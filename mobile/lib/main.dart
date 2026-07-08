@@ -36,9 +36,19 @@ enum WorkspaceMode { work, notes }
 
 enum WorkPage { chat, files, preview }
 
+enum WorkRunMode { auto, review }
+
 enum NotesPage { pages, edit, read }
 
 enum PhoneChatRole { user, assistant, status }
+
+extension WorkRunModeLabel on WorkRunMode {
+  String get label => this == WorkRunMode.review ? 'Review' : 'Auto';
+
+  String get description => this == WorkRunMode.review
+      ? 'Pause on ambiguous attention choices.'
+      : 'Let DAN choose the next action.';
+}
 
 class WireGuardStatus {
   const WireGuardStatus({
@@ -254,6 +264,207 @@ class PhoneChatMessage {
   }
 }
 
+class PhoneAttachmentDraft {
+  const PhoneAttachmentDraft({
+    required this.id,
+    required this.name,
+    required this.mimeType,
+    required this.sizeBytes,
+    required this.dataUrl,
+  });
+
+  final String id;
+  final String name;
+  final String mimeType;
+  final int sizeBytes;
+  final String dataUrl;
+
+  Map<String, Object?> toPayload() {
+    return {
+      'id': id,
+      'kind': 'image',
+      'name': name,
+      'display_name': name,
+      'mime_type': mimeType,
+      'size_bytes': sizeBytes,
+      'source': 'dan-phone-clipboard',
+      'data_url': dataUrl,
+    };
+  }
+}
+
+class PhonePreviewArtifact {
+  const PhonePreviewArtifact({
+    required this.id,
+    required this.title,
+    required this.path,
+    required this.url,
+    required this.kind,
+    required this.source,
+  });
+
+  final String id;
+  final String title;
+  final String path;
+  final String url;
+  final String kind;
+  final String source;
+
+  factory PhonePreviewArtifact.fromJson(Map<String, dynamic> json) {
+    final path = _asString(json['path'], _asString(json['local_path'], ''));
+    final url = _asString(json['url'], _asString(json['uri'], ''));
+    final displayName = _asString(
+      json['display_name'],
+      _asString(json['name'], ''),
+    );
+    final title = displayName.isNotEmpty
+        ? displayName
+        : _baseName(path.isNotEmpty ? path : url);
+    final fallbackId = [
+      path,
+      url,
+      title,
+      _asString(json['kind'], ''),
+    ].where((value) => value.isNotEmpty).join('|');
+    return PhonePreviewArtifact(
+      id: _asString(json['id'], fallbackId),
+      title: title.isEmpty ? 'Output artifact' : title,
+      path: path,
+      url: url,
+      kind: _asString(json['kind'], 'artifact'),
+      source: _asString(json['source'], 'run'),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is PhonePreviewArtifact &&
+        other.id == id &&
+        other.title == title &&
+        other.path == path &&
+        other.url == url &&
+        other.kind == kind &&
+        other.source == source;
+  }
+
+  @override
+  int get hashCode => Object.hash(id, title, path, url, kind, source);
+}
+
+class PhoneSessionSummary {
+  const PhoneSessionSummary({
+    required this.id,
+    required this.workflowId,
+    required this.title,
+    required this.messageCount,
+    required this.updatedAt,
+    required this.archived,
+    required this.mode,
+  });
+
+  final String id;
+  final String workflowId;
+  final String title;
+  final int messageCount;
+  final String updatedAt;
+  final bool archived;
+  final String mode;
+
+  String get displayTitle {
+    final cleaned = title.trim();
+    return cleaned.isEmpty ? 'New Super DAN Session' : cleaned;
+  }
+
+  factory PhoneSessionSummary.fromJson(Map<String, dynamic> json) {
+    return PhoneSessionSummary(
+      id: _asString(json['id'], ''),
+      workflowId: _asString(json['workflow_id'], '_scratch'),
+      title: _asString(json['title'], 'New Super DAN Session'),
+      messageCount: _asInt(json['message_count']),
+      updatedAt: _asString(json['updated_at'], ''),
+      archived: json['archived'] == true,
+      mode: _asString(json['mode'], 'agent'),
+    );
+  }
+}
+
+class PhoneTaskSummary {
+  const PhoneTaskSummary({
+    required this.taskId,
+    required this.threadId,
+    required this.status,
+    required this.latestProgress,
+    required this.workspaceRoot,
+    required this.workspaceId,
+    required this.activeRunId,
+    required this.title,
+  });
+
+  final String taskId;
+  final String threadId;
+  final String status;
+  final String latestProgress;
+  final String workspaceRoot;
+  final String workspaceId;
+  final String activeRunId;
+  final String title;
+
+  bool get isLive {
+    final normalized = status.toLowerCase();
+    return normalized == 'queued' ||
+        normalized == 'running' ||
+        normalized == 'active' ||
+        normalized == 'waiting' ||
+        normalized == 'paused';
+  }
+
+  factory PhoneTaskSummary.fromJson(Map<String, dynamic> json) {
+    final metadata = _recordValue(json['metadata']) ?? const <String, dynamic>{};
+    return PhoneTaskSummary(
+      taskId: _asString(json['task_id'], ''),
+      threadId: _asString(json['thread_id'], ''),
+      status: _asString(json['status'], 'unknown'),
+      latestProgress: _asString(json['latest_progress'], ''),
+      workspaceRoot: _asString(
+        metadata['workspace_root'],
+        _asString(json['workspace_root'], ''),
+      ),
+      workspaceId: _asString(
+        metadata['workspace_id'],
+        _asString(json['workspace_id'], ''),
+      ),
+      activeRunId: _asString(metadata['active_run_id'], ''),
+      title: _asString(json['title'], ''),
+    );
+  }
+}
+
+class PhoneWorkspaceSummary {
+  const PhoneWorkspaceSummary({
+    required this.root,
+    required this.name,
+  });
+
+  final String root;
+  final String name;
+
+  String get id => root.isEmpty ? '_scratch' : root;
+}
+
+class PhoneWorkspaceSessionGroup {
+  const PhoneWorkspaceSessionGroup({
+    required this.root,
+    required this.name,
+    required this.sessions,
+    required this.archived,
+  });
+
+  final String root;
+  final String name;
+  final List<PhoneSessionSummary> sessions;
+  final bool archived;
+}
+
 String _asString(Object? value, String fallback) {
   final text = value?.toString().trim();
   return text == null || text.isEmpty ? fallback : text;
@@ -263,6 +474,15 @@ int _asInt(Object? value) {
   if (value is int) return value;
   if (value is num) return value.toInt();
   return int.tryParse(value?.toString() ?? '') ?? 0;
+}
+
+String _baseName(String path) {
+  final cleaned = path.split('?').first.split('#').first;
+  final parts = cleaned
+      .split(RegExp(r'[\\/]'))
+      .where((part) => part.isNotEmpty)
+      .toList();
+  return parts.isEmpty ? cleaned : parts.last;
 }
 
 String _normalizeAccessToken(String value) {
@@ -279,6 +499,340 @@ List<String> _asStringList(Object? value) {
       .map((item) => item.toString().trim())
       .where((item) => item.isNotEmpty)
       .toList();
+}
+
+List<String> _decodeStringListSetting(String value) {
+  if (value.trim().isEmpty) return const [];
+  try {
+    final decoded = jsonDecode(value);
+    return _asStringList(decoded);
+  } catch (_) {
+    return const [];
+  }
+}
+
+Map<String, String> _decodeStringMapSetting(String value) {
+  if (value.trim().isEmpty) return const {};
+  try {
+    final decoded = jsonDecode(value);
+    if (decoded is! Map) return const {};
+    return decoded.map(
+      (key, item) => MapEntry(key.toString(), item.toString().trim()),
+    )..removeWhere((key, item) => key.trim().isEmpty || item.isEmpty);
+  } catch (_) {
+    return const {};
+  }
+}
+
+String _sessionWorkspaceKey(String workflowId, String threadId) {
+  return '${workflowId.trim().isEmpty ? '_scratch' : workflowId.trim()}:$threadId';
+}
+
+String _workspaceDisplayName(String root) {
+  if (root.trim().isEmpty) return 'Project: Scratch';
+  final base = _baseName(root);
+  return base.isEmpty ? root : base;
+}
+
+String _compactDateTimeLabel(String value) {
+  if (value.trim().isEmpty) return '';
+  try {
+    final parsed = DateTime.parse(value).toLocal();
+    final now = DateTime.now();
+    final sameDay = parsed.year == now.year &&
+        parsed.month == now.month &&
+        parsed.day == now.day;
+    final hour = parsed.hour.toString().padLeft(2, '0');
+    final minute = parsed.minute.toString().padLeft(2, '0');
+    if (sameDay) return '$hour:$minute';
+    return '${parsed.month}/${parsed.day} $hour:$minute';
+  } catch (_) {
+    return value;
+  }
+}
+
+List<PhoneWorkspaceSummary> _mergeWorkspaceRoots(
+  List<PhoneWorkspaceSummary> current,
+  Iterable<String> roots,
+) {
+  final byRoot = <String, PhoneWorkspaceSummary>{
+    for (final item in current) item.root: item,
+  };
+  for (final rawRoot in roots) {
+    final root = rawRoot.trim();
+    if (root.isEmpty || byRoot.containsKey(root)) continue;
+    byRoot[root] = PhoneWorkspaceSummary(
+      root: root,
+      name: _workspaceDisplayName(root),
+    );
+  }
+  return byRoot.values.toList()
+    ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+}
+
+String _imageMimeTypeFromDataUrl(String value) {
+  final match = RegExp(
+    r'^data:(image/[A-Za-z0-9.+-]+);base64,',
+  ).firstMatch(value.trim());
+  return match?.group(1)?.toLowerCase() ?? '';
+}
+
+bool _looksLikeImageDataUrl(String value) {
+  return _imageMimeTypeFromDataUrl(value).isNotEmpty;
+}
+
+int _estimatedDataUrlBytes(String value) {
+  final comma = value.indexOf(',');
+  if (comma < 0) return 0;
+  final encoded = value.substring(comma + 1).replaceAll(RegExp(r'\s+'), '');
+  if (encoded.isEmpty) return 0;
+  final padding = encoded.endsWith('==')
+      ? 2
+      : encoded.endsWith('=')
+      ? 1
+      : 0;
+  return ((encoded.length * 3) ~/ 4) - padding;
+}
+
+String _attachmentExtensionForMimeType(String mimeType) {
+  return switch (mimeType.toLowerCase()) {
+    'image/jpeg' => 'jpg',
+    'image/webp' => 'webp',
+    'image/gif' => 'gif',
+    _ => 'png',
+  };
+}
+
+String _formatBytes(int bytes) {
+  if (bytes <= 0) return '';
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).round()} KB';
+  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+}
+
+bool _isGenericAgentReceipt(String value) {
+  final normalized = value.trim().toLowerCase();
+  return {
+    'completed.',
+    'completed',
+    'run finished',
+    'finished',
+    'super dan accepted the request.',
+  }.contains(normalized);
+}
+
+Map<String, dynamic>? _recordValue(Object? value) {
+  if (value is Map<String, dynamic>) return value;
+  if (value is Map) {
+    return value.map((key, item) => MapEntry(key.toString(), item));
+  }
+  return null;
+}
+
+String _scalarDetailText(Object? value) {
+  if (value == null) return '';
+  if (value is String) return value.trim();
+  if (value is num || value is bool) return value.toString();
+  final record = _recordValue(value);
+  if (record != null) {
+    for (final key in [
+      'summary',
+      'message',
+      'text',
+      'title',
+      'path',
+      'relative_path',
+      'name',
+      'error',
+      'reason',
+    ]) {
+      final text = _scalarDetailText(record[key]);
+      if (text.isNotEmpty) return text;
+    }
+  }
+  return '';
+}
+
+List<String> _detailItemsFromValue(Object? value) {
+  if (value == null) return const [];
+  if (value is List) {
+    return value
+        .expand(_detailItemsFromValue)
+        .where((item) => item.isNotEmpty)
+        .toSet()
+        .toList();
+  }
+  final record = _recordValue(value);
+  if (record != null) {
+    final path = _scalarDetailText(record['path']).isNotEmpty
+        ? _scalarDetailText(record['path'])
+        : _scalarDetailText(record['relative_path']);
+    if (path.isNotEmpty) return [path];
+    final label = _scalarDetailText(record);
+    return label.isEmpty ? const [] : [label];
+  }
+  final scalar = _scalarDetailText(value);
+  return scalar.isEmpty ? const [] : [scalar];
+}
+
+List<String> _detailItemsForKeys(
+  Map<String, dynamic> record,
+  List<String> keys,
+) {
+  return keys
+      .expand((key) => _detailItemsFromValue(record[key]))
+      .where((item) => item.trim().isNotEmpty)
+      .toSet()
+      .toList();
+}
+
+bool _looksLikeOptionalContinuationItem(String value) {
+  final normalized = value.toLowerCase();
+  return normalized.contains('if you want') ||
+      normalized.contains('optional') ||
+      normalized.contains('could also') ||
+      normalized.contains('next step') ||
+      normalized.contains('follow-up') ||
+      normalized.contains('follow up');
+}
+
+String _sectionMarkdown(String title, List<String> items) {
+  if (items.isEmpty) return '';
+  final body = items.length == 1
+      ? items.first
+      : items.map((item) => '- $item').join('\n');
+  return '**$title**\n$body';
+}
+
+String _structuredAgentDisplayFromValue(
+  Object? value, [
+  Set<Object?>? seen,
+  int depth = 0,
+]) {
+  if (value == null || depth > 4) return '';
+  seen ??= <Object?>{};
+  if (seen.contains(value)) return '';
+  final record = _recordValue(value);
+  if (record != null) {
+    seen.add(value);
+    final direct = _structuredAgentDisplayFromRecord(record);
+    if (direct.isNotEmpty) return direct;
+    for (final key in [
+      'result',
+      'final',
+      'output',
+      'outputs',
+      'response',
+      'data',
+      'payload',
+      'text',
+    ]) {
+      final nested = _structuredAgentDisplayFromValue(
+        record[key],
+        seen,
+        depth + 1,
+      );
+      if (nested.isNotEmpty) return nested;
+    }
+  }
+  if (value is List) {
+    seen.add(value);
+    for (final item in value) {
+      final nested = _structuredAgentDisplayFromValue(item, seen, depth + 1);
+      if (nested.isNotEmpty) return nested;
+    }
+  }
+  return '';
+}
+
+String _structuredAgentDisplayFromRecord(Map<String, dynamic> data) {
+  final finalAnswerItems = _detailItemsForKeys(data, [
+    'answer',
+    'final_answer',
+    'public_response',
+    'final_response',
+    'response',
+  ]);
+  final changeItems = _detailItemsForKeys(data, [
+    'summary',
+    'change_summary',
+    'completion_summary',
+    'outcome',
+    'message',
+    'result_summary',
+  ]);
+  final created = _detailItemsForKeys(data, [
+    'files_created',
+    'created_files',
+    'artifacts_created',
+  ]);
+  final changed = _detailItemsForKeys(data, [
+    'files_changed',
+    'changed_files',
+    'files_modified',
+    'modified_files',
+  ]).where((path) => !created.contains(path)).toList();
+  final artifacts = _detailItemsForKeys(data, ['artifacts', 'artifact_refs'])
+      .where((path) => !created.contains(path) && !changed.contains(path))
+      .toList();
+  final fileItems = [
+    ...created.map((path) => 'Created: `$path`'),
+    ...changed.map((path) => 'Changed: `$path`'),
+    ...artifacts.map((path) => 'Artifact: `$path`'),
+  ];
+  final checkItems = _detailItemsForKeys(data, [
+    'validation',
+    'validation_summary',
+    'checks',
+    'tests',
+  ]);
+  final riskItems = _detailItemsForKeys(data, ['risks', 'risk', 'warnings']);
+  final optionalSeedItems = _detailItemsForKeys(data, [
+    'next_steps',
+    'next_step',
+    'optional_next_steps',
+    'follow_up',
+    'follow_ups',
+    'suggestions',
+  ]);
+  final remainingSeedItems = _detailItemsForKeys(data, [
+    'remaining_work',
+    'remaining',
+    'blockers',
+    'blocked_on',
+    'attention_needed',
+    'needs_attention',
+  ]);
+  final optionalItems = {
+    ...optionalSeedItems,
+    ...remainingSeedItems.where(_looksLikeOptionalContinuationItem),
+    ...riskItems.where(_looksLikeOptionalContinuationItem),
+  }.toList();
+  final attentionItems = {
+    ...remainingSeedItems.where(
+      (item) => !_looksLikeOptionalContinuationItem(item),
+    ),
+    ...riskItems.where((item) => !_looksLikeOptionalContinuationItem(item)),
+  }.toList();
+  final summaryItems = finalAnswerItems.isNotEmpty
+      ? finalAnswerItems
+      : changeItems.isNotEmpty
+      ? changeItems.take(2).toList()
+      : fileItems.isNotEmpty
+      ? fileItems.take(2).toList()
+      : checkItems.isNotEmpty
+      ? checkItems.take(2).toList()
+      : attentionItems.take(2).toList();
+  final sections = [
+    _sectionMarkdown('Summary', summaryItems),
+    if (finalAnswerItems.isNotEmpty)
+      _sectionMarkdown('What changed', changeItems),
+    _sectionMarkdown('Files', fileItems),
+    _sectionMarkdown('Checks', checkItems),
+    _sectionMarkdown('Optional next steps', optionalItems),
+    _sectionMarkdown('Needs attention', attentionItems),
+  ].where((section) => section.isNotEmpty).toList();
+  return sections.join('\n\n').trim();
 }
 
 String decodedDefaultPhoneWireGuardConfig() {
@@ -330,6 +884,7 @@ class WorkspaceHome extends StatefulWidget {
 class _WorkspaceHomeState extends State<WorkspaceHome> {
   WorkspaceMode mode = WorkspaceMode.work;
   WorkPage workPage = WorkPage.chat;
+  WorkRunMode runMode = WorkRunMode.auto;
   NotesPage notesPage = NotesPage.pages;
   WireGuardStatus? wireGuard;
   String health = 'checking';
@@ -352,11 +907,25 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
   String workspaceRoot = '';
   List<WorkspaceRootSuggestion> workspaceRootSuggestions = const [];
   bool loadingWorkspaceRootSuggestions = false;
+  List<PhoneWorkspaceSummary> phoneWorkspaces = const [];
+  List<PhoneSessionSummary> phoneSessions = const [];
+  Map<String, PhoneTaskSummary> phoneTasksByThread = const {};
+  Map<String, String> sessionWorkspaceRoots = const {};
+  bool loadingSessions = false;
   List<WorkspaceFileEntry> workspaceFiles = const [];
   WorkspaceFileEntry? activeFile;
   String activeFileContent = '';
   String fileStatus = 'Set a workspace root to browse files';
   bool loadingFiles = false;
+  List<PhonePreviewArtifact> previewArtifacts = const [];
+  bool previewArtifactsExpanded = true;
+  String previewTitle = 'Preview';
+  String previewStatus = 'Select a file, output artifact, or prompt log';
+  String previewContent = '';
+  PhonePreviewArtifact? activePreviewArtifact;
+  bool loadingPromptLog = false;
+  int promptLogEntryCount = 0;
+  String promptLogPath = '';
   List<PhoneChatMessage> chatMessages = const [
     PhoneChatMessage(
       id: 'welcome',
@@ -372,6 +941,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
   bool activeRunLive = false;
   bool chatBusy = false;
   String chatStatus = 'Ready';
+  List<PhoneAttachmentDraft> composerAttachments = const [];
   Timer? agentPollTimer;
   Timer? rootSuggestionDebounce;
   Timer? noteAutosaveTimer;
@@ -501,6 +1071,467 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         .toList();
   }
 
+  String _sessionWorkspaceRootFor(PhoneSessionSummary session) {
+    final taskRoot = phoneTasksByThread[session.id]?.workspaceRoot ?? '';
+    if (taskRoot.isNotEmpty) return taskRoot;
+    final boundRoot =
+        sessionWorkspaceRoots[_sessionWorkspaceKey(session.workflowId, session.id)] ??
+        '';
+    if (boundRoot.isNotEmpty) return boundRoot;
+    return session.id == activeThreadId ? workspaceRoot : '';
+  }
+
+  List<PhoneWorkspaceSessionGroup> _buildSessionGroups() {
+    final grouped = <String, List<PhoneSessionSummary>>{};
+    final archived = <PhoneSessionSummary>[];
+    for (final session in phoneSessions) {
+      if (session.archived) {
+        archived.add(session);
+        continue;
+      }
+      final root = _sessionWorkspaceRootFor(session);
+      grouped.putIfAbsent(root, () => []).add(session);
+    }
+
+    final roots = _mergeWorkspaceRoots(
+      phoneWorkspaces,
+      [
+        if (workspaceRoot.trim().isNotEmpty) workspaceRoot.trim(),
+        ...grouped.keys.where((root) => root.isNotEmpty),
+      ],
+    );
+    final groups = <PhoneWorkspaceSessionGroup>[
+      for (final workspace in roots)
+        PhoneWorkspaceSessionGroup(
+          root: workspace.root,
+          name: workspace.name,
+          sessions: grouped.remove(workspace.root) ?? const [],
+          archived: false,
+        ),
+    ];
+    if (grouped.containsKey('') && grouped['']!.isNotEmpty) {
+      groups.add(
+        PhoneWorkspaceSessionGroup(
+          root: '',
+          name: 'Project: Scratch',
+          sessions: grouped.remove('')!,
+          archived: false,
+        ),
+      );
+    }
+    for (final entry in grouped.entries) {
+      if (entry.value.isEmpty) continue;
+      groups.add(
+        PhoneWorkspaceSessionGroup(
+          root: entry.key,
+          name: _workspaceDisplayName(entry.key),
+          sessions: entry.value,
+          archived: false,
+        ),
+      );
+    }
+    if (archived.isNotEmpty) {
+      groups.add(
+        PhoneWorkspaceSessionGroup(
+          root: '',
+          name: 'Archived',
+          sessions: archived,
+          archived: true,
+        ),
+      );
+    }
+    return groups;
+  }
+
+  Future<void> _refreshSessions() async {
+    if (!mounted || health == 'offline') return;
+    setState(() => loadingSessions = true);
+    final threadPayload = await _getJson(activeApiBase, '/api/chats');
+    final taskPayload = await _getJson(activeApiBase, '/api/v2/tasks?limit=160');
+    if (!mounted) return;
+    final sessions = (threadPayload?['threads'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(PhoneSessionSummary.fromJson)
+        .where((session) => session.id.isNotEmpty)
+        .toList();
+    final tasks = (taskPayload?['tasks'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(PhoneTaskSummary.fromJson)
+        .where((task) => task.threadId.isNotEmpty)
+        .toList();
+    final tasksByThread = <String, PhoneTaskSummary>{};
+    for (final task in tasks) {
+      tasksByThread.putIfAbsent(task.threadId, () => task);
+    }
+    final roots = [
+      if (workspaceRoot.trim().isNotEmpty) workspaceRoot.trim(),
+      ...tasks.map((task) => task.workspaceRoot).where((root) => root.isNotEmpty),
+      ...sessionWorkspaceRoots.values.where((root) => root.trim().isNotEmpty),
+    ];
+    setState(() {
+      phoneSessions = sessions;
+      phoneTasksByThread = tasksByThread;
+      phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, roots);
+      loadingSessions = false;
+    });
+    unawaited(_savePhoneSettings());
+  }
+
+  List<PhoneChatMessage> _phoneMessagesFromThreadPayload(
+    Map<String, dynamic>? payload,
+  ) {
+    final messages = payload?['messages'];
+    if (messages is! List<dynamic>) return const [];
+    final parsed = <PhoneChatMessage>[];
+    for (final item in messages.whereType<Map<String, dynamic>>()) {
+      final role = _asString(item['role'], '');
+      final text = _asString(item['content'], '');
+      if (text.isEmpty) continue;
+      final phoneRole = switch (role) {
+        'user' => PhoneChatRole.user,
+        'assistant' => PhoneChatRole.assistant,
+        _ => PhoneChatRole.status,
+      };
+      if (phoneRole == PhoneChatRole.status) continue;
+      final taskRef = _recordValue(item['task_run_ref']);
+      parsed.add(
+        PhoneChatMessage(
+          id: _asString(item['id'], _newId('history')),
+          role: phoneRole,
+          text: text,
+          status: _asString(taskRef?['status'], ''),
+        ),
+      );
+    }
+    return parsed;
+  }
+
+  List<Map<String, Object?>> _messagesToThreadPayload(
+    List<PhoneChatMessage> messages,
+  ) {
+    return messages
+        .where(
+          (message) =>
+              message.role == PhoneChatRole.user ||
+              message.role == PhoneChatRole.assistant,
+        )
+        .map(
+          (message) => {
+            'id': message.id,
+            'role': message.role == PhoneChatRole.user ? 'user' : 'assistant',
+            'content': message.text,
+          },
+        )
+        .toList();
+  }
+
+  Future<void> _saveActiveThreadMessages([
+    List<PhoneChatMessage>? source,
+  ]) async {
+    if (activeThreadId.isEmpty || activeWorkflowId.isEmpty) return;
+    final payloadMessages = _messagesToThreadPayload(source ?? chatMessages);
+    await _requestJson(
+      activeApiBase,
+      '/api/chats/${Uri.encodeComponent(activeWorkflowId)}/${Uri.encodeComponent(activeThreadId)}',
+      method: 'PUT',
+      body: {
+        'mode': 'agent',
+        'messages': payloadMessages,
+      },
+      timeout: const Duration(seconds: 8),
+    );
+    unawaited(_refreshSessions());
+  }
+
+  Future<void> _selectWorkspaceRootFromDrawer(String root) async {
+    final nextRoot = root.trim();
+    setState(() {
+      workspaceRoot = nextRoot;
+      workspaceRootController.text = nextRoot;
+      phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [nextRoot]);
+      mode = WorkspaceMode.work;
+      workPage = WorkPage.files;
+      fileStatus = nextRoot.isEmpty
+          ? 'Loading default workspace'
+          : 'Loading $nextRoot';
+    });
+    await _savePhoneSettings();
+    await _refreshWorkspaceFiles(root: nextRoot);
+  }
+
+  Future<void> _selectPhoneSession(
+    PhoneSessionSummary session, {
+    String workspaceRootOverride = '',
+  }) async {
+    if (session.archived) {
+      setState(() => chatStatus = 'Restore archived sessions from the desktop workspace');
+      return;
+    }
+    agentPollTimer?.cancel();
+    final targetRoot =
+        workspaceRootOverride.trim().isNotEmpty
+            ? workspaceRootOverride.trim()
+            : _sessionWorkspaceRootFor(session).trim();
+    setState(() {
+      activeWorkflowId = session.workflowId;
+      activeThreadId = session.id;
+      activeRunId = '';
+      activeTaskId = '';
+      activeRunLive = false;
+      chatBusy = false;
+      chatStatus = 'Loading session';
+      chatMessages = const [];
+      composerAttachments = const [];
+      previewArtifacts = const [];
+      promptLogEntryCount = 0;
+      promptLogPath = '';
+      mode = WorkspaceMode.work;
+      workPage = WorkPage.chat;
+      if (targetRoot.isNotEmpty) {
+        workspaceRoot = targetRoot;
+        workspaceRootController.text = targetRoot;
+        phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [targetRoot]);
+      }
+    });
+    if (targetRoot.isNotEmpty) {
+      setState(() {
+        sessionWorkspaceRoots = {
+          ...sessionWorkspaceRoots,
+          _sessionWorkspaceKey(session.workflowId, session.id): targetRoot,
+        };
+      });
+      unawaited(_refreshWorkspaceFiles(root: targetRoot));
+    }
+    final threadPayload = await _getJson(
+      activeApiBase,
+      '/api/chats/${Uri.encodeComponent(session.workflowId)}/${Uri.encodeComponent(session.id)}',
+    );
+    final taskPayload = await _getJson(
+      activeApiBase,
+      '/api/v2/threads/${Uri.encodeComponent(session.id)}/tasks?limit=20',
+    );
+    if (!mounted || activeThreadId != session.id) return;
+    final threadMessages = _phoneMessagesFromThreadPayload(threadPayload);
+    final threadTasks = (taskPayload?['tasks'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(PhoneTaskSummary.fromJson)
+        .where((task) => task.threadId == session.id)
+        .toList();
+    final latestTask = threadTasks.isNotEmpty
+        ? threadTasks.first
+        : phoneTasksByThread[session.id];
+    final recoveredRoot = latestTask?.workspaceRoot ?? targetRoot;
+    final fallbackMessages =
+        threadMessages.isNotEmpty
+            ? threadMessages
+            : latestTask?.latestProgress.isNotEmpty == true
+            ? [
+                PhoneChatMessage(
+                  id: _newId('status'),
+                  role: PhoneChatRole.assistant,
+                  text: latestTask!.latestProgress,
+                  status: latestTask.status,
+                ),
+              ]
+            : const <PhoneChatMessage>[];
+    setState(() {
+      chatMessages = fallbackMessages;
+      activeTaskId = latestTask?.taskId ?? '';
+      activeRunId = latestTask?.activeRunId ?? '';
+      activeRunLive = latestTask?.isLive == true && activeRunId.isNotEmpty;
+      chatStatus = fallbackMessages.isEmpty
+          ? 'Ready'
+          : latestTask?.status == 'completed'
+          ? 'Ready'
+          : latestTask?.status ?? 'Ready';
+      if (recoveredRoot.isNotEmpty) {
+        workspaceRoot = recoveredRoot;
+        workspaceRootController.text = recoveredRoot;
+        phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [recoveredRoot]);
+        sessionWorkspaceRoots = {
+          ...sessionWorkspaceRoots,
+          _sessionWorkspaceKey(session.workflowId, session.id): recoveredRoot,
+        };
+      }
+      if (latestTask != null) {
+        phoneTasksByThread = {
+          ...phoneTasksByThread,
+          session.id: latestTask,
+        };
+      }
+    });
+    await _savePhoneSettings();
+    if (activeRunLive && activeRunId.isNotEmpty) {
+      _startAgentPolling(activeRunId, fallbackMessages.isNotEmpty
+          ? fallbackMessages.last.id
+          : _newId('assistant'));
+    }
+  }
+
+  Future<void> _createSessionForWorkspace(String root) async {
+    final targetRoot = root.trim();
+    setState(() {
+      chatStatus = 'Creating session';
+      if (targetRoot.isNotEmpty) {
+        workspaceRoot = targetRoot;
+        workspaceRootController.text = targetRoot;
+        phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [targetRoot]);
+      }
+      mode = WorkspaceMode.work;
+      workPage = WorkPage.chat;
+    });
+    if (targetRoot.isNotEmpty) {
+      unawaited(_refreshWorkspaceFiles(root: targetRoot));
+    }
+    final payload = await _postJson(activeApiBase, '/api/chats/_scratch', {
+      'title': 'New Super DAN Session',
+      'mode': 'agent',
+    });
+    if (!mounted) return;
+    if (payload == null) {
+      setState(() => chatStatus = 'Session create failed');
+      return;
+    }
+    final session = PhoneSessionSummary.fromJson(payload);
+    if (session.id.isEmpty) {
+      setState(() => chatStatus = 'Session create failed');
+      return;
+    }
+    setState(() {
+      activeWorkflowId = session.workflowId;
+      activeThreadId = session.id;
+      activeRunId = '';
+      activeTaskId = '';
+      activeRunLive = false;
+      chatBusy = false;
+      chatStatus = 'Ready';
+      chatMessages = const [];
+      previewArtifacts = const [];
+      composerAttachments = const [];
+      phoneSessions = [
+        session,
+        ...phoneSessions.where((item) => item.id != session.id),
+      ];
+      if (targetRoot.isNotEmpty) {
+        sessionWorkspaceRoots = {
+          ...sessionWorkspaceRoots,
+          _sessionWorkspaceKey(session.workflowId, session.id): targetRoot,
+        };
+      }
+    });
+    await _savePhoneSettings();
+    unawaited(_refreshSessions());
+  }
+
+  Future<void> _openNewWorkspaceDialog() async {
+    final controller = TextEditingController(
+      text: workspaceRootController.text.trim(),
+    );
+    var suggestions = workspaceRootSuggestions;
+    Timer? debounce;
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (context) {
+          return StatefulBuilder(
+            builder: (context, setDialogState) {
+              Future<void> refreshSuggestions(String value) async {
+                final next = await _fetchWorkspaceRootSuggestions(value);
+                if (context.mounted) {
+                  setDialogState(() => suggestions = next);
+                }
+              }
+
+              void scheduleSuggestions(String value) {
+                debounce?.cancel();
+                debounce = Timer(
+                  const Duration(milliseconds: 220),
+                  () => unawaited(refreshSuggestions(value)),
+                );
+              }
+
+              Future<void> createWorkspace(String value) async {
+                final root = value.trim();
+                if (root.isEmpty) return;
+                Navigator.of(context).pop();
+                await _selectWorkspaceRootFromDrawer(root);
+                unawaited(_refreshSessions());
+              }
+
+              return AlertDialog(
+                title: const Text('New workspace'),
+                content: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextField(
+                        controller: controller,
+                        onChanged: scheduleSuggestions,
+                        onSubmitted: (value) =>
+                            unawaited(createWorkspace(value)),
+                        decoration: const InputDecoration(
+                          labelText: 'Workspace root',
+                          hintText: '/path/to/project',
+                        ),
+                      ),
+                      if (suggestions.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            border: Border.all(color: const Color(0xffded7ca)),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Column(
+                            children: [
+                              for (final suggestion in suggestions.take(5))
+                                ListTile(
+                                  dense: true,
+                                  leading: const Icon(Icons.folder_outlined),
+                                  title: Text(
+                                    suggestion.label.isEmpty
+                                        ? suggestion.path
+                                        : suggestion.label,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  subtitle: Text(
+                                    suggestion.path,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  onTap: () =>
+                                      unawaited(createWorkspace(suggestion.path)),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Cancel'),
+                  ),
+                  FilledButton.icon(
+                    onPressed: () => unawaited(createWorkspace(controller.text)),
+                    icon: const Icon(Icons.add),
+                    label: const Text('Create'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      debounce?.cancel();
+      controller.dispose();
+    }
+  }
+
   void _handleNoteEditChanged() {
     if (suppressNoteEditListener) return;
     final note = activeNote;
@@ -559,6 +1590,13 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       );
       final savedWireGuardConfig = _asString(result['wireGuardConfig'], '');
       final savedWorkspaceRoot = _asString(result['workspaceRoot'], '');
+      final savedRunMode = _asString(result['runMode'], '');
+      final savedWorkspaceRoots = _decodeStringListSetting(
+        _asString(result['workspaceRoots'], ''),
+      );
+      final savedSessionWorkspaceRoots = _decodeStringMapSetting(
+        _asString(result['sessionWorkspaceRoots'], ''),
+      );
       setState(() {
         if (savedApiBase.isNotEmpty) {
           activeApiBase = _normalizeApiBase(savedApiBase);
@@ -577,6 +1615,19 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
             phoneWireGuardDetail = 'DAN phone VPN config loaded';
           }
         }
+        if (savedRunMode == 'review') {
+          runMode = WorkRunMode.review;
+        } else if (savedRunMode == 'auto') {
+          runMode = WorkRunMode.auto;
+        }
+        phoneWorkspaces = _mergeWorkspaceRoots(
+          phoneWorkspaces,
+          [
+            ...savedWorkspaceRoots,
+            if (savedWorkspaceRoot.isNotEmpty) savedWorkspaceRoot,
+          ],
+        );
+        sessionWorkspaceRoots = savedSessionWorkspaceRoots;
       });
       if (savedApiBase.isNotEmpty || savedToken.isNotEmpty) {
         unawaited(_refreshStatus(preferredApiBase: activeApiBase));
@@ -595,6 +1646,10 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     accessToken = _normalizeAccessToken(accessTokenController.text);
     accessTokenController.text = accessToken;
     phoneWireGuardConfig = wireGuardConfigController.text.trim();
+    final workspaceRoots = _mergeWorkspaceRoots(
+      phoneWorkspaces,
+      [if (workspaceRoot.trim().isNotEmpty) workspaceRoot.trim()],
+    ).map((workspace) => workspace.root).toList();
     if (!Platform.isAndroid) return;
     try {
       await wireGuardChannel.invokeMethod<Object?>('saveSettings', {
@@ -602,6 +1657,9 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         'accessToken': accessToken,
         'wireGuardConfig': phoneWireGuardConfig,
         'workspaceRoot': workspaceRoot,
+        'runMode': runMode.name,
+        'workspaceRoots': jsonEncode(workspaceRoots),
+        'sessionWorkspaceRoots': jsonEncode(sessionWorkspaceRoots),
       });
     } on MissingPluginException {
       return;
@@ -666,6 +1724,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       if (health == 'ready') {
         unawaited(_refreshNotes(selectedBase));
         unawaited(_refreshWorkspaceFiles(apiBase: selectedBase));
+        unawaited(_refreshSessions());
       } else {
         setState(() {
           loadingNotes = false;
@@ -892,10 +1951,12 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     setState(() {
       workspaceRoot = nextRoot;
       workspaceRootController.text = nextRoot;
+      phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [nextRoot]);
       fileStatus = 'Loading workspace';
     });
     await _savePhoneSettings();
     await _refreshWorkspaceFiles(root: nextRoot);
+    unawaited(_refreshSessions());
   }
 
   Future<void> _refreshWorkspaceFiles({String? apiBase, String? root}) async {
@@ -929,6 +1990,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     setState(() {
       workspaceRoot = resolvedRoot;
       workspaceRootController.text = resolvedRoot;
+      phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [resolvedRoot]);
       workspaceFiles = entries;
       loadingFiles = false;
       fileStatus = entries.isEmpty
@@ -945,7 +2007,11 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     }
     setState(() {
       activeFile = entry;
+      activePreviewArtifact = null;
       activeFileContent = '';
+      previewTitle = entry.relativePath;
+      previewStatus = 'Reading ${entry.relativePath}';
+      previewContent = '';
       fileStatus = 'Reading ${entry.relativePath}';
       mode = WorkspaceMode.work;
       workPage = WorkPage.preview;
@@ -961,7 +2027,84 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     }
     setState(() {
       activeFileContent = _asString(payload['content'], '');
+      previewTitle = entry.relativePath;
+      previewStatus = entry.relativePath;
+      previewContent = activeFileContent;
       fileStatus = entry.relativePath;
+    });
+  }
+
+  Future<void> _selectPreviewArtifact(PhonePreviewArtifact artifact) async {
+    setState(() {
+      activePreviewArtifact = artifact;
+      activeFile = null;
+      activeFileContent = '';
+      previewTitle = artifact.title;
+      previewStatus = artifact.path.isNotEmpty ? artifact.path : artifact.url;
+      previewContent = 'Loading output artifact...';
+      mode = WorkspaceMode.work;
+      workPage = WorkPage.preview;
+    });
+    if (artifact.path.isEmpty) {
+      setState(() {
+        previewContent =
+            'Remote artifact\n\n${artifact.url}\n\nOpen this URL from a browser-capable surface.';
+      });
+      return;
+    }
+    final payload = await _getJson(
+      activeApiBase,
+      '/api/workspace-files/read?path=${Uri.encodeComponent(artifact.path)}&root_path=${Uri.encodeComponent(workspaceRoot)}',
+    );
+    if (!mounted) return;
+    setState(() {
+      previewContent = _asString(
+        payload?['content'],
+        'Artifact recorded at:\n${artifact.path}\n\nThis output could not be read as text from the current workspace root.',
+      );
+      previewStatus = artifact.path;
+    });
+  }
+
+  Future<void> _openPromptLogPreview() async {
+    if (activeThreadId.isEmpty || loadingPromptLog) {
+      setState(() {
+        chatStatus = activeThreadId.isEmpty
+            ? 'Start a Work session before opening prompt logs'
+            : 'Prompt log is already loading';
+      });
+      return;
+    }
+    setState(() {
+      loadingPromptLog = true;
+      activePreviewArtifact = null;
+      activeFile = null;
+      activeFileContent = '';
+      previewTitle = 'Prompt log';
+      previewStatus = 'Loading prompt log';
+      previewContent = '';
+      mode = WorkspaceMode.work;
+      workPage = WorkPage.preview;
+    });
+    final payload = await _getJson(
+      activeApiBase,
+      '/api/v2/threads/${Uri.encodeComponent(activeThreadId)}/prompt-log',
+    );
+    if (!mounted) return;
+    setState(() {
+      loadingPromptLog = false;
+      promptLogEntryCount = _asInt(payload?['entry_count']);
+      promptLogPath = _asString(payload?['path'], '');
+      previewStatus = payload == null
+          ? 'Could not load prompt log'
+          : '$promptLogEntryCount model ${promptLogEntryCount == 1 ? 'call' : 'calls'} recorded';
+      previewContent = _asString(
+        payload?['content'],
+        'No prompt log content was returned.',
+      );
+      if (promptLogPath.isNotEmpty) {
+        previewStatus = '$previewStatus\n$promptLogPath';
+      }
     });
   }
 
@@ -994,7 +2137,9 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     return activeThreadId.isNotEmpty;
   }
 
-  Map<String, Object?> _phoneSurfaceContext() {
+  Map<String, Object?> _phoneSurfaceContext({
+    List<PhoneAttachmentDraft> attachments = const [],
+  }) {
     return {
       'identity': {'name': 'DAN Phone', 'role': 'chunk_workspace_phone'},
       'workspace_root': workspaceRoot,
@@ -1004,6 +2149,8 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       'surface_profile': 'super_tui',
       'agent_profile': 'super_tui',
       'agent_backend': 'super_dan',
+      'autonomy_mode': runMode.name,
+      'attention_resolution_mode': runMode.name,
       'gui_for': 'dan super-tui',
       'capabilities': [
         'notes',
@@ -1012,7 +2159,14 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         'background_agent_runs',
         'checkpoint_commands',
         'read_only_wireguard_status',
+        'preview_artifacts',
+        'prompt_logs',
+        'screenshot_data_url_attachments',
       ],
+      if (attachments.isNotEmpty)
+        'appended_attachments': attachments
+            .map((attachment) => attachment.toPayload())
+            .toList(),
       'active_note': activeNote == null
           ? null
           : {
@@ -1040,6 +2194,41 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     };
   }
 
+  Map<String, Object?> _phoneExecutePayload() {
+    final attentionMode = runMode.name;
+    return {
+      'backend': 'super_dan',
+      'surface_profile': 'super_tui',
+      'background': true,
+      'profile_policy': {
+        'backend': 'super_dan',
+        'surface_profile': 'super_tui',
+        'autonomy_mode': attentionMode,
+        'attention_resolution_mode': attentionMode,
+      },
+      'approval_policy': {
+        'mode': runMode == WorkRunMode.review
+            ? 'ask_on_attention'
+            : 'auto_within_workspace',
+        'attention_resolution': attentionMode,
+      },
+      'metadata': {
+        'backend': 'super_dan',
+        'surface_profile': 'super_tui',
+        'compatibility_profile': 'super_tui',
+        'surface': 'gui:chunk-workspace',
+        'requested_from': 'chunk_workspace_phone',
+        'gui_for': 'dan super-tui',
+        'selected_backend': 'super_dan',
+        'selected_agent': 'native',
+        'selected_agent_label': 'Native',
+        'autonomy_mode': attentionMode,
+        'attention_resolution_mode': attentionMode,
+        'attention_resolution_label': runMode.label,
+      },
+    };
+  }
+
   List<Map<String, String>> _chatHistoryForBackend([
     List<PhoneChatMessage>? source,
   ]) {
@@ -1059,13 +2248,30 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
   }
 
   Future<void> _sendChatMessage() async {
-    final prompt = chatController.text.trim();
-    if (prompt.isEmpty || chatBusy) return;
+    final typedPrompt = chatController.text.trim();
+    final attachmentsForSend = List<PhoneAttachmentDraft>.from(
+      composerAttachments,
+    );
+    final prompt = typedPrompt.isNotEmpty
+        ? typedPrompt
+        : attachmentsForSend.length <= 1
+        ? 'Please review the attached screenshot.'
+        : 'Please review the attached screenshots.';
+    if ((typedPrompt.isEmpty && attachmentsForSend.isEmpty) || chatBusy) {
+      return;
+    }
     chatController.clear();
     final user = PhoneChatMessage(
       id: _newId('user'),
       role: PhoneChatRole.user,
-      text: prompt,
+      text: attachmentsForSend.isEmpty
+          ? prompt
+          : [
+              if (typedPrompt.isNotEmpty) typedPrompt,
+              attachmentsForSend.length == 1
+                  ? 'Attached ${attachmentsForSend.first.name}'
+                  : 'Attached ${attachmentsForSend.length} screenshots',
+            ].where((value) => value.isNotEmpty).join('\n\n'),
     );
     final assistantId = _newId('assistant');
     final assistant = PhoneChatMessage(
@@ -1081,6 +2287,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       chatBusy = true;
       chatStatus = activeRunLive ? 'Steering Super DAN' : 'Starting Super DAN';
       chatMessages = [...chatMessages, user, assistant];
+      composerAttachments = const [];
     });
 
     try {
@@ -1104,7 +2311,14 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
             'idempotency_key': _newId('phone-append'),
             'payload': {
               'text': prompt,
-              'surface_context': _phoneSurfaceContext(),
+              'surface_context': _phoneSurfaceContext(
+                attachments: attachmentsForSend,
+              ),
+              'attachments': attachmentsForSend
+                  .map((attachment) => attachment.toPayload())
+                  .toList(),
+              'profile_policy': _phoneExecutePayload()['profile_policy'],
+              'approval_policy': _phoneExecutePayload()['approval_policy'],
             },
           },
         );
@@ -1131,7 +2345,9 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         'surface': 'frontend:chunk-workspace',
         'surface_type': 'frontend',
         'surface_id': 'chunk-workspace',
-        'surface_context': _phoneSurfaceContext(),
+        'surface_context': _phoneSurfaceContext(
+          attachments: attachmentsForSend,
+        ),
       });
       final control = created?['v2_control_plane'] is Map<String, dynamic>
           ? created!['v2_control_plane'] as Map<String, dynamic>
@@ -1159,29 +2375,100 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         'Super DAN accepted the request.',
         status: 'running',
       );
-      await _postJson(activeApiBase, '/api/v2/agent-runs/$runId/execute', {
-        'backend': 'super_dan',
-        'surface_profile': 'super_tui',
-        'background': true,
-        'profile_policy': {
-          'backend': 'super_dan',
-          'surface_profile': 'super_tui',
-        },
-        'metadata': {
-          'backend': 'super_dan',
-          'surface_profile': 'super_tui',
-          'compatibility_profile': 'super_tui',
-          'surface': 'gui:chunk-workspace',
-          'requested_from': 'chunk_workspace_phone',
-          'gui_for': 'dan super-tui',
-          'selected_backend': 'super_dan',
-        },
-      });
+      await _postJson(
+        activeApiBase,
+        '/api/v2/agent-runs/$runId/execute',
+        _phoneExecutePayload(),
+      );
       setState(() => chatStatus = 'Super DAN running');
       _startAgentPolling(runId, assistantId);
     } finally {
       if (mounted) setState(() => chatBusy = false);
     }
+  }
+
+  Future<void> _pasteScreenshotAttachment() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text?.trim() ?? '';
+    if (!_looksLikeImageDataUrl(text)) {
+      if (mounted) {
+        setState(() {
+          chatStatus =
+              'Clipboard does not contain a screenshot data URL. Copy an image data URL or attach from desktop.';
+        });
+      }
+      return;
+    }
+    final mimeType = _imageMimeTypeFromDataUrl(text);
+    final sizeBytes = _estimatedDataUrlBytes(text);
+    final extension = _attachmentExtensionForMimeType(mimeType);
+    final attachment = PhoneAttachmentDraft(
+      id: _newId('phone-image'),
+      name: 'phone-screenshot-${composerAttachments.length + 1}.$extension',
+      mimeType: mimeType,
+      sizeBytes: sizeBytes,
+      dataUrl: text,
+    );
+    setState(() {
+      composerAttachments = [...composerAttachments, attachment];
+      chatStatus = 'Screenshot attached';
+    });
+  }
+
+  void _removeComposerAttachment(String id) {
+    setState(() {
+      composerAttachments = composerAttachments
+          .where((attachment) => attachment.id != id)
+          .toList();
+    });
+  }
+
+  Future<void> _changeRunMode(WorkRunMode next) async {
+    if (runMode == next) return;
+    setState(() {
+      runMode = next;
+      chatStatus = '${next.label} mode selected';
+    });
+    await _savePhoneSettings();
+  }
+
+  Future<void> _stopActiveRun() async {
+    if (!activeRunLive || activeRunId.isEmpty) return;
+    setState(() {
+      chatBusy = true;
+      chatStatus = 'Requesting stop';
+    });
+    final command = await _postJson(
+      activeApiBase,
+      '/api/v2/agent-runs/$activeRunId/commands',
+      {
+        'command': 'stop',
+        'task_id': activeTaskId,
+        'idempotency_key': _newId('phone-stop'),
+        'payload': {
+          'text': 'Stop requested from DAN Phone.',
+          'surface_context': _phoneSurfaceContext(),
+        },
+      },
+    );
+    if (!mounted) return;
+    final event = command?['event'] is Map<String, dynamic>
+        ? command!['event'] as Map<String, dynamic>
+        : null;
+    final text = _agentEventText(event);
+    setState(() {
+      chatBusy = false;
+      chatStatus = text.isEmpty ? 'Stop requested' : text;
+      chatMessages = [
+        ...chatMessages,
+        PhoneChatMessage(
+          id: _newId('status'),
+          role: PhoneChatRole.status,
+          text: text.isEmpty ? 'Stop requested.' : text,
+          status: 'stop_requested',
+        ),
+      ];
+    });
   }
 
   bool _ensureWorkspaceUsableForChat(String assistantId) {
@@ -1216,8 +2503,12 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         .whereType<Map<String, dynamic>>()
         .toList();
     if (events.isEmpty) return;
+    final artifacts = events.expand(_previewArtifactsFromEvent).toList();
+    if (artifacts.isNotEmpty) {
+      _mergePreviewArtifacts(artifacts);
+    }
     final latest = events.last;
-    final text = _agentEventText(latest);
+    final text = _bestAgentEventText(events);
     if (text.isNotEmpty) {
       _replaceChatMessage(
         assistantId,
@@ -1238,13 +2529,85 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     }
   }
 
+  Iterable<PhonePreviewArtifact> _previewArtifactsFromEvent(
+    Map<String, dynamic> event,
+  ) sync* {
+    final refs = <Object?>[
+      event['artifact_refs'],
+      if (event['payload'] is Map<String, dynamic>)
+        (event['payload'] as Map<String, dynamic>)['artifact_refs'],
+      if (event['payload'] is Map<String, dynamic>)
+        (event['payload'] as Map<String, dynamic>)['artifacts'],
+    ];
+    for (final refList in refs) {
+      if (refList is! List<dynamic>) continue;
+      for (final item in refList) {
+        if (item is Map<String, dynamic>) {
+          final artifact = PhonePreviewArtifact.fromJson(item);
+          if (artifact.path.isNotEmpty || artifact.url.isNotEmpty) {
+            yield artifact;
+          }
+        } else if (item is Map) {
+          final mapped = item.map(
+            (key, value) => MapEntry(key.toString(), value),
+          );
+          final artifact = PhonePreviewArtifact.fromJson(mapped);
+          if (artifact.path.isNotEmpty || artifact.url.isNotEmpty) {
+            yield artifact;
+          }
+        } else if (item is String && item.trim().isNotEmpty) {
+          final value = item.trim();
+          yield PhonePreviewArtifact(
+            id: value,
+            title: _baseName(value).isEmpty
+                ? 'Output artifact'
+                : _baseName(value),
+            path: value.startsWith('http://') || value.startsWith('https://')
+                ? ''
+                : value,
+            url: value.startsWith('http://') || value.startsWith('https://')
+                ? value
+                : '',
+            kind: 'artifact',
+            source: 'run',
+          );
+        }
+      }
+    }
+  }
+
+  void _mergePreviewArtifacts(List<PhonePreviewArtifact> artifacts) {
+    final byId = <String, PhonePreviewArtifact>{
+      for (final artifact in previewArtifacts) artifact.id: artifact,
+    };
+    for (final artifact in artifacts) {
+      byId[artifact.id] = artifact;
+    }
+    final next = byId.values.toList();
+    if (next.length == previewArtifacts.length &&
+        next.every((artifact) => previewArtifacts.contains(artifact))) {
+      return;
+    }
+    setState(() => previewArtifacts = next);
+  }
+
+  String _bestAgentEventText(List<Map<String, dynamic>> events) {
+    for (final event in events.reversed) {
+      final text = _agentEventText(event);
+      if (text.isNotEmpty && !_isGenericAgentReceipt(text)) return text;
+    }
+    return _agentEventText(events.last);
+  }
+
   String _agentEventText(Map<String, dynamic>? event) {
     if (event == null) return '';
-    final summary = _asString(event['summary'], '');
-    if (summary.isNotEmpty) return summary;
     final payload = event['payload'] is Map<String, dynamic>
         ? event['payload'] as Map<String, dynamic>
         : const <String, dynamic>{};
+    final structured = _structuredAgentDisplayFromValue(payload);
+    if (structured.isNotEmpty) return structured;
+    final summary = _asString(event['summary'], '');
+    if (summary.isNotEmpty) return summary;
     for (final key in ['final_answer', 'answer', 'message', 'text', 'error']) {
       final value = _asString(payload[key], '');
       if (value.isNotEmpty) return value;
@@ -1934,21 +3297,40 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
               child: mode == WorkspaceMode.work
                   ? _WorkSurface(
                       page: workPage,
+                      runMode: runMode,
                       workspaceRoot: workspaceRoot,
                       workspaceRootController: workspaceRootController,
                       files: workspaceFiles,
                       activeFile: activeFile,
                       activeFileContent: activeFileContent,
+                      previewTitle: previewTitle,
+                      previewStatus: previewStatus,
+                      previewContent: previewContent,
+                      previewArtifacts: previewArtifacts,
+                      previewArtifactsExpanded: previewArtifactsExpanded,
                       fileStatus: fileStatus,
                       loadingFiles: loadingFiles,
                       chatMessages: chatMessages,
                       chatController: chatController,
                       chatStatus: chatStatus,
                       chatBusy: chatBusy,
+                      activeRunLive: activeRunLive,
+                      composerAttachments: composerAttachments,
+                      loadingPromptLog: loadingPromptLog,
+                      onRunModeChanged: _changeRunMode,
+                      onPasteScreenshot: _pasteScreenshotAttachment,
+                      onRemoveAttachment: _removeComposerAttachment,
+                      onStopRun: _stopActiveRun,
+                      onOpenPromptLog: _openPromptLogPreview,
+                      onTogglePreviewArtifacts: () => setState(
+                        () => previewArtifactsExpanded =
+                            !previewArtifactsExpanded,
+                      ),
                       onFetchRootSuggestions: _fetchWorkspaceRootSuggestions,
                       onApplyWorkspaceRoot: _applyWorkspaceRoot,
                       onRefreshFiles: _refreshWorkspaceFiles,
                       onSelectFile: _selectWorkspaceFile,
+                      onSelectArtifact: _selectPreviewArtifact,
                       onSendChat: _sendChatMessage,
                     )
                   : _NotesSurface(
@@ -2192,41 +3574,73 @@ class _StatusChip extends StatelessWidget {
 class _WorkSurface extends StatelessWidget {
   const _WorkSurface({
     required this.page,
+    required this.runMode,
     required this.workspaceRoot,
     required this.workspaceRootController,
     required this.files,
     required this.activeFile,
     required this.activeFileContent,
+    required this.previewTitle,
+    required this.previewStatus,
+    required this.previewContent,
+    required this.previewArtifacts,
+    required this.previewArtifactsExpanded,
     required this.fileStatus,
     required this.loadingFiles,
     required this.chatMessages,
     required this.chatController,
     required this.chatStatus,
     required this.chatBusy,
+    required this.activeRunLive,
+    required this.composerAttachments,
+    required this.loadingPromptLog,
+    required this.onRunModeChanged,
+    required this.onPasteScreenshot,
+    required this.onRemoveAttachment,
+    required this.onStopRun,
+    required this.onOpenPromptLog,
+    required this.onTogglePreviewArtifacts,
     required this.onFetchRootSuggestions,
     required this.onApplyWorkspaceRoot,
     required this.onRefreshFiles,
     required this.onSelectFile,
+    required this.onSelectArtifact,
     required this.onSendChat,
   });
 
   final WorkPage page;
+  final WorkRunMode runMode;
   final String workspaceRoot;
   final TextEditingController workspaceRootController;
   final List<WorkspaceFileEntry> files;
   final WorkspaceFileEntry? activeFile;
   final String activeFileContent;
+  final String previewTitle;
+  final String previewStatus;
+  final String previewContent;
+  final List<PhonePreviewArtifact> previewArtifacts;
+  final bool previewArtifactsExpanded;
   final String fileStatus;
   final bool loadingFiles;
   final List<PhoneChatMessage> chatMessages;
   final TextEditingController chatController;
   final String chatStatus;
   final bool chatBusy;
+  final bool activeRunLive;
+  final List<PhoneAttachmentDraft> composerAttachments;
+  final bool loadingPromptLog;
+  final ValueChanged<WorkRunMode> onRunModeChanged;
+  final VoidCallback onPasteScreenshot;
+  final ValueChanged<String> onRemoveAttachment;
+  final VoidCallback onStopRun;
+  final VoidCallback onOpenPromptLog;
+  final VoidCallback onTogglePreviewArtifacts;
   final Future<List<WorkspaceRootSuggestion>> Function(String)
   onFetchRootSuggestions;
   final Future<void> Function([String? value]) onApplyWorkspaceRoot;
   final Future<void> Function({String? apiBase, String? root}) onRefreshFiles;
   final ValueChanged<WorkspaceFileEntry> onSelectFile;
+  final ValueChanged<PhonePreviewArtifact> onSelectArtifact;
   final VoidCallback onSendChat;
 
   @override
@@ -2238,6 +3652,19 @@ class _WorkSurface extends StatelessWidget {
         controller: chatController,
         status: chatStatus,
         busy: chatBusy,
+        activeRunLive: activeRunLive,
+        runMode: runMode,
+        attachments: composerAttachments,
+        previewArtifacts: previewArtifacts,
+        previewArtifactsExpanded: previewArtifactsExpanded,
+        loadingPromptLog: loadingPromptLog,
+        onRunModeChanged: onRunModeChanged,
+        onPasteScreenshot: onPasteScreenshot,
+        onRemoveAttachment: onRemoveAttachment,
+        onStopRun: onStopRun,
+        onOpenPromptLog: onOpenPromptLog,
+        onTogglePreviewArtifacts: onTogglePreviewArtifacts,
+        onSelectArtifact: onSelectArtifact,
         onSend: onSendChat,
       ),
       WorkPage.files => _FilesPage(
@@ -2253,8 +3680,13 @@ class _WorkSurface extends StatelessWidget {
       ),
       WorkPage.preview => _FilePreviewPage(
         activeFile: activeFile,
-        content: activeFileContent,
-        status: fileStatus,
+        title: previewTitle,
+        content: previewContent.isNotEmpty ? previewContent : activeFileContent,
+        status: previewStatus.isNotEmpty ? previewStatus : fileStatus,
+        previewArtifacts: previewArtifacts,
+        previewArtifactsExpanded: previewArtifactsExpanded,
+        onTogglePreviewArtifacts: onTogglePreviewArtifacts,
+        onSelectArtifact: onSelectArtifact,
       ),
     };
   }
@@ -2457,6 +3889,19 @@ class _ChatPage extends StatelessWidget {
     required this.controller,
     required this.status,
     required this.busy,
+    required this.activeRunLive,
+    required this.runMode,
+    required this.attachments,
+    required this.previewArtifacts,
+    required this.previewArtifactsExpanded,
+    required this.loadingPromptLog,
+    required this.onRunModeChanged,
+    required this.onPasteScreenshot,
+    required this.onRemoveAttachment,
+    required this.onStopRun,
+    required this.onOpenPromptLog,
+    required this.onTogglePreviewArtifacts,
+    required this.onSelectArtifact,
     required this.onSend,
   });
 
@@ -2465,6 +3910,19 @@ class _ChatPage extends StatelessWidget {
   final TextEditingController controller;
   final String status;
   final bool busy;
+  final bool activeRunLive;
+  final WorkRunMode runMode;
+  final List<PhoneAttachmentDraft> attachments;
+  final List<PhonePreviewArtifact> previewArtifacts;
+  final bool previewArtifactsExpanded;
+  final bool loadingPromptLog;
+  final ValueChanged<WorkRunMode> onRunModeChanged;
+  final VoidCallback onPasteScreenshot;
+  final ValueChanged<String> onRemoveAttachment;
+  final VoidCallback onStopRun;
+  final VoidCallback onOpenPromptLog;
+  final VoidCallback onTogglePreviewArtifacts;
+  final ValueChanged<PhonePreviewArtifact> onSelectArtifact;
   final VoidCallback onSend;
 
   @override
@@ -2485,6 +3943,54 @@ class _ChatPage extends StatelessWidget {
             workspaceRoot.isEmpty ? 'Default workspace' : workspaceRoot,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: SegmentedButton<WorkRunMode>(
+                  showSelectedIcon: false,
+                  segments: const [
+                    ButtonSegment(
+                      value: WorkRunMode.auto,
+                      icon: Icon(Icons.auto_awesome_outlined),
+                      label: Text('Auto'),
+                    ),
+                    ButtonSegment(
+                      value: WorkRunMode.review,
+                      icon: Icon(Icons.rate_review_outlined),
+                      label: Text('Review'),
+                    ),
+                  ],
+                  selected: {runMode},
+                  onSelectionChanged: busy
+                      ? null
+                      : (selection) => onRunModeChanged(selection.first),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filledTonal(
+                tooltip: 'Paste screenshot data URL',
+                onPressed: busy ? null : onPasteScreenshot,
+                icon: const Icon(Icons.add_photo_alternate_outlined),
+              ),
+              IconButton.filledTonal(
+                tooltip: 'Prompt log',
+                onPressed: loadingPromptLog ? null : onOpenPromptLog,
+                icon: loadingPromptLog
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.receipt_long_outlined),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            runMode.description,
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 12),
@@ -2510,39 +4016,179 @@ class _ChatPage extends StatelessWidget {
               ),
             ),
           ),
-          Text(status, style: Theme.of(context).textTheme.bodySmall),
-          const SizedBox(height: 12),
-          TextField(
-            controller: controller,
-            minLines: 1,
-            maxLines: 4,
-            enabled: !busy,
-            textInputAction: TextInputAction.send,
-            onSubmitted: (_) => onSend(),
-            decoration: InputDecoration(
-              hintText: 'Ask Super DAN to work in this workspace',
-              filled: true,
-              fillColor: Colors.white,
-              suffixIcon: IconButton(
-                tooltip: 'Send',
-                icon: busy
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.send_outlined),
-                onPressed: busy ? null : onSend,
-              ),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
+          if (previewArtifacts.isNotEmpty) ...[
+            _PreviewArtifactShelf(
+              artifacts: previewArtifacts,
+              expanded: previewArtifactsExpanded,
+              onToggle: onTogglePreviewArtifacts,
+              onSelect: onSelectArtifact,
             ),
+            const SizedBox(height: 8),
+          ],
+          Text(status, style: Theme.of(context).textTheme.bodySmall),
+          if (attachments.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final attachment in attachments)
+                  InputChip(
+                    avatar: const Icon(Icons.image_outlined, size: 18),
+                    label: Text(
+                      [
+                        attachment.name,
+                        _formatBytes(attachment.sizeBytes),
+                      ].where((value) => value.isNotEmpty).join(' · '),
+                    ),
+                    onDeleted: () => onRemoveAttachment(attachment.id),
+                  ),
+              ],
+            ),
+          ],
+          const SizedBox(height: 12),
+          ValueListenableBuilder<TextEditingValue>(
+            valueListenable: controller,
+            builder: (context, value, _) {
+              final showStop =
+                  activeRunLive &&
+                  value.text.trim().isEmpty &&
+                  attachments.isEmpty;
+              return TextField(
+                controller: controller,
+                minLines: 1,
+                maxLines: 4,
+                enabled: !busy,
+                textInputAction: TextInputAction.send,
+                onSubmitted: (_) => showStop ? onStopRun() : onSend(),
+                decoration: InputDecoration(
+                  hintText: activeRunLive
+                      ? 'Steer or queue the active run'
+                      : 'Ask Super DAN to work in this workspace',
+                  filled: true,
+                  fillColor: Colors.white,
+                  suffixIcon: IconButton(
+                    tooltip: showStop ? 'Stop active run' : 'Send',
+                    icon: busy
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Icon(
+                            showStop
+                                ? Icons.stop_circle_outlined
+                                : Icons.send_outlined,
+                          ),
+                    onPressed: busy ? null : (showStop ? onStopRun : onSend),
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+              );
+            },
           ),
         ],
       ),
     );
   }
+}
+
+class _PreviewArtifactShelf extends StatelessWidget {
+  const _PreviewArtifactShelf({
+    required this.artifacts,
+    required this.expanded,
+    required this.onToggle,
+    required this.onSelect,
+  });
+
+  final List<PhonePreviewArtifact> artifacts;
+  final bool expanded;
+  final VoidCallback onToggle;
+  final ValueChanged<PhonePreviewArtifact> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    if (artifacts.isEmpty) return const SizedBox.shrink();
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xfffcfaf5),
+        border: Border.all(color: const Color(0xffded7ca)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.inventory_2_outlined, size: 18),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    artifacts.length == 1
+                        ? 'Output'
+                        : '${artifacts.length} outputs',
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                ),
+                IconButton(
+                  tooltip: expanded ? 'Collapse outputs' : 'Show outputs',
+                  onPressed: onToggle,
+                  icon: Icon(
+                    expanded
+                        ? Icons.keyboard_arrow_down
+                        : Icons.keyboard_arrow_right,
+                  ),
+                ),
+              ],
+            ),
+            if (expanded)
+              for (final artifact in artifacts.take(5))
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(_artifactIcon(artifact)),
+                  title: Text(
+                    artifact.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    artifact.path.isNotEmpty ? artifact.path : artifact.url,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => onSelect(artifact),
+                ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+IconData _artifactIcon(PhonePreviewArtifact artifact) {
+  final target = '${artifact.kind} ${artifact.path} ${artifact.url}'
+      .toLowerCase();
+  if (target.contains('.html') || target.contains('text/html')) {
+    return Icons.web_asset_outlined;
+  }
+  if (target.contains('.pdf') || target.contains('pdf')) {
+    return Icons.picture_as_pdf_outlined;
+  }
+  if (RegExp(r'\.(png|jpe?g|webp|gif)\b').hasMatch(target) ||
+      target.contains('image')) {
+    return Icons.image_outlined;
+  }
+  if (RegExp(r'\.(md|markdown)\b').hasMatch(target)) {
+    return Icons.article_outlined;
+  }
+  return Icons.description_outlined;
 }
 
 class _MessageBubble extends StatelessWidget {
@@ -2579,7 +4225,7 @@ class _MessageBubble extends StatelessWidget {
                 if (status.isNotEmpty)
                   Text(status, style: Theme.of(context).textTheme.labelSmall),
                 const SizedBox(height: 4),
-                Text(text),
+                alignRight ? Text(text) : _MarkdownPreviewBody(markdown: text),
               ],
             ),
           ),
@@ -2799,59 +4445,87 @@ class _FilesPageState extends State<_FilesPage> {
 class _FilePreviewPage extends StatelessWidget {
   const _FilePreviewPage({
     required this.activeFile,
+    required this.title,
     required this.content,
     required this.status,
+    required this.previewArtifacts,
+    required this.previewArtifactsExpanded,
+    required this.onTogglePreviewArtifacts,
+    required this.onSelectArtifact,
   });
 
   final WorkspaceFileEntry? activeFile;
+  final String title;
   final String content;
   final String status;
+  final List<PhonePreviewArtifact> previewArtifacts;
+  final bool previewArtifactsExpanded;
+  final VoidCallback onTogglePreviewArtifacts;
+  final ValueChanged<PhonePreviewArtifact> onSelectArtifact;
 
   @override
   Widget build(BuildContext context) {
+    final displayTitle = title.isNotEmpty
+        ? title
+        : activeFile?.relativePath ?? 'Preview';
     return Padding(
       padding: const EdgeInsets.all(16),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          border: Border.all(color: const Color(0xffded7ca)),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                activeFile?.relativePath ?? 'Preview',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+      child: Column(
+        children: [
+          if (previewArtifacts.isNotEmpty) ...[
+            _PreviewArtifactShelf(
+              artifacts: previewArtifacts,
+              expanded: previewArtifactsExpanded,
+              onToggle: onTogglePreviewArtifacts,
+              onSelect: onSelectArtifact,
+            ),
+            const SizedBox(height: 10),
+          ],
+          Expanded(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                border: Border.all(color: const Color(0xffded7ca)),
+                borderRadius: BorderRadius.circular(8),
               ),
-              Text(
-                status,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 10),
-              Expanded(
-                child: SingleChildScrollView(
-                  child: SelectableText(
-                    content.isEmpty
-                        ? 'Select a development file to inspect it here.'
-                        : content,
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 13,
-                      height: 1.35,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      displayTitle,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
-                  ),
+                    Text(
+                      status,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 10),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        child: SelectableText(
+                          content.isEmpty
+                              ? 'Select a development file, output artifact, or prompt log to inspect it here.'
+                              : content,
+                          style: const TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 13,
+                            height: 1.35,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            ],
+            ),
           ),
-        ),
+        ],
       ),
     );
   }
@@ -2875,7 +4549,7 @@ class _NoteReadPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final body = preview?.previewMarkdown.trim().isNotEmpty == true
-        ? preview!.previewMarkdown
+        ? _phonePreviewMarkdown(preview!.previewMarkdown)
         : _formatHugoPreviewBody(_stripHugoFrontmatter(fallbackContent));
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -2935,6 +4609,38 @@ String _stripHugoFrontmatter(String content) {
 String _formatHugoPreviewBody(String body) {
   return body
       .replaceAllMapped(
+        RegExp(
+          r'\{\{<\s*callout\b([^>]*)>\}\}([\s\S]*?)\{\{<\s*/callout\s*>\}\}',
+        ),
+        (match) {
+          final args = (match.group(1) ?? '').trim();
+          final inner = (match.group(2) ?? '').trim();
+          final titleMatch = RegExp(r'"([^"]+)"').firstMatch(args);
+          final title = titleMatch?.group(1)?.trim() ?? '';
+          final kindParts = args
+              .replaceAll(RegExp(r'"[^"]*"'), '')
+              .trim()
+              .split(RegExp(r'\s+'))
+              .where((part) => part.isNotEmpty)
+              .toList();
+          final kind = kindParts.isEmpty ? null : kindParts.first;
+          final label = [
+            if (kind != null && kind.toLowerCase() != 'note')
+              '${kind[0].toUpperCase()}${kind.substring(1)}',
+            if (title.isNotEmpty) title,
+          ].join(': ');
+          final header = label.isEmpty ? 'Note' : label;
+          final lines = inner
+              .split(RegExp(r'\r?\n'))
+              .map((line) => line.trimRight())
+              .toList();
+          return [
+            '> **$header**',
+            for (final line in lines) line.isEmpty ? '>' : '> $line',
+          ].join('\n');
+        },
+      )
+      .replaceAllMapped(
         RegExp(r'\{\{<\s*summary\s+"([^"]+)"\s*>\}\}'),
         (match) => '> Summary transclusion: @${match.group(1)}',
       )
@@ -2947,6 +4653,44 @@ String _formatHugoPreviewBody(String body) {
         RegExp(r'(^|[\s(])@([A-Za-z0-9][A-Za-z0-9_-]+)', multiLine: true),
         (match) => '${match.group(1)}[@${match.group(2)}](#${match.group(2)})',
       );
+}
+
+String _phonePreviewMarkdown(String value) {
+  return value.replaceAllMapped(
+    RegExp(
+      r'<aside class="dan-markdown-callout[\s\S]*?<span class="text-sm[^"]*">([\s\S]*?)</span>[\s\S]*?<div class="dan-markdown-callout-body[^"]*">([\s\S]*?)</div>\s*</aside>',
+      caseSensitive: false,
+    ),
+    (match) {
+      final label = _stripHtml(_decodeHtmlEntities(match.group(1) ?? 'Note'));
+      final bodyHtml = match.group(2) ?? '';
+      final paragraphs = RegExp(r'<p[^>]*>([\s\S]*?)</p>', caseSensitive: false)
+          .allMatches(bodyHtml)
+          .map((item) => _stripHtml(_decodeHtmlEntities(item.group(1) ?? '')))
+          .where((item) => item.trim().isNotEmpty)
+          .toList();
+      final bodyLines = paragraphs.isEmpty
+          ? [_stripHtml(_decodeHtmlEntities(bodyHtml))]
+          : paragraphs;
+      return [
+        '> **${label.isEmpty ? 'Note' : label}**',
+        for (final line in bodyLines) '> $line',
+      ].join('\n');
+    },
+  );
+}
+
+String _stripHtml(String value) {
+  return value.replaceAll(RegExp(r'<[^>]+>'), '').trim();
+}
+
+String _decodeHtmlEntities(String value) {
+  return value
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&amp;', '&')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'");
 }
 
 class _MiniChip extends StatelessWidget {
@@ -3083,11 +4827,10 @@ class _MarkdownPreviewBody extends StatelessWidget {
             width: double.infinity,
             margin: const EdgeInsets.symmetric(vertical: 6),
             padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
-            decoration: const BoxDecoration(
-              border: Border(
-                left: BorderSide(color: Color(0xff176b5b), width: 3),
-              ),
-              color: Color(0xffedf4ef),
+            decoration: BoxDecoration(
+              border: Border.all(color: const Color(0xff9cb9a9)),
+              borderRadius: BorderRadius.circular(8),
+              color: const Color(0xffedf4ef),
             ),
             child: _PreviewInlineText(
               quote.group(1)!,

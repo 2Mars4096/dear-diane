@@ -33,6 +33,9 @@ class MainActivity : FlutterActivity() {
                         call.argument<String>("accessToken").orEmpty(),
                         call.argument<String>("wireGuardConfig").orEmpty(),
                         call.argument<String>("workspaceRoot").orEmpty(),
+                        call.argument<String>("runMode").orEmpty(),
+                        call.argument<String>("workspaceRoots").orEmpty(),
+                        call.argument<String>("sessionWorkspaceRoots").orEmpty(),
                     )
                     result.success(loadSettings())
                 }
@@ -56,6 +59,9 @@ class MainActivity : FlutterActivity() {
             "accessToken" to prefs.getString("accessToken", "").orEmpty(),
             "wireGuardConfig" to prefs.getString("wireGuardConfig", "").orEmpty(),
             "workspaceRoot" to prefs.getString("workspaceRoot", "").orEmpty(),
+            "runMode" to prefs.getString("runMode", "").orEmpty(),
+            "workspaceRoots" to prefs.getString("workspaceRoots", "").orEmpty(),
+            "sessionWorkspaceRoots" to prefs.getString("sessionWorkspaceRoots", "").orEmpty(),
         )
     }
 
@@ -64,6 +70,9 @@ class MainActivity : FlutterActivity() {
         accessToken: String,
         wireGuardConfig: String,
         workspaceRoot: String,
+        runMode: String,
+        workspaceRoots: String,
+        sessionWorkspaceRoots: String,
     ) {
         getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
             .edit()
@@ -71,6 +80,9 @@ class MainActivity : FlutterActivity() {
             .putString("accessToken", accessToken.trim())
             .putString("wireGuardConfig", wireGuardConfig.trim())
             .putString("workspaceRoot", workspaceRoot.trim())
+            .putString("runMode", runMode.trim())
+            .putString("workspaceRoots", workspaceRoots.trim())
+            .putString("sessionWorkspaceRoots", sessionWorkspaceRoots.trim())
             .apply()
     }
 
