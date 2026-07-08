@@ -1104,12 +1104,67 @@ def _format_hugo_preview_body(body: str) -> str:
     def _summary_repl(match: re.Match[str]) -> str:
         return f"> Summary transclusion: @{match.group(1)}"
 
+    def _callout_tone_classes(kind: str) -> dict[str, str]:
+        if kind in {"warning", "caution"}:
+            return {
+                "shell": "border-amber-300/80 bg-amber-50/90 text-amber-950 dark:border-amber-700/80 dark:bg-amber-950/35 dark:text-amber-100",
+                "header": "border-amber-200/80 bg-amber-100/70 text-amber-900 dark:border-amber-800/80 dark:bg-amber-900/35 dark:text-amber-100",
+                "marker": "border-amber-500/70 bg-amber-200 text-amber-950 dark:border-amber-500/70 dark:bg-amber-700/40 dark:text-amber-100",
+            }
+        if kind in {"danger", "error"}:
+            return {
+                "shell": "border-red-300/80 bg-red-50/90 text-red-950 dark:border-red-800/80 dark:bg-red-950/35 dark:text-red-100",
+                "header": "border-red-200/80 bg-red-100/70 text-red-900 dark:border-red-800/80 dark:bg-red-900/35 dark:text-red-100",
+                "marker": "border-red-500/70 bg-red-200 text-red-950 dark:border-red-500/70 dark:bg-red-700/40 dark:text-red-100",
+            }
+        return {
+            "shell": "border-slate-300/80 bg-slate-50/90 text-slate-900 dark:border-slate-700/80 dark:bg-slate-900/60 dark:text-slate-100",
+            "header": "border-slate-200/80 bg-slate-100/70 text-slate-800 dark:border-slate-700/80 dark:bg-slate-800/60 dark:text-slate-100",
+            "marker": "border-slate-400/70 bg-slate-200 text-slate-900 dark:border-slate-500/70 dark:bg-slate-700 dark:text-slate-100",
+        }
+
+    def _callout_repl(match: re.Match[str]) -> str:
+        args = (match.group(1) or "").strip()
+        inner = (match.group(2) or "").strip()
+        title_match = re.search(r'"([^"]+)"', args)
+        title = title_match.group(1).strip() if title_match else ""
+        variant = re.sub(r'"[^"]*"', "", args).strip().split()
+        raw_kind = variant[0] if variant else "note"
+        kind = raw_kind.lower() if re.match(r"^[a-z0-9_-]+$", raw_kind, re.I) else "note"
+        label_parts = []
+        if kind and kind != "note":
+            label_parts.append(kind.capitalize())
+        if title:
+            label_parts.append(title)
+        label = ": ".join(label_parts) or "Note"
+        tone = _callout_tone_classes(kind)
+        paragraphs = [
+            " ".join(part.strip() for part in paragraph.splitlines() if part.strip())
+            for paragraph in re.split(r"\n{2,}", inner)
+        ]
+        body_html = "".join(
+            f'<p class="m-0 leading-7 text-current">{html.escape(paragraph)}</p>'
+            for paragraph in paragraphs
+            if paragraph
+        ) or '<p class="m-0 leading-7 text-current">No callout content.</p>'
+        return (
+            f'<aside class="dan-markdown-callout my-4 overflow-hidden rounded-md border shadow-sm {tone["shell"]}" '
+            f'data-callout-kind="{html.escape(kind)}">'
+            f'<div class="dan-markdown-callout-header flex items-center gap-2 border-b px-3 py-2 {tone["header"]}">'
+            f'<span class="dan-markdown-callout-marker grid h-5 w-5 flex-none place-items-center rounded border text-[11px] font-bold leading-none {tone["marker"]}">!</span>'
+            f'<span class="text-sm font-semibold leading-5">{html.escape(label)}</span>'
+            "</div>"
+            f'<div class="dan-markdown-callout-body space-y-2 px-3 py-3 text-base leading-7">{body_html}</div>'
+            "</aside>"
+        )
+
     def _shortcode_repl(match: re.Match[str]) -> str:
         shortcode = match.group(1)
         args = (match.group(2) or "").strip()
         return f"`{shortcode}{f' {args}' if args else ''}`"
 
     body = re.sub(r'\{\{<\s*summary\s+"([^"]+)"\s*>\}\}', _summary_repl, body)
+    body = re.sub(r"\{\{<\s*callout\b([^>]*)>\}\}([\s\S]*?)\{\{<\s*/callout\s*>\}\}", _callout_repl, body)
     body = re.sub(r"\{\{<\s*([^>\s]+)([\s\S]*?)>\}\}", _shortcode_repl, body)
     return re.sub(
         r"(^|[\s(])@([A-Za-z0-9][A-Za-z0-9_-]+)",
