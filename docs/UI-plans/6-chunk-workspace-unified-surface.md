@@ -258,6 +258,7 @@
   - [x] 6-215. Canonicalize inline clipboard screenshot data URLs before multimodal provider dispatch.
   - [x] 6-216. Add bounded request-understanding self-heal so missing model-authored acceptance criteria can be repaired without leaving the live board blocked after successful context reads.
   - [x] 6-217. Keep validation-stage model/tool progress scoped to the Validate card by settling the broad Execute card once validation starts and freezing its body to a handoff summary.
+  - [x] 6-218. Port the latest Work GUI affordances into the Flutter Android app: persisted Auto/Review mode, active-run Stop-as-send, screenshot data-URL attachments, prompt-log preview, output artifact shelf, structured final/evidence/optional-next rendering, and phone-readable Hugo callouts.
   - [x] 6-218. Lengthen bounded background execution by raising promoted continuations to 16 and allowing two audited +2 scheduler continuation leases by default while keeping parallel capacity hard.
   - [x] 6-219. Scope unsent Work composer text drafts to each session card so switching sessions clears unrelated text and returning restores that session's draft.
   - [x] 6-220. Add a default-expanded collapse button to the Work Preview Card header.
@@ -273,6 +274,8 @@
   - [x] 6-229. Quiet the Work header root-path affordance so the directory cue stays inline without an extra filled input background.
   - [x] 6-230. Render math-like inline code spans as KaTeX in math-enabled Notes pages so imported course manuals show algebra notation instead of code chips.
   - [x] 6-231. Purify the copied Learning Assistant manuals so the Notes body is a clean knowledge pool, with source/audit/teacher/session/runtime scaffolding kept out of the readable manual.
+  - [x] 6-232. Keep escaped dollar currency ranges and adjacent currency amounts out of Notes inline math rendering so bold business prose and table figures remain readable.
+  - [x] 6-233. Render Hugo `callout` shortcodes as first-class Notes callout cards instead of shortcode inline-code text or generic quote blocks.
 
 ## Decisions
 - The workspace route is a surface, not another product mode.

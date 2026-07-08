@@ -1,6 +1,9 @@
 # Todo
 
 ## Current Backlog
+- [x] 2026-07-07 Android phone GUI parity - added persisted Auto/Review run modes, active-run Stop-as-send, screenshot data-URL attachments, prompt-log preview, output artifact shelves, structured final/evidence/optional-next rendering, and phone-readable Hugo callouts to the Flutter DAN phone app.
+- [x] 2026-07-06 Notes Hugo callout rendering - fixed: Hugo `callout` shortcodes now render as first-class Notes callout cards instead of inline-code shortcode text or generic quote blocks.
+- [x] 2026-07-06 Notes currency Markdown rendering - fixed: escaped dollar currency ranges and adjacent currency amounts now stay as normal prose in Notes paragraphs and tables instead of being captured by inline KaTeX math rendering.
 - [x] 2026-07-05 Learning Assistant manual purification - fixed: knowledge-base course manuals now keep learner-facing knowledge, practice, solutions, and final-readiness material while removing source, audit, teacher, session, runtime, and benchmark-blueprint scaffolding from the manual body.
 - [x] 2026-07-05 Notes math manual rendering - fixed: math-enabled Notes pages now render course-notation inline code spans such as `a in P`, `IJ subset I cap J`, and `R/P` through KaTeX while leaving normal source ids and file paths as code.
 - [x] 2026-07-05 Work header root-path affordance - fixed: the root directory line now uses a muted inline folder cue and transparent path input instead of a second filled background.

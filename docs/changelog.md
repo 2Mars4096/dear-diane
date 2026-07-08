@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-07
+- [feat] Ported the newest Super DAN workspace GUI controls to the Android phone app. Flutter Work now exposes persisted Auto/Review run modes, Stop-as-send during active runs, screenshot data-URL attachments, prompt-log preview, output-artifact shelves, richer structured final/evidence/optional-next-step rendering, and phone-readable Hugo callouts; the Android settings bridge persists the run mode and `mobile/dist/dan-phone.apk` was rebuilt from the passing debug build.
+
+## 2026-07-06
+- [fix] Rendered Hugo callout shortcodes in Notes preview. Desktop and backend note previews now convert `{{< callout ... >}}...{{< /callout >}}` into first-class callout cards with a compact header, marker, and body, while unknown shortcodes still fall back to visible inline-code placeholders.
+- [fix] Kept Notes currency prose out of inline math rendering. The shared Markdown renderer now respects escaped dollar signs, rejects adjacent currency amounts such as `$2M–$4M` as KaTeX spans, keeps table-cell dollar figures readable, and leaves common prose terms like SaaS un-highlighted inside bold note text.
+
 ## 2026-07-05
 - [docs] Purified the copied Learning Assistant knowledge-base manuals. The live Notes copies now remove source/audit/teacher/session/runtime/benchmark-blueprint scaffolding from manual bodies while retaining course spines, chapter maps, detailed knowledge, worked examples, practice, solutions, and final-readiness checks.
 - [fix] Rendered math-like inline code spans as KaTeX on math-enabled Notes pages, so imported Learning Assistant manuals show algebra notation such as membership, subset, intersection, and quotient expressions instead of code chips.
