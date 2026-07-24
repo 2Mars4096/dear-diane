@@ -69,6 +69,21 @@ def map_organism_log_rows_to_agent_events(
 def _agent_event_type(event_name: str, row: dict[str, Any]) -> AgentRunEventType:
     status = _clean(row.get("status")).lower()
     lower = event_name.lower()
+    if lower == "live.execution_attempt.updated":
+        attempt = row.get("execution_attempt")
+        attempt_status = (
+            _clean(attempt.get("status")).lower() if isinstance(attempt, dict) else ""
+        )
+        if attempt_status in {"completed", "succeeded"}:
+            return "completed"
+        if attempt_status == "failed":
+            return "failed"
+        if attempt_status == "blocked":
+            return "blocked"
+        if attempt_status == "paused":
+            return "paused"
+        if attempt_status in {"cancelled", "canceled", "stopped"}:
+            return "stopped"
     if status in {"failed", "error", "timeout"} or lower.endswith(".failed"):
         return "failed"
     if status in {"blocked", "invalid"} or lower.endswith(".blocked"):

@@ -53,9 +53,116 @@ _INTERRUPTION_METADATA_KEYS = (
 QueueLane = Literal["append", "continue_after_current"]
 QueueItemStatus = Literal["queued", "injected", "completed", "cancelled"]
 
+_BLUEPRINT_METADATA_KEYS = (
+    "task_blueprint",
+    "task_blueprint_revision_id",
+    "task_blueprint_family",
+    "execution_attempt",
+    "execution_attempts",
+)
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _blueprint_event_projection(event: AgentRunEvent) -> dict[str, Any]:
+    """Extract durable blueprint state from an additive runtime event.
+
+    Super DAN rows are sometimes emitted with their domain payload at the row
+    root and sometimes under ``payload``.  Chat V2 keeps that transport detail
+    out of task snapshots by promoting only the canonical blueprint and attempt
+    objects into run/task metadata.
+    """
+
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    nested = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+
+    blueprint = payload.get("task_blueprint")
+    if not isinstance(blueprint, dict):
+        blueprint = nested.get("task_blueprint")
+
+    projection: dict[str, Any] = {}
+    if isinstance(blueprint, dict):
+        schema = str(
+            blueprint.get("schema")
+            or payload.get("schema")
+            or nested.get("schema")
+            or ""
+        ).strip()
+        revision_id = str(blueprint.get("revision_id") or "").strip()
+        blueprint_id = str(blueprint.get("blueprint_id") or "").strip()
+        if schema == "dan_task_blueprint_v1" and revision_id and blueprint_id:
+            canonical = dict(blueprint)
+            canonical.setdefault("schema", schema)
+            projection.update(
+                {
+                    "task_blueprint": canonical,
+                    "task_blueprint_revision_id": revision_id,
+                    "task_blueprint_family": str(blueprint.get("family") or "").strip(),
+                }
+            )
+
+    attempt = payload.get("execution_attempt")
+    if not isinstance(attempt, dict):
+        attempt = nested.get("execution_attempt")
+    if isinstance(attempt, dict) and str(attempt.get("attempt_id") or "").strip():
+        projection["execution_attempt"] = dict(attempt)
+
+    attempts = payload.get("execution_attempts")
+    if not isinstance(attempts, list):
+        attempts = nested.get("execution_attempts")
+    valid_attempts = [dict(item) for item in attempts or [] if isinstance(item, dict)]
+    if valid_attempts:
+        projection["execution_attempts"] = valid_attempts
+
+    return projection
+
+
+def _apply_blueprint_projection(
+    metadata: dict[str, Any],
+    projection: dict[str, Any],
+) -> None:
+    """Merge the latest blueprint and an idempotent attempt history."""
+
+    for key in (
+        "task_blueprint",
+        "task_blueprint_revision_id",
+        "task_blueprint_family",
+    ):
+        if key in projection:
+            metadata[key] = projection[key]
+
+    latest_attempt = projection.get("execution_attempt")
+    if isinstance(latest_attempt, dict):
+        metadata["execution_attempt"] = latest_attempt
+
+    incoming_attempts = projection.get("execution_attempts")
+    candidates = list(incoming_attempts) if isinstance(incoming_attempts, list) else []
+    if isinstance(latest_attempt, dict):
+        candidates.append(latest_attempt)
+    if not candidates:
+        return
+
+    attempts_by_id: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for value in metadata.get("execution_attempts") or []:
+        if not isinstance(value, dict):
+            continue
+        attempt_id = str(value.get("attempt_id") or "").strip()
+        if attempt_id and attempt_id not in attempts_by_id:
+            order.append(attempt_id)
+            attempts_by_id[attempt_id] = dict(value)
+    for value in candidates:
+        if not isinstance(value, dict):
+            continue
+        attempt_id = str(value.get("attempt_id") or "").strip()
+        if not attempt_id:
+            continue
+        if attempt_id not in attempts_by_id:
+            order.append(attempt_id)
+        attempts_by_id[attempt_id] = dict(value)
+    metadata["execution_attempts"] = [attempts_by_id[item] for item in order]
 
 
 class QueueItemRecord(BaseModel):
@@ -563,7 +670,22 @@ class ChatV2Store:
             run = self.get_run(run_id)
             if run is None:
                 return None
-            run.metadata.update(dict(metadata or {}))
+            metadata_update = dict(metadata or {})
+            run.metadata.update(
+                {
+                    key: value
+                    for key, value in metadata_update.items()
+                    if key not in _BLUEPRINT_METADATA_KEYS
+                }
+            )
+            _apply_blueprint_projection(
+                run.metadata,
+                {
+                    key: metadata_update[key]
+                    for key in _BLUEPRINT_METADATA_KEYS
+                    if key in metadata_update
+                },
+            )
             result = run.metadata.get("backend_result")
             if isinstance(result, dict):
                 summary = str(result.get("summary") or "")
@@ -606,6 +728,14 @@ class ChatV2Store:
                 ):
                     if key in run.metadata:
                         task.metadata[key] = run.metadata[key]
+                _apply_blueprint_projection(
+                    task.metadata,
+                    {
+                        key: run.metadata[key]
+                        for key in _BLUEPRINT_METADATA_KEYS
+                        if key in run.metadata
+                    },
+                )
                 if run.token_usage:
                     task.token_usage = dict(run.token_usage)
                     task.metadata["token_usage"] = dict(run.token_usage)
@@ -765,6 +895,7 @@ class ChatV2Store:
         """Append a normalized Agent event and update the task projection."""
 
         with self._lock:
+            blueprint_projection = _blueprint_event_projection(event)
             run = self.get_run(str(event.run_id or ""))
             task = self.get_task(str(event.task_id or "")) if event.task_id else None
             if run is not None and task is None:
@@ -778,6 +909,7 @@ class ChatV2Store:
                 run.latest_event_type = event.type
                 run.latest_summary = event.summary
                 run.status = _status_for_event(event.type, fallback=run.status)
+                _apply_blueprint_projection(run.metadata, blueprint_projection)
                 _apply_token_usage_event(run, event)
                 run.updated_at = _now()
                 self._save_run(run)
@@ -793,6 +925,7 @@ class ChatV2Store:
                 task.blocker = event.summary
             if event.source_event_path and event.source_event_path not in task.trace_refs:
                 task.trace_refs.append(event.source_event_path)
+            _apply_blueprint_projection(task.metadata, blueprint_projection)
             if run is not None and run.token_usage:
                 task.token_usage = dict(run.token_usage)
                 task.metadata["token_usage"] = dict(task.token_usage)

@@ -76,6 +76,141 @@ def test_v2_parse_admission_command_continuation_alias_is_append() -> None:
     assert hints.command == "/continue"
 
 
+def test_v2_store_promotes_task_blueprint_and_attempt_history(tmp_path) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    accepted = store.accept_bridge_context(
+        build_v2_bridge_context(
+            ChatMessageRequest(
+                workflow_id="_scratch",
+                message="research the failure and validate the answer",
+                mode="agent",
+                surface_type="web",
+                surface_id="v2",
+                thread_id="thread-blueprint",
+            )
+        )
+    )
+    assert accepted.run_id is not None
+    assert accepted.task_id is not None
+
+    blueprint = {
+        "schema": "dan_task_blueprint_v1",
+        "blueprint_id": "bp-task",
+        "task_id": accepted.task_id,
+        "revision_id": "bp-task.r1",
+        "revision": 1,
+        "parent_revision_ids": [],
+        "family": "research",
+        "contract": {
+            "goal": "Explain the failure with evidence.",
+            "permissions": [],
+            "acceptance_criteria": ["Claims have sources."],
+        },
+        "nodes": [],
+        "edges": [],
+        "derived_state": {"status": "ready"},
+        "update_reason": "initial_plan",
+    }
+    attempt = {
+        "attempt_id": "attempt-1",
+        "blueprint_revision_id": "bp-task.r1",
+        "status": "running",
+        "phase": "execute",
+        "run_id": accepted.run_id,
+        "backend": "super_dan",
+    }
+    event = map_organism_log_row_to_agent_event(
+        {
+            "event": "live.task_blueprint.updated",
+            "schema": "dan_task_blueprint_v1",
+            "task_blueprint": blueprint,
+            "execution_attempt": attempt,
+        },
+        run_id=accepted.run_id,
+        task_id=accepted.task_id,
+    )
+
+    snapshot = store.record_agent_event(event)
+
+    assert snapshot is not None
+    assert snapshot.metadata["task_blueprint"]["revision_id"] == "bp-task.r1"
+    assert snapshot.metadata["task_blueprint_family"] == "research"
+    assert snapshot.metadata["execution_attempt"]["status"] == "running"
+    assert len(snapshot.metadata["execution_attempts"]) == 1
+
+    completed_attempt = {**attempt, "status": "completed", "phase": "validate"}
+    store.record_agent_event(
+        AgentRunEvent(
+            type="worker_started",
+            run_id=accepted.run_id,
+            task_id=accepted.task_id,
+            source_event_type="live.task_blueprint.updated",
+            payload={
+                "payload": {
+                    "schema": "dan_task_blueprint_v1",
+                    "task_blueprint": blueprint,
+                    "execution_attempt": completed_attempt,
+                }
+            },
+        )
+    )
+
+    reloaded_task = store.get_task(accepted.task_id)
+    reloaded_run = store.get_run(accepted.run_id)
+    assert reloaded_task is not None
+    assert reloaded_run is not None
+    assert reloaded_task.metadata["execution_attempt"]["status"] == "completed"
+    assert reloaded_run.metadata["execution_attempt"]["phase"] == "validate"
+    assert reloaded_task.metadata["execution_attempts"] == [completed_attempt]
+
+    second_attempt = {
+        **attempt,
+        "attempt_id": "attempt-2",
+        "status": "running",
+        "phase": "execute",
+    }
+    store.update_run_metadata(
+        accepted.run_id,
+        {"execution_attempt": second_attempt},
+    )
+    updated_task = store.get_task(accepted.task_id)
+    assert updated_task is not None
+    assert [
+        item["attempt_id"] for item in updated_task.metadata["execution_attempts"]
+    ] == ["attempt-1", "attempt-2"]
+
+
+@pytest.mark.parametrize(
+    ("attempt_status", "event_type"),
+    [
+        ("running", "worker_started"),
+        ("completed", "completed"),
+        ("failed", "failed"),
+        ("blocked", "blocked"),
+        ("paused", "paused"),
+        ("cancelled", "stopped"),
+    ],
+)
+def test_v2_execution_attempt_events_preserve_terminal_status(
+    attempt_status: str,
+    event_type: str,
+) -> None:
+    event = map_organism_log_row_to_agent_event(
+        {
+            "event": "live.execution_attempt.updated",
+            "execution_attempt": {
+                "attempt_id": "attempt-1",
+                "blueprint_revision_id": "bp-1.r1",
+                "status": attempt_status,
+            },
+        },
+        run_id="run-1",
+        task_id="task-1",
+    )
+
+    assert event.type == event_type
+
+
 def test_v2_surface_turn_structures_telegram_attachment_inputs() -> None:
     req = ChatMessageRequest(
         workflow_id="_scratch",
