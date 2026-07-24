@@ -22,6 +22,7 @@ from typing import Any, Mapping, Sequence
 from dan.cli import load_env, normalize_workspace_root, resolve_config
 from dan.cli import live_gateway
 from dan.cli.dispatch import OrchestratorChoice, select_orchestrator
+from dan.cli.super_blueprint import SuperBlueprintEventBridge
 from dan.cli.super_hooks import (
     SuperHookRuntime,
     format_super_queue_status,
@@ -2075,6 +2076,7 @@ class SuperRunEventLogger:
         trace_id: str = "",
         progress_callback=None,
         hook_runtime: SuperHookRuntime | None = None,
+        blueprint_bridge: SuperBlueprintEventBridge | None = None,
     ) -> None:
         self._writer = OrganismLogWriter(
             path=path,
@@ -2091,10 +2093,30 @@ class SuperRunEventLogger:
         )
         self._progress_callback = progress_callback
         self._hook_runtime = hook_runtime
+        self._blueprint_bridge = blueprint_bridge
         self.path = self._writer.path
 
     def emit(self, event: dict[str, Any]) -> None:
         payload = dict(event)
+        derived_events = (
+            self._blueprint_bridge.observe_event(payload)
+            if self._blueprint_bridge is not None
+            else []
+        )
+        terminal_log_event = str(payload.get("event") or "") in {
+            "run.log.completed",
+            "run.log.failed",
+        }
+        if terminal_log_event:
+            for derived_event in derived_events:
+                self._emit_persisted_event(dict(derived_event))
+            self._emit_persisted_event(payload)
+        else:
+            self._emit_persisted_event(payload)
+            for derived_event in derived_events:
+                self._emit_persisted_event(dict(derived_event))
+
+    def _emit_persisted_event(self, payload: dict[str, Any]) -> None:
         row = self._writer.emit(payload)
         if self._progress_callback is not None:
             self._progress_callback(dict(row))
@@ -2110,10 +2132,16 @@ class SuperRunEventLogger:
 
     def emit_trace_rows(self, trace_rows: Sequence[dict[str, Any]]) -> None:
         rows = [dict(row) for row in trace_rows]
+        derived_events: list[dict[str, Any]] = []
+        if self._blueprint_bridge is not None:
+            for row in rows:
+                derived_events.extend(self._blueprint_bridge.observe_event(row))
         self._writer.emit_trace_rows(rows)
         if self._progress_callback is not None:
             for row in rows:
                 self._progress_callback(dict(row))
+        for event in derived_events:
+            self._emit_persisted_event(dict(event))
 
     def update_context(self, **updates: Any) -> None:
         self._writer.update_context(**updates)
@@ -2122,6 +2150,19 @@ class SuperRunEventLogger:
         if self._hook_runtime is None:
             return None
         return self._hook_runtime.snapshot()
+
+    def blueprint_snapshot(self) -> dict[str, Any]:
+        if self._blueprint_bridge is None:
+            return {}
+        return self._blueprint_bridge.snapshot()
+
+    def canonicalize_plan_context(
+        self,
+        plan_context: Mapping[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if self._blueprint_bridge is None:
+            return dict(plan_context) if isinstance(plan_context, Mapping) else None
+        return self._blueprint_bridge.compile_plan_context(plan_context)
 
     def plan_worktree_task(
         self,
@@ -8775,6 +8816,20 @@ async def _run_live_generic_execution(
                         ),
                         task_graph_state=dict(understanding_plan_context.get("task_graph_state") or {}),
                     )
+                    if event_logger is not None:
+                        understanding_plan_context = (
+                            event_logger.canonicalize_plan_context(
+                                understanding_plan_context
+                            )
+                            or understanding_plan_context
+                        )
+                        generic_input_payload["plan_context"] = (
+                            _super_plan_context_payload(
+                                understanding_plan_context,
+                                plan_root=plan_root,
+                                workspace_root=workspace_root,
+                            )
+                        )
                 _log_live_event(
                     event_logger,
                     "live.request_understanding.updated",
@@ -9034,6 +9089,11 @@ async def _run_live_generic_execution(
                 ),
                 task_graph_state=dict(initial_plan_context.get("task_graph_state") or {}),
             )
+            if event_logger is not None:
+                initial_plan_context = (
+                    event_logger.canonicalize_plan_context(initial_plan_context)
+                    or initial_plan_context
+                )
         _log_live_event(
             event_logger,
             "live.planning.completed",
@@ -9238,6 +9298,11 @@ async def _run_live_generic_execution(
                 ),
                 task_graph_state=dict(validation_plan_context.get("task_graph_state") or {}),
             )
+            if event_logger is not None:
+                validation_plan_context = (
+                    event_logger.canonicalize_plan_context(validation_plan_context)
+                    or validation_plan_context
+                )
         _log_live_event(
             event_logger,
             "live.plan_validation.completed",
@@ -9296,6 +9361,8 @@ async def _run_live_generic_execution(
     plan_context, planning_token_usage = await run_optional_planner()
     if not plan_context and understanding_plan_context:
         plan_context = dict(understanding_plan_context)
+    if isinstance(plan_context, Mapping) and event_logger is not None:
+        plan_context = event_logger.canonicalize_plan_context(plan_context) or dict(plan_context)
     full_plan_context = dict(plan_context) if isinstance(plan_context, Mapping) else None
     worktree_prepared_tasks: list[dict[str, Any]] = []
     main_frontier_task: dict[str, Any] | None = None
@@ -9666,6 +9733,10 @@ async def _run_live_generic_execution(
             ),
             task_graph_state=dict(plan_context.get("task_graph_state") or {}),
         )
+        if event_logger is not None:
+            plan_context = event_logger.canonicalize_plan_context(plan_context) or dict(
+                plan_context
+            )
 
     if plan_context:
         generic_input_payload["plan_context"] = _super_plan_context_payload(
@@ -10031,6 +10102,10 @@ async def _run_live_generic_execution(
                 ),
                 task_graph_state=dict(plan_context.get("task_graph_state") or {}),
             )
+            if event_logger is not None:
+                plan_context = event_logger.canonicalize_plan_context(
+                    plan_context
+                ) or dict(plan_context)
     mutation_required = operator_intent_policy.mutation_policy == "required"
     error = result.error
     if mutation_required and not mutated_paths and not error:
@@ -10897,7 +10972,6 @@ async def _run_live_generic_execution(
             deferred_task_ids=deferred_after_validation,
             dependency_revisions=list(validation.get("dependency_revisions") or []),
         ) or dict(plan_context)
-        final_task_graph_state = dict(plan_context.get("task_graph_state") or {})
         _log_live_event(
             event_logger,
             "live.task_graph.updated",
@@ -10907,8 +10981,13 @@ async def _run_live_generic_execution(
                 plan_root=plan_root,
                 workspace_root=workspace_root,
             ),
-            task_graph_state=final_task_graph_state,
+            task_graph_state=dict(plan_context.get("task_graph_state") or {}),
         )
+        if event_logger is not None:
+            plan_context = event_logger.canonicalize_plan_context(plan_context) or dict(
+                plan_context
+            )
+        final_task_graph_state = dict(plan_context.get("task_graph_state") or {})
     _log_final_validation_event(
         event_logger,
         worker_id="super-dan.live.general.validator",
@@ -11332,6 +11411,27 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
             reactivity_profile=str(getattr(args, "reactivity", "balanced") or "balanced"),
             worktree_parallelism=max(0, int(getattr(args, "worktree_parallelism", 0) or 0)),
         )
+        blueprint_bridge = SuperBlueprintEventBridge(
+            task_id=live_task_id,
+            objective=str(report.target or ""),
+            workspace_root=str(live_workspace_root),
+            trace_id=live_trace_id,
+            operator_policy=_operator_intent_policy_from_objective(
+                str(report.target or ""),
+                workspace_root=live_workspace_root,
+            ).to_payload(),
+            execution_budget={
+                "max_tool_calls": int(args.max_tool_calls),
+                "max_work_seconds": _live_max_work_seconds(args),
+                "max_auto_fix_rounds": _live_max_auto_fix_rounds(args),
+                "max_validation_cycles": _live_max_validation_cycles(args),
+                "max_parallel_workers": max(
+                    1,
+                    int(getattr(args, "worktree_parallelism", 0) or 0) + 1,
+                ),
+            },
+            requested_model=str(args.model or "").strip(),
+        )
         event_logger = SuperRunEventLogger(
             path=live_workdir / "events.jsonl",
             session_id=_super_session_id(live_workspace_root),
@@ -11342,6 +11442,7 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
             trace_id=live_trace_id,
             progress_callback=progress_renderer,
             hook_runtime=hook_runtime,
+            blueprint_bridge=blueprint_bridge,
         )
         try:
             selected_skill_mentions = _selected_super_dan_skill_mentions_from_args(args)
@@ -11484,6 +11585,7 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
                 event_log_path=str(event_logger.path),
                 event_log_schema=ORGANISM_LOG_SCHEMA_VERSION,
             )
+            live_result.update(event_logger.blueprint_snapshot())
         finally:
             event_logger.close()
         payload = {"report": payload, "live_build": live_result}
