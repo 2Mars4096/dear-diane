@@ -115,6 +115,14 @@ import {
   nativeShell,
   nativeWatch,
 } from "../../lib/electronBridge";
+import {
+  normalizeExecutionAttemptProjections,
+  normalizeTaskBlueprintProjection,
+  taskFamilyPresentation,
+  type ExecutionAttemptProjection,
+  type TaskBlueprintContractProjection,
+  type TaskFamily,
+} from "../../lib/taskBlueprintProjection";
 import { workspaceSurfaceThemeClassName } from "../../lib/workspaceSurfaceTheme";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
@@ -561,6 +569,15 @@ type BlueprintNodeKind =
   | "change"
   | "validation"
   | "repair"
+  | "decision"
+  | "artifact"
+  | "gate"
+  | "hypothesis"
+  | "evidence"
+  | "variant"
+  | "approval"
+  | "loop"
+  | "composite"
   | "answer"
   | "queue";
 type WorkspacePane = "work" | "notes";
@@ -662,6 +679,13 @@ interface BlueprintPlanTask {
   status: string;
   state?: string;
   parallelSafe: boolean;
+  description?: string;
+  topologyRole?: string;
+  capabilityRequirements?: string[];
+  criterionIds?: string[];
+  loopPolicy?: string[];
+  supersedes?: string[];
+  supersededBy?: string[];
 }
 
 interface BlueprintPlanContext {
@@ -691,6 +715,19 @@ interface BlueprintPlanContext {
   planGenerationQueueLength: number;
   planExecutionQueueLength: number;
   taskExecutionQueueLength: number;
+  canonicalBlueprint?: boolean;
+  blueprintId?: string;
+  blueprintTaskId?: string;
+  blueprintRevisionId?: string;
+  taskFamily?: TaskFamily;
+  contract?: TaskBlueprintContractProjection;
+  executionAttempts?: ExecutionAttemptProjection[];
+  blueprintEdges?: LiveTaskGraphEdge[];
+  entryNodeIds?: string[];
+  terminalNodeIds?: string[];
+  boundedLoopNodeIds?: string[];
+  requiredCriterionIds?: string[];
+  uncoveredCriterionIds?: string[];
 }
 
 interface BlueprintNode {
@@ -737,6 +774,9 @@ interface LiveTaskGraphBranch {
 interface LiveTaskGraphEdge {
   from: string;
   to: string;
+  kind?: string;
+  condition?: string;
+  loopNodeId?: string;
 }
 
 interface LiveTaskGraphRevision {
@@ -4271,6 +4311,20 @@ function eventActivityLine(event: ChatV2AgentRunEvent) {
     const graphSource = printableTextValue(graphState?.source) || eventPayloadText(event, "source");
     return `Task graph updated${versionId ? ` to ${versionId}` : revision ? ` to r${revision}` : ""}${graphSource ? ` by ${graphSource}` : ""}.`;
   }
+  if (source === "live.task_blueprint.updated") {
+    const blueprint = normalizeTaskBlueprintProjection(payload);
+    const revision = blueprint?.revisionId ||
+      (blueprint?.revision !== null && blueprint?.revision !== undefined
+        ? `r${blueprint.revision}`
+        : "");
+    return `Task blueprint updated${revision ? ` to ${revision}` : ""}.`;
+  }
+  if (source === "live.execution_attempt.updated") {
+    const attempt = normalizeExecutionAttemptProjections(payload).slice(-1)[0];
+    return attempt
+      ? `Execution attempt ${attempt.attemptId} is ${attempt.status || attempt.phase || "active"}.`
+      : "Execution attempt updated.";
+  }
   if (source === "tool.started") {
     const toolId = eventPayloadText(event, "tool_id");
     return toolId ? `Using ${toolLabel(toolId)}.` : "Using a workspace tool.";
@@ -5040,7 +5094,9 @@ function branchRefsFromValue(value: unknown) {
 function hasPlanContextShape(record: Record<string, unknown>) {
   return Boolean(
     record.plan_context ||
+      record.task_blueprint ||
       record.task_graph_state ||
+      printableTextValue(record.schema) === "dan_task_blueprint_v1" ||
       printableTextValue(record.schema) === "super_dan_task_graph_v1" ||
       record.task_graph ||
       record.tasks ||
@@ -5055,6 +5111,90 @@ function hasPlanContextShape(record: Record<string, unknown>) {
 function normalizePlanContext(value: unknown): BlueprintPlanContext | null {
   const record = recordValue(value);
   if (!record || !hasPlanContextShape(record)) return null;
+  const canonicalBlueprint = normalizeTaskBlueprintProjection(value);
+  if (canonicalBlueprint) {
+    const parallelReady = canonicalBlueprint.nodes
+      .filter(
+        (node) =>
+          node.parallelSafe &&
+          (canonicalBlueprint.readyNodeIds.includes(node.id) || node.status === "ready"),
+      )
+      .map((node) => node.id);
+    const branchCounts = new Map<string, number>();
+    for (const node of canonicalBlueprint.nodes) {
+      const branch = node.branchId || "main";
+      branchCounts.set(branch, (branchCounts.get(branch) ?? 0) + 1);
+    }
+    return {
+      taskGraph: canonicalBlueprint.nodes.map((node) => ({
+        taskId: node.id,
+        ...(node.parentId ? { parentId: node.parentId } : {}),
+        ...(node.branchId ? { branchId: node.branchId } : {}),
+        nodeType: node.kind,
+        goal: node.title,
+        dependsOn: node.dependsOn,
+        ownedPaths: node.artifacts,
+        deliverables: node.artifacts,
+        validation: node.validation,
+        status: node.status,
+        state: node.status,
+        parallelSafe: node.parallelSafe,
+        description: node.description,
+        topologyRole: node.topologyRole,
+        capabilityRequirements: node.capabilityRequirements,
+        criterionIds: node.criterionIds,
+        loopPolicy: node.loopPolicy,
+        supersedes: node.supersedes,
+        supersededBy: node.supersededBy,
+      })),
+      readyTaskIds: canonicalBlueprint.readyNodeIds,
+      deferredTaskIds: canonicalBlueprint.deferredNodeIds,
+      assignedTaskIds: [],
+      activeTaskIds: canonicalBlueprint.activeNodeIds,
+      completedTaskIds: canonicalBlueprint.completedNodeIds,
+      parallelWorktreeTaskIds: [],
+      dependencyRevisions: [],
+      planFiles: [],
+      planRootRelative: canonicalBlueprint.contract.goal,
+      graphRevision: canonicalBlueprint.revision,
+      graphVersionId: canonicalBlueprint.revisionId,
+      graphRootVersionId: canonicalBlueprint.blueprintId,
+      graphBaseVersionId: "",
+      graphParentVersionIds: canonicalBlueprint.parentRevisionIds,
+      graphSource: "task blueprint",
+      graphUpdateReason: canonicalBlueprint.updateReason,
+      graphUpdateScope: "blueprint revision",
+      graphChangedTaskIds: canonicalBlueprint.nodes.map((node) => node.id),
+      graphChangedBranchIds: [...branchCounts.keys()],
+      parallelGroups: parallelReady.length > 1 ? [parallelReady] : [],
+      graphBranches: [...branchCounts.entries()].map(
+        ([branch, count]) => `${branch}: ${count} ${count === 1 ? "node" : "nodes"}`,
+      ),
+      graphBranchRefs: [],
+      planGenerationQueueLength: DEFAULT_PLAN_GENERATION_QUEUE_LENGTH,
+      planExecutionQueueLength: DEFAULT_PLAN_EXECUTION_QUEUE_LENGTH,
+      taskExecutionQueueLength: DEFAULT_TASK_EXECUTION_QUEUE_LENGTH,
+      canonicalBlueprint: true,
+      blueprintId: canonicalBlueprint.blueprintId,
+      blueprintTaskId: canonicalBlueprint.taskId,
+      blueprintRevisionId: canonicalBlueprint.revisionId,
+      taskFamily: canonicalBlueprint.family,
+      contract: canonicalBlueprint.contract,
+      executionAttempts: normalizeExecutionAttemptProjections(value),
+      blueprintEdges: canonicalBlueprint.edges.map((edge) => ({
+        from: edge.from,
+        to: edge.to,
+        kind: edge.kind,
+        condition: edge.condition,
+        loopNodeId: edge.loopNodeId,
+      })),
+      entryNodeIds: canonicalBlueprint.entryNodeIds,
+      terminalNodeIds: canonicalBlueprint.terminalNodeIds,
+      boundedLoopNodeIds: canonicalBlueprint.boundedLoopNodeIds,
+      requiredCriterionIds: canonicalBlueprint.requiredCriterionIds,
+      uncoveredCriterionIds: canonicalBlueprint.uncoveredCriterionIds,
+    };
+  }
   const validation = recordValue(record.validation);
   const graphState = graphStateFromRecord(record);
   const graphTaskGraph = planTaskGraphFromValue(graphState?.tasks);
@@ -5149,6 +5289,10 @@ function collectPlanContextCandidates(
   if (hasPlanContextShape(record)) candidates.push(record);
   for (const key of [
     "plan_context",
+    "task_blueprint",
+    "execution_attempt",
+    "execution_attempts",
+    "data",
     "input_payload",
     "raw_result",
     "backend_result",
@@ -5159,7 +5303,70 @@ function collectPlanContextCandidates(
   }
 }
 
-function extractBlueprintPlanContext(events: ChatV2AgentRunEvent[]) {
+function latestExecutionAttemptForBlueprint(context: BlueprintPlanContext) {
+  const attempts = context.executionAttempts ?? [];
+  const matching = attempts.filter((attempt) => {
+    if (context.blueprintRevisionId && attempt.blueprintRevisionId) {
+      return attempt.blueprintRevisionId === context.blueprintRevisionId;
+    }
+    if (context.graphRevision !== null && attempt.blueprintRevision !== null) {
+      return attempt.blueprintRevision === context.graphRevision;
+    }
+    return !context.blueprintId || !attempt.blueprintId || attempt.blueprintId === context.blueprintId;
+  });
+  return matching[matching.length - 1] ?? attempts[attempts.length - 1] ?? null;
+}
+
+function blueprintNodeStatusFromAttempt(value: string) {
+  const status = value.trim().toLowerCase();
+  if (["completed", "complete", "done", "superseded", "skipped"].includes(status)) {
+    return "done";
+  }
+  if (["active", "running", "executing", "validating", "repairing"].includes(status)) {
+    return "active";
+  }
+  if (["ready", "runnable"].includes(status)) return "ready";
+  if (["blocked", "failed", "cancelled", "canceled"].includes(status)) return "blocked";
+  if (["queued", "pending"].includes(status)) return "queued";
+  return "planned";
+}
+
+function overlayExecutionAttemptNodeStates(context: BlueprintPlanContext) {
+  if (!context.canonicalBlueprint) return context;
+  const attempt = latestExecutionAttemptForBlueprint(context);
+  if (!attempt || Object.keys(attempt.nodeStates).length === 0) return context;
+  const readyTaskIds = new Set(context.readyTaskIds);
+  const deferredTaskIds = new Set(context.deferredTaskIds);
+  const activeTaskIds = new Set(context.activeTaskIds);
+  const completedTaskIds = new Set(context.completedTaskIds);
+  const taskGraph = context.taskGraph.map((task) => {
+    const attemptState = attempt.nodeStates[task.taskId];
+    if (!attemptState) return task;
+    const status = blueprintNodeStatusFromAttempt(attemptState);
+    readyTaskIds.delete(task.taskId);
+    deferredTaskIds.delete(task.taskId);
+    activeTaskIds.delete(task.taskId);
+    completedTaskIds.delete(task.taskId);
+    if (status === "ready") readyTaskIds.add(task.taskId);
+    else if (status === "active") activeTaskIds.add(task.taskId);
+    else if (status === "done") completedTaskIds.add(task.taskId);
+    else if (status === "planned") deferredTaskIds.add(task.taskId);
+    return { ...task, status, state: status };
+  });
+  return {
+    ...context,
+    taskGraph,
+    readyTaskIds: [...readyTaskIds],
+    deferredTaskIds: [...deferredTaskIds],
+    activeTaskIds: [...activeTaskIds],
+    completedTaskIds: [...completedTaskIds],
+  };
+}
+
+function extractBlueprintPlanContext(
+  events: ChatV2AgentRunEvent[],
+  tasks: ChatV2TaskSnapshot[] = [],
+) {
   const merged: BlueprintPlanContext = {
     taskGraph: [],
     readyTaskIds: [],
@@ -5216,6 +5423,38 @@ function extractBlueprintPlanContext(events: ChatV2AgentRunEvent[]) {
       }
       if (context.planFiles.length > 0) merged.planFiles = context.planFiles;
       if (context.planRootRelative) merged.planRootRelative = context.planRootRelative;
+      if (context.canonicalBlueprint && (newerGraph || unversionedGraph || !merged.canonicalBlueprint)) {
+        merged.canonicalBlueprint = true;
+        merged.blueprintId = context.blueprintId;
+        merged.blueprintTaskId = context.blueprintTaskId;
+        merged.blueprintRevisionId = context.blueprintRevisionId;
+        merged.taskFamily = context.taskFamily;
+        merged.contract = context.contract;
+        merged.graphRevision = context.graphRevision;
+        merged.graphVersionId = context.graphVersionId;
+        merged.graphRootVersionId = context.graphRootVersionId;
+        merged.graphParentVersionIds = context.graphParentVersionIds;
+        merged.graphSource = context.graphSource;
+        merged.graphUpdateReason = context.graphUpdateReason;
+        merged.graphUpdateScope = context.graphUpdateScope;
+        merged.graphChangedTaskIds = context.graphChangedTaskIds;
+        merged.graphChangedBranchIds = context.graphChangedBranchIds;
+        merged.parallelGroups = context.parallelGroups;
+        merged.graphBranches = context.graphBranches;
+        merged.blueprintEdges = context.blueprintEdges;
+        merged.entryNodeIds = context.entryNodeIds;
+        merged.terminalNodeIds = context.terminalNodeIds;
+        merged.boundedLoopNodeIds = context.boundedLoopNodeIds;
+        merged.requiredCriterionIds = context.requiredCriterionIds;
+        merged.uncoveredCriterionIds = context.uncoveredCriterionIds;
+      }
+      if (context.executionAttempts?.length) {
+        const attemptsById = new Map(
+          (merged.executionAttempts ?? []).map((attempt) => [attempt.attemptId, attempt]),
+        );
+        for (const attempt of context.executionAttempts) attemptsById.set(attempt.attemptId, attempt);
+        merged.executionAttempts = [...attemptsById.values()];
+      }
       if (newerGraph) {
         merged.graphRevision = context.graphRevision;
         merged.graphVersionId = context.graphVersionId;
@@ -5236,7 +5475,53 @@ function extractBlueprintPlanContext(events: ChatV2AgentRunEvent[]) {
       }
     }
   }
-  return found ? merged : null;
+  for (const task of tasks) {
+    const candidates: Record<string, unknown>[] = [];
+    collectPlanContextCandidates(task.metadata, candidates);
+    for (const candidate of candidates) {
+      const context = normalizePlanContext(candidate);
+      if (!context) continue;
+      found = true;
+      const newerGraph =
+        context.graphRevision !== null &&
+        (merged.graphRevision === null || context.graphRevision >= merged.graphRevision);
+      const unversionedGraph = context.graphRevision === null && merged.graphRevision === null;
+      if (context.taskGraph.length > 0 && (newerGraph || unversionedGraph || merged.taskGraph.length === 0)) {
+        merged.taskGraph = context.taskGraph;
+      }
+      if (context.readyTaskIds.length > 0) merged.readyTaskIds = context.readyTaskIds;
+      if (context.deferredTaskIds.length > 0) merged.deferredTaskIds = context.deferredTaskIds;
+      if (context.activeTaskIds.length > 0) merged.activeTaskIds = context.activeTaskIds;
+      if (context.completedTaskIds.length > 0) merged.completedTaskIds = context.completedTaskIds;
+      if (context.canonicalBlueprint && (newerGraph || unversionedGraph || !merged.canonicalBlueprint)) {
+        Object.assign(merged, context);
+      }
+      if (context.executionAttempts?.length) {
+        const attemptsById = new Map(
+          (merged.executionAttempts ?? []).map((attempt) => [attempt.attemptId, attempt]),
+        );
+        for (const attempt of context.executionAttempts) attemptsById.set(attempt.attemptId, attempt);
+        merged.executionAttempts = [...attemptsById.values()];
+      }
+    }
+  }
+  if (found) {
+    const attemptsById = new Map(
+      (merged.executionAttempts ?? []).map((attempt) => [attempt.attemptId, attempt]),
+    );
+    for (const event of events) {
+      for (const attempt of normalizeExecutionAttemptProjections(eventPayload(event))) {
+        attemptsById.set(attempt.attemptId, attempt);
+      }
+    }
+    for (const task of tasks) {
+      for (const attempt of normalizeExecutionAttemptProjections(task.metadata)) {
+        attemptsById.set(attempt.attemptId, attempt);
+      }
+    }
+    merged.executionAttempts = [...attemptsById.values()];
+  }
+  return found ? overlayExecutionAttemptNodeStates(merged) : null;
 }
 
 function graphContextIdentity(context: BlueprintPlanContext, fallbackIndex: number) {
@@ -5264,12 +5549,27 @@ function graphContextDedupKey(context: BlueprintPlanContext) {
   ].join(";");
 }
 
-function extractBlueprintPlanContextHistory(events: ChatV2AgentRunEvent[]) {
+function extractBlueprintPlanContextHistory(
+  events: ChatV2AgentRunEvent[],
+  tasks: ChatV2TaskSnapshot[] = [],
+) {
   const contexts: BlueprintPlanContext[] = [];
   const seen = new Set<string>();
   for (const event of events) {
     const candidates: Record<string, unknown>[] = [];
     collectPlanContextCandidates(eventPayload(event), candidates);
+    for (const candidate of candidates) {
+      const context = normalizePlanContext(candidate);
+      if (!context || context.taskGraph.length === 0) continue;
+      const key = graphContextDedupKey(context);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      contexts.push(context);
+    }
+  }
+  for (const task of tasks) {
+    const candidates: Record<string, unknown>[] = [];
+    collectPlanContextCandidates(task.metadata, candidates);
     for (const candidate of candidates) {
       const context = normalizePlanContext(candidate);
       if (!context || context.taskGraph.length === 0) continue;
@@ -5415,6 +5715,7 @@ function activePlanTaskIdsFromEvents(
 
 function visiblePlanGraphTasks(context: BlueprintPlanContext) {
   if (!isSemanticPlanContext(context)) return [];
+  if (context.canonicalBlueprint) return context.taskGraph;
   return hasExplicitPlanTasks(context)
     ? context.taskGraph.filter(isBlueprintPlanTaskPlan)
     : [];
@@ -5443,6 +5744,21 @@ function planTaskById(context: BlueprintPlanContext | undefined, taskId: string 
 
 function graphTaskKind(task: BlueprintPlanTask, context: BlueprintPlanContext): BlueprintNodeKind {
   if (isBlueprintPlanTaskPlan(task)) return "plan";
+  const semanticRole = `${task.topologyRole || ""}_${task.nodeType || ""}`
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+  const genericKind = (task.nodeType || "").toLowerCase().replace(/[\s-]+/g, "_");
+  if (/approval|signoff|authorization/.test(semanticRole)) return "approval";
+  if (/hypothesis|diagnosis|probe/.test(semanticRole)) return "hypothesis";
+  if (/evidence|source|claim|finding|synthesis/.test(semanticRole)) return "evidence";
+  if (/variant|concept|prototype|option|alternative/.test(semanticRole)) return "variant";
+  if (/decision|choice|resolution|owner/.test(semanticRole)) return "decision";
+  if (/artifact|output|deliverable|document|specification/.test(semanticRole)) return "artifact";
+  if (/loop|iterate|revision_cycle/.test(semanticRole) || genericKind === "loop") return "loop";
+  if (/composite|collapse|group/.test(semanticRole) || genericKind === "composite") {
+    return "composite";
+  }
+  if (/gate|check|validator|validation|compliance|feasibility/.test(semanticRole)) return "gate";
   return context.parallelWorktreeTaskIds.includes(task.taskId) ? "worktree" : "task";
 }
 
@@ -5451,7 +5767,7 @@ function graphTaskNodeId(task: BlueprintPlanTask) {
 }
 
 function taskBody(task: BlueprintPlanTask, context: BlueprintPlanContext) {
-  const lines = [task.goal];
+  const lines = [task.description || task.goal];
   const dependsOn = task.dependsOn ?? [];
   const generationDependsOn = task.generationDependsOn ?? [];
   const branchLine = [
@@ -5482,6 +5798,25 @@ function taskBody(task: BlueprintPlanTask, context: BlueprintPlanContext) {
   if (task.validation.length > 0) {
     lines.push("", "Validation:", ...task.validation.map((check) => `- ${check}`));
   }
+  if (task.capabilityRequirements?.length) {
+    lines.push(
+      "",
+      "Required capabilities:",
+      ...task.capabilityRequirements.map((capability) => `- ${capability}`),
+    );
+  }
+  if (task.criterionIds?.length) {
+    lines.push("", `Criteria: ${task.criterionIds.map((id) => `\`${id}\``).join(", ")}`);
+  }
+  if (task.loopPolicy?.length) {
+    lines.push("", "Loop policy:", ...task.loopPolicy.map((item) => `- ${item}`));
+  }
+  if (task.supersedes?.length) {
+    lines.push("", `Supersedes: ${task.supersedes.map((id) => `\`${id}\``).join(", ")}`);
+  }
+  if (task.supersededBy?.length) {
+    lines.push("", `Superseded by: ${task.supersededBy.map((id) => `\`${id}\``).join(", ")}`);
+  }
   if (context.dependencyRevisions.length > 0) {
     lines.push("", "Dependency revisions:", ...context.dependencyRevisions.map((item) => `- ${item}`));
   }
@@ -5493,12 +5828,13 @@ function compactTaskDetail(task: BlueprintPlanTask) {
   const paths = uniqueStringList([...task.ownedPaths, ...task.deliverables]).slice(0, 2);
   const suffix = paths.length > 0 ? ` · ${paths.join(", ")}` : "";
   const branch = task.branchId ? `branch ${task.branchId} · ` : "";
+  const topology = task.topologyRole ? `${task.topologyRole.replace(/_/g, " ")} · ` : "";
   const dependency = dependsOn.length > 0
     ? `after ${dependsOn.join(", ")}`
     : isBlueprintPlanTaskPlan(task)
       ? "no execution blockers"
       : "ready when reached";
-  return `${branch}${dependency}${suffix}`;
+  return `${topology}${branch}${dependency}${suffix}`;
 }
 
 function phaseStatus(args: {
@@ -5901,7 +6237,26 @@ function planPreviewBody(planContext: BlueprintPlanContext | null) {
       ? `Changed: ${planContext.graphChangedTaskIds.map((id) => `\`${id}\``).join(", ")}`
       : "",
   ]);
-  return detailMarkdown("Planning determines the next visible frontier without claiming future work is done.", [
+  const contractSections: BlueprintDetailSection[] = planContext.canonicalBlueprint
+    ? [
+        { title: "Goal", items: planContext.contract?.goal ? [planContext.contract.goal] : [] },
+        { title: "Non-goals", items: planContext.contract?.nonGoals ?? [] },
+        { title: "Constraints", items: planContext.contract?.constraints ?? [] },
+        { title: "Permissions", items: planContext.contract?.permissions ?? [] },
+        { title: "Risks", items: planContext.contract?.risks ?? [] },
+        { title: "Budget", items: planContext.contract?.budget ?? [] },
+        { title: "Acceptance Criteria", items: planContext.contract?.acceptanceCriteria ?? [] },
+      ]
+    : [];
+  const topologyItems = (planContext.blueprintEdges ?? []).map((edge) =>
+    `${edge.from} → ${edge.to} · ${edge.kind || "dependency"}${edge.condition ? ` · ${edge.condition}` : ""}`,
+  );
+  return detailMarkdown(
+    planContext.canonicalBlueprint
+      ? "The blueprint carries the task contract and semantic route. Execution details belong to attempts."
+      : "Planning determines the next visible frontier without claiming future work is done.",
+    [
+    ...contractSections,
     {
       title: "Graph Version",
       items: revisionItems,
@@ -5910,14 +6265,18 @@ function planPreviewBody(planContext: BlueprintPlanContext | null) {
       title: "Plan Files",
       items: planContext.planFiles.map((path) => `\`${path}\``),
     },
-    {
-      title: "Queue Limits",
-      items: [
-        `Plan generation: ${planContext.planGenerationQueueLength}`,
-        `Plan execution: ${planContext.planExecutionQueueLength}`,
-        `Task execution: ${planContext.taskExecutionQueueLength}`,
-      ],
-    },
+    ...(planContext.canonicalBlueprint
+      ? []
+      : [
+          {
+            title: "Queue Limits",
+            items: [
+              `Plan generation: ${planContext.planGenerationQueueLength}`,
+              `Plan execution: ${planContext.planExecutionQueueLength}`,
+              `Task execution: ${planContext.taskExecutionQueueLength}`,
+            ],
+          },
+        ]),
     {
       title: "Ready Frontier",
       items: planContext.readyTaskIds.map((id) => `\`${id}\``),
@@ -5943,11 +6302,19 @@ function planPreviewBody(planContext: BlueprintPlanContext | null) {
       items: planContext.graphBranchRefs,
     },
     {
+      title: "Topology",
+      items: topologyItems,
+    },
+    {
+      title: "Criterion Gaps",
+      items: (planContext.uncoveredCriterionIds ?? []).map((id) => `\`${id}\``),
+    },
+    {
       title: "Deferred Frontier",
       items: planContext.deferredTaskIds.map((id) => `\`${id}\``),
     },
     {
-      title: "Projected Tasks",
+      title: planContext.canonicalBlueprint ? "Blueprint Nodes" : "Projected Tasks",
       items: planContext.taskGraph.map((task) => `${task.taskId}: ${task.goal}`),
     },
   ]);
@@ -6191,7 +6558,7 @@ function buildBlueprintNodesForRunScope(args: {
     shouldScopeToRun
       ? tasks.filter((task) => taskRunId(task) === activeRunId)
       : tasks;
-  const extractedPlanContext = extractBlueprintPlanContext(activeRunEvents);
+  const extractedPlanContext = extractBlueprintPlanContext(activeRunEvents, activeRunTasks);
   const emittedPlanContext = isSemanticPlanContext(extractedPlanContext) ? extractedPlanContext : null;
   const latestAnswerChunk = latestMatchingChunk(chunks, activeRunId, isFinalAnswerChunk);
   const latestOutcomeChunk = latestMatchingChunk(chunks, activeRunId, isOutcomeChunk);
@@ -6266,7 +6633,10 @@ function buildBlueprintNodesForRunScope(args: {
   const operatorContexts = operatorContextRecords(activeRunEvents, activeRunTasks);
   const requestPlanContext = readOnlyRun ? null : deriveRequestPlanContext(requestBody);
   const rawPlanContext = emittedPlanContext ?? requestPlanContext;
-  const emittedGraphHistory = extractBlueprintPlanContextHistory(activeRunEvents).filter(isSemanticPlanContext);
+  const emittedGraphHistory = extractBlueprintPlanContextHistory(
+    activeRunEvents,
+    activeRunTasks,
+  ).filter(isSemanticPlanContext);
   const rawGraphHistory = graphHistoryWithLatest(
     emittedGraphHistory.length > 0 ? emittedGraphHistory : requestPlanContext ? [requestPlanContext] : [],
     emittedPlanContext,
@@ -6282,7 +6652,6 @@ function buildBlueprintNodesForRunScope(args: {
   const activeTaskIds = activePlanTaskIdsFromEvents(activeRunEvents, planContext, hasActiveRun);
   const readyTaskIds = new Set(planContext?.readyTaskIds ?? []);
   const deferredTaskIds = new Set(planContext?.deferredTaskIds ?? []);
-  const worktreeTaskIds = new Set(planContext?.parallelWorktreeTaskIds ?? []);
   const hasPlannedTaskGraph = Boolean(planContext?.taskGraph.length);
   const planningStarted = hasEventSource(activeRunEvents, (source) => source.startsWith("live.planning"));
   const executionPhaseStarted = hasEventSource(activeRunEvents, eventStartsExecutionPhase);
@@ -6434,6 +6803,7 @@ function buildBlueprintNodesForRunScope(args: {
   const planningFallbackActive =
     hasActiveRun && laterThanUnderstanding && !planningStarted && !planningCompleted && !planContext;
   if (planningStarted || planningCompletedExplicit || planContext) {
+    const familyPresentation = taskFamilyPresentation(planContext?.taskFamily ?? "general");
     const graphVersionLabel =
       planContext?.graphVersionId ||
       (planContext?.graphRevision !== null && planContext?.graphRevision !== undefined
@@ -6441,7 +6811,9 @@ function buildBlueprintNodesForRunScope(args: {
         : "");
     nodes.push({
       id: "blueprint:planning",
-      title: "Blueprint planning",
+      title: planContext?.canonicalBlueprint
+        ? `${familyPresentation.label} blueprint`
+        : "Blueprint planning",
       detail:
         planContext?.taskGraph.length
           ? `${graphVersionLabel ? `${graphVersionLabel} · ` : ""}${planContext.taskGraph.length} projected tasks · ${planContext.readyTaskIds.length || 0} ready now`
@@ -6451,7 +6823,9 @@ function buildBlueprintNodesForRunScope(args: {
               ? "No task graph emitted; later work continued"
             : "Predicting the task graph and ready frontier",
       meta:
-        planContext && planContext.graphRevision !== null && planContext.graphSource
+        planContext?.canonicalBlueprint
+          ? familyPresentation.lens
+          : planContext && planContext.graphRevision !== null && planContext.graphSource
           ? planContext.graphSource
           : planContext?.planRootRelative || "plan frontier",
       body: [
@@ -6518,13 +6892,11 @@ function buildBlueprintNodesForRunScope(args: {
         deferredTaskIds.has(task.taskId) ||
         ["deferred", "future", "planned", "projected", "generated", "blueprint", "waiting"].includes(taskState) ||
         (!done && !active && !ready);
-      const kind: BlueprintNodeKind = isBlueprintPlanTaskPlan(task)
-        ? "plan"
-        : worktreeTaskIds.has(task.taskId)
-          ? "worktree"
-          : "task";
+      const kind: BlueprintNodeKind = graphTaskKind(task, planContext);
       const meta = uniqueStringList([
         kind === "plan" ? "plan" : "",
+        planContext.canonicalBlueprint ? kind.replace(/_/g, " ") : "",
+        task.topologyRole ? task.topologyRole.replace(/_/g, " ") : "",
         kind === "worktree" ? "parallel lane" : "",
         task.branchId ? `branch ${task.branchId}` : "",
         task.parallelSafe ? "parallel-safe" : "serial",
@@ -8783,6 +9155,15 @@ function blueprintKindIcon(kind: BlueprintNodeKind) {
   if (kind === "change") return FileText;
   if (kind === "validation") return Shield;
   if (kind === "repair") return WandSparkles;
+  if (kind === "decision") return GitBranchIcon;
+  if (kind === "artifact") return FileText;
+  if (kind === "gate") return Shield;
+  if (kind === "hypothesis") return Lightbulb;
+  if (kind === "evidence") return ScrollText;
+  if (kind === "variant") return WandSparkles;
+  if (kind === "approval") return Check;
+  if (kind === "loop") return RotateCcw;
+  if (kind === "composite") return Cable;
   if (kind === "answer") return Bot;
   return Clock3;
 }
@@ -10098,6 +10479,8 @@ function blueprintNodeFromPlanTask(
   const kind = graphTaskKind(task, context);
   const meta = uniqueStringList([
     isBlueprintPlanTaskPlan(task) ? "plan" : "",
+    context.canonicalBlueprint ? kind.replace(/_/g, " ") : "",
+    task.topologyRole ? task.topologyRole.replace(/_/g, " ") : "",
     task.branchId ? `branch ${task.branchId}` : "",
     task.dependsOn.length > 0 ? `after ${task.dependsOn.join(", ")}` : "",
     kind === "worktree" ? "parallel lane" : "",
@@ -10177,7 +10560,14 @@ function buildLiveTaskGraphRevisions(nodes: BlueprintNode[]): LiveTaskGraphRevis
         meta: graphRevisionMeta(context),
         reason: context.graphUpdateReason || context.planRootRelative || "",
         branches,
-        planEdges: planDependencyEdgesForNodes(revisionNodes),
+        planEdges:
+          context.canonicalBlueprint && context.blueprintEdges?.length
+            ? context.blueprintEdges.map((edge) => ({
+                ...edge,
+                from: `blueprint:task:${edge.from}`,
+                to: `blueprint:task:${edge.to}`,
+              }))
+            : planDependencyEdgesForNodes(revisionNodes),
       };
     });
   }
@@ -10198,10 +10588,13 @@ function buildLiveTaskGraphRevisions(nodes: BlueprintNode[]): LiveTaskGraphRevis
 }
 
 function uniquePlanNodesForRevision(revision: LiveTaskGraphRevision) {
+  const canonical = revision.branches.some((branch) =>
+    branch.nodes.some((node) => node.graphContext?.canonicalBlueprint),
+  );
   const byId = new Map<string, BlueprintNode>();
   for (const branch of revision.branches) {
     for (const node of branch.nodes) {
-      if (node.kind !== "plan" || !node.graphTaskId) continue;
+      if (!node.graphTaskId || (!canonical && node.kind !== "plan")) continue;
       if (!byId.has(node.id)) byId.set(node.id, node);
     }
   }
@@ -10209,20 +10602,25 @@ function uniquePlanNodesForRevision(revision: LiveTaskGraphRevision) {
 }
 
 function planDependencyEdgesForNodes(nodes: BlueprintNode[]): LiveTaskGraphEdge[] {
+  const includeCanonicalNodes = nodes.some((node) => node.graphContext?.canonicalBlueprint);
   const planIds = new Set(
     nodes
-      .filter((node) => node.kind === "plan" && node.graphTaskId)
+      .filter(
+        (node) => node.graphTaskId && (includeCanonicalNodes || node.kind === "plan"),
+      )
       .map((node) => node.graphTaskId as string),
   );
   const nodeIdByTaskId = new Map(
     nodes
-      .filter((node) => node.kind === "plan" && node.graphTaskId)
+      .filter(
+        (node) => node.graphTaskId && (includeCanonicalNodes || node.kind === "plan"),
+      )
       .map((node) => [node.graphTaskId as string, node.id] as const),
   );
   const edges: LiveTaskGraphEdge[] = [];
   const seen = new Set<string>();
   for (const node of nodes) {
-    if (node.kind !== "plan" || !node.graphTaskId) continue;
+    if (!node.graphTaskId || (!includeCanonicalNodes && node.kind !== "plan")) continue;
     for (const dependency of node.dependencyIds ?? []) {
       if (!planIds.has(dependency)) continue;
       const from = nodeIdByTaskId.get(dependency);
@@ -10247,6 +10645,9 @@ function liveTaskTreeSnapshot(items: LiveTaskTreeItem[]): LiveTaskTreeSnapshot[]
 
 function treeNodeMeta(node: BlueprintNode) {
   const bits = uniqueStringList([
+    node.graphContext?.canonicalBlueprint && !["task", "plan"].includes(node.kind)
+      ? node.kind.replace(/_/g, " ")
+      : "",
     node.branchId ? `branch ${node.branchId}` : "",
     node.dependencyIds?.length ? `after ${node.dependencyIds.join(", ")}` : "",
     node.kind === "worktree" ? "parallel lane" : "",
@@ -10367,12 +10768,29 @@ function PlanDependencyGraph({
           const mid = x1 + Math.max(24, (x2 - x1) / 2);
           return (
             <path
-              key={`${edge.from}->${edge.to}`}
+              key={`${edge.from}:${edge.kind || "dependency"}->${edge.to}`}
+              data-edge-kind={edge.kind || "dependency"}
               d={`M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2 - 6} ${y2}`}
-              className="fill-none stroke-slate-300 dark:stroke-slate-600"
+              className={cx(
+                "fill-none",
+                edge.kind === "feedback"
+                  ? "stroke-amber-500 dark:stroke-amber-400"
+                  : edge.kind === "validates"
+                    ? "stroke-cyan-500 dark:stroke-cyan-400"
+                    : edge.kind === "alternative"
+                      ? "stroke-violet-400 dark:stroke-violet-500"
+                      : "stroke-slate-300 dark:stroke-slate-600",
+              )}
               strokeWidth="1.5"
+              strokeDasharray={
+                edge.kind === "feedback" || edge.kind === "alternative" ? "5 4" : undefined
+              }
               markerEnd={`url(#${markerId})`}
-            />
+            >
+              <title>
+                {[edge.kind || "dependency", edge.condition].filter(Boolean).join(": ")}
+              </title>
+            </path>
           );
         })}
       </svg>
@@ -10427,6 +10845,154 @@ function PlanDependencyGraph({
   );
 }
 
+function canonicalBlueprintContext(nodes: BlueprintNode[]) {
+  return (
+    nodes.find(
+      (node) => node.kind === "plan" && !node.graphTaskId && node.graphContext?.canonicalBlueprint,
+    )?.graphContext ??
+    nodes.find((node) => node.graphContext?.canonicalBlueprint)?.graphContext ??
+    null
+  );
+}
+
+function taskFamilyIcon(family: TaskFamily) {
+  if (family === "direct") return <ArrowUp size={11} />;
+  if (family === "debugging") return <RotateCcw size={11} />;
+  if (family === "research") return <ScrollText size={11} />;
+  if (family === "design") return <WandSparkles size={11} />;
+  if (family === "meeting") return <MessageSquareText size={11} />;
+  if (family === "manufacturing") return <TerminalSquare size={11} />;
+  return <Cable size={11} />;
+}
+
+function taskFamilyTone(family: TaskFamily) {
+  if (family === "debugging") {
+    return "border-orange-300 bg-orange-50/70 text-orange-900 dark:border-orange-800 dark:bg-orange-950/25 dark:text-orange-100";
+  }
+  if (family === "research") {
+    return "border-blue-300 bg-blue-50/70 text-blue-900 dark:border-blue-800 dark:bg-blue-950/25 dark:text-blue-100";
+  }
+  if (family === "design") {
+    return "border-fuchsia-300 bg-fuchsia-50/60 text-fuchsia-900 dark:border-fuchsia-800 dark:bg-fuchsia-950/20 dark:text-fuchsia-100";
+  }
+  if (family === "meeting") {
+    return "border-emerald-300 bg-emerald-50/65 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/20 dark:text-emerald-100";
+  }
+  if (family === "manufacturing") {
+    return "border-amber-300 bg-amber-50/70 text-amber-950 dark:border-amber-700 dark:bg-amber-950/25 dark:text-amber-100";
+  }
+  return "border-cyan-300 bg-cyan-50/65 text-cyan-900 dark:border-cyan-800 dark:bg-cyan-950/20 dark:text-cyan-100";
+}
+
+function BlueprintContractPlate({ context }: { context: BlueprintPlanContext }) {
+  const family = context.taskFamily ?? "general";
+  const presentation = taskFamilyPresentation(family);
+  const contract = context.contract;
+  const facets = [
+    { label: "Non-goals", items: contract?.nonGoals ?? [] },
+    { label: "Constraints", items: contract?.constraints ?? [] },
+    { label: "Permissions", items: contract?.permissions ?? [] },
+    { label: "Risks", items: contract?.risks ?? [] },
+    { label: "Budget", items: contract?.budget ?? [] },
+    { label: "Done when", items: contract?.acceptanceCriteria ?? [] },
+  ].filter((facet) => facet.items.length > 0);
+  const edgeKindCounts = new Map<string, number>();
+  for (const edge of context.blueprintEdges ?? []) {
+    const kind = edge.kind || "dependency";
+    edgeKindCounts.set(kind, (edgeKindCounts.get(kind) ?? 0) + 1);
+  }
+  return (
+    <div
+      className="dan-task-blueprint-contract rounded border border-slate-200/80 bg-[linear-gradient(135deg,rgba(255,255,255,0.92),rgba(248,250,252,0.68))] p-3 shadow-[inset_3px_0_0_rgba(245,158,11,0.65)] dark:border-slate-800 dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.88),rgba(2,6,23,0.62))]"
+      data-task-family={family}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={cx(
+                "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.11em]",
+                taskFamilyTone(family),
+              )}
+            >
+              {taskFamilyIcon(family)}
+              {presentation.label}
+            </span>
+            <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+              {presentation.lens}
+            </span>
+          </div>
+          <div className="mt-2 text-sm font-semibold leading-5 text-slate-900 dark:text-slate-100">
+            {contract?.goal || "Goal carried by the current blueprint revision"}
+          </div>
+          <div className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+            {presentation.blueprintHint}
+          </div>
+        </div>
+        <div className="shrink-0 text-right font-mono text-[10px] text-slate-400">
+          {context.blueprintRevisionId ||
+            (context.graphRevision !== null ? `r${context.graphRevision}` : "current")}
+        </div>
+      </div>
+      {(facets.length > 0 ||
+        Boolean(context.boundedLoopNodeIds?.length) ||
+        Boolean(context.uncoveredCriterionIds?.length)) && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {facets.map((facet) => (
+            <span
+              key={facet.label}
+              title={facet.items.join("\n")}
+              className="rounded border border-slate-200 bg-white/70 px-2 py-1 text-[10px] text-slate-600 dark:border-slate-800 dark:bg-slate-950/55 dark:text-slate-300"
+            >
+              <span className="font-semibold uppercase tracking-[0.08em] text-slate-400">
+                {facet.label}
+              </span>{" "}
+              <span className="font-mono">{facet.items.length}</span>
+            </span>
+          ))}
+          {Boolean(context.boundedLoopNodeIds?.length) && (
+            <span className="rounded border border-amber-200 bg-amber-50/70 px-2 py-1 text-[10px] font-semibold text-amber-800 dark:border-amber-800 dark:bg-amber-950/25 dark:text-amber-100">
+              {context.boundedLoopNodeIds?.length} bounded loop
+              {context.boundedLoopNodeIds?.length === 1 ? "" : "s"}
+            </span>
+          )}
+          {Boolean(context.uncoveredCriterionIds?.length) && (
+            <span
+              title={context.uncoveredCriterionIds?.join("\n")}
+              className="rounded border border-rose-200 bg-rose-50/70 px-2 py-1 text-[10px] font-semibold text-rose-800 dark:border-rose-800 dark:bg-rose-950/25 dark:text-rose-100"
+            >
+              {context.uncoveredCriterionIds?.length} criterion gap
+              {context.uncoveredCriterionIds?.length === 1 ? "" : "s"}
+            </span>
+          )}
+        </div>
+      )}
+      {edgeKindCounts.size > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-slate-200/70 pt-2 text-[10px] dark:border-slate-800">
+          <span className="font-semibold uppercase tracking-[0.1em] text-slate-400">Topology</span>
+          {[...edgeKindCounts.entries()].map(([kind, count]) => (
+            <span
+              key={kind}
+              className={cx(
+                "rounded-full border px-1.5 py-0.5 font-medium",
+                kind === "feedback"
+                  ? "border-amber-300 text-amber-800 dark:border-amber-800 dark:text-amber-200"
+                  : kind === "alternative"
+                    ? "border-violet-300 text-violet-800 dark:border-violet-800 dark:text-violet-200"
+                    : kind === "validates"
+                      ? "border-cyan-300 text-cyan-800 dark:border-cyan-800 dark:text-cyan-200"
+                      : "border-slate-200 text-slate-500 dark:border-slate-800 dark:text-slate-400",
+              )}
+            >
+              {kind.replace(/_/g, " ")} {count}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BlueprintTreeOverview({
   nodes,
   activeNodeId,
@@ -10444,6 +11010,7 @@ function BlueprintTreeOverview({
   const selectedRevision =
     revisions.find((revision) => revision.id === selectedRevisionId) ?? latestRevision;
   const selectedPlanNodes = selectedRevision ? uniquePlanNodesForRevision(selectedRevision) : [];
+  const blueprintContext = useMemo(() => canonicalBlueprintContext(nodes), [nodes]);
 
   useEffect(() => {
     if (revisions.length === 0) {
@@ -10519,11 +11086,11 @@ function BlueprintTreeOverview({
   };
 
   return (
-    <section className="mb-4" aria-label="Live task graph">
+    <section className="mb-4" aria-label="Task blueprint">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">
           <Cable size={13} />
-          Live Task Graph
+          Task Blueprint
         </div>
         {revisions.length > 1 && (
           <div className="flex max-w-full flex-wrap items-center gap-1 text-[10px]">
@@ -10549,6 +11116,11 @@ function BlueprintTreeOverview({
         )}
       </div>
       <div className="overflow-x-auto rounded-md border border-slate-200/80 bg-white/55 p-3 dark:border-slate-800 dark:bg-slate-950/45">
+        {blueprintContext && (
+          <div className="mb-3 min-w-[360px]">
+            <BlueprintContractPlate context={blueprintContext} />
+          </div>
+        )}
         {selectedRevision ? (
           <div className="min-w-[360px] space-y-3">
             {(selectedRevision.meta || selectedRevision.reason) && (
@@ -10593,7 +11165,7 @@ function BlueprintTreeOverview({
           </div>
         ) : (
           <div className="min-w-[360px] rounded border border-dashed border-slate-200/80 bg-white/45 p-3 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950/30 dark:text-slate-400">
-            Waiting for DAN to emit actual task nodes or branches. Run Steps below show the broad workflow meanwhile.
+            Waiting for DAN to emit task nodes or branches. The execution attempt below shows live activity meanwhile.
           </div>
         )}
       </div>
@@ -11417,6 +11989,126 @@ function ConversationTimelineCard({
   );
 }
 
+function attemptStatusTone(status: string) {
+  const normalized = status.toLowerCase();
+  if (["running", "active", "executing", "validating"].includes(normalized)) {
+    return "border-cyan-300 bg-cyan-100 text-cyan-900 dark:border-cyan-700 dark:bg-cyan-950/50 dark:text-cyan-100";
+  }
+  if (["completed", "complete", "done", "succeeded"].includes(normalized)) {
+    return "border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/45 dark:text-emerald-100";
+  }
+  if (["failed", "blocked", "cancelled", "canceled"].includes(normalized)) {
+    return "border-rose-300 bg-rose-100 text-rose-900 dark:border-rose-800 dark:bg-rose-950/45 dark:text-rose-100";
+  }
+  return "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300";
+}
+
+function ExecutionAttemptPlate({ context }: { context: BlueprintPlanContext }) {
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const attempts = context.executionAttempts ?? [];
+  const latest = latestExecutionAttemptForBlueprint(context);
+  const visibleAttempts = attempts;
+  if (!latest) {
+    return (
+      <div className="dan-execution-attempt-plate mb-3 rounded border border-dashed border-slate-300 bg-white/45 px-3 py-2.5 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-950/35 dark:text-slate-400">
+        No execution attempt has started for this blueprint revision.
+      </div>
+    );
+  }
+  const resourceFacets = [
+    { label: "Workers", items: latest.workers },
+    { label: "Models", items: latest.models },
+    { label: "Tools", items: latest.tools },
+  ].filter((facet) => facet.items.length > 0);
+  const retries =
+    latest.retryCount !== null
+      ? `${latest.retryCount}${latest.maxRetries !== null ? ` / ${latest.maxRetries}` : ""}`
+      : latest.maxRetries !== null
+        ? `up to ${latest.maxRetries}`
+        : "";
+  return (
+    <div className="dan-execution-attempt-plate mb-3 rounded border border-slate-200/80 bg-white/70 p-3 shadow-[inset_3px_0_0_rgba(6,182,212,0.55)] dark:border-slate-800 dark:bg-slate-950/55">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span
+              className={cx(
+                "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.1em]",
+                attemptStatusTone(latest.status),
+              )}
+            >
+              {latest.status || "planned"}
+            </span>
+            {latest.phase && (
+              <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400">
+                {latest.phase.replace(/_/g, " ")}
+              </span>
+            )}
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+            <span className="font-mono text-slate-700 dark:text-slate-200">
+              {latest.attemptId}
+            </span>
+            {latest.backend && <span>{latest.backend}</span>}
+            {latest.schedule && <span>{latest.schedule}</span>}
+            {retries && <span>{retries} retries</span>}
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="font-mono text-[10px] text-slate-400">
+            {latest.blueprintRevisionId || context.blueprintRevisionId || "current blueprint"}
+          </span>
+          {visibleAttempts.length > 1 && (
+            <button
+              type="button"
+              onClick={() => setHistoryOpen((open) => !open)}
+              aria-expanded={historyOpen}
+              className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white/70 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 transition hover:border-slate-300 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400"
+            >
+              {visibleAttempts.length} attempts
+              <ChevronDown size={10} className={cx("transition", historyOpen && "rotate-180")} />
+            </button>
+          )}
+        </div>
+      </div>
+      {resourceFacets.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {resourceFacets.map((facet) => (
+            <span
+              key={facet.label}
+              title={facet.items.join("\n")}
+              className="rounded border border-slate-200 bg-slate-50/70 px-2 py-1 text-[10px] text-slate-600 dark:border-slate-800 dark:bg-slate-900/65 dark:text-slate-300"
+            >
+              <span className="font-semibold uppercase tracking-[0.08em] text-slate-400">
+                {facet.label}
+              </span>{" "}
+              {facet.items.slice(0, 2).join(", ")}
+              {facet.items.length > 2 ? ` +${facet.items.length - 2}` : ""}
+            </span>
+          ))}
+        </div>
+      )}
+      {historyOpen && visibleAttempts.length > 1 && (
+        <div className="mt-2 grid gap-1 border-t border-slate-200/80 pt-2 dark:border-slate-800">
+          {[...visibleAttempts].reverse().map((attempt) => (
+            <div
+              key={`${attempt.attemptId}:${attempt.blueprintRevisionId}:${attempt.runId}`}
+              className="flex items-center justify-between gap-2 rounded bg-slate-50/70 px-2 py-1.5 text-[10px] dark:bg-slate-900/55"
+            >
+              <span className="min-w-0 truncate font-mono text-slate-600 dark:text-slate-300">
+                {attempt.attemptId}
+              </span>
+              <span className="shrink-0 text-slate-400">
+                {[attempt.phase, attempt.backend, attempt.status].filter(Boolean).join(" · ")}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BlueprintView({
   nodes,
   conversationChunks,
@@ -11472,6 +12164,7 @@ function BlueprintView({
     () => blueprintTimelineItems(nodes, conversationChunks),
     [nodes, conversationChunks],
   );
+  const blueprintContext = useMemo(() => canonicalBlueprintContext(nodes), [nodes]);
 
   if (nodes.length === 0) {
     return (
@@ -11483,10 +12176,17 @@ function BlueprintView({
 
   return (
     <div className="dan-blueprint-board min-h-full rounded-md border border-slate-200/80 bg-[linear-gradient(to_right,rgba(148,163,184,0.10)_1px,transparent_1px),linear-gradient(to_bottom,rgba(148,163,184,0.10)_1px,transparent_1px)] bg-[size:28px_28px] p-4 dark:border-slate-800 dark:bg-slate-950">
+      <BlueprintTreeOverview
+        nodes={nodes}
+        activeNodeId={activeNodeId}
+        selectedNodeId={selectedNodeId}
+        onSelect={onSelect}
+      />
+
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-          <Cable size={13} />
-          Run Steps
+          <Activity size={13} />
+          Execution Attempt
         </div>
         <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
           {elapsedCounter && (
@@ -11523,12 +12223,7 @@ function BlueprintView({
         </div>
       </div>
 
-      <BlueprintTreeOverview
-        nodes={nodes}
-        activeNodeId={activeNodeId}
-        selectedNodeId={selectedNodeId}
-        onSelect={onSelect}
-      />
+      {blueprintContext && <ExecutionAttemptPlate context={blueprintContext} />}
 
       <ol className="relative space-y-2.5">
         <div className="dan-blueprint-rail-line absolute bottom-4 left-[18px] top-4 w-px bg-slate-200 dark:bg-slate-800" />
