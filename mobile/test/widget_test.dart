@@ -13,7 +13,9 @@ void main() {
     await tester.tap(find.byIcon(Icons.menu));
     await tester.pumpAndSettle();
     expect(find.text('Search sessions'), findsOneWidget);
-    await tester.tap(find.text('Unified workspace surface'));
+    expect(find.byIcon(Icons.create_new_folder_outlined), findsOneWidget);
+    expect(find.byIcon(Icons.refresh), findsOneWidget);
+    await tester.tapAt(const Offset(520, 80));
     await tester.pumpAndSettle();
 
     await tester.tap(find.byIcon(Icons.settings_outlined));

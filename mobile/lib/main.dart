@@ -419,7 +419,8 @@ class PhoneTaskSummary {
   }
 
   factory PhoneTaskSummary.fromJson(Map<String, dynamic> json) {
-    final metadata = _recordValue(json['metadata']) ?? const <String, dynamic>{};
+    final metadata =
+        _recordValue(json['metadata']) ?? const <String, dynamic>{};
     return PhoneTaskSummary(
       taskId: _asString(json['task_id'], ''),
       threadId: _asString(json['thread_id'], ''),
@@ -440,10 +441,7 @@ class PhoneTaskSummary {
 }
 
 class PhoneWorkspaceSummary {
-  const PhoneWorkspaceSummary({
-    required this.root,
-    required this.name,
-  });
+  const PhoneWorkspaceSummary({required this.root, required this.name});
 
   final String root;
   final String name;
@@ -539,7 +537,8 @@ String _compactDateTimeLabel(String value) {
   try {
     final parsed = DateTime.parse(value).toLocal();
     final now = DateTime.now();
-    final sameDay = parsed.year == now.year &&
+    final sameDay =
+        parsed.year == now.year &&
         parsed.month == now.month &&
         parsed.day == now.day;
     final hour = parsed.hour.toString().padLeft(2, '0');
@@ -1075,7 +1074,10 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     final taskRoot = phoneTasksByThread[session.id]?.workspaceRoot ?? '';
     if (taskRoot.isNotEmpty) return taskRoot;
     final boundRoot =
-        sessionWorkspaceRoots[_sessionWorkspaceKey(session.workflowId, session.id)] ??
+        sessionWorkspaceRoots[_sessionWorkspaceKey(
+          session.workflowId,
+          session.id,
+        )] ??
         '';
     if (boundRoot.isNotEmpty) return boundRoot;
     return session.id == activeThreadId ? workspaceRoot : '';
@@ -1093,13 +1095,10 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       grouped.putIfAbsent(root, () => []).add(session);
     }
 
-    final roots = _mergeWorkspaceRoots(
-      phoneWorkspaces,
-      [
-        if (workspaceRoot.trim().isNotEmpty) workspaceRoot.trim(),
-        ...grouped.keys.where((root) => root.isNotEmpty),
-      ],
-    );
+    final roots = _mergeWorkspaceRoots(phoneWorkspaces, [
+      if (workspaceRoot.trim().isNotEmpty) workspaceRoot.trim(),
+      ...grouped.keys.where((root) => root.isNotEmpty),
+    ]);
     final groups = <PhoneWorkspaceSessionGroup>[
       for (final workspace in roots)
         PhoneWorkspaceSessionGroup(
@@ -1147,7 +1146,10 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     if (!mounted || health == 'offline') return;
     setState(() => loadingSessions = true);
     final threadPayload = await _getJson(activeApiBase, '/api/chats');
-    final taskPayload = await _getJson(activeApiBase, '/api/v2/tasks?limit=160');
+    final taskPayload = await _getJson(
+      activeApiBase,
+      '/api/v2/tasks?limit=160',
+    );
     if (!mounted) return;
     final sessions = (threadPayload?['threads'] as List<dynamic>? ?? const [])
         .whereType<Map<String, dynamic>>()
@@ -1165,7 +1167,9 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     }
     final roots = [
       if (workspaceRoot.trim().isNotEmpty) workspaceRoot.trim(),
-      ...tasks.map((task) => task.workspaceRoot).where((root) => root.isNotEmpty),
+      ...tasks
+          .map((task) => task.workspaceRoot)
+          .where((root) => root.isNotEmpty),
       ...sessionWorkspaceRoots.values.where((root) => root.trim().isNotEmpty),
     ];
     setState(() {
@@ -1234,10 +1238,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       activeApiBase,
       '/api/chats/${Uri.encodeComponent(activeWorkflowId)}/${Uri.encodeComponent(activeThreadId)}',
       method: 'PUT',
-      body: {
-        'mode': 'agent',
-        'messages': payloadMessages,
-      },
+      body: {'mode': 'agent', 'messages': payloadMessages},
       timeout: const Duration(seconds: 8),
     );
     unawaited(_refreshSessions());
@@ -1264,14 +1265,16 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     String workspaceRootOverride = '',
   }) async {
     if (session.archived) {
-      setState(() => chatStatus = 'Restore archived sessions from the desktop workspace');
+      setState(
+        () =>
+            chatStatus = 'Restore archived sessions from the desktop workspace',
+      );
       return;
     }
     agentPollTimer?.cancel();
-    final targetRoot =
-        workspaceRootOverride.trim().isNotEmpty
-            ? workspaceRootOverride.trim()
-            : _sessionWorkspaceRootFor(session).trim();
+    final targetRoot = workspaceRootOverride.trim().isNotEmpty
+        ? workspaceRootOverride.trim()
+        : _sessionWorkspaceRootFor(session).trim();
     setState(() {
       activeWorkflowId = session.workflowId;
       activeThreadId = session.id;
@@ -1321,19 +1324,21 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         ? threadTasks.first
         : phoneTasksByThread[session.id];
     final recoveredRoot = latestTask?.workspaceRoot ?? targetRoot;
-    final fallbackMessages =
-        threadMessages.isNotEmpty
-            ? threadMessages
-            : latestTask?.latestProgress.isNotEmpty == true
-            ? [
-                PhoneChatMessage(
-                  id: _newId('status'),
-                  role: PhoneChatRole.assistant,
-                  text: latestTask!.latestProgress,
-                  status: latestTask.status,
-                ),
-              ]
-            : const <PhoneChatMessage>[];
+    final fallbackMessages = threadMessages.isNotEmpty
+        ? threadMessages
+        : latestTask != null &&
+              (latestTask.latestProgress.isNotEmpty || latestTask.isLive)
+        ? [
+            PhoneChatMessage(
+              id: _newId('assistant'),
+              role: PhoneChatRole.assistant,
+              text: latestTask.latestProgress.isNotEmpty
+                  ? latestTask.latestProgress
+                  : 'Super DAN is working in this session.',
+              status: latestTask.status,
+            ),
+          ]
+        : const <PhoneChatMessage>[];
     setState(() {
       chatMessages = fallbackMessages;
       activeTaskId = latestTask?.taskId ?? '';
@@ -1347,24 +1352,26 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       if (recoveredRoot.isNotEmpty) {
         workspaceRoot = recoveredRoot;
         workspaceRootController.text = recoveredRoot;
-        phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [recoveredRoot]);
+        phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [
+          recoveredRoot,
+        ]);
         sessionWorkspaceRoots = {
           ...sessionWorkspaceRoots,
           _sessionWorkspaceKey(session.workflowId, session.id): recoveredRoot,
         };
       }
       if (latestTask != null) {
-        phoneTasksByThread = {
-          ...phoneTasksByThread,
-          session.id: latestTask,
-        };
+        phoneTasksByThread = {...phoneTasksByThread, session.id: latestTask};
       }
     });
     await _savePhoneSettings();
     if (activeRunLive && activeRunId.isNotEmpty) {
-      _startAgentPolling(activeRunId, fallbackMessages.isNotEmpty
-          ? fallbackMessages.last.id
-          : _newId('assistant'));
+      _startAgentPolling(
+        activeRunId,
+        fallbackMessages.isNotEmpty
+            ? fallbackMessages.last.id
+            : _newId('assistant'),
+      );
     }
   }
 
@@ -1500,8 +1507,9 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                   ),
-                                  onTap: () =>
-                                      unawaited(createWorkspace(suggestion.path)),
+                                  onTap: () => unawaited(
+                                    createWorkspace(suggestion.path),
+                                  ),
                                 ),
                             ],
                           ),
@@ -1516,7 +1524,8 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
                     child: const Text('Cancel'),
                   ),
                   FilledButton.icon(
-                    onPressed: () => unawaited(createWorkspace(controller.text)),
+                    onPressed: () =>
+                        unawaited(createWorkspace(controller.text)),
                     icon: const Icon(Icons.add),
                     label: const Text('Create'),
                   ),
@@ -1620,13 +1629,10 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         } else if (savedRunMode == 'auto') {
           runMode = WorkRunMode.auto;
         }
-        phoneWorkspaces = _mergeWorkspaceRoots(
-          phoneWorkspaces,
-          [
-            ...savedWorkspaceRoots,
-            if (savedWorkspaceRoot.isNotEmpty) savedWorkspaceRoot,
-          ],
-        );
+        phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [
+          ...savedWorkspaceRoots,
+          if (savedWorkspaceRoot.isNotEmpty) savedWorkspaceRoot,
+        ]);
         sessionWorkspaceRoots = savedSessionWorkspaceRoots;
       });
       if (savedApiBase.isNotEmpty || savedToken.isNotEmpty) {
@@ -1646,10 +1652,9 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     accessToken = _normalizeAccessToken(accessTokenController.text);
     accessTokenController.text = accessToken;
     phoneWireGuardConfig = wireGuardConfigController.text.trim();
-    final workspaceRoots = _mergeWorkspaceRoots(
-      phoneWorkspaces,
-      [if (workspaceRoot.trim().isNotEmpty) workspaceRoot.trim()],
-    ).map((workspace) => workspace.root).toList();
+    final workspaceRoots = _mergeWorkspaceRoots(phoneWorkspaces, [
+      if (workspaceRoot.trim().isNotEmpty) workspaceRoot.trim(),
+    ]).map((workspace) => workspace.root).toList();
     if (!Platform.isAndroid) return;
     try {
       await wireGuardChannel.invokeMethod<Object?>('saveSettings', {
@@ -2113,15 +2118,20 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
   }
 
   void _replaceChatMessage(String id, String text, {String status = ''}) {
+    late final List<PhoneChatMessage> nextMessages;
     setState(() {
-      chatMessages = chatMessages
+      nextMessages = chatMessages
           .map(
             (message) => message.id == id
                 ? message.copyWith(text: text, status: status)
                 : message,
           )
           .toList();
+      chatMessages = nextMessages;
     });
+    if (activeThreadId.isNotEmpty) {
+      unawaited(_saveActiveThreadMessages(nextMessages));
+    }
   }
 
   Future<bool> _ensurePhoneThread(String prompt) async {
@@ -2134,6 +2144,18 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     if (payload == null) return false;
     activeThreadId = _asString(payload['id'], '');
     activeWorkflowId = _asString(payload['workflow_id'], '_scratch');
+    final root = workspaceRoot.trim();
+    if (activeThreadId.isNotEmpty && root.isNotEmpty) {
+      setState(() {
+        phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [root]);
+        sessionWorkspaceRoots = {
+          ...sessionWorkspaceRoots,
+          _sessionWorkspaceKey(activeWorkflowId, activeThreadId): root,
+        };
+      });
+      unawaited(_savePhoneSettings());
+    }
+    unawaited(_refreshSessions());
     return activeThreadId.isNotEmpty;
   }
 
@@ -2143,6 +2165,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     return {
       'identity': {'name': 'DAN Phone', 'role': 'chunk_workspace_phone'},
       'workspace_root': workspaceRoot,
+      'workspace_id': workspaceRoot,
       'notes_root': notesRoot,
       'workspace_source': 'chunk_workspace_phone',
       'ui_surface': 'chunk_workspace',
@@ -2282,11 +2305,12 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
           : 'Starting Super DAN...',
       status: 'working',
     );
+    final nextMessages = [...chatMessages, user, assistant];
     final historyForBackend = _chatHistoryForBackend([...chatMessages, user]);
     setState(() {
       chatBusy = true;
       chatStatus = activeRunLive ? 'Steering Super DAN' : 'Starting Super DAN';
-      chatMessages = [...chatMessages, user, assistant];
+      chatMessages = nextMessages;
       composerAttachments = const [];
     });
 
@@ -2300,6 +2324,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         );
         return;
       }
+      unawaited(_saveActiveThreadMessages(nextMessages));
 
       if (activeRunLive && activeRunId.isNotEmpty && activeTaskId.isNotEmpty) {
         final command = await _postJson(
@@ -2375,6 +2400,23 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         'Super DAN accepted the request.',
         status: 'running',
       );
+      setState(() {
+        phoneTasksByThread = {
+          ...phoneTasksByThread,
+          if (activeThreadId.isNotEmpty)
+            activeThreadId: PhoneTaskSummary(
+              taskId: activeTaskId,
+              threadId: activeThreadId,
+              status: 'running',
+              latestProgress: 'Super DAN accepted the request.',
+              workspaceRoot: workspaceRoot,
+              workspaceId: workspaceRoot,
+              activeRunId: runId,
+              title: prompt,
+            ),
+        };
+      });
+      unawaited(_refreshSessions());
       await _postJson(
         activeApiBase,
         '/api/v2/agent-runs/$runId/execute',
@@ -2517,6 +2559,23 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       );
     }
     final type = _asString(latest['type'], '');
+    if (activeThreadId.isNotEmpty) {
+      setState(() {
+        phoneTasksByThread = {
+          ...phoneTasksByThread,
+          activeThreadId: PhoneTaskSummary(
+            taskId: _asString(latest['task_id'], activeTaskId),
+            threadId: activeThreadId,
+            status: type.isEmpty ? 'running' : type,
+            latestProgress: text,
+            workspaceRoot: workspaceRoot,
+            workspaceId: workspaceRoot,
+            activeRunId: runId,
+            title: text,
+          ),
+        };
+      });
+    }
     if (type == 'completed' ||
         type == 'failed' ||
         type == 'blocked' ||
@@ -2526,6 +2585,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         activeRunLive = false;
         chatStatus = type == 'completed' ? 'Ready' : type;
       });
+      unawaited(_refreshSessions());
     }
   }
 
@@ -3276,13 +3336,16 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     return Scaffold(
       key: scaffoldKey,
       drawer: _SessionDrawer(
-        onSelectSession: () {
-          Navigator.of(context).pop();
-          setState(() {
-            mode = WorkspaceMode.work;
-            workPage = WorkPage.chat;
-          });
-        },
+        groups: _buildSessionGroups(),
+        tasksByThread: phoneTasksByThread,
+        activeThreadId: activeThreadId,
+        activeWorkspaceRoot: workspaceRoot,
+        loading: loadingSessions,
+        onRefresh: _refreshSessions,
+        onCreateWorkspace: _openNewWorkspaceDialog,
+        onSelectWorkspace: _selectWorkspaceRootFromDrawer,
+        onCreateSession: _createSessionForWorkspace,
+        onSelectSession: _selectPhoneSession,
       ),
       body: SafeArea(
         child: Column(
@@ -3480,31 +3543,136 @@ class _WorkspaceHeader extends StatelessWidget {
   }
 }
 
-class _SessionDrawer extends StatelessWidget {
-  const _SessionDrawer({required this.onSelectSession});
+class _SessionDrawer extends StatefulWidget {
+  const _SessionDrawer({
+    required this.groups,
+    required this.tasksByThread,
+    required this.activeThreadId,
+    required this.activeWorkspaceRoot,
+    required this.loading,
+    required this.onRefresh,
+    required this.onCreateWorkspace,
+    required this.onSelectWorkspace,
+    required this.onCreateSession,
+    required this.onSelectSession,
+  });
 
-  final VoidCallback onSelectSession;
+  final List<PhoneWorkspaceSessionGroup> groups;
+  final Map<String, PhoneTaskSummary> tasksByThread;
+  final String activeThreadId;
+  final String activeWorkspaceRoot;
+  final bool loading;
+  final Future<void> Function() onRefresh;
+  final Future<void> Function() onCreateWorkspace;
+  final Future<void> Function(String root) onSelectWorkspace;
+  final Future<void> Function(String root) onCreateSession;
+  final Future<void> Function(
+    PhoneSessionSummary session, {
+    String workspaceRootOverride,
+  })
+  onSelectSession;
+
+  @override
+  State<_SessionDrawer> createState() => _SessionDrawerState();
+}
+
+class _SessionDrawerState extends State<_SessionDrawer> {
+  String query = '';
+  final Set<String> expandedRoots = {};
+
+  @override
+  void didUpdateWidget(covariant _SessionDrawer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    for (final group in widget.groups) {
+      if (group.root == widget.activeWorkspaceRoot || group.archived) {
+        expandedRoots.add(_groupKey(group));
+      }
+    }
+  }
+
+  String _groupKey(PhoneWorkspaceSessionGroup group) {
+    return group.archived ? 'archived' : group.root;
+  }
+
+  bool _sessionMatchesQuery(PhoneSessionSummary session, String normalized) {
+    if (normalized.isEmpty) return true;
+    final task = widget.tasksByThread[session.id];
+    return session.displayTitle.toLowerCase().contains(normalized) ||
+        session.id.toLowerCase().contains(normalized) ||
+        session.workflowId.toLowerCase().contains(normalized) ||
+        (task?.latestProgress.toLowerCase().contains(normalized) ?? false);
+  }
+
+  List<PhoneWorkspaceSessionGroup> _visibleGroups() {
+    final normalized = query.trim().toLowerCase();
+    if (normalized.isEmpty) return widget.groups;
+    return widget.groups
+        .map(
+          (group) => PhoneWorkspaceSessionGroup(
+            root: group.root,
+            name: group.name,
+            archived: group.archived,
+            sessions: group.sessions
+                .where((session) => _sessionMatchesQuery(session, normalized))
+                .toList(),
+          ),
+        )
+        .where(
+          (group) =>
+              group.sessions.isNotEmpty ||
+              group.name.toLowerCase().contains(normalized) ||
+              group.root.toLowerCase().contains(normalized),
+        )
+        .toList();
+  }
+
+  Future<void> _runAndClose(Future<void> Function() action) async {
+    Navigator.of(context).pop();
+    await action();
+  }
 
   @override
   Widget build(BuildContext context) {
-    const sessions = [
-      'Unified workspace surface',
-      'Phone friendly navigation',
-      'WireGuard status check',
-    ];
+    final visibleGroups = _visibleGroups();
     return Drawer(
       child: SafeArea(
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            Text(
-              'Sessions',
-              style: Theme.of(
-                context,
-              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Sessions',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Refresh sessions',
+                  onPressed: widget.loading
+                      ? null
+                      : () => unawaited(widget.onRefresh()),
+                  icon: widget.loading
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh),
+                ),
+                IconButton.filledTonal(
+                  tooltip: 'New workspace',
+                  onPressed: () =>
+                      unawaited(_runAndClose(widget.onCreateWorkspace)),
+                  icon: const Icon(Icons.create_new_folder_outlined),
+                ),
+              ],
             ),
             const SizedBox(height: 12),
             TextField(
+              onChanged: (value) => setState(() => query = value),
               decoration: InputDecoration(
                 hintText: 'Search sessions',
                 prefixIcon: const Icon(Icons.search),
@@ -3516,23 +3684,218 @@ class _SessionDrawer extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 12),
-            for (final session in sessions)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: ListTile(
-                  tileColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    side: const BorderSide(color: Color(0xffded7ca)),
+            if (widget.loading) const LinearProgressIndicator(),
+            if (!widget.loading && visibleGroups.isEmpty)
+              const Padding(
+                padding: EdgeInsets.only(top: 12),
+                child: Text('No sessions found.'),
+              ),
+            for (final group in visibleGroups)
+              _SessionWorkspaceGroupCard(
+                group: group,
+                tasksByThread: widget.tasksByThread,
+                activeThreadId: widget.activeThreadId,
+                activeWorkspaceRoot: widget.activeWorkspaceRoot,
+                expanded:
+                    expandedRoots.contains(_groupKey(group)) ||
+                    group.root == widget.activeWorkspaceRoot,
+                onExpandedChanged: (expanded) {
+                  setState(() {
+                    if (expanded) {
+                      expandedRoots.add(_groupKey(group));
+                    } else {
+                      expandedRoots.remove(_groupKey(group));
+                    }
+                  });
+                },
+                onSelectWorkspace: group.archived
+                    ? null
+                    : () => _runAndClose(
+                        () => widget.onSelectWorkspace(group.root),
+                      ),
+                onCreateSession: group.archived
+                    ? null
+                    : () => _runAndClose(
+                        () => widget.onCreateSession(group.root),
+                      ),
+                onSelectSession: (session) => _runAndClose(
+                  () => widget.onSelectSession(
+                    session,
+                    workspaceRootOverride: group.root,
                   ),
-                  leading: const Icon(Icons.chat_bubble_outline),
-                  title: Text(session),
-                  onTap: onSelectSession,
                 ),
               ),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _SessionWorkspaceGroupCard extends StatelessWidget {
+  const _SessionWorkspaceGroupCard({
+    required this.group,
+    required this.tasksByThread,
+    required this.activeThreadId,
+    required this.activeWorkspaceRoot,
+    required this.expanded,
+    required this.onExpandedChanged,
+    required this.onSelectWorkspace,
+    required this.onCreateSession,
+    required this.onSelectSession,
+  });
+
+  final PhoneWorkspaceSessionGroup group;
+  final Map<String, PhoneTaskSummary> tasksByThread;
+  final String activeThreadId;
+  final String activeWorkspaceRoot;
+  final bool expanded;
+  final ValueChanged<bool> onExpandedChanged;
+  final VoidCallback? onSelectWorkspace;
+  final VoidCallback? onCreateSession;
+  final ValueChanged<PhoneSessionSummary> onSelectSession;
+
+  @override
+  Widget build(BuildContext context) {
+    final activeWorkspace =
+        !group.archived && group.root == activeWorkspaceRoot;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: activeWorkspace ? const Color(0xffe9f3ed) : Colors.white,
+          border: Border.all(
+            color: activeWorkspace
+                ? const Color(0xff9cb9a9)
+                : const Color(0xffded7ca),
+          ),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(
+          children: [
+            ListTile(
+              contentPadding: const EdgeInsets.fromLTRB(12, 4, 8, 4),
+              leading: Icon(
+                group.archived
+                    ? Icons.archive_outlined
+                    : Icons.folder_copy_outlined,
+              ),
+              title: Text(
+                group.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              subtitle: Text(
+                group.archived
+                    ? '${group.sessions.length} archived'
+                    : group.root.isEmpty
+                    ? '${group.sessions.length} sessions'
+                    : group.root,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              onTap: group.archived ? null : onSelectWorkspace,
+              trailing: Wrap(
+                spacing: 2,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  if (!group.archived)
+                    IconButton(
+                      tooltip: 'New session in ${group.name}',
+                      onPressed: onCreateSession,
+                      icon: const Icon(Icons.add_comment_outlined),
+                    ),
+                  IconButton(
+                    tooltip: expanded
+                        ? 'Collapse workspace'
+                        : 'Expand workspace',
+                    onPressed: () => onExpandedChanged(!expanded),
+                    icon: Icon(
+                      expanded
+                          ? Icons.keyboard_arrow_down
+                          : Icons.keyboard_arrow_right,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (expanded) ...[
+              if (group.sessions.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('No sessions yet.'),
+                  ),
+                ),
+              for (final session in group.sessions)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                  child: _SessionTile(
+                    session: session,
+                    task: tasksByThread[session.id],
+                    active: session.id == activeThreadId,
+                    archived: group.archived,
+                    onTap: () => onSelectSession(session),
+                  ),
+                ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SessionTile extends StatelessWidget {
+  const _SessionTile({
+    required this.session,
+    required this.task,
+    required this.active,
+    required this.archived,
+    required this.onTap,
+  });
+
+  final PhoneSessionSummary session;
+  final PhoneTaskSummary? task;
+  final bool active;
+  final bool archived;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final status =
+        task?.status ?? (session.messageCount == 0 ? 'blank' : 'saved');
+    final updated = _compactDateTimeLabel(session.updatedAt);
+    final detail = [
+      status,
+      if (session.messageCount > 0) '${session.messageCount} messages',
+      if (updated.isNotEmpty) updated,
+    ].join(' · ');
+    final live = task?.isLive == true;
+    return ListTile(
+      dense: true,
+      enabled: !archived,
+      selected: active,
+      tileColor: Colors.white,
+      selectedTileColor: const Color(0xffd7eadf),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: const BorderSide(color: Color(0xffded7ca)),
+      ),
+      leading: Icon(
+        live ? Icons.radio_button_checked : Icons.chat_bubble_outline,
+        color: live ? const Color(0xff176b5b) : null,
+      ),
+      title: Text(
+        session.displayTitle,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Text(detail, maxLines: 1, overflow: TextOverflow.ellipsis),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: archived ? null : onTap,
     );
   }
 }
