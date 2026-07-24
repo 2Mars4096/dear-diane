@@ -159,6 +159,8 @@ The next theoretical phase is `55-*` agent-level stochastic orchestration. DAN s
 
 The next runtime-control phase is `58-*` async core and background execution. The first proof should be narrow: while task A is still running, DAN accepts task B immediately, classifies it conservatively as parallel / queued-behind / append / clarify from a durable task board plus deterministic path/resource evidence, and surfaces that decision without waiting for A's executor. This is the operational version of the narrator/executor split: narrator explains, foreground control admits and schedules, background executors do tool-using work.
 
+The horizontal `59-*` Task Blueprint phase separates semantic intent from operational execution. One immutable, revisioned `TaskBlueprint` now combines the protected task contract with task-native work, decisions, artifacts, dependencies, bounded loops, and gates; one or more `ExecutionAttempt` records bind concrete workers/models/tools/scheduling to exact revisions. Super DAN consumes the accepted canonical projection through its existing scheduler seam, and the Work GUI projects the same contract/topology/attempt distinction for direct, debugging, research, design, meeting, manufacturing, and general work. This does not advance the manufacturing-broker roadmap: provider integration, quoting, purchasing, sample release, and production remain incubation work behind explicit validation and approval gates.
+
 ---
 
 ## 5. Design Decisions

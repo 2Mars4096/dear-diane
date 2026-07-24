@@ -1,5 +1,11 @@
 # Known Issues & Failed Approaches
 
+- ~~**P3: Imported math manuals depended on pseudo-math and renderer inference.**~~ **FIXED 2026-07-21.** The five copied math manuals mixed inline-code notation, plain ASCII operators, ad hoc matrix literals, formula-shaped text fences, and three calculus practice packs accidentally wrapped as code. Their knowledge-base copies now use explicit `$...$` and `$$...$$` LaTeX that passes strict KaTeX and live Notes rendering checks, while all learner-facing section and assessment markers remain preserved.
+- **Failed approach recorded:** renderer heuristics are useful for legacy notes but are not a stable source format for maintained course manuals. Canonical math content should carry explicit delimiters and LaTeX commands in Markdown.
+
+- ~~**P3: Notes KaTeX `aligned` blocks could render `amp;` beside equals signs.**~~ **FIXED 2026-07-09.** Some Notes preview paths could hand KaTeX HTML-escaped math such as `X&amp;=XXX`; TeX then treated the leading `&` as the alignment marker and rendered the remaining `amp;` text before `=`, producing visibly broken aligned equations. The shared Markdown renderer now decodes common HTML entities inside math input before KaTeX rendering, with a regression covering escaped `aligned` ampersands.
+- **Failed approach recorded:** do not fix this by asking note authors to avoid `&` in `aligned`. The preview boundary must preserve TeX semantics even when earlier Hugo/HTML normalization escaped the source.
+
 - ~~**P3: Hugo callout shortcodes rendered as literal inline-code text or generic quote blocks in Notes.**~~ **FIXED 2026-07-06.** The desktop Notes formatter and backend preview helper treated every unknown Hugo shortcode as an inline-code placeholder, so `{{< callout warning "Critical Caveat" >}}...{{< /callout >}}` became visible `callout warning "Critical Caveat"` and `/callout` tokens around the prose. The first fix mapped callouts onto generic blockquotes, which still did not read as callouts. Known callout shortcodes now normalize to first-class `aside` callout cards with the kind/title label, marker, and body preserved.
 - **Failed approach recorded:** a generic shortcode-to-code fallback is useful for unknown shortcode visibility, but content-bearing shortcodes need explicit normalization before the fallback runs.
 

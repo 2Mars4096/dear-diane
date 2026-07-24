@@ -10,6 +10,7 @@ from dan.engine import Engine, EngineConfig, RunResult
 from dan.engine.executor import ExecutorRegistry
 from dan.executors.tool import ToolExecutor, ToolRegistry
 from dan.models.context import MergeStrategy, CompactionStrategy, CompactionRule, FailurePolicy
+from dan.task_blueprints import TaskContract, create_blueprint, execution_attempt_for_blueprint
 from dan.worker import Worker, RoleSpec, WorkerBrief, build_cell, request_from_brief
 ```
 
@@ -58,6 +59,73 @@ For Hugo/Markdown notes surfaces, keep note-editing rules in `surface_context` i
 `AgentRunEvent` also carries token usage for active management. Per-model-call rows use `type="token_usage_recorded"` with `token_usage_delta`, `token_usage_total`, and `token_usage_round`; task snapshots and run records expose aggregate `token_usage` plus `latest_token_usage_round` / `metadata.token_usage_rounds`. Super DAN backend events pass through provider usage when available, and deterministic test runs emit a provider-free usage record.
 
 Live Agent progress may include `source_event_type="live.task_graph.updated"` with `payload.task_graph_state` and mirrored `payload.plan_context.task_graph_state`. A task graph state should keep task rows backward-compatible, but can mark higher-level plan cards with `node_type: "plan"`; child tasks can be nested under `tasks` / `subtasks` / `children` or linked with `plan_id`. Use `depends_on` for execution dependencies and omit plan-generation dependency edges for now unless a surface explicitly asks for them. The state can carry `plan_generation_queue_length`, `plan_execution_queue_length`, and `task_execution_queue_length`; GUI callers default each to `4` when absent and render explicit plan nodes as the top-level Work cards with child tasks in the selected-plan checklist.
+
+### Task Blueprints and Execution Attempts
+
+`dan.task_blueprints` defines the canonical semantic task contract. A `TaskBlueprint` is not a `dan_graph_v1` compute workflow: it combines the protected user contract with user-meaningful work, decisions, artifacts, gates, dependencies, alternatives, and bounded feedback loops. Workers, models, tools, retries, scheduling, and runtime results belong to a separate `ExecutionAttempt` bound to one exact `blueprint_revision_id`.
+
+```python
+from dan.task_blueprints import (
+    AcceptanceCriterion,
+    TaskContract,
+    create_blueprint,
+    execution_attempt_for_blueprint,
+)
+
+contract = TaskContract(
+    goal="Explain the failure and prove the repair.",
+    non_goals=("Do not publish or deploy.",),
+    permissions=("workspace:read", "workspace:write"),
+    acceptance_criteria=(
+        AcceptanceCriterion(
+            criterion_id="focused-tests",
+            description="Focused and regression tests pass.",
+            evidence_required=("validation_result",),
+        ),
+    ),
+)
+blueprint = create_blueprint(
+    task_id="task-123",
+    contract=contract,
+    family="debugging",
+)
+attempt = execution_attempt_for_blueprint(
+    blueprint,
+    run_id="run-456",
+    backend="super_dan",
+    model_summary=("kimi-k2.6",),
+    tool_summary=("file_read", "file_edit", "shell_command"),
+)
+```
+
+Available topology families are `direct`, `debugging`, `research`, `design`, `meeting`, `manufacturing`, and `general`. They are starting priors composed from the same node/edge grammar, not rigid modes. Direct work stays short; debugging and design use bounded feedback; research and meetings expose parallel evidence/workstreams; manufacturing adds specification, DFM/compliance, and explicit prototype-release gates. `plan → execute → validate` remains an ordinary reusable graph shape.
+
+Use `make_blueprint_patch(...)` plus `apply_blueprint_patch(...)` for atomic optimistic revisions, or `sync_blueprint_graph(...)` when admitting a complete semantic proposal at a safe scheduler checkpoint. Supported patch operations include add/revise/retire/supersede/split/merge/reopen/branch nodes, add/remove/revise edges, attach criteria/evidence, narrow permissions, and strengthen criteria. Ordinary patches cannot widen permissions, weaken or detach acceptance criteria, create unbounded dependency cycles, or rewrite active/completed nodes. A protected goal/authority/budget change requires `ContractAmendment` with an explicit `approval_id` and `approval_scope_hash` equal to the current `contract_hash`.
+
+Super DAN emits the canonical state additively while preserving the legacy event:
+
+```json
+{
+  "event": "live.task_blueprint.updated",
+  "event_schema": "dan_task_blueprint_event_v1",
+  "task_blueprint": {
+    "schema": "dan_task_blueprint_v1",
+    "blueprint_id": "bp-task-123",
+    "task_id": "task-123",
+    "revision_id": "bp-task-123.r2",
+    "revision": 2,
+    "parent_revision_ids": ["bp-task-123.r1"],
+    "family": "debugging",
+    "contract": {},
+    "nodes": [],
+    "edges": [],
+    "derived_state": {},
+    "update_reason": "New failure evidence split the diagnosis branch."
+  }
+}
+```
+
+`live.execution_attempt.updated` carries `execution_attempt` with schema `dan_execution_attempt_v1`, exact blueprint revision binding, status/phase, backend/run id, policy snapshot, worker/model/tool summaries, retries, schedule, per-node runtime state, timestamps, and results. Chat V2 promotes the latest objects into `TaskSnapshot.metadata.task_blueprint` and `.execution_attempt`, and maintains an idempotent `.execution_attempts` history. Consumers should render blueprint fulfilment separately from attempt health and use legacy `task_graph_state` only as a compatibility fallback.
 
 Durable task/run state is exposed through the V2 control endpoints:
 - `POST /api/v2/agent-runs`: foreground-admit a durable V2 Agent task/run from the same chat request body. The async admission layer reads the compact task board first and returns `admission` plus `board` payloads.
