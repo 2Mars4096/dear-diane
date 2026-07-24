@@ -31,6 +31,16 @@ describe("MarkdownRenderer", () => {
     expect(html).not.toContain("DAN_MD_");
   });
 
+  it("keeps aligned math ampersands as alignment markers after entity escaping", () => {
+    const html = renderMarkdownToHtml(
+      "$$\n\\begin{aligned}\nX&amp;=XXX\\\\\n&amp;= \\\\\nXXX&amp;=asnoiu\n\\end{aligned}\n$$",
+    );
+
+    expect(html).toContain("katex");
+    expect(html).toContain("columnalign=\"right left\"");
+    expect(html).not.toContain("<mi>m</mi><mi>p</mi>");
+  });
+
   it("respects escaped dollar signs inside bold notes prose", () => {
     const html = renderMarkdownToHtml(
       "**\\$2M–\\$4M vs. ~\\$300K at typical public SaaS companies**",

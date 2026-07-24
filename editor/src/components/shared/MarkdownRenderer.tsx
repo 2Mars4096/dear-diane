@@ -141,15 +141,41 @@ function renderAutoCodeText(value: string): string {
 }
 
 function renderKatex(source: string, displayMode: boolean): string {
+  const normalizedSource = decodeMathHtmlEntities(source.trim());
   try {
-    return katex.renderToString(source.trim(), {
+    return katex.renderToString(normalizedSource, {
       displayMode,
       throwOnError: false,
       strict: false,
     });
   } catch {
-    return `<code>${escapeHtml(source)}</code>`;
+    return `<code>${escapeHtml(normalizedSource)}</code>`;
   }
+}
+
+function decodeMathHtmlEntities(source: string): string {
+  const namedEntities: Record<string, string> = {
+    amp: "&",
+    apos: "'",
+    gt: ">",
+    lt: "<",
+    quot: '"',
+  };
+  const decodeCodePoint = (value: number, fallback: string) => {
+    try {
+      return Number.isFinite(value) ? String.fromCodePoint(value) : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  return source
+    .replace(/&#x([0-9a-f]+);/gi, (match, value) =>
+      decodeCodePoint(Number.parseInt(value, 16), match),
+    )
+    .replace(/&#(\d+);/g, (match, value) =>
+      decodeCodePoint(Number.parseInt(value, 10), match),
+    )
+    .replace(/&(amp|apos|gt|lt|quot);/g, (_match, entity) => namedEntities[entity] ?? _match);
 }
 
 function isEscapedMarkdownDelimiter(source: string, index: number): boolean {
