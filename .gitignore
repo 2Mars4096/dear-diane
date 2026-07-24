@@ -149,6 +149,7 @@ pnpm-debug.log*
 !/tests/test_cli/
 !/tests/test_cli/test_chat.py
 !/tests/test_cli/test_organism_logs.py
+!/tests/test_task_blueprints.py
 !/tests/test_server/test_run_manager_reflection.py
 !/tests/test_server/test_run_manager_telemetry.py
 !/tests/test_mutation_duplicate_add_repair.py
