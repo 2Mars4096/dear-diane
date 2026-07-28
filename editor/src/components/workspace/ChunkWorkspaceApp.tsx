@@ -216,36 +216,15 @@ const WORKSPACE_AUTONOMY_OPTIONS: WorkspaceAutonomyOption[] = [
 const WORKSPACE_AGENT_OPTIONS: WorkspaceAgentOption[] = [
   {
     id: "native",
-    label: "Native",
-    shortLabel: "Native",
+    label: "Super DAN",
+    shortLabel: "DAN",
     backend: SUPER_DAN_BACKEND,
-  },
-  {
-    id: "codex",
-    label: "Codex",
-    shortLabel: "Codex",
-    backend: CODEX_BACKEND,
   },
 ];
 const DEFAULT_MODEL_SELECTION_BY_AGENT: Record<WorkspaceAgentSelectionId, string> = {
   native: "native_default",
-  codex: "codex_gpt_5_5_medium",
+  codex: "native_default",
 };
-const CODEX_REASONING_EFFORTS: WorkspaceCodexReasoningEffort[] = [
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-];
-const CODEX_MODEL_CATALOG = [
-  { key: "gpt_5_5", model: "gpt-5.5", label: "GPT-5.5" },
-  { key: "gpt_5_4", model: "gpt-5.4", label: "GPT-5.4" },
-  { key: "gpt_5_4_mini", model: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
-  { key: "gpt_5_3_codex_spark", model: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark" },
-  { key: "gpt_5_3_codex", model: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
-  { key: "gpt_5_2", model: "gpt-5.2", label: "GPT-5.2" },
-  { key: "codex_auto_review", model: "codex-auto-review", label: "Codex Auto Review" },
-];
 const WORKSPACE_MODEL_OPTIONS: WorkspaceModelOption[] = [
   {
     id: "native_default",
@@ -260,16 +239,6 @@ const WORKSPACE_MODEL_OPTIONS: WorkspaceModelOption[] = [
     shortLabel: "Kimi K2.6",
     model: "kimi-k2.6",
   },
-  ...CODEX_MODEL_CATALOG.flatMap((model) =>
-    CODEX_REASONING_EFFORTS.map((reasoningEffort) => ({
-      id: `codex_${model.key}_${reasoningEffort}`,
-      agentId: "codex" as const,
-      label: `${model.label} · ${reasoningEffort}`,
-      shortLabel: `${model.label} ${reasoningEffort}`,
-      model: model.model,
-      reasoningEffort,
-    })),
-  ),
 ];
 
 function isWorkspaceAgentSelectionId(value: string | null | undefined): value is WorkspaceAgentSelectionId {
@@ -281,7 +250,7 @@ function legacyWorkspaceSelection(value: string | null | undefined): {
   modelId: string;
 } {
   if (value === "codex") {
-    return { agentId: "codex", modelId: DEFAULT_MODEL_SELECTION_BY_AGENT.codex };
+    return { agentId: "native", modelId: DEFAULT_MODEL_SELECTION_BY_AGENT.native };
   }
   if (value === "super_dan_kimi_k26") {
     return { agentId: "native", modelId: "native_kimi_k26" };
@@ -1864,6 +1833,146 @@ function formatHugoPreviewBody(body: string) {
       `\`${shortcode}${String(args || "").trim() ? ` ${String(args).trim()}` : ""}\``,
     )
     .replace(/(^|[\s(])@([A-Za-z0-9][A-Za-z0-9_-]+)/g, "$1[@$2](#$2)");
+}
+
+type HugoPreviewBodyBlock =
+  | { kind: "markdown"; content: string }
+  | { kind: "paper-pdf"; filename: string; heightPx: number };
+
+function hugoShortcodeNamedArgument(args: string, name: string) {
+  const match = new RegExp(
+    `(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s]+))`,
+    "i",
+  ).exec(args);
+  return (match?.[1] ?? match?.[2] ?? match?.[3] ?? "").trim();
+}
+
+function hugoPaperPdfHeight(value: string) {
+  const match = /^(\d{2,4})(?:px)?$/i.exec(value.trim());
+  if (!match) return 800;
+  return Math.min(1200, Math.max(360, Number(match[1])));
+}
+
+function splitHugoPreviewBody(body: string): HugoPreviewBodyBlock[] {
+  const blocks: HugoPreviewBodyBlock[] = [];
+  const shortcode = /{{<\s*paperPDF\b([^>]*)>}}/gi;
+  let cursor = 0;
+
+  for (const match of body.matchAll(shortcode)) {
+    const start = match.index ?? 0;
+    if (start > cursor) {
+      blocks.push({ kind: "markdown", content: body.slice(cursor, start) });
+    }
+
+    const filename = hugoShortcodeNamedArgument(match[1] || "", "filename");
+    if (/^[A-Za-z0-9][A-Za-z0-9._-]*\.pdf$/i.test(filename)) {
+      blocks.push({
+        kind: "paper-pdf",
+        filename,
+        heightPx: hugoPaperPdfHeight(
+          hugoShortcodeNamedArgument(match[1] || "", "height"),
+        ),
+      });
+    } else {
+      blocks.push({ kind: "markdown", content: match[0] });
+    }
+    cursor = start + match[0].length;
+  }
+
+  if (cursor < body.length) {
+    blocks.push({ kind: "markdown", content: body.slice(cursor) });
+  }
+  return blocks.length > 0 ? blocks : [{ kind: "markdown", content: body }];
+}
+
+function knowledgeBaseRootFromNotesRoot(notesRoot: string) {
+  const normalized = notesRoot.trim().replace(/[\\/]+$/, "");
+  const match = /^(.*)[\\/]content(?:[\\/].*)?$/i.exec(normalized);
+  return match?.[1] || "";
+}
+
+function hugoPaperPdfPreviewUrl(notesRoot: string, filename: string) {
+  const knowledgeBaseRoot = knowledgeBaseRootFromNotesRoot(notesRoot);
+  if (!knowledgeBaseRoot) return "";
+  const relativePath = `static/papers/${filename}`;
+  return workspaceFilePreviewUrl(
+    joinPath(knowledgeBaseRoot, relativePath),
+    knowledgeBaseRoot,
+    relativePath,
+  );
+}
+
+function HugoNotePreviewBody({
+  body,
+  notesRoot,
+  renderMathCodeSpans,
+  onClick,
+}: {
+  body: string;
+  notesRoot: string;
+  renderMathCodeSpans: boolean;
+  onClick: (event: MouseEvent<HTMLDivElement>) => void;
+}) {
+  const blocks = useMemo(() => splitHugoPreviewBody(body), [body]);
+
+  return (
+    <div className="space-y-4">
+      {blocks.map((block, index) => {
+        if (block.kind === "markdown") {
+          const content = formatHugoPreviewBody(block.content);
+          if (!content.trim()) return null;
+          return (
+            <MarkdownRenderer
+              key={`markdown:${index}`}
+              content={content}
+              renderMathCodeSpans={renderMathCodeSpans}
+              onClick={onClick}
+            />
+          );
+        }
+
+        const previewUrl = hugoPaperPdfPreviewUrl(notesRoot, block.filename);
+        if (!previewUrl) {
+          return (
+            <MarkdownRenderer
+              key={`paper-pdf-fallback:${index}`}
+              content={`\`paperPDF filename="${block.filename}"\``}
+            />
+          );
+        }
+        const documentUrl = `${previewUrl}#view=FitH`;
+        return (
+          <section
+            key={`paper-pdf:${block.filename}:${index}`}
+            className="my-5 overflow-hidden rounded-md border border-slate-300 bg-slate-100/70 shadow-sm dark:border-slate-700 dark:bg-slate-900/70"
+          >
+            <div className="flex h-10 items-center justify-between gap-3 border-b border-slate-300 bg-slate-50 px-3 dark:border-slate-700 dark:bg-slate-900">
+              <div className="flex min-w-0 items-center gap-2 text-xs font-semibold text-slate-700 dark:text-slate-200">
+                <FileText size={14} className="shrink-0 text-slate-500" aria-hidden="true" />
+                <span className="truncate">{block.filename}</span>
+              </div>
+              <a
+                href={documentUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="grid h-7 w-7 shrink-0 place-items-center rounded border border-slate-300 bg-white text-slate-500 transition hover:border-slate-400 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-400 dark:hover:text-slate-100"
+                title="Open PDF"
+                aria-label={`Open ${block.filename}`}
+              >
+                <Maximize2 size={13} aria-hidden="true" />
+              </a>
+            </div>
+            <iframe
+              src={documentUrl}
+              title={block.filename}
+              className="block w-full bg-slate-200 dark:bg-slate-950"
+              style={{ height: `${block.heightPx}px` }}
+            />
+          </section>
+        );
+      })}
+    </div>
+  );
 }
 
 function noteModifiedTimestamp(note: WorkspaceNote) {
@@ -8353,6 +8462,14 @@ export function formatHugoPreviewBodyForTest(content: string) {
   return formatHugoPreviewBody(content);
 }
 
+export function hugoPreviewBodyBlocksForTest(content: string) {
+  return splitHugoPreviewBody(content);
+}
+
+export function hugoPaperPdfPreviewUrlForTest(notesRoot: string, filename: string) {
+  return hugoPaperPdfPreviewUrl(notesRoot, filename);
+}
+
 export function statusLineUsesMarkdownForTest(content: string) {
   return statusLineUsesMarkdown(content);
 }
@@ -12937,10 +13054,6 @@ export default function ChunkWorkspaceApp() {
     () => extractHugoPage(deferredNoteContent, activeNote?.title || "Note"),
     [activeNote?.title, deferredNoteContent],
   );
-  const renderedNoteBody = useMemo(
-    () => formatHugoPreviewBody(parsedActiveNote.body),
-    [parsedActiveNote.body],
-  );
   const activeNoteMathEnabled = parsedActiveNote.meta.math === "true";
   const completedLearnSessionIds = useMemo(
     () => new Set(learnCourse?.progress?.completed_session_ids ?? []),
@@ -14246,7 +14359,7 @@ export default function ChunkWorkspaceApp() {
   const rootBrowsePath = normalizeRootPath(rootInput || developmentRoot || devRoot);
   const rootParentPath = parentRootPath(rootBrowsePath);
   const hasActiveRun = Boolean(activeRunId && activeRunningTask);
-  const [selectedAgentId, setSelectedAgentId] = useState<WorkspaceAgentSelectionId>(() => {
+  const [selectedAgentId] = useState<WorkspaceAgentSelectionId>(() => {
     return readStoredWorkspaceSelection().agentId;
   });
   const [autonomyMode, setAutonomyMode] = useState<WorkspaceAutonomyMode>(() =>
@@ -14255,7 +14368,6 @@ export default function ChunkWorkspaceApp() {
   const [modelSelectionsByAgent, setModelSelectionsByAgent] = useState<WorkspaceModelSelectionByAgent>(() => {
     return readStoredWorkspaceSelection().modelSelectionsByAgent;
   });
-  const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [autonomyMenuOpen, setAutonomyMenuOpen] = useState(false);
   const selectedAgentOption = useMemo(
@@ -16126,7 +16238,7 @@ export default function ChunkWorkspaceApp() {
           rows={1}
           className="max-h-32 min-h-11 w-full resize-none rounded-lg border border-slate-200 bg-slate-50/90 px-3 py-2.5 text-sm leading-6 outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:bg-white focus:shadow-sm dark:border-slate-800 dark:bg-slate-900"
         />
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <div className="flex h-7 shrink-0 items-center gap-0.5 rounded-md border border-slate-200 bg-slate-100/70 p-0.5 shadow-inner dark:border-slate-800 dark:bg-slate-900">
             {(["steer", "queue"] as const).map((mode) => {
               const queueUnavailable = mode === "queue" && !hasActiveRun;
@@ -16233,66 +16345,6 @@ export default function ChunkWorkspaceApp() {
               if (nextFocus instanceof Node && event.currentTarget.contains(nextFocus)) {
                 return;
               }
-              setAgentMenuOpen(false);
-            }}
-          >
-            <button
-              type="button"
-              onClick={() => setAgentMenuOpen((open) => !open)}
-              className="inline-flex h-7 min-w-20 max-w-[7rem] items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50/95 px-2 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-white dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-700 sm:min-w-24 sm:max-w-[8rem] sm:px-2.5"
-              title="Choose agent"
-              aria-expanded={agentMenuOpen}
-            >
-              {selectedAgentOption.backend === CODEX_BACKEND ? (
-                <Bot size={12} />
-              ) : (
-                <TerminalSquare size={12} />
-              )}
-              <span className="truncate">{selectedAgentOption.shortLabel}</span>
-              <ChevronDown size={12} className={cx("transition", agentMenuOpen && "rotate-180")} />
-            </button>
-            {agentMenuOpen && (
-              <div className="absolute bottom-full right-0 z-50 mb-2 w-36 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
-                {WORKSPACE_AGENT_OPTIONS.map((option) => {
-                  const selected = option.id === selectedAgentOption.id;
-                  return (
-                    <button
-                      key={option.id}
-                      type="button"
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => {
-                        setSelectedAgentId(option.id);
-                        setAgentMenuOpen(false);
-                      }}
-                      className={cx(
-                        "flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition",
-                        selected
-                          ? "bg-slate-100 text-slate-950 dark:bg-slate-800 dark:text-white"
-                          : "text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-white",
-                      )}
-                    >
-                      {option.backend === CODEX_BACKEND ? (
-                        <Bot size={13} className="shrink-0" />
-                      ) : (
-                        <TerminalSquare size={13} className="shrink-0" />
-                      )}
-                      <span className="min-w-0 flex-1 truncate text-xs font-semibold">
-                        {option.label}
-                      </span>
-                      {selected && <Check size={13} className="shrink-0" />}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          <div
-            className="relative shrink-0"
-            onBlur={(event) => {
-              const nextFocus = event.relatedTarget;
-              if (nextFocus instanceof Node && event.currentTarget.contains(nextFocus)) {
-                return;
-              }
               setModelMenuOpen(false);
             }}
           >
@@ -16300,15 +16352,11 @@ export default function ChunkWorkspaceApp() {
               type="button"
               onClick={() => setModelMenuOpen((open) => !open)}
               className="inline-flex h-7 min-w-24 max-w-[8rem] items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50/95 px-2 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-white dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-700 sm:min-w-28 sm:max-w-[12rem] sm:px-2.5"
-              title="Choose model and reasoning"
+              title="Choose Super DAN model"
               aria-expanded={modelMenuOpen}
             >
-              {selectedAgentOption.backend === CODEX_BACKEND ? (
-                <Bot size={12} />
-              ) : (
-                <TerminalSquare size={12} />
-              )}
-              <span className="truncate">{selectedModelOption.shortLabel}</span>
+              <TerminalSquare size={12} />
+              <span className="truncate">DAN · {selectedModelOption.shortLabel}</span>
               <ChevronDown size={12} className={cx("transition", modelMenuOpen && "rotate-180")} />
             </button>
             {modelMenuOpen && (
@@ -16334,11 +16382,7 @@ export default function ChunkWorkspaceApp() {
                           : "text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-white",
                       )}
                     >
-                      {selectedAgentOption.backend === CODEX_BACKEND ? (
-                        <Bot size={13} className="shrink-0" />
-                      ) : (
-                        <TerminalSquare size={13} className="shrink-0" />
-                      )}
+                      <TerminalSquare size={13} className="shrink-0" />
                       <span className="min-w-0 flex-1 truncate text-xs font-semibold">
                         {option.label}
                       </span>
@@ -17661,8 +17705,9 @@ export default function ChunkWorkspaceApp() {
                       )}
                     </header>
                   )}
-                  <MarkdownRenderer
-                    content={renderedNoteBody || "_No note content yet._"}
+                  <HugoNotePreviewBody
+                    body={parsedActiveNote.body || "_No note content yet._"}
+                    notesRoot={notesRoot}
                     renderMathCodeSpans={activeNoteMathEnabled}
                     onClick={handleNotePreviewClick}
                   />

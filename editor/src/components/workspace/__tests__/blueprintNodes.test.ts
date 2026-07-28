@@ -125,12 +125,14 @@ function workspaceFile(relativePath: string, overrides: Partial<WorkspaceFileEnt
 }
 
 describe("workspace blueprint nodes", () => {
-  it("keeps Native Super DAN as the default agent with a separate default model", () => {
+  it("exposes Super DAN as the only workspace agent with a separate model choice", () => {
     const agentOptions = workspaceAgentOptionsForTest();
     const modelOptions = workspaceModelOptionsForTest("native");
     const payload = workspaceAgentExecutePayloadForTest("native", "native_default");
 
-    expect(agentOptions.map((option) => option.id)).toEqual(["native", "codex"]);
+    expect(agentOptions).toEqual([
+      expect.objectContaining({ id: "native", label: "Super DAN", backend: "super_dan" }),
+    ]);
     expect(modelOptions.map((option) => option.id)).toEqual(["native_default", "native_kimi_k26"]);
     expect(payload.backend).toBe("super_dan");
     expect(payload.profile_policy).toMatchObject({
@@ -161,32 +163,23 @@ describe("workspace blueprint nodes", () => {
     });
   });
 
-  it("routes Codex model and reasoning config through the Codex backend", () => {
+  it("migrates archived Codex selections onto the supported Super DAN backend", () => {
     const modelOptions = workspaceModelOptionsForTest("codex");
     const payload = workspaceAgentExecutePayloadForTest("codex", "codex_gpt_5_5_high");
 
-    expect(modelOptions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: "codex_gpt_5_5_low", model: "gpt-5.5", reasoningEffort: "low" }),
-        expect.objectContaining({ id: "codex_gpt_5_5_medium", model: "gpt-5.5", reasoningEffort: "medium" }),
-        expect.objectContaining({ id: "codex_gpt_5_5_high", model: "gpt-5.5", reasoningEffort: "high" }),
-        expect.objectContaining({ id: "codex_gpt_5_5_xhigh", model: "gpt-5.5", reasoningEffort: "xhigh" }),
-      ]),
-    );
-    expect(payload.backend).toBe("codex");
+    expect(modelOptions).toEqual([]);
+    expect(payload.backend).toBe("super_dan");
     expect(payload.profile_policy).toMatchObject({
-      backend: "codex",
+      backend: "super_dan",
       surface_profile: "super_tui",
-      codex_model: "gpt-5.5",
-      codex_reasoning_effort: "high",
-      auto_backend_continuation: false,
     });
+    expect(payload.profile_policy).not.toHaveProperty("codex_model");
+    expect(payload.profile_policy).not.toHaveProperty("codex_reasoning_effort");
     expect(payload.metadata).toMatchObject({
-      selected_agent: "codex",
-      selected_backend: "codex",
-      selected_model: "gpt-5.5",
-      selected_reasoning_effort: "high",
-      gui_for: "codex exec",
+      selected_agent: "native",
+      selected_backend: "super_dan",
+      selected_model_option: "native_default",
+      gui_for: "dan super-tui",
     });
   });
 
@@ -220,7 +213,7 @@ describe("workspace blueprint nodes", () => {
     });
   });
 
-  it("remembers model selections separately for each workspace Agent", () => {
+  it("drops archived Agent selections while preserving the supported native model", () => {
     const selection = workspaceSelectionFromStorageForTest({
       storedAgent: "codex",
       storedModel: "native_default",
@@ -230,11 +223,11 @@ describe("workspace blueprint nodes", () => {
       }),
     });
 
-    expect(selection.agentId).toBe("codex");
-    expect(selection.modelId).toBe("codex_gpt_5_5_high");
+    expect(selection.agentId).toBe("native");
+    expect(selection.modelId).toBe("native_kimi_k26");
     expect(selection.modelSelectionsByAgent).toEqual({
       native: "native_kimi_k26",
-      codex: "codex_gpt_5_5_high",
+      codex: "native_default",
     });
   });
 
@@ -248,7 +241,7 @@ describe("workspace blueprint nodes", () => {
       modelId: "native_kimi_k26",
       modelSelectionsByAgent: {
         native: "native_kimi_k26",
-        codex: "codex_gpt_5_5_medium",
+        codex: "native_default",
       },
     });
 
@@ -258,11 +251,11 @@ describe("workspace blueprint nodes", () => {
         storedModel: "codex_gpt_5_5_xhigh",
       }),
     ).toMatchObject({
-      agentId: "codex",
-      modelId: "codex_gpt_5_5_xhigh",
+      agentId: "native",
+      modelId: "native_default",
       modelSelectionsByAgent: {
         native: "native_default",
-        codex: "codex_gpt_5_5_xhigh",
+        codex: "native_default",
       },
     });
   });

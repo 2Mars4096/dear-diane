@@ -34,6 +34,8 @@ describe("resolveContentBootstrapRoots", () => {
 
     expect(roots).toEqual([
       "/Volumes/data/Dropbox/Projects/my-knowledge-base",
+      "/Users/tester/Dropbox/Projects/my-knowledge-base",
+      "/Users/tester/Projects/my-knowledge-base",
       "/Volumes/data/Dropbox/my-knowledge-base",
     ]);
   });

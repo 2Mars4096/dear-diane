@@ -5,14 +5,14 @@ const assetsDir = join(process.cwd(), "dist", "assets");
 
 const budgets = [
   {
-    label: "monaco chunk",
-    pattern: /^monaco-.*\.js$/,
-    maxBytes: 4_600_000,
+    label: "workspace shell chunk",
+    pattern: /^ChunkWorkspaceApp-.*\.js$/,
+    maxBytes: 450_000,
   },
   {
-    label: "pdf chunk",
-    pattern: /^pdf-.*\.js$/,
-    maxBytes: 550_000,
+    label: "entry chunk",
+    pattern: /^index-.*\.js$/,
+    maxBytes: 60_000,
   },
   {
     label: "katex chunk",
@@ -20,19 +20,37 @@ const budgets = [
     maxBytes: 350_000,
   },
   {
-    label: "ResearchMode shell chunk",
-    pattern: /^ResearchMode-.*\.js$/,
-    maxBytes: 60_000,
+    label: "content rendering chunk",
+    pattern: /^content-.*\.js$/,
+    maxBytes: 190_000,
   },
   {
-    label: "ResearchFurnacePanel chunk",
-    pattern: /^ResearchFurnacePanel-.*\.js$/,
-    maxBytes: 55_000,
+    label: "React/vendor chunk",
+    pattern: /^vendor-.*\.js$/,
+    maxBytes: 250_000,
+  },
+];
+
+const archivedSurfacePatterns = [
+  {
+    label: "classic application shell",
+    pattern: /^AppShell-.*\.js$/,
   },
   {
-    label: "CodeMode shell chunk",
-    pattern: /^CodeMode-.*\.js$/,
-    maxBytes: 240_000,
+    label: "legacy V2 chat shell",
+    pattern: /^ChatV2App-.*\.js$/,
+  },
+  {
+    label: "Operations/network graph",
+    pattern: /^(OperationsMode|graph)-.*\.js$/,
+  },
+  {
+    label: "Code mode",
+    pattern: /^(CodeMode|monaco|terminal)-.*\.js$/,
+  },
+  {
+    label: "Research mode",
+    pattern: /^(ResearchMode|ResearchFurnacePanel|pdf)-.*\.js$/,
   },
 ];
 
@@ -42,14 +60,13 @@ function formatKb(bytes) {
 
 const assetFiles = readdirSync(assetsDir);
 const failures = [];
-const warnings = [];
 
 console.log("Bundle budget report");
 
 for (const budget of budgets) {
   const file = assetFiles.find((candidate) => budget.pattern.test(candidate));
   if (!file) {
-    warnings.push(`Missing expected chunk for ${budget.label}`);
+    failures.push(`Missing required active chunk for ${budget.label}`);
     continue;
   }
 
@@ -66,10 +83,18 @@ for (const budget of budgets) {
   }
 }
 
-if (warnings.length > 0) {
-  console.warn("\nBundle budget warnings:");
-  for (const warning of warnings) {
-    console.warn(`- ${warning}`);
+console.log("\nArchived surface exclusion report");
+for (const archivedSurface of archivedSurfacePatterns) {
+  const matches = assetFiles.filter((candidate) =>
+    archivedSurface.pattern.test(candidate),
+  );
+  if (matches.length > 0) {
+    failures.push(
+      `${archivedSurface.label} leaked into the active bundle: ${matches.join(", ")}`,
+    );
+    console.log(`- ${archivedSurface.label}: present (${matches.join(", ")})`);
+  } else {
+    console.log(`- ${archivedSurface.label}: absent (ok)`);
   }
 }
 
