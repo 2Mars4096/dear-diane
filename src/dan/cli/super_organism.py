@@ -58,7 +58,6 @@ from dan.worker.organisms.super_organism import (
 )
 from dan.worker.structured_payload import parse_jsonish_payload
 
-
 _GENERIC_SNAPSHOT_SKIP_DIR_NAMES = frozenset(
     {
         ".dan-super",
@@ -165,7 +164,9 @@ def _live_max_builder_retry_attempts(args: argparse.Namespace) -> int:
     payload = _live_execution_policy_payload(args)
     if not payload:
         return _SUPER_DAN_GENERIC_BUILDER_RETRY_ATTEMPTS
-    return _live_max_auto_fix_rounds(args, default=_SUPER_DAN_GENERIC_BUILDER_RETRY_ATTEMPTS)
+    return _live_max_auto_fix_rounds(
+        args, default=_SUPER_DAN_GENERIC_BUILDER_RETRY_ATTEMPTS
+    )
 
 
 def _live_answer_recovery_loop_limit(args: argparse.Namespace) -> int:
@@ -365,7 +366,9 @@ def _tool_guide_snippet(
         if not tool_id or tool_id in seen:
             continue
         seen.add(tool_id)
-        description = descriptions.get(tool_id, "use only when it directly supports the current stage")
+        description = descriptions.get(
+            tool_id, "use only when it directly supports the current stage"
+        )
         lines.append(f"`{tool_id}`: {description}.")
     return _bullet_section("Available tool guide", lines)
 
@@ -474,7 +477,9 @@ def _super_dan_skill_token(value: Mapping[str, Any]) -> str:
 
 
 def _super_dan_skill_catalog_by_token(workspace_root: str) -> dict[str, dict[str, Any]]:
-    return skill_invocation.catalog_by_token(_load_super_dan_skill_catalog(workspace_root))
+    return skill_invocation.catalog_by_token(
+        _load_super_dan_skill_catalog(workspace_root)
+    )
 
 
 def _parse_super_dan_skill_invocation_text(
@@ -498,7 +503,9 @@ def _prepare_super_dan_skill_invocation_args(
     workspace_root: Path | str | None = None,
     source: str = "cli",
 ) -> skill_invocation.SkillInvocationParse:
-    root = str(workspace_root or normalize_workspace_root(str(getattr(args, "workspace", "."))))
+    root = str(
+        workspace_root or normalize_workspace_root(str(getattr(args, "workspace", ".")))
+    )
     parsed = skill_invocation.prepare_skill_invocation_args(
         args,
         catalog=_load_super_dan_skill_catalog(root),
@@ -515,13 +522,41 @@ def _super_dan_skill_bonus(skill_id: str, text: str) -> int:
     skill_id = skill_id.replace("-", "_")
     lowered = text.lower()
     bonuses = {
-        "skill_creation": ["skill", "skills", "skill.md", "codex skill", "claude skill", "cursor skill"],
-        "frontend_design": ["frontend", "website", "html", "css", "ui", "landing page", "web app"],
-        "frontend_vibe": ["frontend", "website", "ui", "redesign", "dashboard", "app shell"],
+        "skill_creation": [
+            "skill",
+            "skills",
+            "skill.md",
+            "codex skill",
+            "claude skill",
+            "cursor skill",
+        ],
+        "frontend_design": [
+            "frontend",
+            "website",
+            "html",
+            "css",
+            "ui",
+            "landing page",
+            "web app",
+        ],
+        "frontend_vibe": [
+            "frontend",
+            "website",
+            "ui",
+            "redesign",
+            "dashboard",
+            "app shell",
+        ],
         "web_artifacts_builder": ["react", "tailwind", "shadcn", "html artifact"],
         "theme_factory": ["theme", "styling", "colors", "visual style"],
         "brand_guidelines": ["brand", "branding", "anthropic"],
-        "scientific_writer": ["paper", "manuscript", "literature review", "latex", "academic"],
+        "scientific_writer": [
+            "paper",
+            "manuscript",
+            "literature review",
+            "latex",
+            "academic",
+        ],
         "paper_reader": ["paper", "pdf", "article", "literature review"],
         "paper_review": ["paper review", "referee", "review report", "manuscript"],
         "code_review": ["code review", "review diff", "pr review", "pull request"],
@@ -537,7 +572,9 @@ def _super_dan_skill_bonus(skill_id: str, text: str) -> int:
 def _select_super_dan_skills(brief: WorkerBrief) -> list[dict[str, Any]]:
     payload = dict(brief.input_payload)
     metadata = dict(brief.metadata)
-    workspace_root = str(payload.get("workspace_root") or metadata.get("workspace_root") or "")
+    workspace_root = str(
+        payload.get("workspace_root") or metadata.get("workspace_root") or ""
+    )
     objective_text = " ".join(
         str(value or "")
         for value in [
@@ -566,7 +603,12 @@ def _select_super_dan_skills(brief: WorkerBrief) -> list[dict[str, Any]]:
         )
         skill_tokens = _skill_tokenize(searchable)
         overlap = len(query_tokens & skill_tokens)
-        exact = 4 if skill_id.replace("_", "-") in objective_text.lower() or skill_id in objective_text.lower() else 0
+        exact = (
+            4
+            if skill_id.replace("_", "-") in objective_text.lower()
+            or skill_id in objective_text.lower()
+            else 0
+        )
         score = overlap + exact + _super_dan_skill_bonus(skill_id, objective_text)
         if score >= 3:
             scored.append((score, skill))
@@ -623,7 +665,9 @@ def _select_explicit_super_dan_skills(brief: WorkerBrief) -> list[dict[str, Any]
         return []
     payload = dict(brief.input_payload)
     metadata = dict(brief.metadata)
-    workspace_root = str(payload.get("workspace_root") or metadata.get("workspace_root") or "")
+    workspace_root = str(
+        payload.get("workspace_root") or metadata.get("workspace_root") or ""
+    )
     return skill_invocation.select_explicit_skill_items(
         requested,
         _load_super_dan_skill_catalog(workspace_root),
@@ -637,7 +681,9 @@ def _render_super_dan_skill_snippet(skill: Mapping[str, Any]) -> str:
         content_limit=_SUPER_DAN_SKILL_CONTENT_LIMIT,
         reference_limit=_SUPER_DAN_EXPLICIT_SKILL_REFERENCE_LIMIT,
         reference_file_limit=_SUPER_DAN_EXPLICIT_SKILL_REFERENCE_FILE_LIMIT,
-        sha256_prefix=lambda text: hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
+        sha256_prefix=lambda text: hashlib.sha256(text.encode("utf-8")).hexdigest()[
+            :16
+        ],
     )
 
 
@@ -700,7 +746,9 @@ def _run_selected_super_dan_skill_preflights(
     if notes:
         setattr(args, "_selected_skill_preflight_notes", notes)
         setattr(args, "selected_skill_preflight", notes)
-        if getattr(args, "_selected_skill_source", "") == "tui" or hasattr(args, "_tui_selected_skill_mentions"):
+        if getattr(args, "_selected_skill_source", "") == "tui" or hasattr(
+            args, "_tui_selected_skill_mentions"
+        ):
             setattr(args, "_tui_skill_preflight_notes", notes)
     return ok, notes
 
@@ -713,14 +761,18 @@ def _explicit_super_dan_skill_reference_excerpt(skill: Mapping[str, Any]) -> str
     )
 
 
-def _explicit_super_dan_skill_constraints(selected: Sequence[Mapping[str, Any]]) -> list[str]:
+def _explicit_super_dan_skill_constraints(
+    selected: Sequence[Mapping[str, Any]],
+) -> list[str]:
     return skill_invocation.explicit_skill_constraints(selected)
 
 
 def _apply_auto_super_dan_skills(brief: WorkerBrief) -> WorkerBrief:
     if brief.metadata.get("active_skills"):
         return brief
-    selected = _select_explicit_super_dan_skills(brief) or _select_super_dan_skills(brief)
+    selected = _select_explicit_super_dan_skills(brief) or _select_super_dan_skills(
+        brief
+    )
     if not selected:
         return brief
     explicit_constraints = _explicit_super_dan_skill_constraints(selected)
@@ -733,7 +785,9 @@ def _apply_auto_super_dan_skills(brief: WorkerBrief) -> WorkerBrief:
             "source_scope": skill.get("source_scope"),
             "match_score": skill.get("match_score"),
             "match_reason": skill.get("match_reason"),
-            "content_sha256": hashlib.sha256(str(skill.get("content") or "").encode("utf-8")).hexdigest()[:16],
+            "content_sha256": hashlib.sha256(
+                str(skill.get("content") or "").encode("utf-8")
+            ).hexdigest()[:16],
         }
         for skill in selected
     ]
@@ -801,7 +855,9 @@ def _super_plan_files(plan_root: Path, workspace_root: Path) -> list[str]:
     return files
 
 
-def _super_plan_exclude_roots(plan_context: Mapping[str, Any] | None) -> tuple[Path, ...]:
+def _super_plan_exclude_roots(
+    plan_context: Mapping[str, Any] | None,
+) -> tuple[Path, ...]:
     if not isinstance(plan_context, Mapping):
         return ()
     raw_root = str(plan_context.get("plan_root") or "").strip()
@@ -869,14 +925,14 @@ def _super_plan_task_graph(value: Any) -> list[dict[str, Any]]:
         return []
     tasks: list[dict[str, Any]] = []
     seen: set[str] = set()
-    def visit(item: Any, *, inherited_plan_id: str = "", inherited_branch_id: str = "") -> None:
+
+    def visit(
+        item: Any, *, inherited_plan_id: str = "", inherited_branch_id: str = ""
+    ) -> None:
         if not isinstance(item, Mapping):
             return
         task_id = str(
-            item.get("task_id")
-            or item.get("id")
-            or item.get("number")
-            or ""
+            item.get("task_id") or item.get("id") or item.get("number") or ""
         ).strip()
         if not task_id or task_id in seen:
             return
@@ -891,7 +947,10 @@ def _super_plan_task_graph(value: Any) -> list[dict[str, Any]]:
             or []
         )
         owned_paths = _super_plan_string_list(
-            item.get("owned_paths") or item.get("owner_paths") or item.get("paths") or []
+            item.get("owned_paths")
+            or item.get("owner_paths")
+            or item.get("paths")
+            or []
         )
         deliverables = _super_plan_string_list(item.get("deliverables") or [])
         validation = _super_plan_string_list(
@@ -910,7 +969,9 @@ def _super_plan_task_graph(value: Any) -> list[dict[str, Any]]:
             "status": status,
         }
         parent_id = str(item.get("parent_id") or item.get("parent") or "").strip()
-        branch_id = str(item.get("branch_id") or item.get("branch") or inherited_branch_id).strip()
+        branch_id = str(
+            item.get("branch_id") or item.get("branch") or inherited_branch_id
+        ).strip()
         node_type = str(
             item.get("node_type")
             or item.get("graph_level")
@@ -954,7 +1015,11 @@ def _super_plan_task_graph(value: Any) -> list[dict[str, Any]]:
         if isinstance(child_items, list):
             child_plan_id = task_id if task.get("node_type") == "plan" else plan_id
             for child in child_items:
-                visit(child, inherited_plan_id=child_plan_id, inherited_branch_id=branch_id)
+                visit(
+                    child,
+                    inherited_plan_id=child_plan_id,
+                    inherited_branch_id=branch_id,
+                )
 
     for item in raw_items:
         visit(item)
@@ -1001,7 +1066,9 @@ def _super_plan_deferred_task_ids(
     return deferred
 
 
-def _super_plan_deferred_match_terms(plan_context: Mapping[str, Any] | None) -> set[str]:
+def _super_plan_deferred_match_terms(
+    plan_context: Mapping[str, Any] | None,
+) -> set[str]:
     if not isinstance(plan_context, Mapping):
         return set()
     deferred_ids = {
@@ -1053,21 +1120,30 @@ def _super_plan_deferred_match_terms(plan_context: Mapping[str, Any] | None) -> 
     return terms
 
 
-def _super_plan_text_mentions_deferred(text: str, plan_context: Mapping[str, Any] | None) -> bool:
+def _super_plan_text_mentions_deferred(
+    text: str, plan_context: Mapping[str, Any] | None
+) -> bool:
     lowered = str(text or "").lower()
     if not lowered:
         return False
-    return any(term and term in lowered for term in _super_plan_deferred_match_terms(plan_context))
+    return any(
+        term and term in lowered
+        for term in _super_plan_deferred_match_terms(plan_context)
+    )
 
 
-def _super_plan_task_graph_fragment(task_graph: Sequence[Mapping[str, Any]], *, limit: int = 8) -> str:
+def _super_plan_task_graph_fragment(
+    task_graph: Sequence[Mapping[str, Any]], *, limit: int = 8
+) -> str:
     fragments: list[str] = []
     for task in list(task_graph)[:limit]:
         task_id = str(task.get("task_id") or "").strip()
         if not task_id:
             continue
         depends = ",".join(_super_plan_string_list(task.get("depends_on") or [])) or "-"
-        owned = ",".join(_super_plan_string_list(task.get("owned_paths") or [])[:3]) or "-"
+        owned = (
+            ",".join(_super_plan_string_list(task.get("owned_paths") or [])[:3]) or "-"
+        )
         goal = str(task.get("goal") or "").strip()
         if len(goal) > 90:
             goal = goal[:87].rstrip() + "..."
@@ -1077,7 +1153,9 @@ def _super_plan_task_graph_fragment(task_graph: Sequence[Mapping[str, Any]], *, 
     return "; ".join(fragments)
 
 
-def _super_plan_task_map(plan_context: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+def _super_plan_task_map(
+    plan_context: Mapping[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
     if not isinstance(plan_context, Mapping):
         return {}
     return {
@@ -1087,12 +1165,16 @@ def _super_plan_task_map(plan_context: Mapping[str, Any] | None) -> dict[str, di
     }
 
 
-def _super_plan_ready_tasks(plan_context: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+def _super_plan_ready_tasks(
+    plan_context: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
     if not isinstance(plan_context, Mapping):
         return []
     task_map = _super_plan_task_map(plan_context)
     ready_ids = _super_plan_string_list(
-        plan_context.get("ready_task_ids") or plan_context.get("assigned_task_ids") or []
+        plan_context.get("ready_task_ids")
+        or plan_context.get("assigned_task_ids")
+        or []
     )
     return [task_map[task_id] for task_id in ready_ids if task_id in task_map]
 
@@ -1122,11 +1204,15 @@ def _super_plan_graph_update_payload(payload: Any) -> dict[str, Any]:
     return {
         "scope": str(update.get("scope") or "").strip(),
         "reason": str(update.get("reason") or "").strip(),
-        "changed_task_ids": _super_plan_string_list(update.get("changed_task_ids") or []),
+        "changed_task_ids": _super_plan_string_list(
+            update.get("changed_task_ids") or []
+        ),
     }
 
 
-def _super_plan_existing_completed_task_ids(plan_context: Mapping[str, Any] | None) -> list[str]:
+def _super_plan_existing_completed_task_ids(
+    plan_context: Mapping[str, Any] | None,
+) -> list[str]:
     if not isinstance(plan_context, Mapping):
         return []
     graph_state = plan_context.get("task_graph_state")
@@ -1150,7 +1236,11 @@ def _super_plan_relative_mutation_path(path: str, *, workspace_root: Path) -> st
     candidate = Path(raw).expanduser()
     resolved = candidate if candidate.is_absolute() else workspace_root / candidate
     try:
-        return resolved.resolve(strict=False).relative_to(workspace_root.resolve(strict=False)).as_posix()
+        return (
+            resolved.resolve(strict=False)
+            .relative_to(workspace_root.resolve(strict=False))
+            .as_posix()
+        )
     except ValueError:
         return raw.replace("\\", "/").strip("/")
 
@@ -1204,7 +1294,9 @@ def _super_plan_rel_paths_overlap(left: str, right: str) -> bool:
     )
 
 
-def _super_plan_tasks_conflict(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+def _super_plan_tasks_conflict(
+    left: Mapping[str, Any], right: Mapping[str, Any]
+) -> bool:
     left_paths = _super_plan_task_owned_paths(left)
     right_paths = _super_plan_task_owned_paths(right)
     if not left_paths or not right_paths:
@@ -1291,7 +1383,9 @@ def _super_plan_parallel_groups(
     for task in ready_tasks:
         placed = False
         for group in groups:
-            if not any(_super_plan_tasks_conflict(existing, task) for existing in group):
+            if not any(
+                _super_plan_tasks_conflict(existing, task) for existing in group
+            ):
                 group.append(task)
                 placed = True
                 break
@@ -1368,9 +1462,16 @@ def _super_plan_version_lineage(
         {str(branch_id).strip() for branch_id in branch_ids if str(branch_id).strip()}
     )
     changed_branches = sorted(
-        {str(branch_id).strip() for branch_id in changed_branch_ids if str(branch_id).strip()}
+        {
+            str(branch_id).strip()
+            for branch_id in changed_branch_ids
+            if str(branch_id).strip()
+        }
     )
-    whole_graph = str(update_scope or "").strip() != "branch_local" or not existing_root_version_id
+    whole_graph = (
+        str(update_scope or "").strip() != "branch_local"
+        or not existing_root_version_id
+    )
     if whole_graph:
         root_version_id = f"v{int(revision)}"
         branch_versions = {branch_id: 0 for branch_id in normalized_branches}
@@ -1380,7 +1481,8 @@ def _super_plan_version_lineage(
                 {
                     "branch_id": branch_id,
                     "version_id": root_version_id,
-                    "parent_version_id": existing_refs.get(branch_id) or existing_version_id,
+                    "parent_version_id": existing_refs.get(branch_id)
+                    or existing_version_id,
                     "base_version_id": root_version_id,
                     "local_revision": 0,
                     "changed": True,
@@ -1396,7 +1498,11 @@ def _super_plan_version_lineage(
             "branch_refs": branch_refs,
         }
 
-    root_version_id = existing_root_version_id or existing_version_id or f"v{max(1, int(revision) - 1)}"
+    root_version_id = (
+        existing_root_version_id
+        or existing_version_id
+        or f"v{max(1, int(revision) - 1)}"
+    )
     base_version_id = existing_base_version_id or root_version_id
     branch_versions = {
         branch_id: existing_branch_versions.get(branch_id, 0)
@@ -1423,21 +1529,31 @@ def _super_plan_version_lineage(
             {
                 "branch_id": branch_id,
                 "version_id": version_id,
-                "parent_version_id": parent_by_branch.get(branch_id) or existing_refs.get(branch_id) or root_version_id,
+                "parent_version_id": parent_by_branch.get(branch_id)
+                or existing_refs.get(branch_id)
+                or root_version_id,
                 "base_version_id": root_version_id,
                 "local_revision": local_revision,
                 "changed": changed,
                 "ref_name": f"branch/{token}",
             }
         )
-    changed_suffixes = [branch_suffixes[branch_id] for branch_id in changed_branches if branch_id in branch_suffixes]
+    changed_suffixes = [
+        branch_suffixes[branch_id]
+        for branch_id in changed_branches
+        if branch_id in branch_suffixes
+    ]
     version_id = (
         f"{root_version_id}.{'+'.join(changed_suffixes)}"
         if changed_suffixes
         else existing_version_id or root_version_id
     )
     parent_version_ids = list(
-        dict.fromkeys(parent_by_branch[branch_id] for branch_id in changed_branches if parent_by_branch.get(branch_id))
+        dict.fromkeys(
+            parent_by_branch[branch_id]
+            for branch_id in changed_branches
+            if parent_by_branch.get(branch_id)
+        )
     )
     return {
         "version_id": version_id,
@@ -1474,7 +1590,8 @@ def _super_plan_task_graph_state(
         str(item.get("task_id") or "").strip(): str(item.get("state") or "").strip()
         for item in (
             existing_state.get("tasks")
-            if isinstance(existing_state, Mapping) and isinstance(existing_state.get("tasks"), list)
+            if isinstance(existing_state, Mapping)
+            and isinstance(existing_state.get("tasks"), list)
             else []
         )
         if isinstance(item, Mapping) and str(item.get("task_id") or "").strip()
@@ -1484,32 +1601,28 @@ def _super_plan_task_graph_state(
         if isinstance(existing_state, Mapping)
         else []
     )
-    changed = {
-        str(item).strip()
-        for item in changed_task_ids
-        if str(item).strip()
-    }
+    changed = {str(item).strip() for item in changed_task_ids if str(item).strip()}
     completed = {
         str(item).strip()
         for item in [*list(existing_completed or []), *list(completed_task_ids)]
         if str(item).strip()
     }
-    active = {
-        str(item).strip()
-        for item in active_task_ids
-        if str(item).strip()
-    }
+    active = {str(item).strip() for item in active_task_ids if str(item).strip()}
     ready = {
         str(item).strip()
         for item in (
             ready_task_ids
             if ready_task_ids is not None
-            else plan_context.get("ready_task_ids") or plan_context.get("assigned_task_ids") or []
+            else plan_context.get("ready_task_ids")
+            or plan_context.get("assigned_task_ids")
+            or []
         )
         if str(item).strip()
     }
     if not ready and task_graph:
-        ready = set(_super_plan_ready_task_ids(task_graph, completed_task_ids=tuple(completed)))
+        ready = set(
+            _super_plan_ready_task_ids(task_graph, completed_task_ids=tuple(completed))
+        )
     deferred = {
         str(item).strip()
         for item in (
@@ -1618,7 +1731,11 @@ def _super_plan_task_graph_state(
         "branches": list(branch_counts.values()),
         "dependency_revisions": [
             dict(item) if isinstance(item, Mapping) else str(item)
-            for item in (dependency_revisions if dependency_revisions is not None else plan_context.get("dependency_revisions") or [])
+            for item in (
+                dependency_revisions
+                if dependency_revisions is not None
+                else plan_context.get("dependency_revisions") or []
+            )
         ],
     }
 
@@ -1678,8 +1795,12 @@ def _super_plan_context_payload(
         "deferred_task_ids": list(plan_context.get("deferred_task_ids") or []),
         "task_graph": _super_plan_task_graph(plan_context.get("task_graph") or []),
         "dependency_revisions": list(plan_context.get("dependency_revisions") or []),
-        "execution_mode": str(plan_context.get("execution_mode") or "dependency_frontier"),
-        "parallel_worktree_task_ids": list(plan_context.get("parallel_worktree_task_ids") or []),
+        "execution_mode": str(
+            plan_context.get("execution_mode") or "dependency_frontier"
+        ),
+        "parallel_worktree_task_ids": list(
+            plan_context.get("parallel_worktree_task_ids") or []
+        ),
         "validation": dict(plan_context.get("validation") or {}),
         "request_understanding": dict(plan_context.get("request_understanding") or {}),
     }
@@ -1724,21 +1845,44 @@ def _super_plan_executor_contract(plan_context: Mapping[str, Any] | None) -> str
     payload = _super_plan_context_payload(plan_context)
     if not payload:
         return ""
-    ready_ids = list(payload.get("ready_task_ids") or payload.get("assigned_task_ids") or [])
-    ready = ", ".join(str(item) for item in ready_ids) or "the highest-value ready frontier"
-    parallel_worktree = ", ".join(str(item) for item in (payload.get("parallel_worktree_task_ids") or [])[:8])
+    ready_ids = list(
+        payload.get("ready_task_ids") or payload.get("assigned_task_ids") or []
+    )
+    ready = (
+        ", ".join(str(item) for item in ready_ids) or "the highest-value ready frontier"
+    )
+    parallel_worktree = ", ".join(
+        str(item) for item in (payload.get("parallel_worktree_task_ids") or [])[:8]
+    )
     parallel_note = (
         f" Parallel worktree tasks already admitted elsewhere, do not duplicate them in this lane: {parallel_worktree}."
         if parallel_worktree
         else ""
     )
-    deferred = ", ".join(str(item) for item in (payload.get("deferred_task_ids") or [])[:8])
-    deferred_note = f" Deferred or blocked tasks, not for this worker unless dependencies change: {deferred}." if deferred else ""
-    plan_files = ", ".join(str(item) for item in (payload.get("plan_files") or [])[:6]) or "run-local plan files"
+    deferred = ", ".join(
+        str(item) for item in (payload.get("deferred_task_ids") or [])[:8]
+    )
+    deferred_note = (
+        f" Deferred or blocked tasks, not for this worker unless dependencies change: {deferred}."
+        if deferred
+        else ""
+    )
+    plan_files = (
+        ", ".join(str(item) for item in (payload.get("plan_files") or [])[:6])
+        or "run-local plan files"
+    )
     graph = _super_plan_task_graph_fragment(payload.get("task_graph") or [])
     graph_note = f" Dependency graph: {graph}." if graph else ""
-    graph_state = payload.get("task_graph_state") if isinstance(payload.get("task_graph_state"), Mapping) else {}
-    version = str(dict(graph_state or {}).get("version_id") or payload.get("task_graph_revision") or "").strip()
+    graph_state = (
+        payload.get("task_graph_state")
+        if isinstance(payload.get("task_graph_state"), Mapping)
+        else {}
+    )
+    version = str(
+        dict(graph_state or {}).get("version_id")
+        or payload.get("task_graph_revision")
+        or ""
+    ).strip()
     version_note = (
         f" Latest task graph version: {version}; treat that version as authoritative for ready/deferred/blocker decisions."
         if version
@@ -1760,8 +1904,15 @@ def _super_plan_validation_contract(plan_context: Mapping[str, Any] | None) -> s
     payload = _super_plan_context_payload(plan_context)
     if not payload:
         return ""
-    ready = ", ".join(str(item) for item in (payload.get("ready_task_ids") or payload.get("assigned_task_ids") or []))
-    deferred = ", ".join(str(item) for item in (payload.get("deferred_task_ids") or [])[:8])
+    ready = ", ".join(
+        str(item)
+        for item in (
+            payload.get("ready_task_ids") or payload.get("assigned_task_ids") or []
+        )
+    )
+    deferred = ", ".join(
+        str(item) for item in (payload.get("deferred_task_ids") or [])[:8]
+    )
     frontier_note = (
         f"Current ready frontier: {ready or 'highest-value ready tasks'}. "
         f"Deferred or blocked tasks: {deferred or 'none recorded'}. "
@@ -1775,7 +1926,7 @@ def _super_plan_validation_contract(plan_context: Mapping[str, Any] | None) -> s
         "Fail or list `blocking_current_task_failures` only when the current frontier is incomplete, broken, or unsupported. "
         "Put future downstream gaps under `deferred_task_gaps` / `remaining_work`; do not turn queued DAG tasks into a "
         "repair brief for the current worker. If the current frontier is materially complete and only deferred tasks remain, "
-        "return `passed=true` with `completion_scope=\"current_frontier\"`."
+        'return `passed=true` with `completion_scope="current_frontier"`.'
     )
 
 
@@ -1836,7 +1987,9 @@ def _super_should_run_planner(
         "migrate",
         "rewrite",
     )
-    if any(term in text for term in broad_terms) and any(term in text for term in action_terms):
+    if any(term in text for term in broad_terms) and any(
+        term in text for term in action_terms
+    ):
         return True
     return False
 
@@ -1983,12 +2136,15 @@ def _super_is_interactive_source_implementation_objective(text: str) -> bool:
         "validator",
         "workspace",
     )
-    has_action = any(re.search(rf"\b{re.escape(term)}\b", normalized) for term in action_terms)
+    has_action = any(
+        re.search(rf"\b{re.escape(term)}\b", normalized) for term in action_terms
+    )
     has_interaction = any(
         re.search(rf"\b{re.escape(term)}\b", normalized) for term in interaction_terms
     )
     has_implementation_context = any(
-        re.search(rf"\b{re.escape(term)}\b", normalized) for term in implementation_context_terms
+        re.search(rf"\b{re.escape(term)}\b", normalized)
+        for term in implementation_context_terms
     ) or _super_mentions_source_file_path(normalized)
     return has_action and has_interaction and has_implementation_context
 
@@ -2039,25 +2195,38 @@ def _super_is_targeted_source_repair_objective(text: str) -> bool:
         "source",
         "targeted",
     )
-    has_action = any(re.search(rf"\b{re.escape(term)}\b", normalized) for term in action_terms)
-    has_failure = any(re.search(rf"\b{re.escape(term)}\b", normalized) for term in failure_terms)
-    has_scope = any(re.search(rf"\b{re.escape(term)}\b", normalized) for term in scope_terms)
+    has_action = any(
+        re.search(rf"\b{re.escape(term)}\b", normalized) for term in action_terms
+    )
+    has_failure = any(
+        re.search(rf"\b{re.escape(term)}\b", normalized) for term in failure_terms
+    )
+    has_scope = any(
+        re.search(rf"\b{re.escape(term)}\b", normalized) for term in scope_terms
+    )
     mentions_source = _super_mentions_source_file_path(normalized)
-    if not (has_action and has_failure and (has_scope or mentions_source or len(normalized.split()) <= 28)):
+    if not (
+        has_action
+        and has_failure
+        and (has_scope or mentions_source or len(normalized.split()) <= 28)
+    ):
         return False
-    broad_without_path = any(
-        term in normalized
-        for term in (
-            "architecture",
-            "codebase",
-            "end to end",
-            "migration",
-            "project",
-            "refactor",
-            "repo",
-            "system",
+    broad_without_path = (
+        any(
+            term in normalized
+            for term in (
+                "architecture",
+                "codebase",
+                "end to end",
+                "migration",
+                "project",
+                "refactor",
+                "repo",
+                "system",
+            )
         )
-    ) and not mentions_source
+        and not mentions_source
+    )
     return not broad_without_path
 
 
@@ -2184,7 +2353,9 @@ class SuperRunEventLogger:
                 self._progress_callback(dict(row))
         return task
 
-    def admit_worktree_diff(self, diff_packet: Mapping[str, Any]) -> list[dict[str, Any]]:
+    def admit_worktree_diff(
+        self, diff_packet: Mapping[str, Any]
+    ) -> list[dict[str, Any]]:
         if self._hook_runtime is None:
             return []
         emitted: list[dict[str, Any]] = []
@@ -2395,7 +2566,10 @@ def _print_compact_report(
         f"Target: {_display_text(report.target)}",
         f"Verdict: {_display_text(report.final_verdict)}",
         f"{_display_text(report.score_label)}: {report.credibility_score:.2f}",
-        "Organs: " + ", ".join(f"{key}={value}" for key, value in sorted(report.organ_counts.items())),
+        "Organs: "
+        + ", ".join(
+            f"{key}={value}" for key, value in sorted(report.organ_counts.items())
+        ),
         "Coordination: "
         + " -> ".join(
             [
@@ -2457,11 +2631,19 @@ def _print_live_report(
         lines.append(f"Event Log: {event_log_path}")
     hook_state = live_result.get("hook_state")
     if bool(live_result.get("show_queue_status")) and isinstance(hook_state, dict):
-        inboxes = hook_state.get("inboxes") if isinstance(hook_state.get("inboxes"), dict) else {}
+        inboxes = (
+            hook_state.get("inboxes")
+            if isinstance(hook_state.get("inboxes"), dict)
+            else {}
+        )
         lines.append("Hook Queues:")
         for inbox_id in sorted(inboxes):
-            inbox = inboxes.get(inbox_id) if isinstance(inboxes.get(inbox_id), dict) else {}
-            metrics = inbox.get("metrics") if isinstance(inbox.get("metrics"), dict) else {}
+            inbox = (
+                inboxes.get(inbox_id) if isinstance(inboxes.get(inbox_id), dict) else {}
+            )
+            metrics = (
+                inbox.get("metrics") if isinstance(inbox.get("metrics"), dict) else {}
+            )
             pending = len(list(inbox.get("pending_packet_ids") or []))
             active = len(list(inbox.get("active_lease_ids") or []))
             lines.append(
@@ -2478,7 +2660,11 @@ def _print_live_report(
             "",
             f"Organism: {_display_text(report.organism_id)} ({report.cell_count} logical cells)",
             f"Target: {_display_text(report.target)}",
-            "Full trace shown below." if verbose else "Full trace: rerun with --verbose or --json.",
+            (
+                "Full trace shown below."
+                if verbose
+                else "Full trace: rerun with --verbose or --json."
+            ),
         ]
     )
     print("\n".join(lines), end="\n")
@@ -2498,8 +2684,14 @@ def _text_report_lines(report: SuperOrganismReport) -> list[str]:
         f"Verdict: {_display_text(report.final_verdict)}",
         f"{_display_text(report.score_label)}: {report.credibility_score:.2f}",
         f"Stages: {_display_text(' -> '.join(report.stage_sequence))}",
-        "Organs: " + ", ".join(f"{key}={value}" for key, value in sorted(report.organ_counts.items())),
-        "Signals: " + ", ".join(f"{key}={value}" for key, value in sorted(report.signal_counts.items())),
+        "Organs: "
+        + ", ".join(
+            f"{key}={value}" for key, value in sorted(report.organ_counts.items())
+        ),
+        "Signals: "
+        + ", ".join(
+            f"{key}={value}" for key, value in sorted(report.signal_counts.items())
+        ),
     ]
     if report.claim_graph:
         lines.extend(["", "Claim Graph:"])
@@ -2620,7 +2812,9 @@ def _tool_request_summary(tool_id: str, arguments: Mapping[str, Any]) -> str:
     if tool_id == "list_directory":
         return str(args.get("path") or ".")
     if tool_id == "web_search":
-        return _truncate_text(args.get("query") or args.get("url") or "(missing query)", limit=160)
+        return _truncate_text(
+            args.get("query") or args.get("url") or "(missing query)", limit=160
+        )
     if tool_id == "shell_command":
         return _truncate_text(args.get("command") or "(missing command)", limit=160)
     if tool_id in {"git_status", "git_diff", "git_log"}:
@@ -2734,7 +2928,11 @@ class SuperProgressRenderer:
         raw = str(event.get("timestamp") or "").strip()
         if raw:
             try:
-                return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone().strftime("%H:%M:%S")
+                return (
+                    datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                    .astimezone()
+                    .strftime("%H:%M:%S")
+                )
             except ValueError:
                 pass
         return datetime.now().astimezone().strftime("%H:%M:%S")
@@ -2757,7 +2955,9 @@ class SuperProgressRenderer:
     def _emit(self, event: Mapping[str, Any], message: str) -> None:
         print(f"[{self._timestamp(event)}] {message}", flush=True)
 
-    def _print_once(self, key: tuple[str, str, str], event: Mapping[str, Any], message: str) -> None:
+    def _print_once(
+        self, key: tuple[str, str, str], event: Mapping[str, Any], message: str
+    ) -> None:
         if key in self._seen:
             return
         self._seen.add(key)
@@ -2775,25 +2975,34 @@ class SuperProgressRenderer:
             return
         if name == "super.hook.runtime.started":
             profile = str(event.get("reactivity_profile") or "balanced")
-            inboxes = ",".join(str(item) for item in list(event.get("inboxes") or [])[:6])
+            inboxes = ",".join(
+                str(item) for item in list(event.get("inboxes") or [])[:6]
+            )
             suffix = f" inboxes={inboxes}" if inboxes else ""
             self._emit(event, f"[hooks] runtime started: reactivity={profile}{suffix}")
             return
         if name == "super.worktree.policy.configured":
             parallelism = int(event.get("worktree_parallelism") or 0)
             root = _truncate_text(event.get("worktree_root") or "", limit=120)
-            self._emit(event, f"[hooks] worktree lane configured: parallelism={parallelism} root={root}")
+            self._emit(
+                event,
+                f"[hooks] worktree lane configured: parallelism={parallelism} root={root}",
+            )
             return
         if name == "super.hook.packet_enqueued":
             inbox_id = str(event.get("inbox_id") or "inbox")
             source = str(event.get("source_event") or "event")
             packet_type = str(event.get("packet_type") or "packet")
             depth = int(event.get("queue_depth") or 0)
-            self._emit(event, f"[hooks] {inbox_id} <= {source} ({packet_type}, depth={depth})")
+            self._emit(
+                event, f"[hooks] {inbox_id} <= {source} ({packet_type}, depth={depth})"
+            )
             return
         if name.startswith("super.inbox."):
             inbox_id = str(event.get("inbox_id") or "inbox")
-            reason = _truncate_text(event.get("reason") or event.get("queue_full_action") or "", limit=120)
+            reason = _truncate_text(
+                event.get("reason") or event.get("queue_full_action") or "", limit=120
+            )
             action = name.rsplit(".", 1)[-1].replace("packet_", "")
             suffix = f": {reason}" if reason else ""
             self._emit(event, f"[hooks] {inbox_id} {action}{suffix}")
@@ -2806,7 +3015,9 @@ class SuperProgressRenderer:
                 self._emit(event, f"[run] previous validation feedback: {hint}")
             return
         if name == "provider.build.started":
-            model = str(event.get("model") or event.get("requested_model") or "").strip()
+            model = str(
+                event.get("model") or event.get("requested_model") or ""
+            ).strip()
             if model:
                 self._emit(event, f"[model] preparing provider: {model}")
             return
@@ -2841,7 +3052,9 @@ class SuperProgressRenderer:
             self._emit(event, f"[worktree] frontier started{suffix}")
             return
         if name == "super.worktree.task_planned":
-            task_id = _truncate_text(event.get("owner_scope") or event.get("task_id") or "", limit=120)
+            task_id = _truncate_text(
+                event.get("owner_scope") or event.get("task_id") or "", limit=120
+            )
             self._emit(event, f"[worktree] planned {task_id}")
             return
         if name == "super.worktree.diff_admitted":
@@ -2954,23 +3167,31 @@ class SuperProgressRenderer:
             self._emit(event, f"[validation] model {verdict}")
             return
         if name == "live.validation.shell_check.started":
-            command = _truncate_text(event.get("command") or "validation command", limit=140)
+            command = _truncate_text(
+                event.get("command") or "validation command", limit=140
+            )
             self._emit(event, f"[validation] command started: {command}")
             return
         if name == "live.validation.shell_check.completed":
             verdict = "passed" if event.get("passed") else "failed"
-            command = _truncate_text(event.get("command") or "validation command", limit=100)
+            command = _truncate_text(
+                event.get("command") or "validation command", limit=100
+            )
             exit_code = event.get("exit_code")
             suffix = f" exit={exit_code}" if exit_code is not None else ""
             self._emit(event, f"[validation] command {verdict}{suffix}: {command}")
             failure = str(event.get("failure") or "").strip()
             if failure:
-                self._emit(event, f"[validation] gap: {_truncate_text(failure, limit=180)}")
+                self._emit(
+                    event, f"[validation] gap: {_truncate_text(failure, limit=180)}"
+                )
             return
         if name == "live.validation.completed":
             verdict = "passed" if event.get("passed") else "failed"
             score = _coerce_float(event.get("overall_score"))
-            scope = str(event.get("validation_scope") or event.get("completion_scope") or "").strip()
+            scope = str(
+                event.get("validation_scope") or event.get("completion_scope") or ""
+            ).strip()
             scope_suffix = f" ({scope})" if scope else ""
             self._emit(event, f"[validation] {verdict} {score:.2f}{scope_suffix}")
             failures = [
@@ -2986,13 +3207,17 @@ class SuperProgressRenderer:
                 if isinstance(item, Mapping)
             ]
             for check in check_records[:2]:
-                label = _truncate_text(check.get("check") or "deterministic check", limit=80)
+                label = _truncate_text(
+                    check.get("check") or "deterministic check", limit=80
+                )
                 status = str(check.get("status") or "checked").strip()
                 self._emit(event, f"[validation] check {status}: {label}")
             return
         if name == "live.builder_retry.started":
             attempt = int(event.get("attempt") or 1)
-            reason = _truncate_text(event.get("reason") or "no required files changed", limit=160)
+            reason = _truncate_text(
+                event.get("reason") or "no required files changed", limit=160
+            )
             self._emit(event, f"[builder] retry {attempt} started: {reason}")
             return
         if name == "live.builder_retry.completed":
@@ -3008,17 +3233,23 @@ class SuperProgressRenderer:
             return
         if name == "live.answer_recovery.started":
             attempt = int(event.get("attempt") or 1)
-            reason = _truncate_text(event.get("reason") or "final answer missing", limit=160)
+            reason = _truncate_text(
+                event.get("reason") or "final answer missing", limit=160
+            )
             self._emit(event, f"[answer] recovery {attempt} started: {reason}")
             return
         if name == "live.answer_recovery.completed":
             attempt = int(event.get("attempt") or 1)
-            verdict = "satisfied" if event.get("answer_satisfactory") else "still missing"
+            verdict = (
+                "satisfied" if event.get("answer_satisfactory") else "still missing"
+            )
             self._emit(event, f"[answer] recovery {attempt} {verdict}")
             return
         if name in {"live.website_repair.started", "live.generic_repair.started"}:
             attempt = int(event.get("attempt") or 1)
-            reason = _truncate_text(event.get("reason") or "validation failed", limit=160)
+            reason = _truncate_text(
+                event.get("reason") or "validation failed", limit=160
+            )
             self._emit(event, f"[repair] attempt {attempt} started: {reason}")
             return
         if name in {"live.website_repair.completed", "live.generic_repair.completed"}:
@@ -3053,7 +3284,9 @@ class SuperProgressRenderer:
             detail = _truncate_text(event.get("detail") or "", limit=160)
             elapsed = int(event.get("elapsed_seconds") or 0)
             suffix = f": {detail}" if detail else ""
-            self._emit(event, f"[status] still running {phase} ({elapsed}s idle){suffix}")
+            self._emit(
+                event, f"[status] still running {phase} ({elapsed}s idle){suffix}"
+            )
 
 
 class SuperHeartbeatMonitor:
@@ -3161,7 +3394,9 @@ class SuperHeartbeatMonitor:
             loop = asyncio.get_running_loop()
             now = loop.time()
             idle = now - self._last_activity
-            since_last = now - self._last_heartbeat if self._last_heartbeat else float("inf")
+            since_last = (
+                now - self._last_heartbeat if self._last_heartbeat else float("inf")
+            )
             if idle < self._idle_seconds or since_last < self._repeat_seconds:
                 continue
             self._last_heartbeat = now
@@ -3193,14 +3428,20 @@ def _super_live_choice(
     surface_context = _surface_context_from_args(args)
     if surface_context:
         context["surface_context"] = surface_context
-    surface_policy = getattr(args, "_tui_surface_policy", None) if args is not None else None
+    surface_policy = (
+        getattr(args, "_tui_surface_policy", None) if args is not None else None
+    )
     if isinstance(surface_policy, MappingABC):
         context["surface_policy"] = dict(surface_policy)
-    capability_packs = getattr(args, "_capability_packs", None) if args is not None else None
+    capability_packs = (
+        getattr(args, "_capability_packs", None) if args is not None else None
+    )
     if capability_packs:
         context["capability_packs"] = capability_packs
     code_like_live = args is not None and bool(getattr(args, "_code_like_live", False))
-    workspace_root = normalize_workspace_root(str(args.workspace)) if args is not None else Path(".")
+    workspace_root = (
+        normalize_workspace_root(str(args.workspace)) if args is not None else Path(".")
+    )
     operator_policy = _operator_intent_policy_from_objective(
         str(report.target or ""),
         workspace_root=workspace_root,
@@ -3287,10 +3528,14 @@ def _supports_live_execution(
 
 
 def _live_choice_tool_ids(choice: OrchestratorChoice) -> list[str]:
-    return [str(tool_id) for tool_id in choice.tool_policy.get("allowed_tool_ids") or []]
+    return [
+        str(tool_id) for tool_id in choice.tool_policy.get("allowed_tool_ids") or []
+    ]
 
 
-def _live_choice_preferred_tool_ids(choice: OrchestratorChoice, fallback: Sequence[str]) -> list[str]:
+def _live_choice_preferred_tool_ids(
+    choice: OrchestratorChoice, fallback: Sequence[str]
+) -> list[str]:
     preferred = choice.tool_policy.get("preferred_tool_ids")
     if isinstance(preferred, (list, tuple)):
         return [str(tool_id) for tool_id in preferred]
@@ -3314,7 +3559,9 @@ def _live_choice_read_only_tool_ids(choice: OrchestratorChoice) -> list[str]:
         "git_diff",
         "git_log",
     }
-    return [tool_id for tool_id in _live_choice_tool_ids(choice) if tool_id in read_only]
+    return [
+        tool_id for tool_id in _live_choice_tool_ids(choice) if tool_id in read_only
+    ]
 
 
 def _live_choice_required_files(choice: OrchestratorChoice) -> list[str]:
@@ -3324,7 +3571,9 @@ def _live_choice_required_files(choice: OrchestratorChoice) -> list[str]:
     return ["index.html", "styles.css", "app.js", "README.md"]
 
 
-def _live_choice_existing_preferred_coordinated_files(choice: OrchestratorChoice) -> int:
+def _live_choice_existing_preferred_coordinated_files(
+    choice: OrchestratorChoice,
+) -> int:
     value = choice.artifact_policy.get(
         "existing_website_preferred_coordinated_files",
         choice.artifact_policy.get("existing_website_min_changed_files", 2),
@@ -3429,13 +3678,22 @@ def _latest_super_dan_failure_hint(
             except Exception:
                 continue
             event = str(row.get("event") or "")
-            failed = row.get("passed") is False or str(row.get("status") or "") == "failed"
-            if event not in {"live.validation.completed", "run.log.completed"} or not failed:
+            failed = (
+                row.get("passed") is False or str(row.get("status") or "") == "failed"
+            )
+            if (
+                event not in {"live.validation.completed", "run.log.completed"}
+                or not failed
+            ):
                 continue
             parts: list[str] = []
             deterministic_failures = row.get("deterministic_failures")
             if isinstance(deterministic_failures, list):
-                parts.extend(str(item).strip() for item in deterministic_failures if str(item).strip())
+                parts.extend(
+                    str(item).strip()
+                    for item in deterministic_failures
+                    if str(item).strip()
+                )
             for key in ("error", "repair_brief", "comparison_note"):
                 value = str(row.get(key) or "").strip()
                 if value:
@@ -3453,10 +3711,10 @@ def _live_website_objective_context(
     required_paths: Sequence[Path],
 ) -> dict[str, Any]:
     original = _single_line(report.target)
-    existing_required_files = [
-        path.name for path in required_paths if path.exists()
-    ]
-    existing_website = "index.html" in existing_required_files or len(existing_required_files) >= 2
+    existing_required_files = [path.name for path in required_paths if path.exists()]
+    existing_website = (
+        "index.html" in existing_required_files or len(existing_required_files) >= 2
+    )
     previous_failure_hint = (
         _latest_super_dan_failure_hint(workspace_root) if existing_website else ""
     )
@@ -3481,9 +3739,7 @@ def _live_website_objective_context(
         "Keep the patch bounded, static, and dependency-free."
     )
     if previous_failure_hint:
-        default_brief = (
-            f"{default_brief} Address this previous validation feedback: {previous_failure_hint}"
-        )
+        default_brief = f"{default_brief} Address this previous validation feedback: {previous_failure_hint}"
     return {
         "normalized": True,
         "reason": "vague_website_continuation",
@@ -3509,7 +3765,9 @@ def _live_model_configured(requested_model: str | None) -> bool:
     return bool(fallback and fallback != "stub-model")
 
 
-def _should_implicit_live(report: SuperOrganismReport, args: argparse.Namespace) -> bool:
+def _should_implicit_live(
+    report: SuperOrganismReport, args: argparse.Namespace
+) -> bool:
     live_probe_args = copy.copy(args)
     setattr(live_probe_args, "_code_like_live", True)
     if (
@@ -3527,7 +3785,9 @@ def _should_implicit_live(report: SuperOrganismReport, args: argparse.Namespace)
     return _live_model_configured(getattr(args, "model", None))
 
 
-def _should_materialize_website(report: SuperOrganismReport, args: argparse.Namespace) -> bool:
+def _should_materialize_website(
+    report: SuperOrganismReport, args: argparse.Namespace
+) -> bool:
     return False
 
 
@@ -3539,7 +3799,9 @@ def _artifact_root(args: argparse.Namespace) -> Path:
     return workspace / artifact_dir
 
 
-def _materialize_website_artifact(report: SuperOrganismReport, args: argparse.Namespace) -> list[Path]:
+def _materialize_website_artifact(
+    report: SuperOrganismReport, args: argparse.Namespace
+) -> list[Path]:
     root = _artifact_root(args)
     root.mkdir(parents=True, exist_ok=True)
     files = {
@@ -3587,7 +3849,9 @@ def _existing_website_workspace_context(args: argparse.Namespace) -> bool:
     workspace_root = normalize_workspace_root(str(args.workspace))
     if workspace_root.name.lower() in {"website", "site", "web", "public", "dist"}:
         return True
-    artifact_dir = Path(str(getattr(args, "artifact_dir", "website") or "website")).expanduser()
+    artifact_dir = Path(
+        str(getattr(args, "artifact_dir", "website") or "website")
+    ).expanduser()
     candidate_roots = [workspace_root]
     if artifact_dir.is_absolute():
         candidate_roots.append(artifact_dir.resolve(strict=False))
@@ -3608,7 +3872,9 @@ def _existing_website_workspace_context(args: argparse.Namespace) -> bool:
 
 def _single_file_html_workspace_context(args: argparse.Namespace) -> bool:
     workspace_root = normalize_workspace_root(str(args.workspace))
-    artifact_dir = Path(str(getattr(args, "artifact_dir", "website") or "website")).expanduser()
+    artifact_dir = Path(
+        str(getattr(args, "artifact_dir", "website") or "website")
+    ).expanduser()
     candidate_roots = [workspace_root]
     if artifact_dir.is_absolute():
         candidate_roots.append(artifact_dir.resolve(strict=False))
@@ -3670,8 +3936,13 @@ def _live_artifact_layout(
     else:
         workspace_root = normalize_workspace_root(str(args.workspace))
         artifact_root = (workspace_root / artifact_dir).resolve(strict=False)
-        relative_files = [(artifact_dir / filename).as_posix() for filename in required_files]
-    required_paths = [(workspace_root / relative_path).resolve(strict=False) for relative_path in relative_files]
+        relative_files = [
+            (artifact_dir / filename).as_posix() for filename in required_files
+        ]
+    required_paths = [
+        (workspace_root / relative_path).resolve(strict=False)
+        for relative_path in relative_files
+    ]
     return workspace_root, artifact_root, relative_files, required_paths
 
 
@@ -3708,24 +3979,40 @@ def _live_expected_return_shape() -> str:
                 "Bad: only `Run completed`, raw JSON, candidate ids, or a file/change receipt."
             ),
             "source_tracking": {
-                "files_read": ["Only central files used as evidence, not every incidental read."],
+                "files_read": [
+                    "Only central files used as evidence, not every incidental read."
+                ],
                 "links_opened": ["External links or searches used for current facts."],
-                "commands_run": ["Commands that materially affected confidence or checks."],
-                "checks_performed": ["Focused checks or inspections already performed."],
+                "commands_run": [
+                    "Commands that materially affected confidence or checks."
+                ],
+                "checks_performed": [
+                    "Focused checks or inspections already performed."
+                ],
             },
             "change_tracking": {
                 "files_created": ["New files actually created; empty when none."],
                 "files_edited": ["Existing files actually edited; empty when none."],
                 "files_deleted": ["Files actually deleted; empty when none."],
-                "generated_artifacts": ["Standalone artifacts produced for the operator."],
+                "generated_artifacts": [
+                    "Standalone artifacts produced for the operator."
+                ],
             },
             "change_summary": [
                 "Concrete user-relevant changes actually made. Good: `Updated README setup command`. Bad: internal stage/status text."
             ],
-            "target_files": ["Files intentionally changed or central to the deliverable; avoid incidental reads."],
-            "test_plan": ["Verification already run, or the narrow next verification with blocker if not run."],
-            "risks": ["Remaining uncertainty that affects trust; avoid generic boilerplate."],
-            "files_created": ["Backward-compatible alias for change_tracking.files_created."],
+            "target_files": [
+                "Files intentionally changed or central to the deliverable; avoid incidental reads."
+            ],
+            "test_plan": [
+                "Verification already run, or the narrow next verification with blocker if not run."
+            ],
+            "risks": [
+                "Remaining uncertainty that affects trust; avoid generic boilerplate."
+            ],
+            "files_created": [
+                "Backward-compatible alias for change_tracking.files_created."
+            ],
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -3768,7 +4055,9 @@ def _live_answer_return_shape() -> str:
                 "files_read": ["Only files used to ground the answer."],
                 "links_opened": ["External links/searches used, when any."],
                 "commands_run": ["Commands run, usually empty for answer-only work."],
-                "checks_performed": ["Read-only checks/inspections used for confidence."],
+                "checks_performed": [
+                    "Read-only checks/inspections used for confidence."
+                ],
             },
             "change_tracking": {
                 "files_created": [],
@@ -3779,7 +4068,9 @@ def _live_answer_return_shape() -> str:
             "summary": ["Key answer points, not tool/status receipts."],
             "risks": ["Material limitations or assumptions."],
             "validation": ["Inspection evidence used for the answer."],
-            "remaining_work": ["Follow-up work that would require permission or a separate request."],
+            "remaining_work": [
+                "Follow-up work that would require permission or a separate request."
+            ],
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -3823,7 +4114,9 @@ def _live_request_understanding_return_shape() -> str:
                     "depends_on": [],
                     "owned_paths": ["Files or targets this step owns, if any."],
                     "deliverables": ["What this step must produce for the operator."],
-                    "validation": ["Deterministic or semantic check expected for this step."],
+                    "validation": [
+                        "Deterministic or semantic check expected for this step."
+                    ],
                     "status": "ready | deferred | blocked",
                     "parallel_safe": True,
                 }
@@ -3837,7 +4130,9 @@ def _live_request_understanding_return_shape() -> str:
             },
             "source_tracking": {
                 "files_read": ["Only files actually used to understand the request."],
-                "links_opened": ["Links/web_search used for current external facts, if any."],
+                "links_opened": [
+                    "Links/web_search used for current external facts, if any."
+                ],
                 "commands_run": ["Read-only checks used, if any."],
             },
         },
@@ -4134,13 +4429,33 @@ def _request_understanding_kind(objective: str) -> str:
     text = _single_line(objective).lower()
     if not text:
         return "general"
-    if any(phrase in text for phrase in ("research", "paper", "literature", "experiment", "citation")):
+    if any(
+        phrase in text
+        for phrase in ("research", "paper", "literature", "experiment", "citation")
+    ):
         return "research"
-    if any(phrase in text for phrase in ("website", "landing page", "web app", "frontend", "page")):
+    if any(
+        phrase in text
+        for phrase in ("website", "landing page", "web app", "frontend", "page")
+    ):
         return "website"
-    if any(phrase in text for phrase in ("app", "tool", "cli", "api", "dashboard", "feature", "bug", "test")):
+    if any(
+        phrase in text
+        for phrase in (
+            "app",
+            "tool",
+            "cli",
+            "api",
+            "dashboard",
+            "feature",
+            "bug",
+            "test",
+        )
+    ):
         return "software"
-    if any(phrase in text for phrase in ("report", "memo", "markdown", "document", "brief")):
+    if any(
+        phrase in text for phrase in ("report", "memo", "markdown", "document", "brief")
+    ):
         return "document"
     return "general"
 
@@ -4198,7 +4513,9 @@ def _request_understanding_payload(
             "The generated rules must not depend on existing artifacts as source material."
         )
     if not policy.allow_shell_command:
-        rule_generation_brief.append("The generated rules must not require shell commands.")
+        rule_generation_brief.append(
+            "The generated rules must not require shell commands."
+        )
     if not policy.allow_workspace_mutation:
         rule_generation_brief.append(
             "The generated rules must treat the deliverable as an in-session answer or inspection result, not a workspace mutation."
@@ -4274,7 +4591,9 @@ def _normalize_model_request_understanding_payload(
                 or item.get("summary")
                 or item.get("criterion")
             )
-            confidence = _coerce_float(item.get("confidence") if item.get("confidence") is not None else 0.8)
+            confidence = _coerce_float(
+                item.get("confidence") if item.get("confidence") is not None else 0.8
+            )
         else:
             aspect = f"rule_{index}"
             question = "What must be understood for this request?"
@@ -4306,8 +4625,12 @@ def _normalize_model_request_understanding_payload(
                 or item.get("summary")
                 or item.get("request_comment")
             )
-            confidence = _coerce_float(item.get("confidence") if item.get("confidence") is not None else 0.8)
-            action = _single_line(item.get("action") or "do_or_explain") or "do_or_explain"
+            confidence = _coerce_float(
+                item.get("confidence") if item.get("confidence") is not None else 0.8
+            )
+            action = (
+                _single_line(item.get("action") or "do_or_explain") or "do_or_explain"
+            )
         else:
             criterion = _single_line(item)
             confidence = 0.8
@@ -4322,13 +4645,17 @@ def _normalize_model_request_understanding_payload(
             }
         )
 
-    stop_rule = _single_line(parsed.get("stop_rule") or parsed.get("completion_rule") or "")
+    stop_rule = _single_line(
+        parsed.get("stop_rule") or parsed.get("completion_rule") or ""
+    )
     fallback_has_contract = (
         bool(fallback.get("aspect_reviews"))
         and bool(fallback.get("confidence_scoped_acceptance"))
         and bool(_single_line(fallback.get("stop_rule") or ""))
     )
-    if not fallback_has_contract and (not aspect_items or not criteria_items or not stop_rule):
+    if not fallback_has_contract and (
+        not aspect_items or not criteria_items or not stop_rule
+    ):
         return None
     if fallback_has_contract and not (aspect_items or criteria_items or stop_rule):
         return None
@@ -4336,12 +4663,21 @@ def _normalize_model_request_understanding_payload(
     return {
         "schema": "super_dan_request_understanding_v1",
         "source": "model_authored",
-        "request_kind": _single_line(parsed.get("request_kind") or fallback.get("request_kind") or "general"),
-        "original_request": _single_line(parsed.get("original_request") or fallback.get("original_request") or ""),
-        "workspace_root": _single_line(parsed.get("workspace_root") or fallback.get("workspace_root") or ""),
-        "target_paths": _super_plan_string_list(parsed.get("target_paths") or fallback.get("target_paths") or []),
+        "request_kind": _single_line(
+            parsed.get("request_kind") or fallback.get("request_kind") or "general"
+        ),
+        "original_request": _single_line(
+            parsed.get("original_request") or fallback.get("original_request") or ""
+        ),
+        "workspace_root": _single_line(
+            parsed.get("workspace_root") or fallback.get("workspace_root") or ""
+        ),
+        "target_paths": _super_plan_string_list(
+            parsed.get("target_paths") or fallback.get("target_paths") or []
+        ),
         "aspect_reviews": aspect_items or list(fallback.get("aspect_reviews") or []),
-        "confidence_scoped_acceptance": criteria_items or list(fallback.get("confidence_scoped_acceptance") or []),
+        "confidence_scoped_acceptance": criteria_items
+        or list(fallback.get("confidence_scoped_acceptance") or []),
         "stop_rule": stop_rule or _single_line(fallback.get("stop_rule") or ""),
     }
 
@@ -4353,12 +4689,16 @@ def _extract_request_understanding_from_outputs(
 ) -> dict[str, Any] | None:
     parsed = parse_jsonish_payload(outputs)
     if isinstance(parsed, Mapping):
-        normalized = _normalize_model_request_understanding_payload(parsed, fallback=fallback)
+        normalized = _normalize_model_request_understanding_payload(
+            parsed, fallback=fallback
+        )
         if normalized is not None:
             return normalized
         for key in ("result", "text", "answer", "final_response"):
             if key in parsed:
-                nested = _normalize_model_request_understanding_payload(parsed.get(key), fallback=fallback)
+                nested = _normalize_model_request_understanding_payload(
+                    parsed.get(key), fallback=fallback
+                )
                 if nested is not None:
                     return nested
     return None
@@ -4389,7 +4729,9 @@ def _request_understanding_contract(
             criteria_lines.append(f"- {criterion}")
     brief_lines = [
         _single_line(item)
-        for item in _request_understanding_list(payload.get("rule_generation_brief") or [])
+        for item in _request_understanding_list(
+            payload.get("rule_generation_brief") or []
+        )
         if _single_line(item)
     ]
     if not aspect_lines and not criteria_lines and not brief_lines:
@@ -4408,7 +4750,11 @@ def _request_understanding_contract(
             f"evidence_policy={_single_line(work_contract.get('evidence_policy') or '')}",
             f"final_response_policy={_single_line(work_contract.get('final_response_policy') or 'human_readable_synthesis')}",
         ]
-        lines.append("Resolved work contract: " + ", ".join(part for part in contract_parts if not part.endswith("=")) + ".")
+        lines.append(
+            "Resolved work contract: "
+            + ", ".join(part for part in contract_parts if not part.endswith("="))
+            + "."
+        )
     lines.append("Context hooks:")
     lines.extend(
         [
@@ -4428,7 +4774,10 @@ def _request_understanding_contract(
     if brief_lines:
         for hint in brief_lines:
             clean_hint = _single_line(hint)
-            if "explicit target path" in clean_hint.lower() or "source boundary" in clean_hint.lower():
+            if (
+                "explicit target path" in clean_hint.lower()
+                or "source boundary" in clean_hint.lower()
+            ):
                 compact_rule_hints.append(clean_hint)
     lines.extend(f"- {item}" for item in compact_rule_hints[:8])
     if aspect_lines:
@@ -4468,7 +4817,10 @@ def _super_report_evidence_blocks(report: SuperOrganismReport) -> list[dict[str,
         {
             "label": "Coordination tickets",
             "content": json.dumps(
-                [ticket.model_dump(mode="json") for ticket in report.coordination_tickets],
+                [
+                    ticket.model_dump(mode="json")
+                    for ticket in report.coordination_tickets
+                ],
                 ensure_ascii=False,
                 sort_keys=True,
             ),
@@ -4488,7 +4840,11 @@ def _super_report_evidence_blocks(report: SuperOrganismReport) -> list[dict[str,
         {
             "label": "Final audit gate",
             "content": json.dumps(
-                (report.final_audit.model_dump(mode="json") if report.final_audit is not None else {}),
+                (
+                    report.final_audit.model_dump(mode="json")
+                    if report.final_audit is not None
+                    else {}
+                ),
                 ensure_ascii=False,
                 sort_keys=True,
             ),
@@ -4498,11 +4854,15 @@ def _super_report_evidence_blocks(report: SuperOrganismReport) -> list[dict[str,
     ]
 
 
-def _selected_super_dan_skill_mentions_from_args(args: argparse.Namespace | None) -> list[str]:
+def _selected_super_dan_skill_mentions_from_args(
+    args: argparse.Namespace | None,
+) -> list[str]:
     return skill_invocation.selected_skill_mentions_from_args(args)
 
 
-def _selected_super_dan_skill_preflight_notes_from_args(args: argparse.Namespace | None) -> list[str]:
+def _selected_super_dan_skill_preflight_notes_from_args(
+    args: argparse.Namespace | None,
+) -> list[str]:
     return skill_invocation.selected_skill_preflight_notes_from_args(args)
 
 
@@ -4531,20 +4891,30 @@ def _brief_with_explicit_super_dan_skills(
                 "explicit_skill_ids": combined,
                 "selected_skill_mentions": combined,
                 "selected_skill_source": source,
-                **({"selected_skill_preflight": preflight_notes} if preflight_notes else {}),
+                **(
+                    {"selected_skill_preflight": preflight_notes}
+                    if preflight_notes
+                    else {}
+                ),
             },
             "metadata": {
                 **dict(brief.metadata),
                 "explicit_skill_ids": combined,
                 "selected_skill_mentions": combined,
                 "selected_skill_source": source,
-                **({"selected_skill_preflight": preflight_notes} if preflight_notes else {}),
+                **(
+                    {"selected_skill_preflight": preflight_notes}
+                    if preflight_notes
+                    else {}
+                ),
             },
         }
     )
 
 
-def _surface_attachments_from_args(args: argparse.Namespace | None) -> list[dict[str, Any]]:
+def _surface_attachments_from_args(
+    args: argparse.Namespace | None,
+) -> list[dict[str, Any]]:
     if args is None:
         return []
     raw = getattr(args, "_surface_attachments", None)
@@ -4553,7 +4923,9 @@ def _surface_attachments_from_args(args: argparse.Namespace | None) -> list[dict
     return [dict(item) for item in raw if isinstance(item, MappingABC)]
 
 
-def _surface_image_attachments_from_args(args: argparse.Namespace | None) -> list[dict[str, Any]]:
+def _surface_image_attachments_from_args(
+    args: argparse.Namespace | None,
+) -> list[dict[str, Any]]:
     if args is None:
         return []
     raw = getattr(args, "_surface_image_attachments", None)
@@ -4672,7 +5044,9 @@ def _brief_with_surface_attachments(
         "surface_attachments": attachments,
         "image_attachments": image_attachments,
     }
-    return brief.model_copy(update={"input_payload": payload_update, "metadata": metadata_update})
+    return brief.model_copy(
+        update={"input_payload": payload_update, "metadata": metadata_update}
+    )
 
 
 def _request_from_live_brief(
@@ -4692,7 +5066,9 @@ def _request_from_live_brief(
                 metadata_update["execution_policy"] = execution_policy
             if max_work_seconds is not None:
                 metadata_update["completion_timeout_seconds"] = max_work_seconds
-            explicit_brief = explicit_brief.model_copy(update={"metadata": metadata_update})
+            explicit_brief = explicit_brief.model_copy(
+                update={"metadata": metadata_update}
+            )
     if (
         str(explicit_brief.metadata.get("surface") or "") == "super_organism"
         and str(explicit_brief.metadata.get("mode") or "") == "live"
@@ -4734,7 +5110,9 @@ def _live_website_task(
 ) -> str:
     files = ", ".join(relative_files)
     context = dict(objective_context or {})
-    effective_objective = str(context.get("effective_objective") or report.target).strip()
+    effective_objective = str(
+        context.get("effective_objective") or report.target
+    ).strip()
     original_objective = str(context.get("original_objective") or report.target).strip()
     normalized_note = ""
     if context.get("normalized"):
@@ -4769,7 +5147,9 @@ def _live_website_validation_task(
 ) -> str:
     files = ", ".join(relative_files)
     context = dict(objective_context or {})
-    effective_objective = str(context.get("effective_objective") or report.target).strip()
+    effective_objective = str(
+        context.get("effective_objective") or report.target
+    ).strip()
     original_objective = str(context.get("original_objective") or report.target).strip()
     normalized_note = ""
     if context.get("normalized"):
@@ -4805,7 +5185,9 @@ def _validation_repair_brief(
     missing = validation.get("missing_requirements")
     if isinstance(missing, list):
         parts.extend(_display_text(item) for item in missing if str(item).strip())
-    parts.extend(_display_text(item) for item in deterministic_failures if str(item).strip())
+    parts.extend(
+        _display_text(item) for item in deterministic_failures if str(item).strip()
+    )
     seen: set[str] = set()
     compact: list[str] = []
     for part in parts:
@@ -4827,16 +5209,22 @@ def _super_plan_scoped_validation_payload(
         return normalized
     deferred_gaps = _super_plan_string_list(normalized.get("deferred_task_gaps") or [])
     remaining_work = _super_plan_string_list(normalized.get("remaining_work") or [])
-    blocking = _super_plan_string_list(normalized.get("blocking_current_task_failures") or [])
+    blocking = _super_plan_string_list(
+        normalized.get("blocking_current_task_failures") or []
+    )
     if deferred_gaps and remaining_work:
-        normalized["deferred_task_gaps"] = list(dict.fromkeys([*deferred_gaps, *remaining_work]))
+        normalized["deferred_task_gaps"] = list(
+            dict.fromkeys([*deferred_gaps, *remaining_work])
+        )
     elif remaining_work:
         normalized["deferred_task_gaps"] = remaining_work
     deferred_gaps = _super_plan_string_list(normalized.get("deferred_task_gaps") or [])
     missing = _super_plan_string_list(normalized.get("missing_requirements") or [])
     if not deferred_gaps and missing:
         deferred_like = [
-            item for item in missing if _super_plan_text_mentions_deferred(item, plan_context)
+            item
+            for item in missing
+            if _super_plan_text_mentions_deferred(item, plan_context)
         ]
         if deferred_like:
             deferred_gaps = deferred_like
@@ -4844,7 +5232,9 @@ def _super_plan_scoped_validation_payload(
             normalized["missing_requirements"] = [
                 item for item in missing if item not in set(deferred_like)
             ]
-            missing = _super_plan_string_list(normalized.get("missing_requirements") or [])
+            missing = _super_plan_string_list(
+                normalized.get("missing_requirements") or []
+            )
     if blocking:
         normalized["passed"] = False
         normalized["missing_requirements"] = blocking
@@ -4853,7 +5243,9 @@ def _super_plan_scoped_validation_payload(
         return normalized
     if deferred_gaps:
         deferred_set = set(deferred_gaps)
-        only_deferred_missing = not missing or all(item in deferred_set for item in missing)
+        only_deferred_missing = not missing or all(
+            item in deferred_set for item in missing
+        )
         scope = str(normalized.get("completion_scope") or "").strip()
         if only_deferred_missing or scope == "current_frontier":
             normalized["passed"] = True
@@ -4862,7 +5254,9 @@ def _super_plan_scoped_validation_payload(
             normalized["repair_brief"] = ""
             comparison = str(normalized.get("comparison_note") or "").strip()
             if "deferred" not in comparison.lower():
-                suffix = "Deferred DAG tasks remain queued for later ready-frontier waves."
+                suffix = (
+                    "Deferred DAG tasks remain queued for later ready-frontier waves."
+                )
                 normalized["comparison_note"] = f"{comparison} {suffix}".strip()
     return normalized
 
@@ -4919,11 +5313,21 @@ def _generic_validation_repair_brief(
     for sentence in sentences:
         lowered_sentence = sentence.lower()
         sentence_is_git_baseline = (
-            ("git" in lowered_sentence or "commit" in lowered_sentence or "head~" in lowered_sentence)
-            and any(term in lowered_sentence for term in ("baseline", "diff", "history", "greenfield"))
+            (
+                "git" in lowered_sentence
+                or "commit" in lowered_sentence
+                or "head~" in lowered_sentence
+            )
+            and any(
+                term in lowered_sentence
+                for term in ("baseline", "diff", "history", "greenfield")
+            )
         ) or (
             "baseline" in lowered_sentence
-            and any(term in lowered_sentence for term in ("locate", "create", "prior version", "fresh"))
+            and any(
+                term in lowered_sentence
+                for term in ("locate", "create", "prior version", "fresh")
+            )
         )
         if not sentence_is_git_baseline:
             filtered_sentences.append(sentence)
@@ -4966,10 +5370,14 @@ def _live_website_repair_task(
     objective_context: Mapping[str, Any] | None = None,
 ) -> str:
     files = ", ".join(relative_files)
-    changed = ", ".join(_path_basename(path) for path in changed_required_paths) or "none"
+    changed = (
+        ", ".join(_path_basename(path) for path in changed_required_paths) or "none"
+    )
     repair_brief = _validation_repair_brief(validation, deterministic_failures)
     context = dict(objective_context or {})
-    effective_objective = str(context.get("effective_objective") or report.target).strip()
+    effective_objective = str(
+        context.get("effective_objective") or report.target
+    ).strip()
     return (
         "Repair the previous website patch now; do not stop with another summary-only response. "
         f"Operator objective: {effective_objective}. "
@@ -4999,7 +5407,9 @@ def _live_artifact_builder_retry_task(
     files = ", ".join(relative_files)
     recovery_brief = _validation_repair_brief(validation, deterministic_failures)
     context = dict(objective_context or {})
-    effective_objective = str(context.get("effective_objective") or report.target).strip()
+    effective_objective = str(
+        context.get("effective_objective") or report.target
+    ).strip()
     return (
         "Run a focused Super DAN builder retry now. The prior builder returned without changing any required "
         "artifact file, so this is not a validation repair. "
@@ -5022,8 +5432,12 @@ def _live_generic_planner_task(
     operator_intent_policy: OperatorIntentPolicy | None = None,
     request_understanding: Mapping[str, Any] | None = None,
 ) -> str:
-    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
-    understanding_note = _request_understanding_contract(request_understanding, stage="planner")
+    policy_note = _operator_intent_policy_prompt(
+        operator_intent_policy or OperatorIntentPolicy()
+    )
+    understanding_note = _request_understanding_contract(
+        request_understanding, stage="planner"
+    )
     if understanding_note:
         understanding_note += " "
     return (
@@ -5052,8 +5466,12 @@ def _live_request_understanding_task(
     operator_intent_policy: OperatorIntentPolicy | None = None,
     request_understanding: Mapping[str, Any] | None = None,
 ) -> str:
-    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
-    understanding_note = _request_understanding_contract(request_understanding, stage="request_understanding")
+    policy_note = _operator_intent_policy_prompt(
+        operator_intent_policy or OperatorIntentPolicy()
+    )
+    understanding_note = _request_understanding_contract(
+        request_understanding, stage="request_understanding"
+    )
     if understanding_note:
         understanding_note += " "
     return (
@@ -5083,10 +5501,14 @@ def _live_request_understanding_repair_task(
     previous_output: Any = None,
     previous_error: str = "",
 ) -> str:
-    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    policy_note = _operator_intent_policy_prompt(
+        operator_intent_policy or OperatorIntentPolicy()
+    )
     previous_text = _truncate_text(previous_output, limit=4000)
     error_text = _truncate_text(previous_error, limit=800)
-    understanding_note = _request_understanding_contract(request_understanding, stage="request_understanding")
+    understanding_note = _request_understanding_contract(
+        request_understanding, stage="request_understanding"
+    )
     if understanding_note:
         understanding_note += " "
     previous_parts = []
@@ -5120,8 +5542,12 @@ def _live_generic_plan_validation_task(
     operator_intent_policy: OperatorIntentPolicy | None = None,
     request_understanding: Mapping[str, Any] | None = None,
 ) -> str:
-    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
-    understanding_note = _request_understanding_contract(request_understanding, stage="plan_validator")
+    policy_note = _operator_intent_policy_prompt(
+        operator_intent_policy or OperatorIntentPolicy()
+    )
+    understanding_note = _request_understanding_contract(
+        request_understanding, stage="plan_validator"
+    )
     if understanding_note:
         understanding_note += " "
     rendered_files = ", ".join(str(path) for path in plan_files) or "none"
@@ -5157,7 +5583,9 @@ def _live_generic_task(
     plan_note = _super_plan_executor_contract(plan_context)
     if plan_note:
         plan_note += " "
-    understanding_note = _request_understanding_contract(request_understanding, stage="builder")
+    understanding_note = _request_understanding_contract(
+        request_understanding, stage="builder"
+    )
     if understanding_note:
         understanding_note += " "
     constrained_creation_note = ""
@@ -5267,12 +5695,18 @@ def _live_generic_answer_recovery_task(
     operator_intent_policy: OperatorIntentPolicy | None = None,
     request_understanding: Mapping[str, Any] | None = None,
 ) -> str:
-    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
-    understanding_note = _request_understanding_contract(request_understanding, stage="final_response_recovery")
+    policy_note = _operator_intent_policy_prompt(
+        operator_intent_policy or OperatorIntentPolicy()
+    )
+    understanding_note = _request_understanding_contract(
+        request_understanding, stage="final_response_recovery"
+    )
     if understanding_note:
         understanding_note += " "
     try:
-        previous_rendered = json.dumps(previous_output, ensure_ascii=False, sort_keys=True)
+        previous_rendered = json.dumps(
+            previous_output, ensure_ascii=False, sort_keys=True
+        )
     except TypeError:
         previous_rendered = str(previous_output)
     previous_rendered = _truncate_text(previous_rendered, limit=1600)
@@ -5305,14 +5739,21 @@ def _live_generic_worktree_task(
     operator_intent_policy: OperatorIntentPolicy | None = None,
     request_understanding: Mapping[str, Any] | None = None,
 ) -> str:
-    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
-    understanding_note = _request_understanding_contract(request_understanding, stage="worktree")
+    policy_note = _operator_intent_policy_prompt(
+        operator_intent_policy or OperatorIntentPolicy()
+    )
+    understanding_note = _request_understanding_contract(
+        request_understanding, stage="worktree"
+    )
     if understanding_note:
         understanding_note += " "
     task_id = str(task.get("task_id") or "").strip()
     goal = str(task.get("goal") or "").strip()
     owned = ", ".join(_super_plan_task_owned_paths(task)) or "the task-owned files"
-    checks = ", ".join(_super_plan_string_list(task.get("validation") or [])) or "focused local inspection"
+    checks = (
+        ", ".join(_super_plan_string_list(task.get("validation") or []))
+        or "focused local inspection"
+    )
     plan_note = _super_plan_executor_contract(plan_context)
     if plan_note:
         plan_note += " "
@@ -5348,11 +5789,15 @@ def _live_generic_builder_retry_task(
     plan_context: Mapping[str, Any] | None = None,
     request_understanding: Mapping[str, Any] | None = None,
 ) -> str:
-    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    policy_note = _operator_intent_policy_prompt(
+        operator_intent_policy or OperatorIntentPolicy()
+    )
     plan_note = _super_plan_executor_contract(plan_context)
     if plan_note:
         plan_note += " "
-    understanding_note = _request_understanding_contract(request_understanding, stage="builder_retry")
+    understanding_note = _request_understanding_contract(
+        request_understanding, stage="builder_retry"
+    )
     if understanding_note:
         understanding_note += " "
     preservation_note = ""
@@ -5417,11 +5862,15 @@ def _live_generic_validation_task(
     plan_context: Mapping[str, Any] | None = None,
     request_understanding: Mapping[str, Any] | None = None,
 ) -> str:
-    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    policy_note = _operator_intent_policy_prompt(
+        operator_intent_policy or OperatorIntentPolicy()
+    )
     plan_note = _super_plan_validation_contract(plan_context)
     if plan_note:
         plan_note += " "
-    understanding_note = _request_understanding_contract(request_understanding, stage="validator")
+    understanding_note = _request_understanding_contract(
+        request_understanding, stage="validator"
+    )
     if understanding_note:
         understanding_note += " "
     state_note = ""
@@ -5486,14 +5935,20 @@ def _live_generic_repair_task(
     plan_context: Mapping[str, Any] | None = None,
     request_understanding: Mapping[str, Any] | None = None,
 ) -> str:
-    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    policy_note = _operator_intent_policy_prompt(
+        operator_intent_policy or OperatorIntentPolicy()
+    )
     plan_note = _super_plan_executor_contract(plan_context)
     if plan_note:
         plan_note += " "
-    understanding_note = _request_understanding_contract(request_understanding, stage="repair")
+    understanding_note = _request_understanding_contract(
+        request_understanding, stage="repair"
+    )
     if understanding_note:
         understanding_note += " "
-    effective_repair_brief = repair_brief or _generic_validation_repair_brief(validation)
+    effective_repair_brief = repair_brief or _generic_validation_repair_brief(
+        validation
+    )
     changed = ", ".join(str(path) for path in mutated_paths) or "none recorded"
     state_note = ""
     if pre_run_file_state or current_file_state:
@@ -5590,7 +6045,9 @@ def _safe_workspace_artifact_path(
     candidate = Path(raw).expanduser()
     if not candidate.is_absolute():
         candidate = workspace_root / candidate
-    relative = _relative_workspace_artifact_path(candidate, workspace_root=workspace_root)
+    relative = _relative_workspace_artifact_path(
+        candidate, workspace_root=workspace_root
+    )
     if not relative:
         return None
     return (workspace_root / relative).resolve(strict=False)
@@ -5629,8 +6086,18 @@ def _objective_forbids_workspace_mutation(objective: str) -> bool:
     lowered = " ".join(str(objective or "").lower().split())
     if not lowered:
         return False
+    scoped_read_only_checks = bool(
+        re.search(
+            r"\b(?:after|following|once)\b.{0,160}\bread[-\s]?only\s+"
+            r"(?:checks?|validation|verification)\b",
+            lowered,
+        )
+    )
+    if re.search(r"\bread[-\s]?only\b", lowered) and not (
+        scoped_read_only_checks and _objective_requests_workspace_mutation(lowered)
+    ):
+        return True
     patterns = (
-        r"\bread[-\s]?only\b",
         r"\bdo\s+not\s+(?:edit|modify|change|write|create|delete|touch|mutate)\s+(?:any\s+)?(?:workspace\s+)?files?\b",
         r"\bdon['’]?t\s+(?:edit|modify|change|write|create|delete|touch|mutate)\s+(?:any\s+)?(?:workspace\s+)?files?\b",
         r"\bdont\s+(?:edit|modify|change|write|create|delete|touch|mutate)\s+(?:any\s+)?(?:workspace\s+)?files?\b",
@@ -5732,11 +6199,17 @@ def _objective_explicitly_requests_saved_answer_artifact(objective: str) -> bool
     lowered = " ".join(str(objective or "").lower().split())
     if not lowered:
         return False
-    if re.search(r"(?<!\w)[\w./~-]+\.(?:md|txt|json|html|py|ts|tsx|jsx|csv|yaml|yml|toml)\b", lowered):
+    if re.search(
+        r"(?<!\w)[\w./~-]+\.(?:md|txt|json|html|py|ts|tsx|jsx|csv|yaml|yml|toml)\b",
+        lowered,
+    ):
         return True
     if re.search(r"\b(?:readme|file|artifact|document|markdown|md)\b", lowered):
         return True
-    if re.search(r"\b(?:edit|modify|change|update|fix|repair|implement|build|add|delete|touch|mutate)\b", lowered):
+    if re.search(
+        r"\b(?:edit|modify|change|update|fix|repair|implement|build|add|delete|touch|mutate)\b",
+        lowered,
+    ):
         return True
     if re.search(r"\b(?:save|export|materialize)\b", lowered):
         return True
@@ -5749,14 +6222,18 @@ def _objective_is_assessment_only_request(objective: str) -> bool:
         return False
     project_answer = _objective_is_project_answer_request(lowered)
     if _objective_requests_workspace_mutation(lowered):
-        if not project_answer or _objective_explicitly_requests_saved_answer_artifact(lowered):
+        if not project_answer or _objective_explicitly_requests_saved_answer_artifact(
+            lowered
+        ):
             return False
     assessment_patterns = (
         r"\b(?:review|audit|assess|evaluate|inspect|check|look\s+over|analyze|analyse|summarize|summarise|explain)\b",
         r"\bwhat\s+(?:do\s+you\s+think|is\s+going\s+on|is\s+the\s+status)\b",
         r"\bhelp\s+me\s+(?:understand|review|audit|assess|evaluate|inspect|check|analyze|analyse|summarize|summarise|summary)\b",
     )
-    return project_answer or any(re.search(pattern, lowered) for pattern in assessment_patterns)
+    return project_answer or any(
+        re.search(pattern, lowered) for pattern in assessment_patterns
+    )
 
 
 def _resolve_work_contract_for_objective(
@@ -5770,7 +6247,9 @@ def _resolve_work_contract_for_objective(
 
     external_facts = _objective_needs_external_facts(objective)
     if forbid_workspace_mutation or assessment_only:
-        evidence_policy = "workspace_and_internet_reads" if external_facts else "workspace_reads"
+        evidence_policy = (
+            "workspace_and_internet_reads" if external_facts else "workspace_reads"
+        )
         return "workspace_read", "forbidden", evidence_policy
     if _objective_is_plain_chat_answer_request(objective):
         if external_facts:
@@ -5778,7 +6257,9 @@ def _resolve_work_contract_for_objective(
         return "chat_answer", "forbidden", "none"
     if _objective_requests_workspace_mutation(objective) or target_artifacts:
         return "workspace_change", "required", "reads_and_checks"
-    evidence_policy = "workspace_and_internet_reads" if external_facts else "workspace_reads"
+    evidence_policy = (
+        "workspace_and_internet_reads" if external_facts else "workspace_reads"
+    )
     return "workspace_read", "forbidden", evidence_policy
 
 
@@ -5841,7 +6322,9 @@ def _objective_for_policy_resolution(objective: str) -> str:
         return original
     if _objective_forbids_workspace_mutation(original):
         return original
-    if _objective_explicitly_requests_saved_answer_artifact(followup) or _objective_requests_workspace_mutation(followup):
+    if _objective_explicitly_requests_saved_answer_artifact(
+        followup
+    ) or _objective_requests_workspace_mutation(followup):
         return f"{original}\n{followup}"
     return original
 
@@ -5876,17 +6359,31 @@ def _operator_intent_policy_from_objective(
     )
     constraints: list[str] = []
     if work_mode == "chat_answer":
-        constraints.append("This is a plain chat answer; answer in-session without reading workspace files or using tools.")
+        constraints.append(
+            "This is a plain chat answer; answer in-session without reading workspace files or using tools."
+        )
     if forbid_other_inputs:
-        constraints.append("Do not read, inspect, list, or otherwise use other workspace files.")
+        constraints.append(
+            "Do not read, inspect, list, or otherwise use other workspace files."
+        )
     if forbid_existing_reuse:
-        constraints.append("Do not reuse existing workspace artifacts as source material.")
+        constraints.append(
+            "Do not reuse existing workspace artifacts as source material."
+        )
     if assessment_only:
-        constraints.append("This is an assessment request; inspect the workspace and answer with findings.")
-        constraints.append("Do not create or edit review documents unless the operator explicitly asks for a saved artifact or file changes.")
+        constraints.append(
+            "This is an assessment request; inspect the workspace and answer with findings."
+        )
+        constraints.append(
+            "Do not create or edit review documents unless the operator explicitly asks for a saved artifact or file changes."
+        )
     if forbid_workspace_mutation:
-        constraints.append("Do not write, edit, create, delete, or otherwise mutate workspace files.")
-        constraints.append("Return a direct answer or read-only findings only; no workspace mutation is required.")
+        constraints.append(
+            "Do not write, edit, create, delete, or otherwise mutate workspace files."
+        )
+        constraints.append(
+            "Return a direct answer or read-only findings only; no workspace mutation is required."
+        )
     elif work_mode == "workspace_read" and mutation_policy == "forbidden":
         constraints.append(
             "No explicit workspace mutation was requested; inspect/read and answer without editing files."
@@ -5908,13 +6405,21 @@ def _operator_intent_policy_from_objective(
         evidence_policy=evidence_policy,
         allow_workspace_mutation=mutation_allowed,
         target_artifacts=target_artifacts,
-        allowed_read_paths=() if chat_answer else (allowed_targets if forbid_other_inputs else ()),
-        allowed_write_paths=allowed_targets if (mutation_allowed and allowed_targets) else (),
+        allowed_read_paths=(
+            () if chat_answer else (allowed_targets if forbid_other_inputs else ())
+        ),
+        allowed_write_paths=(
+            allowed_targets if (mutation_allowed and allowed_targets) else ()
+        ),
         forbid_other_workspace_inputs=forbid_other_inputs or chat_answer,
         allow_directory_listing=not (forbid_other_inputs or chat_answer),
         allow_git_context=not (forbid_other_inputs or chat_answer),
-        allow_shell_command=not (forbid_other_inputs or forbid_shell_command or chat_answer),
-        allow_existing_artifact_reuse=not (forbid_other_inputs or forbid_existing_reuse),
+        allow_shell_command=not (
+            forbid_other_inputs or forbid_shell_command or chat_answer
+        ),
+        allow_existing_artifact_reuse=not (
+            forbid_other_inputs or forbid_existing_reuse
+        ),
         source_scope=(
             "conversation_only"
             if chat_answer
@@ -5940,7 +6445,9 @@ def _operator_intent_policy_from_objective(
     )
 
 
-def _operator_intent_policy_from_request(request: ExecutionRequest) -> OperatorIntentPolicy:
+def _operator_intent_policy_from_request(
+    request: ExecutionRequest,
+) -> OperatorIntentPolicy:
     raw = getattr(request, "metadata", {}).get("operator_intent_policy")
     if not isinstance(raw, Mapping):
         return OperatorIntentPolicy()
@@ -5960,9 +6467,7 @@ def _operator_intent_policy_from_request(request: ExecutionRequest) -> OperatorI
     return OperatorIntentPolicy(
         active=bool(raw.get("active")),
         work_mode=str(
-            raw.get("work_mode")
-            or work_contract.get("work_mode")
-            or "workspace_change"
+            raw.get("work_mode") or work_contract.get("work_mode") or "workspace_change"
         ),
         mutation_policy=mutation_policy,
         evidence_policy=str(
@@ -5972,13 +6477,19 @@ def _operator_intent_policy_from_request(request: ExecutionRequest) -> OperatorI
         ),
         allow_workspace_mutation=allow_workspace_mutation,
         target_artifacts=tuple(str(path) for path in raw.get("target_artifacts") or ()),
-        allowed_read_paths=tuple(str(path) for path in raw.get("allowed_read_paths") or ()),
-        allowed_write_paths=tuple(str(path) for path in raw.get("allowed_write_paths") or ()),
+        allowed_read_paths=tuple(
+            str(path) for path in raw.get("allowed_read_paths") or ()
+        ),
+        allowed_write_paths=tuple(
+            str(path) for path in raw.get("allowed_write_paths") or ()
+        ),
         forbid_other_workspace_inputs=bool(raw.get("forbid_other_workspace_inputs")),
         allow_directory_listing=bool(raw.get("allow_directory_listing", True)),
         allow_git_context=bool(raw.get("allow_git_context", True)),
         allow_shell_command=bool(raw.get("allow_shell_command", True)),
-        allow_existing_artifact_reuse=bool(raw.get("allow_existing_artifact_reuse", True)),
+        allow_existing_artifact_reuse=bool(
+            raw.get("allow_existing_artifact_reuse", True)
+        ),
         source_scope=str(raw.get("source_scope") or "workspace_allowed"),
         constraints=tuple(str(item) for item in raw.get("constraints") or ()),
     )
@@ -6009,18 +6520,26 @@ def _operator_intent_policy_prompt(policy: OperatorIntentPolicy) -> str:
     ]
     if not policy.active:
         return " ".join(lines)
-    lines.extend([
-        "Binding operator intent policy:",
-        f"- Source scope: {policy.source_scope}.",
-    ])
+    lines.extend(
+        [
+            "Binding operator intent policy:",
+            f"- Source scope: {policy.source_scope}.",
+        ]
+    )
     if policy.target_artifacts:
         lines.append(f"- Target artifacts: {', '.join(policy.target_artifacts)}.")
     if policy.allowed_read_paths:
-        lines.append(f"- Allowed workspace reads: {', '.join(policy.allowed_read_paths)}.")
+        lines.append(
+            f"- Allowed workspace reads: {', '.join(policy.allowed_read_paths)}."
+        )
     elif policy.forbid_other_workspace_inputs:
-        lines.append("- Allowed workspace reads: none before the target artifact exists.")
+        lines.append(
+            "- Allowed workspace reads: none before the target artifact exists."
+        )
     if policy.allowed_write_paths:
-        lines.append(f"- Allowed workspace writes: {', '.join(policy.allowed_write_paths)}.")
+        lines.append(
+            f"- Allowed workspace writes: {', '.join(policy.allowed_write_paths)}."
+        )
     elif not policy.allow_workspace_mutation:
         lines.append("- Allowed workspace writes: none.")
     for constraint in policy.constraints:
@@ -6028,9 +6547,13 @@ def _operator_intent_policy_prompt(policy: OperatorIntentPolicy) -> str:
     if not policy.allow_directory_listing:
         lines.append("- Do not list or inventory the workspace directory.")
     if not policy.allow_git_context:
-        lines.append("- Do not use git status, git diff, or git log as workspace context.")
+        lines.append(
+            "- Do not use git status, git diff, or git log as workspace context."
+        )
     if not policy.allow_existing_artifact_reuse:
-        lines.append("- Do not materialize the target by copying or adapting another workspace artifact.")
+        lines.append(
+            "- Do not materialize the target by copying or adapting another workspace artifact."
+        )
     return " ".join(lines)
 
 
@@ -6056,7 +6579,9 @@ def _filter_tool_ids_for_operator_intent(
     return [str(tool_id) for tool_id in tool_ids if str(tool_id) not in blocked]
 
 
-def _operator_policy_relative_path(raw_path: str, *, workspace_root: Path) -> str | None:
+def _operator_policy_relative_path(
+    raw_path: str, *, workspace_root: Path
+) -> str | None:
     raw = str(raw_path or "").strip()
     if not raw:
         return None
@@ -6096,11 +6621,15 @@ def _operator_policy_tool_decision(
     if tool in {"file_write", "file_edit"} and not policy.allow_workspace_mutation:
         return False, "operator_intent_blocks_workspace_mutation"
     if tool == "file_read" and allowed_reads:
-        relative = _operator_policy_relative_path(str(args.get("path") or ""), workspace_root=workspace_root)
+        relative = _operator_policy_relative_path(
+            str(args.get("path") or ""), workspace_root=workspace_root
+        )
         if not relative or relative not in allowed_reads:
             return False, f"operator_intent_blocks_file_read:{relative or '(unknown)'}"
     if tool in {"file_write", "file_edit"} and allowed_writes:
-        relative = _operator_policy_relative_path(str(args.get("path") or ""), workspace_root=workspace_root)
+        relative = _operator_policy_relative_path(
+            str(args.get("path") or ""), workspace_root=workspace_root
+        )
         if not relative or relative not in allowed_writes:
             return False, f"operator_intent_blocks_file_write:{relative or '(unknown)'}"
     if tool == "workspace_check" and policy.forbid_other_workspace_inputs:
@@ -6111,18 +6640,26 @@ def _operator_policy_tool_decision(
             raw_paths.extend(str(path) for path in args.get("paths") or [])
         check = str(args.get("check") or "").strip()
         for raw_path in raw_paths:
-            relative = _operator_policy_relative_path(raw_path, workspace_root=workspace_root)
+            relative = _operator_policy_relative_path(
+                raw_path, workspace_root=workspace_root
+            )
             if relative == "." and check == "exists":
                 continue
             if relative not in allowed_targets:
-                return False, f"operator_intent_blocks_workspace_check:{relative or '(unknown)'}"
+                return (
+                    False,
+                    f"operator_intent_blocks_workspace_check:{relative or '(unknown)'}",
+                )
         if check and check != "exists":
             checked_path = _operator_policy_relative_path(
                 str(args.get("path") or ""),
                 workspace_root=workspace_root,
             )
             if checked_path not in allowed_targets:
-                return False, f"operator_intent_blocks_workspace_check:{checked_path or '(unknown)'}"
+                return (
+                    False,
+                    f"operator_intent_blocks_workspace_check:{checked_path or '(unknown)'}",
+                )
     return True, ""
 
 
@@ -6135,7 +6672,9 @@ def _operator_intent_approval_callback(
     if not policy.active:
         return None
 
-    def approve(tool_id: str, arguments: dict[str, Any], metadata: dict[str, Any]) -> bool:
+    def approve(
+        tool_id: str, arguments: dict[str, Any], metadata: dict[str, Any]
+    ) -> bool:
         del metadata
         allowed, reason = _operator_policy_tool_decision(
             policy,
@@ -6172,7 +6711,9 @@ def _snapshot_workspace_file_metadata_for_intent(
         ]
     )
     return {
-        str((workspace_root / path).resolve(strict=False)): _file_metadata(workspace_root / path)
+        str((workspace_root / path).resolve(strict=False)): _file_metadata(
+            workspace_root / path
+        )
         for path in paths
     }
 
@@ -6265,9 +6806,8 @@ async def _execute_live_request(
                 heartbeat_monitor.observe(payload)
             return
         trace_row = payload.get("trace_row")
-        if (
-            str(payload.get("event") or "").strip() == "trace.row"
-            and isinstance(trace_row, dict)
+        if str(payload.get("event") or "").strip() == "trace.row" and isinstance(
+            trace_row, dict
         ):
             event_logger.emit_trace_rows([trace_row])
             if heartbeat_monitor is not None:
@@ -6299,6 +6839,16 @@ async def _execute_live_request(
             workspace_root=workspace_root,
         ),
         event_callback=record_event,
+        operator_message_provider=getattr(
+            args,
+            "_live_operator_message_provider",
+            None,
+        ),
+        operator_message_acknowledger=getattr(
+            args,
+            "_live_operator_message_acknowledger",
+            None,
+        ),
     )
     executor = WorkerCoreExecutor(
         completion_provider=completion_provider,
@@ -6333,10 +6883,7 @@ def _file_digest(path: Path) -> str | None:
 
 
 def _snapshot_file_state(paths: Sequence[Path]) -> dict[str, str | None]:
-    return {
-        str(path.resolve(strict=False)): _file_digest(path)
-        for path in paths
-    }
+    return {str(path.resolve(strict=False)): _file_digest(path) for path in paths}
 
 
 def _file_metadata(path: Path) -> dict[str, Any]:
@@ -6358,7 +6905,9 @@ def _file_metadata(path: Path) -> dict[str, Any]:
     }
 
 
-def _snapshot_workspace_file_metadata(workspace_root: Path) -> dict[str, dict[str, Any]]:
+def _snapshot_workspace_file_metadata(
+    workspace_root: Path,
+) -> dict[str, dict[str, Any]]:
     root = workspace_root.resolve(strict=False)
     snapshot: dict[str, dict[str, Any]] = {}
     if not root.exists():
@@ -6450,9 +6999,13 @@ def _dedupe_preserving_order(items: Sequence[str]) -> list[str]:
     return result
 
 
-def _relative_workspace_artifact_path(path: Path, *, workspace_root: Path) -> str | None:
+def _relative_workspace_artifact_path(
+    path: Path, *, workspace_root: Path
+) -> str | None:
     try:
-        relative = path.resolve(strict=False).relative_to(workspace_root.resolve(strict=False))
+        relative = path.resolve(strict=False).relative_to(
+            workspace_root.resolve(strict=False)
+        )
     except (OSError, ValueError):
         return None
     if any(part in _GENERIC_SNAPSHOT_SKIP_DIR_NAMES for part in relative.parts):
@@ -6485,9 +7038,23 @@ def _existing_workspace_artifact_paths(
 
 def _generic_artifact_extension(objective: str) -> str:
     lowered = objective.lower()
-    if any(token in lowered for token in ("html", "javascript", "canvas", "animation", "web app", "website", "page")):
+    if any(
+        token in lowered
+        for token in (
+            "html",
+            "javascript",
+            "canvas",
+            "animation",
+            "web app",
+            "website",
+            "page",
+        )
+    ):
         return ".html"
-    if any(token in lowered for token in ("markdown", "report", "research", "memo", "document", "note")):
+    if any(
+        token in lowered
+        for token in ("markdown", "report", "research", "memo", "document", "note")
+    ):
         return ".md"
     if "python" in lowered or re.search(r"\bscript\b|\bcli\b", lowered):
         return ".py"
@@ -6540,11 +7107,16 @@ def _explicit_objective_artifact_paths(
             continue
         path = Path(raw)
         if path.is_absolute():
-            relative = _relative_workspace_artifact_path(path, workspace_root=workspace_root)
+            relative = _relative_workspace_artifact_path(
+                path, workspace_root=workspace_root
+            )
             if relative:
                 paths.append(relative)
             continue
-        if any(part in _GENERIC_SNAPSHOT_SKIP_DIR_NAMES or part.startswith(".") for part in path.parts):
+        if any(
+            part in _GENERIC_SNAPSHOT_SKIP_DIR_NAMES or part.startswith(".")
+            for part in path.parts
+        ):
             continue
         paths.append(path.as_posix())
     return _dedupe_preserving_order(paths)
@@ -6561,7 +7133,8 @@ def _generic_builder_retry_targets(
     policy = operator_intent_policy or OperatorIntentPolicy()
     existing_paths = (
         []
-        if policy.forbid_other_workspace_inputs or not policy.allow_existing_artifact_reuse
+        if policy.forbid_other_workspace_inputs
+        or not policy.allow_existing_artifact_reuse
         else _existing_workspace_artifact_paths(
             pre_run_workspace_state,
             workspace_root=workspace_root,
@@ -6592,7 +7165,9 @@ def _generic_builder_retry_targets(
             [*explicit_paths, *existing_by_extension, *existing_paths, generated]
         )[:6]
     create_like = bool(
-        re.search(r"\b(build|create|generate|write|produce|implement)\b", objective.lower())
+        re.search(
+            r"\b(build|create|generate|write|produce|implement)\b", objective.lower()
+        )
     )
     if create_like and generated:
         return _dedupe_preserving_order(
@@ -6715,7 +7290,9 @@ def _super_copy_workspace_to_worktree(
     target_root = worktree_root.resolve(strict=False)
     allowed_parent = (source_root / ".dan-super" / "worktrees").resolve(strict=False)
     if not _path_is_under(target_root, allowed_parent):
-        raise ValueError(f"refusing to prepare worktree outside {allowed_parent}: {target_root}")
+        raise ValueError(
+            f"refusing to prepare worktree outside {allowed_parent}: {target_root}"
+        )
     if target_root.exists():
         shutil.rmtree(target_root)
     target_root.mkdir(parents=True, exist_ok=True)
@@ -6765,7 +7342,9 @@ def _super_worktree_relative_mutation_paths(
             relative = path.relative_to(worktree_root.resolve(strict=False)).as_posix()
         except ValueError:
             continue
-        if allowed and not any(_super_plan_rel_paths_overlap(relative, owner) for owner in allowed):
+        if allowed and not any(
+            _super_plan_rel_paths_overlap(relative, owner) for owner in allowed
+        ):
             continue
         if relative in seen:
             continue
@@ -6908,7 +7487,9 @@ def _failed_validation_payload(
     reason: str,
     missing_requirements: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    items = [str(item).strip() for item in (missing_requirements or []) if str(item).strip()]
+    items = [
+        str(item).strip() for item in (missing_requirements or []) if str(item).strip()
+    ]
     if not items:
         items = [reason]
     return {
@@ -6921,7 +7502,9 @@ def _failed_validation_payload(
     }
 
 
-def _validation_mapping_list(payload: Mapping[str, Any], key: str) -> list[dict[str, Any]]:
+def _validation_mapping_list(
+    payload: Mapping[str, Any], key: str
+) -> list[dict[str, Any]]:
     value = payload.get(key)
     if not isinstance(value, list):
         return []
@@ -6935,7 +7518,9 @@ def _normalize_validation_payload(payload: Any) -> dict[str, Any]:
         )
     dimension_scores = payload.get("dimension_scores")
     missing_requirements = payload.get("missing_requirements")
-    blocking_current = _super_plan_string_list(payload.get("blocking_current_task_failures") or [])
+    blocking_current = _super_plan_string_list(
+        payload.get("blocking_current_task_failures") or []
+    )
     deferred_gaps = _super_plan_string_list(payload.get("deferred_task_gaps") or [])
     remaining_work = _super_plan_string_list(payload.get("remaining_work") or [])
     ready_next = _super_plan_string_list(payload.get("ready_next_task_ids") or [])
@@ -6945,21 +7530,29 @@ def _normalize_validation_payload(payload: Any) -> dict[str, Any]:
         validation_scope = "branch_frontier"
     elif not validation_scope and completion_scope == "full_objective":
         validation_scope = "graph_level"
-    dependency_revisions = [
-        dict(item)
-        for item in (payload.get("dependency_revisions") or [])
-        if isinstance(item, Mapping)
-    ] if isinstance(payload.get("dependency_revisions"), list) else []
+    dependency_revisions = (
+        [
+            dict(item)
+            for item in (payload.get("dependency_revisions") or [])
+            if isinstance(item, Mapping)
+        ]
+        if isinstance(payload.get("dependency_revisions"), list)
+        else []
+    )
     task_graph_update = _super_plan_graph_update_payload(payload)
     return {
         "passed": bool(payload.get("passed")),
         "overall_score": _coerce_float(payload.get("overall_score")),
-        "dimension_scores": dict(dimension_scores) if isinstance(dimension_scores, dict) else {},
+        "dimension_scores": (
+            dict(dimension_scores) if isinstance(dimension_scores, dict) else {}
+        ),
         "validation_scope": validation_scope,
         "validated_branch_ids": _super_plan_string_list(
             payload.get("validated_branch_ids") or []
         ),
-        "validated_task_ids": _super_plan_string_list(payload.get("validated_task_ids") or []),
+        "validated_task_ids": _super_plan_string_list(
+            payload.get("validated_task_ids") or []
+        ),
         "repair_brief": str(payload.get("repair_brief") or "").strip(),
         "missing_requirements": (
             [str(item).strip() for item in missing_requirements if str(item).strip()]
@@ -6972,7 +7565,9 @@ def _normalize_validation_payload(payload: Any) -> dict[str, Any]:
         "ready_next_task_ids": ready_next,
         "dependency_revisions": dependency_revisions,
         "branch_results": _validation_mapping_list(payload, "branch_results"),
-        "deterministic_checks": _validation_mapping_list(payload, "deterministic_checks"),
+        "deterministic_checks": _validation_mapping_list(
+            payload, "deterministic_checks"
+        ),
         "llm_semantic_checks": _validation_mapping_list(payload, "llm_semantic_checks"),
         "graph_level_validation": (
             dict(payload.get("graph_level_validation") or {})
@@ -6980,11 +7575,15 @@ def _normalize_validation_payload(payload: Any) -> dict[str, Any]:
             else {}
         ),
         "task_graph_update": task_graph_update,
-        "aspect_coverage": [
-            dict(item)
-            for item in (payload.get("aspect_coverage") or [])
-            if isinstance(item, Mapping)
-        ] if isinstance(payload.get("aspect_coverage"), list) else [],
+        "aspect_coverage": (
+            [
+                dict(item)
+                for item in (payload.get("aspect_coverage") or [])
+                if isinstance(item, Mapping)
+            ]
+            if isinstance(payload.get("aspect_coverage"), list)
+            else []
+        ),
         "completion_scope": completion_scope,
         "comparison_note": str(payload.get("comparison_note") or "").strip(),
     }
@@ -6993,7 +7592,9 @@ def _normalize_validation_payload(payload: Any) -> dict[str, Any]:
 def _extract_validation_payload(outputs: Any) -> Any:
     if not isinstance(outputs, dict):
         return outputs
-    if any(key in outputs for key in ("passed", "overall_score", "missing_requirements")):
+    if any(
+        key in outputs for key in ("passed", "overall_score", "missing_requirements")
+    ):
         return outputs
     for key in ("result", "text"):
         raw = outputs.get(key)
@@ -7069,7 +7670,15 @@ def _answer_text_from_outputs(outputs: Any) -> str:
             answer = _answer_text_from_value(raw)
             if answer:
                 return answer
-        if not any(key in parsed for key in ("change_summary", "target_files", "files_created", "files_changed")):
+        if not any(
+            key in parsed
+            for key in (
+                "change_summary",
+                "target_files",
+                "files_created",
+                "files_changed",
+            )
+        ):
             answer = _answer_text_from_value(parsed.get("summary"))
             if answer:
                 return answer
@@ -7094,11 +7703,15 @@ def _answer_text_satisfaction(
     normalized = _normalized_final_answer_receipt(answer)
     if normalized in _OPERATIONAL_FINAL_ANSWER_RECEIPTS:
         return False, "The final response was only an operational completion receipt."
-    if re.fullmatch(r"(?:run\s+log\s+)?(?:completed|complete|done|finished)", normalized):
+    if re.fullmatch(
+        r"(?:run\s+log\s+)?(?:completed|complete|done|finished)", normalized
+    ):
         return False, "The final response was only an operational completion receipt."
     word_count = len(re.findall(r"[A-Za-z0-9]+", answer))
     exact_reply_requested = bool(
-        re.search(r"\b(?:reply|respond|say)\s+with\s+exactly\b", str(objective or "").lower())
+        re.search(
+            r"\b(?:reply|respond|say)\s+with\s+exactly\b", str(objective or "").lower()
+        )
     )
     if word_count < 3 and not exact_reply_requested:
         return False, "The final answer was too thin to satisfy the request."
@@ -7166,16 +7779,23 @@ def _normalize_plan_validation_payload(
     deferred_ids = _super_plan_string_list(payload.get("deferred_task_ids") or [])
     if not deferred_ids and task_graph:
         deferred_ids = _super_plan_deferred_task_ids(task_graph, ready_ids)
-    dependency_revisions = [
-        dict(item)
-        for item in (payload.get("dependency_revisions") or [])
-        if isinstance(item, Mapping)
-    ] if isinstance(payload.get("dependency_revisions"), list) else []
+    dependency_revisions = (
+        [
+            dict(item)
+            for item in (payload.get("dependency_revisions") or [])
+            if isinstance(item, Mapping)
+        ]
+        if isinstance(payload.get("dependency_revisions"), list)
+        else []
+    )
     task_graph_update = _super_plan_graph_update_payload(payload)
     return {
         "passed": bool(payload.get("passed")),
         "overall_score": _coerce_float(payload.get("overall_score")),
-        "first_build_slice": [str(item).strip() for item in first_slice if str(item).strip()] or list(ready_ids),
+        "first_build_slice": [
+            str(item).strip() for item in first_slice if str(item).strip()
+        ]
+        or list(ready_ids),
         "ready_task_ids": list(ready_ids),
         "deferred_task_ids": list(deferred_ids),
         "task_graph": task_graph,
@@ -7407,13 +8027,17 @@ def _website_static_validation_failures(
     if not index_path.exists():
         return failures
     try:
-        html = " ".join(index_path.read_text(encoding="utf-8", errors="ignore").lower().split())
+        html = " ".join(
+            index_path.read_text(encoding="utf-8", errors="ignore").lower().split()
+        )
     except Exception as exc:
         failures.append(f"Failed to inspect {index_path}: {type(exc).__name__}: {exc}")
         return failures
     target = " ".join(str(report.target or "").lower().split())
     if target and len(target) >= 24 and target in html:
-        failures.append("The generated website still echoes the raw operator prompt as page copy.")
+        failures.append(
+            "The generated website still echoes the raw operator prompt as page copy."
+        )
     template_hits = _website_template_phrase_hits(html, template_phrases)
     if len(template_hits) >= 2:
         failures.append(
@@ -7474,7 +8098,10 @@ def _log_final_validation_event(
         completion_scope=validation.get("completion_scope") or None,
         validated_branch_ids=list(validation.get("validated_branch_ids") or []) or None,
         validated_task_ids=list(validation.get("validated_task_ids") or []) or None,
-        blocking_current_task_failures=list(validation.get("blocking_current_task_failures") or []) or None,
+        blocking_current_task_failures=list(
+            validation.get("blocking_current_task_failures") or []
+        )
+        or None,
         deferred_task_gaps=list(validation.get("deferred_task_gaps") or []) or None,
         remaining_work=list(validation.get("remaining_work") or []) or None,
         ready_next_task_ids=list(validation.get("ready_next_task_ids") or []) or None,
@@ -7707,11 +8334,15 @@ async def _run_live_website_build(
         ["file_write", "file_edit", "file_read", "list_directory"],
     )
     website_read_only_tool_ids = _live_choice_read_only_tool_ids(choice)
-    existing_preferred_coordinated_files = _live_choice_existing_preferred_coordinated_files(choice)
+    existing_preferred_coordinated_files = (
+        _live_choice_existing_preferred_coordinated_files(choice)
+    )
     template_phrases = _live_choice_template_phrases(choice)
     pacing_policy = _live_pacing_policy(forbid_scratch_files=True)
     worker_id = "super-dan.live.website-builder"
-    workspace_root, artifact_root, relative_files, required_paths = _live_artifact_layout(args, choice)
+    workspace_root, artifact_root, relative_files, required_paths = (
+        _live_artifact_layout(args, choice)
+    )
     workspace_root.mkdir(parents=True, exist_ok=True)
     file_snapshot = _snapshot_file_state(required_paths)
     objective_context = _live_website_objective_context(
@@ -7726,112 +8357,123 @@ async def _run_live_website_build(
             reason=objective_context.get("reason"),
             original_objective=objective_context.get("original_objective"),
             effective_objective=objective_context.get("effective_objective"),
-            previous_failure_hint=objective_context.get("previous_failure_hint") or None,
-            existing_required_files=list(objective_context.get("existing_required_files") or []),
+            previous_failure_hint=objective_context.get("previous_failure_hint")
+            or None,
+            existing_required_files=list(
+                objective_context.get("existing_required_files") or []
+            ),
         )
     worker_brief = coding_brief(
-            role=RoleSpec(
-                role_label="workspace_worker",
-                responsibility="Build the requested Super DAN static website artifact.",
-                success_criteria=[
-                    "All required website files exist.",
-                    "Existing websites receive material required-file changes; multi-file coordination is preferred for broad patches.",
-                    "The result is inspectable by opening index.html directly.",
-                ],
-                artifact_targets=list(relative_files),
-                trace_role="super-dan.live.website-builder",
-            ),
-            task=_live_website_task(
-                report,
-                artifact_root=artifact_root,
-                relative_files=relative_files,
-                objective_context=objective_context,
-            ),
-            scope=f"workspace={workspace_root}; artifact_root={artifact_root}; native Super DAN live website build",
-            hard_constraints=[
-                "Actually create or update all required website files with file_write or file_edit.",
-                "Keep writes inside the requested workspace/artifact paths.",
-                "Do not install dependencies or require a build step.",
-                "Do not create scratch or throwaway files outside the required website artifact set.",
-                "For existing websites, materially change at least one required file; prefer broader coordinated edits when the requested patch naturally spans files.",
+        role=RoleSpec(
+            role_label="workspace_worker",
+            responsibility="Build the requested Super DAN static website artifact.",
+            success_criteria=[
+                "All required website files exist.",
+                "Existing websites receive material required-file changes; multi-file coordination is preferred for broad patches.",
+                "The result is inspectable by opening index.html directly.",
             ],
-            soft_constraints=[
-                "Build a polished static product website with distinctive layout, motion, and concise copy.",
-                "Treat the supplied coordination tickets as the working backlog and satisfy the final audit gate.",
-                "If the required files already exist, improve them incrementally instead of replacing everything at once.",
-                "If this is an existing website redesign, update HTML structure plus CSS visual language and/or JS motion.",
-                "After one failed or truncated large write, immediately switch to a smaller section-level strategy.",
-                "Avoid rereading the same file unless the next edit truly needs exact line grounding.",
-                "Use local file tools for every required file before finalizing.",
-                "Keep dependencies zero; no package install, no external CDN requirement.",
-            ],
-            pacing_policy=pacing_policy,
-            tool_policy={
-                "allowed_tool_ids": list(website_tool_ids),
-                "preferred_tool_ids": list(website_preferred_tool_ids),
-                "max_tool_calls": int(args.max_tool_calls),
-            },
-            contract_snippets=[
-                *_super_dan_stage_snippets("builder", tool_ids=website_tool_ids),
-            ],
-            output_contract=OutputContract(
-                definition_of_done=(
-                    "All required files exist on disk and the final response names the files created, "
-                    "a concise validation plan, and any remaining risks."
-                ),
-                expected_return_shape=_live_expected_return_shape(),
+            artifact_targets=list(relative_files),
+            trace_role="super-dan.live.website-builder",
+        ),
+        task=_live_website_task(
+            report,
+            artifact_root=artifact_root,
+            relative_files=relative_files,
+            objective_context=objective_context,
+        ),
+        scope=f"workspace={workspace_root}; artifact_root={artifact_root}; native Super DAN live website build",
+        hard_constraints=[
+            "Actually create or update all required website files with file_write or file_edit.",
+            "Keep writes inside the requested workspace/artifact paths.",
+            "Do not install dependencies or require a build step.",
+            "Do not create scratch or throwaway files outside the required website artifact set.",
+            "For existing websites, materially change at least one required file; prefer broader coordinated edits when the requested patch naturally spans files.",
+        ],
+        soft_constraints=[
+            "Build a polished static product website with distinctive layout, motion, and concise copy.",
+            "Treat the supplied coordination tickets as the working backlog and satisfy the final audit gate.",
+            "If the required files already exist, improve them incrementally instead of replacing everything at once.",
+            "If this is an existing website redesign, update HTML structure plus CSS visual language and/or JS motion.",
+            "After one failed or truncated large write, immediately switch to a smaller section-level strategy.",
+            "Avoid rereading the same file unless the next edit truly needs exact line grounding.",
+            "Use local file tools for every required file before finalizing.",
+            "Keep dependencies zero; no package install, no external CDN requirement.",
+        ],
+        pacing_policy=pacing_policy,
+        tool_policy={
+            "allowed_tool_ids": list(website_tool_ids),
+            "preferred_tool_ids": list(website_preferred_tool_ids),
+            "max_tool_calls": int(args.max_tool_calls),
+        },
+        contract_snippets=[
+            *_super_dan_stage_snippets("builder", tool_ids=website_tool_ids),
+        ],
+        output_contract=OutputContract(
+            definition_of_done=(
+                "All required files exist on disk and the final response names the files created, "
+                "a concise validation plan, and any remaining risks."
             ),
-            sampling_policy={
-                "profile": choice.sampling_policy,
-                "temperature": 0.35,
-                "max_tokens": _SUPER_DAN_WORKER_MAX_TOKENS,
+            expected_return_shape=_live_expected_return_shape(),
+        ),
+        sampling_policy={
+            "profile": choice.sampling_policy,
+            "temperature": 0.35,
+            "max_tokens": _SUPER_DAN_WORKER_MAX_TOKENS,
+        },
+        evidence=_super_report_evidence_blocks(report),
+        input_payload={
+            "objective": objective_context.get("effective_objective") or report.target,
+            "original_objective": report.target,
+            "objective_normalization": dict(objective_context),
+            "workspace_root": str(workspace_root),
+            "artifact_root": str(artifact_root),
+            "artifact_files": list(relative_files),
+            "organism_id": report.organism_id,
+            "cell_count": report.cell_count,
+            "active_cell_cap": report.active_cell_cap,
+            "organ_counts": dict(report.organ_counts),
+            "delivery_plan": [
+                node.model_dump(mode="json") for node in report.delivery_plan
+            ],
+            "write_pacing": dict(pacing_policy),
+            "existing_required_files": _existing_required_files_from_snapshot(
+                file_snapshot,
+                required_paths,
+            ),
+            "existing_website_change_policy": {
+                "minimum_required_changed_files": 1,
+                "preferred_coordinated_required_files": existing_preferred_coordinated_files,
+                "prefer_coordinated_when_objective_spans_files": True,
             },
-            evidence=_super_report_evidence_blocks(report),
-            input_payload={
-                "objective": objective_context.get("effective_objective") or report.target,
-                "original_objective": report.target,
-                "objective_normalization": dict(objective_context),
-                "workspace_root": str(workspace_root),
-                "artifact_root": str(artifact_root),
-                "artifact_files": list(relative_files),
-                "organism_id": report.organism_id,
-                "cell_count": report.cell_count,
-                "active_cell_cap": report.active_cell_cap,
-                "organ_counts": dict(report.organ_counts),
-                "delivery_plan": [node.model_dump(mode="json") for node in report.delivery_plan],
-                "write_pacing": dict(pacing_policy),
-                "existing_required_files": _existing_required_files_from_snapshot(
-                    file_snapshot,
-                    required_paths,
-                ),
-                "existing_website_change_policy": {
-                    "minimum_required_changed_files": 1,
-                    "preferred_coordinated_required_files": existing_preferred_coordinated_files,
-                    "prefer_coordinated_when_objective_spans_files": True,
-                },
-                "shared_board": (
-                    report.shared_board.model_dump(mode="json") if report.shared_board is not None else None
-                ),
-                "coordination_tickets": [
-                    ticket.model_dump(mode="json") for ticket in report.coordination_tickets
-                ],
-                "handoff_packets": [packet.model_dump(mode="json") for packet in report.handoff_packets],
-                "final_audit": (
-                    report.final_audit.model_dump(mode="json") if report.final_audit is not None else None
-                ),
-            },
-            metadata={
-                "surface": "super_organism",
-                "mode": "live",
-                "tool_budget_profile": "super_dan_live",
-                "trace_id": run_trace_id,
-                "root_task_id": run_task_id,
-                "organism_id": report.organism_id,
-                "organ_id": "super-dan.live.website",
-                "organism_stage": "execution",
-                "worker_id": worker_id,
-            },
-        )
+            "shared_board": (
+                report.shared_board.model_dump(mode="json")
+                if report.shared_board is not None
+                else None
+            ),
+            "coordination_tickets": [
+                ticket.model_dump(mode="json") for ticket in report.coordination_tickets
+            ],
+            "handoff_packets": [
+                packet.model_dump(mode="json") for packet in report.handoff_packets
+            ],
+            "final_audit": (
+                report.final_audit.model_dump(mode="json")
+                if report.final_audit is not None
+                else None
+            ),
+        },
+        metadata={
+            "surface": "super_organism",
+            "mode": "live",
+            "tool_budget_profile": "super_dan_live",
+            "trace_id": run_trace_id,
+            "root_task_id": run_task_id,
+            "organism_id": report.organism_id,
+            "organ_id": "super-dan.live.website",
+            "organism_stage": "execution",
+            "worker_id": worker_id,
+        },
+    )
     worker = _live_cell_from_brief(
         model=model,
         brief=worker_brief,
@@ -7869,12 +8511,13 @@ async def _run_live_website_build(
     existing_paths = [path for path in required_paths if path.exists()]
     missing_paths = [path for path in required_paths if not path.exists()]
     changed_required_paths = _changed_paths_from_snapshot(file_snapshot, required_paths)
-    mutated_paths = _mutation_paths_from_tools(executed_tools, workspace_root=workspace_root)
+    mutated_paths = _mutation_paths_from_tools(
+        executed_tools, workspace_root=workspace_root
+    )
     error = result.error
     if missing_paths and not error:
-        error = (
-            "live build finished without creating required files: "
-            + ", ".join(str(path) for path in missing_paths)
+        error = "live build finished without creating required files: " + ", ".join(
+            str(path) for path in missing_paths
         )
     validation = _failed_validation_payload(
         reason=error or "live website build did not meet the exit contract",
@@ -7937,7 +8580,8 @@ async def _run_live_website_build(
                 expected_return_shape=_live_validation_return_shape(),
             ),
             input_payload={
-                "objective": objective_context.get("effective_objective") or report.target,
+                "objective": objective_context.get("effective_objective")
+                or report.target,
                 "original_objective": report.target,
                 "objective_normalization": dict(objective_context),
                 "workspace_root": str(workspace_root),
@@ -8011,7 +8655,9 @@ async def _run_live_website_build(
         and builder_retry_attempts < builder_retry_limit
     ):
         builder_retry_attempts += 1
-        recovery_reason = _validation_repair_brief(validation, static_validation_failures)
+        recovery_reason = _validation_repair_brief(
+            validation, static_validation_failures
+        )
         _log_live_event(
             event_logger,
             "live.builder_retry.started",
@@ -8080,7 +8726,8 @@ async def _run_live_website_build(
             },
             evidence=_super_report_evidence_blocks(report),
             input_payload={
-                "objective": objective_context.get("effective_objective") or report.target,
+                "objective": objective_context.get("effective_objective")
+                or report.target,
                 "original_objective": report.target,
                 "objective_normalization": dict(objective_context),
                 "workspace_root": str(workspace_root),
@@ -8112,7 +8759,9 @@ async def _run_live_website_build(
                 "organism_stage": "execution",
                 "worker_id": recovery_worker_id,
                 "builder_retry": True,
-                "exclusive_write_owner_path": relative_files[0] if relative_files else "",
+                "exclusive_write_owner_path": (
+                    relative_files[0] if relative_files else ""
+                ),
                 "recommended_write_paths": list(relative_files),
             },
         )
@@ -8142,8 +8791,12 @@ async def _run_live_website_build(
         error = recovery_result.error
         existing_paths = [path for path in required_paths if path.exists()]
         missing_paths = [path for path in required_paths if not path.exists()]
-        changed_required_paths = _changed_paths_from_snapshot(file_snapshot, required_paths)
-        mutated_paths = _mutation_paths_from_tools(executed_tools, workspace_root=workspace_root)
+        changed_required_paths = _changed_paths_from_snapshot(
+            file_snapshot, required_paths
+        )
+        mutated_paths = _mutation_paths_from_tools(
+            executed_tools, workspace_root=workspace_root
+        )
         _log_live_event(
             event_logger,
             "live.builder_retry.completed",
@@ -8267,7 +8920,8 @@ async def _run_live_website_build(
             },
             evidence=_super_report_evidence_blocks(report),
             input_payload={
-                "objective": objective_context.get("effective_objective") or report.target,
+                "objective": objective_context.get("effective_objective")
+                or report.target,
                 "original_objective": report.target,
                 "objective_normalization": dict(objective_context),
                 "workspace_root": str(workspace_root),
@@ -8327,8 +8981,12 @@ async def _run_live_website_build(
             error = repair_result.error
         existing_paths = [path for path in required_paths if path.exists()]
         missing_paths = [path for path in required_paths if not path.exists()]
-        changed_required_paths = _changed_paths_from_snapshot(file_snapshot, required_paths)
-        mutated_paths = _mutation_paths_from_tools(executed_tools, workspace_root=workspace_root)
+        changed_required_paths = _changed_paths_from_snapshot(
+            file_snapshot, required_paths
+        )
+        mutated_paths = _mutation_paths_from_tools(
+            executed_tools, workspace_root=workspace_root
+        )
         _log_live_event(
             event_logger,
             "live.website_repair.completed",
@@ -8489,8 +9147,12 @@ async def _run_live_generic_execution(
     )
     if prompt_only_creation_target:
         generic_tool_ids = _prompt_only_creation_tool_ids(generic_tool_ids)
-        generic_preferred_tool_ids = _prompt_only_creation_tool_ids(generic_preferred_tool_ids)
-    generic_evidence = [] if prompt_only_creation_target else _super_report_evidence_blocks(report)
+        generic_preferred_tool_ids = _prompt_only_creation_tool_ids(
+            generic_preferred_tool_ids
+        )
+    generic_evidence = (
+        [] if prompt_only_creation_target else _super_report_evidence_blocks(report)
+    )
     request_understanding = _request_understanding_payload(
         str(report.target or ""),
         workspace_root=workspace_root,
@@ -8505,9 +9167,13 @@ async def _run_live_generic_execution(
         workspace_root=request_understanding.get("workspace_root"),
         target_paths=list(request_understanding.get("target_paths") or []),
         source=request_understanding.get("source"),
-        rule_generation_brief=list(request_understanding.get("rule_generation_brief") or []),
+        rule_generation_brief=list(
+            request_understanding.get("rule_generation_brief") or []
+        ),
         aspect_reviews=list(request_understanding.get("aspect_reviews") or []),
-        confidence_scoped_acceptance=list(request_understanding.get("confidence_scoped_acceptance") or []),
+        confidence_scoped_acceptance=list(
+            request_understanding.get("confidence_scoped_acceptance") or []
+        ),
         stop_rule=request_understanding.get("stop_rule"),
     )
     generic_input_payload: dict[str, Any] = {
@@ -8535,16 +9201,25 @@ async def _run_live_generic_execution(
                 "cell_count": report.cell_count,
                 "active_cell_cap": report.active_cell_cap,
                 "organ_counts": dict(report.organ_counts),
-                "delivery_plan": [node.model_dump(mode="json") for node in report.delivery_plan],
+                "delivery_plan": [
+                    node.model_dump(mode="json") for node in report.delivery_plan
+                ],
                 "shared_board": (
-                    report.shared_board.model_dump(mode="json") if report.shared_board is not None else None
+                    report.shared_board.model_dump(mode="json")
+                    if report.shared_board is not None
+                    else None
                 ),
                 "coordination_tickets": [
-                    ticket.model_dump(mode="json") for ticket in report.coordination_tickets
+                    ticket.model_dump(mode="json")
+                    for ticket in report.coordination_tickets
                 ],
-                "handoff_packets": [packet.model_dump(mode="json") for packet in report.handoff_packets],
+                "handoff_packets": [
+                    packet.model_dump(mode="json") for packet in report.handoff_packets
+                ],
                 "final_audit": (
-                    report.final_audit.model_dump(mode="json") if report.final_audit is not None else None
+                    report.final_audit.model_dump(mode="json")
+                    if report.final_audit is not None
+                    else None
                 ),
             }
         )
@@ -8557,7 +9232,9 @@ async def _run_live_generic_execution(
     request_understanding_event_count_total = 0
     task_graph_revision = 0
     understanding_plan_context: dict[str, Any] | None = None
-    plan_root = _super_plan_root(event_logger=event_logger, workspace_root=workspace_root)
+    plan_root = _super_plan_root(
+        event_logger=event_logger, workspace_root=workspace_root
+    )
     plan_root_relative = _super_plan_root_relative(plan_root, workspace_root)
 
     async def run_model_request_understanding() -> bool:
@@ -8582,20 +9259,28 @@ async def _run_live_generic_execution(
         last_status = ""
         last_error = ""
 
-        for attempt in range(1, _SUPER_DAN_REQUEST_UNDERSTANDING_SELF_HEAL_ATTEMPTS + 1):
+        for attempt in range(
+            1, _SUPER_DAN_REQUEST_UNDERSTANDING_SELF_HEAL_ATTEMPTS + 1
+        ):
             is_repair_attempt = attempt > 1
-            understanding_tool_ids = [] if is_repair_attempt else list(base_understanding_tool_ids)
+            understanding_tool_ids = (
+                [] if is_repair_attempt else list(base_understanding_tool_ids)
+            )
             _log_live_event(
                 event_logger,
-                "live.request_understanding.repair_started"
-                if is_repair_attempt
-                else "live.request_understanding.started",
+                (
+                    "live.request_understanding.repair_started"
+                    if is_repair_attempt
+                    else "live.request_understanding.started"
+                ),
                 model=model,
                 workspace_root=str(workspace_root),
                 tool_ids=list(understanding_tool_ids),
                 attempt=attempt,
                 max_attempts=_SUPER_DAN_REQUEST_UNDERSTANDING_SELF_HEAL_ATTEMPTS,
-                operator_intent_policy=operator_intent_payload if operator_intent_policy.active else None,
+                operator_intent_policy=(
+                    operator_intent_payload if operator_intent_policy.active else None
+                ),
                 previous_error=previous_error if is_repair_attempt else None,
             )
             task = (
@@ -8643,7 +9328,9 @@ async def _run_live_generic_execution(
                     "Do not write plan files or execute the deliverable.",
                     "Return structured request-understanding and initial task-graph data only.",
                     *(
-                        ["Do not call tools; this is a no-tool request-understanding self-heal attempt."]
+                        [
+                            "Do not call tools; this is a no-tool request-understanding self-heal attempt."
+                        ]
                         if is_repair_attempt
                         else []
                     ),
@@ -8661,12 +9348,16 @@ async def _run_live_generic_execution(
                         for tool_id in ("file_read", "list_directory", "web_search")
                         if tool_id in set(understanding_tool_ids)
                     ],
-                    "max_tool_calls": 0
-                    if is_repair_attempt or not understanding_tool_ids
-                    else max(1, min(int(args.max_tool_calls), 8)),
+                    "max_tool_calls": (
+                        0
+                        if is_repair_attempt or not understanding_tool_ids
+                        else max(1, min(int(args.max_tool_calls), 8))
+                    ),
                 },
                 contract_snippets=[
-                    *_super_dan_stage_snippets("planner", tool_ids=understanding_tool_ids),
+                    *_super_dan_stage_snippets(
+                        "planner", tool_ids=understanding_tool_ids
+                    ),
                 ],
                 output_contract=OutputContract(
                     definition_of_done=(
@@ -8680,7 +9371,11 @@ async def _run_live_generic_execution(
                     "temperature": 0.0,
                     "max_tokens": _SUPER_DAN_REQUEST_UNDERSTANDING_MAX_TOKENS,
                 },
-                evidence=[] if prompt_only_creation_target else _super_report_evidence_blocks(report),
+                evidence=(
+                    []
+                    if prompt_only_creation_target
+                    else _super_report_evidence_blocks(report)
+                ),
                 input_payload=input_payload,
                 metadata={
                     "surface": "super_organism",
@@ -8704,17 +9399,23 @@ async def _run_live_generic_execution(
                 organism_stage="request_understanding",
             )
             try:
-                understanding_result, understanding_tools, understanding_events = await _execute_live_request(
-                    worker=understanding_worker,
-                    request=_request_from_live_brief(understanding_brief, args=args),
-                    tool_ids=understanding_tool_ids,
-                    workspace_root=workspace_root,
-                    args=args,
-                    model=model,
-                    provider=provider,
-                    event_logger=event_logger,
+                understanding_result, understanding_tools, understanding_events = (
+                    await _execute_live_request(
+                        worker=understanding_worker,
+                        request=_request_from_live_brief(
+                            understanding_brief, args=args
+                        ),
+                        tool_ids=understanding_tool_ids,
+                        workspace_root=workspace_root,
+                        args=args,
+                        model=model,
+                        provider=provider,
+                        event_logger=event_logger,
+                    )
                 )
-            except Exception as exc:  # defensive: one self-heal pass may still recover shape-only failures.
+            except (
+                Exception
+            ) as exc:  # defensive: one self-heal pass may still recover shape-only failures.
                 previous_output = None
                 previous_error = f"{type(exc).__name__}: {exc}"
                 last_status = "exception"
@@ -8747,15 +9448,23 @@ async def _run_live_generic_execution(
             )
             if updated_understanding is not None:
                 request_understanding = updated_understanding
-                generic_input_payload["request_understanding"] = dict(request_understanding)
+                generic_input_payload["request_understanding"] = dict(
+                    request_understanding
+                )
                 initial_task_graph = _super_plan_task_graph(
-                    understanding_payload.get("task_graph") if isinstance(understanding_payload, Mapping) else []
+                    understanding_payload.get("task_graph")
+                    if isinstance(understanding_payload, Mapping)
+                    else []
                 )
                 initial_ready_task_ids = _super_plan_string_list(
-                    understanding_payload.get("ready_task_ids") if isinstance(understanding_payload, Mapping) else []
+                    understanding_payload.get("ready_task_ids")
+                    if isinstance(understanding_payload, Mapping)
+                    else []
                 )
                 if not initial_ready_task_ids and initial_task_graph:
-                    initial_ready_task_ids = _super_plan_ready_task_ids(initial_task_graph)
+                    initial_ready_task_ids = _super_plan_ready_task_ids(
+                        initial_task_graph
+                    )
                 initial_deferred_task_ids = _super_plan_string_list(
                     understanding_payload.get("deferred_task_ids")
                     if isinstance(understanding_payload, Mapping)
@@ -8767,7 +9476,9 @@ async def _run_live_generic_execution(
                         initial_ready_task_ids,
                     )
                 if initial_task_graph:
-                    graph_update = _super_plan_graph_update_payload(understanding_payload)
+                    graph_update = _super_plan_graph_update_payload(
+                        understanding_payload
+                    )
                     task_graph_revision += 1
                     initial_context: dict[str, Any] = {
                         "enabled": True,
@@ -8785,21 +9496,28 @@ async def _run_live_generic_execution(
                         "request_understanding": dict(request_understanding),
                     }
                     update_source = (
-                        "request_understanding_repair" if is_repair_attempt else "request_understanding"
+                        "request_understanding_repair"
+                        if is_repair_attempt
+                        else "request_understanding"
                     )
-                    understanding_plan_context = _super_plan_context_with_graph_state(
-                        initial_context,
-                        revision=task_graph_revision,
-                        source=update_source,
-                        update_reason=(
-                            graph_update.get("reason")
-                            or "Initial model-authored task graph from request understanding."
-                        ),
-                        update_scope=graph_update.get("scope") or "whole_graph",
-                        changed_task_ids=list(graph_update.get("changed_task_ids") or []),
-                        ready_task_ids=initial_ready_task_ids,
-                        deferred_task_ids=initial_deferred_task_ids,
-                    ) or initial_context
+                    understanding_plan_context = (
+                        _super_plan_context_with_graph_state(
+                            initial_context,
+                            revision=task_graph_revision,
+                            source=update_source,
+                            update_reason=(
+                                graph_update.get("reason")
+                                or "Initial model-authored task graph from request understanding."
+                            ),
+                            update_scope=graph_update.get("scope") or "whole_graph",
+                            changed_task_ids=list(
+                                graph_update.get("changed_task_ids") or []
+                            ),
+                            ready_task_ids=initial_ready_task_ids,
+                            deferred_task_ids=initial_deferred_task_ids,
+                        )
+                        or initial_context
+                    )
                     generic_input_payload["plan_context"] = _super_plan_context_payload(
                         understanding_plan_context,
                         plan_root=plan_root,
@@ -8814,7 +9532,9 @@ async def _run_live_generic_execution(
                             plan_root=plan_root,
                             workspace_root=workspace_root,
                         ),
-                        task_graph_state=dict(understanding_plan_context.get("task_graph_state") or {}),
+                        task_graph_state=dict(
+                            understanding_plan_context.get("task_graph_state") or {}
+                        ),
                     )
                     if event_logger is not None:
                         understanding_plan_context = (
@@ -8833,7 +9553,11 @@ async def _run_live_generic_execution(
                 _log_live_event(
                     event_logger,
                     "live.request_understanding.updated",
-                    source="request_understanding_repair" if is_repair_attempt else "request_understanding",
+                    source=(
+                        "request_understanding_repair"
+                        if is_repair_attempt
+                        else "request_understanding"
+                    ),
                     attempt=attempt,
                     request_understanding=dict(request_understanding),
                     request_understanding_schema=request_understanding.get("schema"),
@@ -8841,8 +9565,12 @@ async def _run_live_generic_execution(
                     original_request=request_understanding.get("original_request"),
                     workspace_root=request_understanding.get("workspace_root"),
                     target_paths=list(request_understanding.get("target_paths") or []),
-                    aspect_reviews=list(request_understanding.get("aspect_reviews") or []),
-                    confidence_scoped_acceptance=list(request_understanding.get("confidence_scoped_acceptance") or []),
+                    aspect_reviews=list(
+                        request_understanding.get("aspect_reviews") or []
+                    ),
+                    confidence_scoped_acceptance=list(
+                        request_understanding.get("confidence_scoped_acceptance") or []
+                    ),
                     stop_rule=request_understanding.get("stop_rule"),
                 )
                 return True
@@ -8876,7 +9604,9 @@ async def _run_live_generic_execution(
         )
         return False
 
-    async def run_optional_planner() -> tuple[dict[str, Any] | None, dict[str, int] | None]:
+    async def run_optional_planner() -> (
+        tuple[dict[str, Any] | None, dict[str, int] | None]
+    ):
         nonlocal planning_tool_calls_total, planning_event_count_total, request_understanding, task_graph_revision
         planner_tool_ids = [
             tool_id
@@ -8946,7 +9676,12 @@ async def _run_live_generic_execution(
                 "allowed_tool_ids": list(planner_tool_ids),
                 "preferred_tool_ids": [
                     tool_id
-                    for tool_id in ("list_directory", "file_read", "file_write", "file_edit")
+                    for tool_id in (
+                        "list_directory",
+                        "file_read",
+                        "file_write",
+                        "file_edit",
+                    )
                     if tool_id in set(planner_tool_ids)
                 ],
                 "max_tool_calls": max(4, min(int(args.max_tool_calls), 24)),
@@ -8967,7 +9702,11 @@ async def _run_live_generic_execution(
                 "temperature": 0.20,
                 "max_tokens": _SUPER_DAN_PLANNER_MAX_TOKENS,
             },
-            evidence=[] if prompt_only_creation_target else _super_report_evidence_blocks(report),
+            evidence=(
+                []
+                if prompt_only_creation_target
+                else _super_report_evidence_blocks(report)
+            ),
             input_payload={
                 "objective": report.target,
                 "workspace_root": str(workspace_root),
@@ -9027,7 +9766,9 @@ async def _run_live_generic_execution(
                 workspace_root=request_understanding.get("workspace_root"),
                 target_paths=list(request_understanding.get("target_paths") or []),
                 aspect_reviews=list(request_understanding.get("aspect_reviews") or []),
-                confidence_scoped_acceptance=list(request_understanding.get("confidence_scoped_acceptance") or []),
+                confidence_scoped_acceptance=list(
+                    request_understanding.get("confidence_scoped_acceptance") or []
+                ),
                 stop_rule=request_understanding.get("stop_rule"),
             )
         initial_slice: list[str] = []
@@ -9037,14 +9778,22 @@ async def _run_live_generic_execution(
         if isinstance(planner_payload, Mapping):
             raw_slice = planner_payload.get("first_build_slice")
             if isinstance(raw_slice, list):
-                initial_slice = [str(item).strip() for item in raw_slice if str(item).strip()]
-            initial_task_graph = _super_plan_task_graph(planner_payload.get("task_graph") or [])
-            initial_ready_task_ids = _super_plan_string_list(planner_payload.get("ready_task_ids") or [])
+                initial_slice = [
+                    str(item).strip() for item in raw_slice if str(item).strip()
+                ]
+            initial_task_graph = _super_plan_task_graph(
+                planner_payload.get("task_graph") or []
+            )
+            initial_ready_task_ids = _super_plan_string_list(
+                planner_payload.get("ready_task_ids") or []
+            )
             if not initial_ready_task_ids:
                 initial_ready_task_ids = list(initial_slice)
             if not initial_ready_task_ids and initial_task_graph:
                 initial_ready_task_ids = _super_plan_ready_task_ids(initial_task_graph)
-            initial_deferred_task_ids = _super_plan_string_list(planner_payload.get("deferred_task_ids") or [])
+            initial_deferred_task_ids = _super_plan_string_list(
+                planner_payload.get("deferred_task_ids") or []
+            )
             if not initial_deferred_task_ids and initial_task_graph:
                 initial_deferred_task_ids = _super_plan_deferred_task_ids(
                     initial_task_graph,
@@ -9068,16 +9817,22 @@ async def _run_live_generic_execution(
         if initial_task_graph:
             initial_graph_update = _super_plan_graph_update_payload(planner_payload)
             task_graph_revision += 1
-            initial_plan_context = _super_plan_context_with_graph_state(
-                initial_plan_context,
-                revision=task_graph_revision,
-                source="planner",
-                update_reason=initial_graph_update.get("reason") or "Initial model-authored task graph.",
-                update_scope="whole_graph",
-                changed_task_ids=list(initial_graph_update.get("changed_task_ids") or []),
-                ready_task_ids=initial_ready_task_ids,
-                deferred_task_ids=initial_deferred_task_ids,
-            ) or initial_plan_context
+            initial_plan_context = (
+                _super_plan_context_with_graph_state(
+                    initial_plan_context,
+                    revision=task_graph_revision,
+                    source="planner",
+                    update_reason=initial_graph_update.get("reason")
+                    or "Initial model-authored task graph.",
+                    update_scope="whole_graph",
+                    changed_task_ids=list(
+                        initial_graph_update.get("changed_task_ids") or []
+                    ),
+                    ready_task_ids=initial_ready_task_ids,
+                    deferred_task_ids=initial_deferred_task_ids,
+                )
+                or initial_plan_context
+            )
             _log_live_event(
                 event_logger,
                 "live.task_graph.updated",
@@ -9087,7 +9842,9 @@ async def _run_live_generic_execution(
                     plan_root=plan_root,
                     workspace_root=workspace_root,
                 ),
-                task_graph_state=dict(initial_plan_context.get("task_graph_state") or {}),
+                task_graph_state=dict(
+                    initial_plan_context.get("task_graph_state") or {}
+                ),
             )
             if event_logger is not None:
                 initial_plan_context = (
@@ -9111,7 +9868,11 @@ async def _run_live_generic_execution(
             request_understanding=dict(request_understanding),
             error=planner_result.error,
         )
-        if planner_result.status != "completed" or planner_result.error or not plan_files:
+        if (
+            planner_result.status != "completed"
+            or planner_result.error
+            or not plan_files
+        ):
             return None, usage
 
         _log_live_event(
@@ -9167,7 +9928,9 @@ async def _run_live_generic_execution(
                 "max_tool_calls": max(4, min(int(args.max_tool_calls), 16)),
             },
             contract_snippets=[
-                *_super_dan_stage_snippets("plan_validator", tool_ids=plan_validator_tool_ids),
+                *_super_dan_stage_snippets(
+                    "plan_validator", tool_ids=plan_validator_tool_ids
+                ),
                 _super_plan_file_contract(plan_root_relative),
             ],
             sampling_policy={
@@ -9185,7 +9948,9 @@ async def _run_live_generic_execution(
                 "plan_root": str(plan_root),
                 "plan_root_relative": plan_root_relative,
                 "plan_files": list(plan_files),
-                "plan_task_state": _super_plan_task_state(plan_root, workspace_root=workspace_root),
+                "plan_task_state": _super_plan_task_state(
+                    plan_root, workspace_root=workspace_root
+                ),
                 "operator_intent_policy": operator_intent_payload,
                 "request_understanding": dict(request_understanding),
             },
@@ -9208,20 +9973,26 @@ async def _run_live_generic_execution(
             worker_id=plan_validator_worker_id,
             organism_stage="plan_validation",
         )
-        plan_validation_result, plan_validation_tools, plan_validation_events = await _execute_live_request(
-            worker=plan_validator_worker,
-            request=_request_from_live_brief(plan_validator_brief, args=args),
-            tool_ids=plan_validator_tool_ids,
-            workspace_root=workspace_root,
-            args=args,
-            model=model,
-            provider=provider,
-            event_logger=event_logger,
+        plan_validation_result, plan_validation_tools, plan_validation_events = (
+            await _execute_live_request(
+                worker=plan_validator_worker,
+                request=_request_from_live_brief(plan_validator_brief, args=args),
+                tool_ids=plan_validator_tool_ids,
+                workspace_root=workspace_root,
+                args=args,
+                model=model,
+                provider=provider,
+                event_logger=event_logger,
+            )
         )
-        usage = _merge_token_usage(usage, _extract_execution_usage(plan_validation_result))
+        usage = _merge_token_usage(
+            usage, _extract_execution_usage(plan_validation_result)
+        )
         planning_tool_calls_total += len(plan_validation_tools)
         planning_event_count_total += len(plan_validation_events)
-        raw_plan_validation_payload = _extract_validation_payload(dict(plan_validation_result.outputs))
+        raw_plan_validation_payload = _extract_validation_payload(
+            dict(plan_validation_result.outputs)
+        )
         plan_validation = _normalize_plan_validation_payload(
             raw_plan_validation_payload,
             plan_files=plan_files,
@@ -9230,7 +10001,8 @@ async def _run_live_generic_execution(
             plan_validation["passed"] = False
             plan_validation["blocking_issues"] = [
                 *list(plan_validation.get("blocking_issues") or []),
-                plan_validation_result.error or "plan validator did not complete successfully",
+                plan_validation_result.error
+                or "plan validator did not complete successfully",
             ]
         if not plan_validation.get("first_build_slice") and initial_slice:
             plan_validation["first_build_slice"] = list(initial_slice)
@@ -9240,14 +10012,24 @@ async def _run_live_generic_execution(
             plan_validation["ready_task_ids"] = list(initial_ready_task_ids)
         if not plan_validation.get("deferred_task_ids") and initial_deferred_task_ids:
             plan_validation["deferred_task_ids"] = list(initial_deferred_task_ids)
-        if not plan_validation.get("first_build_slice") and plan_validation.get("ready_task_ids"):
-            plan_validation["first_build_slice"] = list(plan_validation.get("ready_task_ids") or [])
+        if not plan_validation.get("first_build_slice") and plan_validation.get(
+            "ready_task_ids"
+        ):
+            plan_validation["first_build_slice"] = list(
+                plan_validation.get("ready_task_ids") or []
+            )
         task_graph_update = _super_plan_graph_update_payload(planner_payload)
-        validation_graph_update = _super_plan_graph_update_payload(raw_plan_validation_payload)
+        validation_graph_update = _super_plan_graph_update_payload(
+            raw_plan_validation_payload
+        )
         update_scope = str(
             validation_graph_update.get("scope")
             or task_graph_update.get("scope")
-            or ("branch_local" if plan_validation.get("dependency_revisions") else "whole_graph")
+            or (
+                "branch_local"
+                if plan_validation.get("dependency_revisions")
+                else "whole_graph"
+            )
         ).strip()
         update_reason = str(
             validation_graph_update.get("reason")
@@ -9269,24 +10051,35 @@ async def _run_live_generic_execution(
             "ready_task_ids": list(plan_validation.get("ready_task_ids") or []),
             "deferred_task_ids": list(plan_validation.get("deferred_task_ids") or []),
             "task_graph": list(plan_validation.get("task_graph") or []),
-            "dependency_revisions": list(plan_validation.get("dependency_revisions") or []),
+            "dependency_revisions": list(
+                plan_validation.get("dependency_revisions") or []
+            ),
             "execution_mode": "dependency_frontier",
             "validation": plan_validation,
             "request_understanding": dict(request_understanding),
         }
         if plan_validation.get("task_graph"):
             task_graph_revision += 1
-            validation_plan_context = _super_plan_context_with_graph_state(
-                validation_plan_context,
-                revision=task_graph_revision,
-                source="plan_validator",
-                update_reason=update_reason,
-                update_scope=update_scope or "whole_graph",
-                changed_task_ids=list(validation_graph_update.get("changed_task_ids") or []),
-                ready_task_ids=list(plan_validation.get("ready_task_ids") or []),
-                deferred_task_ids=list(plan_validation.get("deferred_task_ids") or []),
-                dependency_revisions=list(plan_validation.get("dependency_revisions") or []),
-            ) or validation_plan_context
+            validation_plan_context = (
+                _super_plan_context_with_graph_state(
+                    validation_plan_context,
+                    revision=task_graph_revision,
+                    source="plan_validator",
+                    update_reason=update_reason,
+                    update_scope=update_scope or "whole_graph",
+                    changed_task_ids=list(
+                        validation_graph_update.get("changed_task_ids") or []
+                    ),
+                    ready_task_ids=list(plan_validation.get("ready_task_ids") or []),
+                    deferred_task_ids=list(
+                        plan_validation.get("deferred_task_ids") or []
+                    ),
+                    dependency_revisions=list(
+                        plan_validation.get("dependency_revisions") or []
+                    ),
+                )
+                or validation_plan_context
+            )
             _log_live_event(
                 event_logger,
                 "live.task_graph.updated",
@@ -9296,7 +10089,9 @@ async def _run_live_generic_execution(
                     plan_root=plan_root,
                     workspace_root=workspace_root,
                 ),
-                task_graph_state=dict(validation_plan_context.get("task_graph_state") or {}),
+                task_graph_state=dict(
+                    validation_plan_context.get("task_graph_state") or {}
+                ),
             )
             if event_logger is not None:
                 validation_plan_context = (
@@ -9317,8 +10112,12 @@ async def _run_live_generic_execution(
             deferred_task_ids=list(plan_validation.get("deferred_task_ids") or []),
             first_build_slice=list(plan_validation.get("first_build_slice") or []),
             task_graph=list(plan_validation.get("task_graph") or []),
-            dependency_revisions=list(plan_validation.get("dependency_revisions") or []),
-            task_graph_state=dict(validation_plan_context.get("task_graph_state") or {}),
+            dependency_revisions=list(
+                plan_validation.get("dependency_revisions") or []
+            ),
+            task_graph_state=dict(
+                validation_plan_context.get("task_graph_state") or {}
+            ),
             blocking_issues=list(plan_validation.get("blocking_issues") or []),
         )
         if not plan_validation.get("passed"):
@@ -9362,15 +10161,21 @@ async def _run_live_generic_execution(
     if not plan_context and understanding_plan_context:
         plan_context = dict(understanding_plan_context)
     if isinstance(plan_context, Mapping) and event_logger is not None:
-        plan_context = event_logger.canonicalize_plan_context(plan_context) or dict(plan_context)
-    full_plan_context = dict(plan_context) if isinstance(plan_context, Mapping) else None
+        plan_context = event_logger.canonicalize_plan_context(plan_context) or dict(
+            plan_context
+        )
+    full_plan_context = (
+        dict(plan_context) if isinstance(plan_context, Mapping) else None
+    )
     worktree_prepared_tasks: list[dict[str, Any]] = []
     main_frontier_task: dict[str, Any] | None = None
     worktree_frontier_tasks: list[dict[str, Any]] = []
     if full_plan_context:
         main_frontier_task, worktree_frontier_tasks = _super_plan_parallel_frontier(
             full_plan_context,
-            max_worktree_tasks=max(0, int(getattr(args, "worktree_parallelism", 0) or 0)),
+            max_worktree_tasks=max(
+                0, int(getattr(args, "worktree_parallelism", 0) or 0)
+            ),
         )
     if worktree_frontier_tasks and event_logger is not None:
         for frontier_task in worktree_frontier_tasks:
@@ -9428,7 +10233,9 @@ async def _run_live_generic_execution(
                     str(item["plan_task"].get("task_id") or "").strip()
                     for item in worktree_prepared_tasks
                 ],
-                worktree_roots=[str(item["worktree_root"]) for item in worktree_prepared_tasks],
+                worktree_roots=[
+                    str(item["worktree_root"]) for item in worktree_prepared_tasks
+                ],
                 main_task_id=str((main_frontier_task or {}).get("task_id") or ""),
             )
 
@@ -9455,13 +10262,14 @@ async def _run_live_generic_execution(
             worktree_root = Path(str(prepared.get("worktree_root") or "")).expanduser()
             plan_task_id = str(frontier_task.get("task_id") or "").strip()
             task_plan_context = dict(full_plan_context or {})
-            task_plan_context["assigned_task_ids"] = [plan_task_id] if plan_task_id else []
+            task_plan_context["assigned_task_ids"] = (
+                [plan_task_id] if plan_task_id else []
+            )
             task_plan_context["ready_task_ids"] = [plan_task_id] if plan_task_id else []
             task_plan_context["parallel_worktree_task_ids"] = []
-            worker_id_for_task = (
-                "super-dan.live.worktree."
-                + re.sub(r"[^A-Za-z0-9_.-]+", "-", plan_task_id or "ready-task").strip("-")
-            )
+            worker_id_for_task = "super-dan.live.worktree." + re.sub(
+                r"[^A-Za-z0-9_.-]+", "-", plan_task_id or "ready-task"
+            ).strip("-")
             owned_paths = _super_plan_task_owned_paths(frontier_task)
             worktree_brief = role_brief(
                 role=RoleSpec(
@@ -9568,15 +10376,17 @@ async def _run_live_generic_execution(
                 worktree_root=str(worktree_root),
                 owned_paths=list(owned_paths),
             )
-            worktree_result, worktree_tools, worktree_events = await _execute_live_request(
-                worker=worker_for_task,
-                request=_request_from_live_brief(worktree_brief, args=args),
-                tool_ids=generic_tool_ids,
-                workspace_root=worktree_root,
-                args=args,
-                model=model,
-                provider=provider,
-                event_logger=event_logger,
+            worktree_result, worktree_tools, worktree_events = (
+                await _execute_live_request(
+                    worker=worker_for_task,
+                    request=_request_from_live_brief(worktree_brief, args=args),
+                    tool_ids=generic_tool_ids,
+                    workspace_root=worktree_root,
+                    args=args,
+                    model=model,
+                    provider=provider,
+                    event_logger=event_logger,
+                )
             )
             worktree_mutated_paths = _mutation_paths_from_tools(
                 worktree_tools,
@@ -9601,11 +10411,14 @@ async def _run_live_generic_execution(
                         "packet_id": getattr(runtime_task, "packet_id", ""),
                         "owner_scope": getattr(runtime_task, "owner_scope", ""),
                         "changed_files": list(relative_mutations),
-                        "summary": summary_text or f"worktree task {plan_task_id} completed",
+                        "summary": summary_text
+                        or f"worktree task {plan_task_id} completed",
                         "validation_evidence": _super_plan_string_list(
                             frontier_task.get("validation") or []
                         ),
-                        "candidate_score": 0.75 if worktree_result.status == "completed" else 0.25,
+                        "candidate_score": (
+                            0.75 if worktree_result.status == "completed" else 0.25
+                        ),
                         "merge_risk": "bounded_owned_path_copy",
                         "diff_ref": str(worktree_root),
                     }
@@ -9709,7 +10522,11 @@ async def _run_live_generic_execution(
 
     if isinstance(plan_context, Mapping) and plan_context.get("task_graph"):
         active_frontier_ids = [
-            *list(plan_context.get("assigned_task_ids") or plan_context.get("ready_task_ids") or []),
+            *list(
+                plan_context.get("assigned_task_ids")
+                or plan_context.get("ready_task_ids")
+                or []
+            ),
             *list(plan_context.get("parallel_worktree_task_ids") or []),
         ]
         task_graph_revision += 1
@@ -9745,12 +10562,16 @@ async def _run_live_generic_execution(
             workspace_root=workspace_root,
             include_task_state_key="task_state_before_execution",
         )
-    interactive_source_implementation = _super_is_interactive_source_implementation_objective(
+    interactive_source_implementation = (
+        _super_is_interactive_source_implementation_objective(str(report.target or ""))
+    )
+    targeted_source_repair = _super_is_targeted_source_repair_objective(
         str(report.target or "")
     )
-    targeted_source_repair = _super_is_targeted_source_repair_objective(str(report.target or ""))
     if interactive_source_implementation:
-        generic_input_payload["execution_condition"] = "interactive_source_implementation"
+        generic_input_payload["execution_condition"] = (
+            "interactive_source_implementation"
+        )
         generic_input_payload["first_write_expectation"] = (
             "After minimal source/scene inspection, the live worker should make product source, scene/state, "
             "UI, asset, or validation/test edits rather than continuing reconnaissance."
@@ -9801,144 +10622,154 @@ async def _run_live_generic_execution(
         )
     )
     worker_brief = role_brief(
-            role=RoleSpec(
-                role_label="workspace_worker",
-                responsibility="Execute the requested Super DAN deliverable directly in the workspace.",
-                success_criteria=worker_success_criteria,
-                trace_role="super-dan.live.general-builder",
-            ),
-            task=_live_generic_task(
-                report,
-                workspace_root=workspace_root,
-                operator_intent_policy=operator_intent_policy,
-                prompt_only_creation_target=prompt_only_creation_target,
-                plan_context=plan_context,
-                request_understanding=request_understanding,
-            ),
-            scope=f"workspace={workspace_root}; native Super DAN live general workspace execution",
-            hard_constraints=[
-                *(
-                    ["Do not create, edit, delete, or otherwise mutate workspace files; answer from inspection."]
-                    if mutation_forbidden
-                    else (
-                        ["Make the concrete workspace change required by the resolved request contract before finalizing."]
-                        if mutation_required
-                        else ["Do not mutate workspace files unless the request-specific completion contract requires a change."]
-                    )
-                ),
-                *(
+        role=RoleSpec(
+            role_label="workspace_worker",
+            responsibility="Execute the requested Super DAN deliverable directly in the workspace.",
+            success_criteria=worker_success_criteria,
+            trace_role="super-dan.live.general-builder",
+        ),
+        task=_live_generic_task(
+            report,
+            workspace_root=workspace_root,
+            operator_intent_policy=operator_intent_policy,
+            prompt_only_creation_target=prompt_only_creation_target,
+            plan_context=plan_context,
+            request_understanding=request_understanding,
+        ),
+        scope=f"workspace={workspace_root}; native Super DAN live general workspace execution",
+        hard_constraints=[
+            *(
+                [
+                    "Do not create, edit, delete, or otherwise mutate workspace files; answer from inspection."
+                ]
+                if mutation_forbidden
+                else (
                     [
-                        "For interactive source implementation objectives, after minimal inspection the first durable output must be product source, scene/state, UI, asset, or validation/test edits, not `.dan-super` plans or analysis notes.",
-                    ]
-                    if interactive_source_implementation
-                    else []
-                ),
-                *(
-                    [
-                        "For targeted source repair objectives, after at most one focused inspection of the relevant file, test, or error context, make a concrete file_edit/file_write mutation to the responsible source/test material or report a precise blocker.",
-                        "Do not create `.dan-super` plan files or run validation as a substitute for the required repair edit unless the precise blocker is that no responsible workspace file can be identified.",
-                    ]
-                    if targeted_source_repair
-                    else []
-                ),
-                "Default to the current workspace root; only use explicit external paths when the operator asks and runtime policy allows.",
-                *(
-                    [
-                        "When the requested deliverable is a saved report, markdown file, data note, or other document artifact, write that artifact to the workspace.",
+                        "Make the concrete workspace change required by the resolved request contract before finalizing."
                     ]
                     if mutation_required
-                    else []
-                ),
-                *(
-                    [
-                        "Follow the supplied run-local plan context, but treat the actual deliverable edit as mandatory; plan-file edits alone do not satisfy the objective.",
-                        "Tick plan checkboxes only for work completed with evidence.",
+                    else [
+                        "Do not mutate workspace files unless the request-specific completion contract requires a change."
                     ]
-                    if plan_context and mutation_required
-                    else []
-                ),
-                "Use web_search for current external facts when the enabled tool is available.",
-                *list(operator_intent_policy.constraints),
-            ],
-            soft_constraints=[
-                *(
-                    ["Prefer a bounded concrete deliverable over broad speculative analysis."]
-                    if mutation_required
-                    else ["Prefer a concise evidence-backed answer over creating a workspace artifact unless mutation is explicitly required."]
-                ),
-                "For broad maps, cover the highest-value chain first and mark lower-confidence gaps clearly.",
-                "Prefer primary/company/regulatory/source-grounded evidence over unsourced memory when current facts matter.",
-                "Keep the final summary concise and inspectable.",
-                *(
-                    [
-                        "Use shell_command only when it materially verifies or inspects the workspace.",
-                        "Inspect first, then make a bounded coherent implementation.",
-                        "Prefer `file_edit` over whole-file `file_write` when the target file already exists.",
-                        "After one failed or truncated large write, immediately switch to a smaller patch strategy.",
-                    ]
-                    if mutation_required
-                    else []
-                ),
-                (
-                    "Avoid rereading the same files unless the next edit truly needs exact grounding."
-                    if operator_intent_policy.allow_workspace_mutation
-                    else "Avoid rereading the same files unless the next finding truly needs exact grounding."
-                ),
-                *(
-                    [
-                        "For targeted repairs, prefer the smallest responsible path/function/edit range over broad repository discovery.",
-                    ]
-                    if targeted_source_repair
-                    else []
-                ),
-            ],
-            tool_policy={
-                "allowed_tool_ids": list(generic_tool_ids),
-                "preferred_tool_ids": list(generic_preferred_tool_ids),
-                "max_tool_calls": int(args.max_tool_calls),
-            },
-            contract_snippets=[
-                *_super_dan_stage_snippets("builder", tool_ids=generic_tool_ids),
-                _super_plan_executor_contract(plan_context),
-                _live_pacing_contract(pacing_policy),
-                snippets.incremental_edit_contract(),
-                snippets.no_scratch_files_contract(),
-            ],
-            output_contract=OutputContract(
-                definition_of_done=definition_of_done,
-                expected_return_shape=(
-                    _live_answer_return_shape()
-                    if mutation_forbidden
-                    else _live_expected_return_shape()
-                ),
+                )
             ),
-            sampling_policy={
-                "profile": choice.sampling_policy,
-                "temperature": 0.30,
-                "max_tokens": _SUPER_DAN_WORKER_MAX_TOKENS,
-            },
-            evidence=generic_evidence,
-            input_payload=generic_input_payload,
-            metadata={
-                "surface": "super_organism",
-                "mode": "live",
-                "tool_budget_profile": "super_dan_live",
-                "trace_id": run_trace_id,
-                "root_task_id": run_task_id,
-                "organism_id": report.organism_id,
-                "organ_id": "super-dan.live.general",
-                "organism_stage": "execution",
-                "worker_id": worker_id,
-                "operator_intent_policy": operator_intent_payload,
-                "exclusive_write_owner_path": prompt_only_creation_target or "",
-                "recommended_write_paths": (
-                    [prompt_only_creation_target] if prompt_only_creation_target else []
-                ),
-                "operator_prompt_only_creation": bool(prompt_only_creation_target),
-                "interactive_source_implementation": interactive_source_implementation,
-                "targeted_source_repair": targeted_source_repair,
-            },
-        )
+            *(
+                [
+                    "For interactive source implementation objectives, after minimal inspection the first durable output must be product source, scene/state, UI, asset, or validation/test edits, not `.dan-super` plans or analysis notes.",
+                ]
+                if interactive_source_implementation
+                else []
+            ),
+            *(
+                [
+                    "For targeted source repair objectives, after at most one focused inspection of the relevant file, test, or error context, make a concrete file_edit/file_write mutation to the responsible source/test material or report a precise blocker.",
+                    "Do not create `.dan-super` plan files or run validation as a substitute for the required repair edit unless the precise blocker is that no responsible workspace file can be identified.",
+                ]
+                if targeted_source_repair
+                else []
+            ),
+            "Default to the current workspace root; only use explicit external paths when the operator asks and runtime policy allows.",
+            *(
+                [
+                    "When the requested deliverable is a saved report, markdown file, data note, or other document artifact, write that artifact to the workspace.",
+                ]
+                if mutation_required
+                else []
+            ),
+            *(
+                [
+                    "Follow the supplied run-local plan context, but treat the actual deliverable edit as mandatory; plan-file edits alone do not satisfy the objective.",
+                    "Tick plan checkboxes only for work completed with evidence.",
+                ]
+                if plan_context and mutation_required
+                else []
+            ),
+            "Use web_search for current external facts when the enabled tool is available.",
+            *list(operator_intent_policy.constraints),
+        ],
+        soft_constraints=[
+            *(
+                [
+                    "Prefer a bounded concrete deliverable over broad speculative analysis."
+                ]
+                if mutation_required
+                else [
+                    "Prefer a concise evidence-backed answer over creating a workspace artifact unless mutation is explicitly required."
+                ]
+            ),
+            "For broad maps, cover the highest-value chain first and mark lower-confidence gaps clearly.",
+            "Prefer primary/company/regulatory/source-grounded evidence over unsourced memory when current facts matter.",
+            "Keep the final summary concise and inspectable.",
+            *(
+                [
+                    "Use shell_command only when it materially verifies or inspects the workspace.",
+                    "Inspect first, then make a bounded coherent implementation.",
+                    "Prefer `file_edit` over whole-file `file_write` when the target file already exists.",
+                    "After one failed or truncated large write, immediately switch to a smaller patch strategy.",
+                ]
+                if mutation_required
+                else []
+            ),
+            (
+                "Avoid rereading the same files unless the next edit truly needs exact grounding."
+                if operator_intent_policy.allow_workspace_mutation
+                else "Avoid rereading the same files unless the next finding truly needs exact grounding."
+            ),
+            *(
+                [
+                    "For targeted repairs, prefer the smallest responsible path/function/edit range over broad repository discovery.",
+                ]
+                if targeted_source_repair
+                else []
+            ),
+        ],
+        tool_policy={
+            "allowed_tool_ids": list(generic_tool_ids),
+            "preferred_tool_ids": list(generic_preferred_tool_ids),
+            "max_tool_calls": int(args.max_tool_calls),
+        },
+        contract_snippets=[
+            *_super_dan_stage_snippets("builder", tool_ids=generic_tool_ids),
+            _super_plan_executor_contract(plan_context),
+            _live_pacing_contract(pacing_policy),
+            snippets.incremental_edit_contract(),
+            snippets.no_scratch_files_contract(),
+        ],
+        output_contract=OutputContract(
+            definition_of_done=definition_of_done,
+            expected_return_shape=(
+                _live_answer_return_shape()
+                if mutation_forbidden
+                else _live_expected_return_shape()
+            ),
+        ),
+        sampling_policy={
+            "profile": choice.sampling_policy,
+            "temperature": 0.30,
+            "max_tokens": _SUPER_DAN_WORKER_MAX_TOKENS,
+        },
+        evidence=generic_evidence,
+        input_payload=generic_input_payload,
+        metadata={
+            "surface": "super_organism",
+            "mode": "live",
+            "tool_budget_profile": "super_dan_live",
+            "trace_id": run_trace_id,
+            "root_task_id": run_task_id,
+            "organism_id": report.organism_id,
+            "organ_id": "super-dan.live.general",
+            "organism_stage": "execution",
+            "worker_id": worker_id,
+            "operator_intent_policy": operator_intent_payload,
+            "exclusive_write_owner_path": prompt_only_creation_target or "",
+            "recommended_write_paths": (
+                [prompt_only_creation_target] if prompt_only_creation_target else []
+            ),
+            "operator_prompt_only_creation": bool(prompt_only_creation_target),
+            "interactive_source_implementation": interactive_source_implementation,
+            "targeted_source_repair": targeted_source_repair,
+        },
+    )
     worker = _live_cell_from_brief(
         model=model,
         brief=worker_brief,
@@ -9947,14 +10778,18 @@ async def _run_live_generic_execution(
     )
     request = _request_from_live_brief(worker_brief, args=args)
 
-    async def run_main_builder() -> tuple[Any, list[dict[str, Any]], list[dict[str, Any]]]:
+    async def run_main_builder() -> (
+        tuple[Any, list[dict[str, Any]], list[dict[str, Any]]]
+    ):
         _log_live_event(
             event_logger,
             "live.generic_build.started",
             model=model,
             workspace_root=str(workspace_root),
             tool_ids=list(generic_tool_ids),
-            operator_intent_policy=operator_intent_payload if operator_intent_policy.active else None,
+            operator_intent_policy=(
+                operator_intent_payload if operator_intent_policy.active else None
+            ),
             main_task_id=str((main_frontier_task or {}).get("task_id") or ""),
             parallel_worktree_task_ids=[
                 str(item["plan_task"].get("task_id") or "").strip()
@@ -10000,9 +10835,15 @@ async def _run_live_generic_execution(
     events.extend(list(worktree_summary.get("events") or []))
     if worktree_prepared_tasks and full_plan_context:
         restored_plan_context = dict(full_plan_context)
-        if isinstance(plan_context, Mapping) and isinstance(plan_context.get("task_graph_state"), Mapping):
-            restored_plan_context["task_graph_state"] = dict(plan_context.get("task_graph_state") or {})
-            restored_plan_context["task_graph_revision"] = plan_context.get("task_graph_revision")
+        if isinstance(plan_context, Mapping) and isinstance(
+            plan_context.get("task_graph_state"), Mapping
+        ):
+            restored_plan_context["task_graph_state"] = dict(
+                plan_context.get("task_graph_state") or {}
+            )
+            restored_plan_context["task_graph_revision"] = plan_context.get(
+                "task_graph_revision"
+            )
         plan_context = restored_plan_context
     builder_payload_for_graph = _extract_validation_payload(
         dict(result.outputs) if isinstance(result.outputs, Mapping) else result.outputs,
@@ -10024,7 +10865,9 @@ async def _run_live_generic_execution(
             workspace_root=request_understanding.get("workspace_root"),
             target_paths=list(request_understanding.get("target_paths") or []),
             aspect_reviews=list(request_understanding.get("aspect_reviews") or []),
-            confidence_scoped_acceptance=list(request_understanding.get("confidence_scoped_acceptance") or []),
+            confidence_scoped_acceptance=list(
+                request_understanding.get("confidence_scoped_acceptance") or []
+            ),
             stop_rule=request_understanding.get("stop_rule"),
         )
     build_token_usage = _merge_token_usage(
@@ -10043,7 +10886,9 @@ async def _run_live_generic_execution(
         exclude_roots=_super_plan_exclude_roots(plan_context),
     )
     if isinstance(plan_context, Mapping) and plan_context.get("task_graph"):
-        builder_graph_update = _super_plan_graph_update_payload(builder_payload_for_graph)
+        builder_graph_update = _super_plan_graph_update_payload(
+            builder_payload_for_graph
+        )
         graph_changed_task_ids = _super_plan_string_list(
             builder_graph_update.get("changed_task_ids") or []
         )
@@ -10065,7 +10910,11 @@ async def _run_live_generic_execution(
         )
         active_frontier_ids = _super_plan_string_list(
             [
-                *list(plan_context.get("assigned_task_ids") or plan_context.get("ready_task_ids") or []),
+                *list(
+                    plan_context.get("assigned_task_ids")
+                    or plan_context.get("ready_task_ids")
+                    or []
+                ),
                 *list(plan_context.get("parallel_worktree_task_ids") or []),
             ]
         )
@@ -10086,7 +10935,9 @@ async def _run_live_generic_execution(
                 ),
                 update_scope=builder_graph_update.get("scope") or "branch_local",
                 changed_task_ids=list(
-                    dict.fromkeys([*graph_changed_task_ids, *execution_completed_task_ids])
+                    dict.fromkeys(
+                        [*graph_changed_task_ids, *execution_completed_task_ids]
+                    )
                 ),
                 active_task_ids=remaining_active_task_ids,
                 completed_task_ids=execution_completed_task_ids,
@@ -10137,7 +10988,9 @@ async def _run_live_generic_execution(
             and answer_recovery_attempts < answer_recovery_limit
         ):
             answer_recovery_attempts += 1
-            recovery_reason = str(current_quality.get("reason") or "The final answer is missing.").strip()
+            recovery_reason = str(
+                current_quality.get("reason") or "The final answer is missing."
+            ).strip()
             _log_live_event(
                 event_logger,
                 "live.answer_recovery.started",
@@ -10162,7 +11015,11 @@ async def _run_live_generic_execution(
                     workspace_root=workspace_root,
                     failure_reason=recovery_reason,
                     attempt=answer_recovery_attempts,
-                    previous_output=dict(result.outputs) if isinstance(result.outputs, Mapping) else result.outputs,
+                    previous_output=(
+                        dict(result.outputs)
+                        if isinstance(result.outputs, Mapping)
+                        else result.outputs
+                    ),
                     operator_intent_policy=operator_intent_policy,
                     request_understanding=request_understanding,
                 ),
@@ -10181,13 +11038,22 @@ async def _run_live_generic_execution(
                 tool_policy={
                     "allowed_tool_ids": list(generic_read_only_tool_ids),
                     "preferred_tool_ids": _filter_tool_ids_for_operator_intent(
-                        ["file_read", "list_directory", "git_diff", "git_status", "workspace_check", "web_search"],
+                        [
+                            "file_read",
+                            "list_directory",
+                            "git_diff",
+                            "git_status",
+                            "workspace_check",
+                            "web_search",
+                        ],
                         operator_intent_policy,
                     ),
                     "max_tool_calls": max(4, min(int(args.max_tool_calls), 16)),
                 },
                 contract_snippets=[
-                    *_super_dan_stage_snippets("final_response_recovery", tool_ids=generic_read_only_tool_ids),
+                    *_super_dan_stage_snippets(
+                        "final_response_recovery", tool_ids=generic_read_only_tool_ids
+                    ),
                 ],
                 output_contract=OutputContract(
                     definition_of_done=(
@@ -10207,7 +11073,11 @@ async def _run_live_generic_execution(
                     "workspace_root": str(workspace_root),
                     "failure_reason": recovery_reason,
                     "attempt": answer_recovery_attempts,
-                    "previous_output": dict(result.outputs) if isinstance(result.outputs, Mapping) else result.outputs,
+                    "previous_output": (
+                        dict(result.outputs)
+                        if isinstance(result.outputs, Mapping)
+                        else result.outputs
+                    ),
                     "operator_intent_policy": operator_intent_payload,
                     "request_understanding": dict(request_understanding),
                     "answer_recovery_rule": (
@@ -10235,15 +11105,17 @@ async def _run_live_generic_execution(
                 worker_id=recovery_worker_id,
                 organism_stage="final_response_recovery",
             )
-            recovery_result, recovery_tools, recovery_events = await _execute_live_request(
-                worker=recovery_worker,
-                request=_request_from_live_brief(recovery_brief, args=args),
-                tool_ids=generic_read_only_tool_ids,
-                workspace_root=workspace_root,
-                args=args,
-                model=model,
-                provider=provider,
-                event_logger=event_logger,
+            recovery_result, recovery_tools, recovery_events = (
+                await _execute_live_request(
+                    worker=recovery_worker,
+                    request=_request_from_live_brief(recovery_brief, args=args),
+                    tool_ids=generic_read_only_tool_ids,
+                    workspace_root=workspace_root,
+                    args=args,
+                    model=model,
+                    provider=provider,
+                    event_logger=event_logger,
+                )
             )
             result = recovery_result
             executed_tools.extend(recovery_tools)
@@ -10254,7 +11126,9 @@ async def _run_live_generic_execution(
             )
             if recovery_result.error:
                 error = recovery_result.error
-            current_quality = _live_answer_quality(result.outputs, objective=report.target)
+            current_quality = _live_answer_quality(
+                result.outputs, objective=report.target
+            )
             _log_live_event(
                 event_logger,
                 "live.answer_recovery.completed",
@@ -10265,7 +11139,9 @@ async def _run_live_generic_execution(
                 event_count=len(recovery_events),
                 answer_satisfactory=bool(current_quality.get("passed")),
                 reason=str(current_quality.get("reason") or ""),
-                answer_preview=_truncate_text(current_quality.get("answer") or "", limit=240),
+                answer_preview=_truncate_text(
+                    current_quality.get("answer") or "", limit=240
+                ),
             )
         return current_quality
 
@@ -10280,106 +11156,113 @@ async def _run_live_generic_execution(
             include_task_state_key="task_state_after_execution",
         )
         validator_brief = review_brief(
-                role=RoleSpec(
-                    role_label="validator_workspace",
-                    responsibility="Validate the Super DAN workspace deliverable in read-only mode.",
-                    success_criteria=[
-                        "Mutated files and relevant git evidence were inspected.",
-                        "Each active branch/frontier task has an explicit branch_result with evidence, status, and gap.",
-                        "Concrete deterministic checks are separated from LLM semantic fit checks.",
-                        "Graph-level completion is claimed only after all ready branches pass or remaining branch work is named.",
-                        "The implementation materially advances the operator objective.",
-                        "Placeholder-style or non-responsive changes are rejected.",
+            role=RoleSpec(
+                role_label="validator_workspace",
+                responsibility="Validate the Super DAN workspace deliverable in read-only mode.",
+                success_criteria=[
+                    "Mutated files and relevant git evidence were inspected.",
+                    "Each active branch/frontier task has an explicit branch_result with evidence, status, and gap.",
+                    "Concrete deterministic checks are separated from LLM semantic fit checks.",
+                    "Graph-level completion is claimed only after all ready branches pass or remaining branch work is named.",
+                    "The implementation materially advances the operator objective.",
+                    "Placeholder-style or non-responsive changes are rejected.",
+                ],
+                artifact_targets=list(paths),
+                trace_role="super-dan.live.general.validator",
+            ),
+            task=_live_generic_validation_task(
+                report,
+                workspace_root=workspace_root,
+                pre_run_file_state=pre_run_file_state,
+                post_run_file_state=post_run_file_state,
+                operator_intent_policy=operator_intent_policy,
+                plan_context=validator_plan_context,
+                request_understanding=request_understanding,
+            ),
+            scope=f"workspace={workspace_root}; native Super DAN general workspace validation",
+            hard_constraints=[
+                "Read-only validation only; do not write or edit files.",
+                "Inspect the mutated files and relevant read-only git evidence before deciding.",
+                "Use pre-run file-state metadata as the material-change baseline for untracked workspaces; do not require git commits or git history.",
+                *(
+                    [
+                        "Audit plan checkbox updates against changed deliverable files and evidence; do not pass a run only because it ticked plan tasks.",
+                    ]
+                    if validator_plan_context
+                    else []
+                ),
+                "Fail if the run made only placeholder-style or otherwise non-responsive changes.",
+                "For document/report objectives, inspect the written artifact and fail if no report-like file was produced.",
+                *list(operator_intent_policy.constraints),
+            ],
+            soft_constraints=[
+                "Prefer concrete missing requirements over vague criticism.",
+                "Judge material advancement against the operator objective.",
+                "Use tests, lints, file existence, static inspection, and command outcomes as deterministic checks when available.",
+                "Use LLM judgment only for semantic fit against the request, understanding, and task graph.",
+            ],
+            allowed_tool_ids=generic_read_only_tool_ids,
+            tool_policy={
+                "allowed_tool_ids": list(generic_read_only_tool_ids),
+                "preferred_tool_ids": _filter_tool_ids_for_operator_intent(
+                    [
+                        "git_diff",
+                        "file_read",
+                        "web_search",
+                        "git_status",
+                        "list_directory",
+                        "workspace_check",
                     ],
-                    artifact_targets=list(paths),
-                    trace_role="super-dan.live.general.validator",
+                    operator_intent_policy,
                 ),
-                task=_live_generic_validation_task(
-                    report,
-                    workspace_root=workspace_root,
-                    pre_run_file_state=pre_run_file_state,
-                    post_run_file_state=post_run_file_state,
-                    operator_intent_policy=operator_intent_policy,
-                    plan_context=validator_plan_context,
-                    request_understanding=request_understanding,
-                ),
-                scope=f"workspace={workspace_root}; native Super DAN general workspace validation",
-                hard_constraints=[
-                    "Read-only validation only; do not write or edit files.",
-                    "Inspect the mutated files and relevant read-only git evidence before deciding.",
-                    "Use pre-run file-state metadata as the material-change baseline for untracked workspaces; do not require git commits or git history.",
-                    *(
+                "max_tool_calls": max(4, min(int(args.max_tool_calls), 24)),
+            },
+            contract_snippets=[
+                *_super_dan_stage_snippets(
+                    "validator",
+                    tool_ids=generic_read_only_tool_ids,
+                    extra_questions=(
                         [
-                            "Audit plan checkbox updates against changed deliverable files and evidence; do not pass a run only because it ticked plan tasks.",
+                            "Were any plan tasks ticked, and do the changed files prove those tasks are actually complete?"
                         ]
                         if validator_plan_context
-                        else []
+                        else None
                     ),
-                    "Fail if the run made only placeholder-style or otherwise non-responsive changes.",
-                    "For document/report objectives, inspect the written artifact and fail if no report-like file was produced.",
-                    *list(operator_intent_policy.constraints),
-                ],
-                soft_constraints=[
-                    "Prefer concrete missing requirements over vague criticism.",
-                    "Judge material advancement against the operator objective.",
-                    "Use tests, lints, file existence, static inspection, and command outcomes as deterministic checks when available.",
-                    "Use LLM judgment only for semantic fit against the request, understanding, and task graph.",
-                ],
-                allowed_tool_ids=generic_read_only_tool_ids,
-                tool_policy={
-                    "allowed_tool_ids": list(generic_read_only_tool_ids),
-                    "preferred_tool_ids": _filter_tool_ids_for_operator_intent(
-                        ["git_diff", "file_read", "web_search", "git_status", "list_directory", "workspace_check"],
-                        operator_intent_policy,
-                    ),
-                    "max_tool_calls": max(4, min(int(args.max_tool_calls), 24)),
-                },
-                contract_snippets=[
-                    *_super_dan_stage_snippets(
-                        "validator",
-                        tool_ids=generic_read_only_tool_ids,
-                        extra_questions=(
-                            [
-                                "Were any plan tasks ticked, and do the changed files prove those tasks are actually complete?"
-                            ]
-                            if validator_plan_context
-                            else None
-                        ),
-                    ),
-                    _super_plan_validation_contract(validator_plan_context),
-                ],
-                sampling_policy={
-                    "profile": "deterministic",
-                    "temperature": 0.0,
-                    "max_tokens": _SUPER_DAN_VALIDATOR_MAX_TOKENS,
-                },
-                output_contract=OutputContract(
-                    definition_of_done="Return the validation report only.",
-                    expected_return_shape=_live_validation_return_shape(),
                 ),
-                input_payload={
-                    "objective": report.target,
-                    "workspace_root": str(workspace_root),
-                    "mutated_paths": list(paths),
-                    "pre_run_file_state": pre_run_file_state,
-                    "post_run_file_state": post_run_file_state,
-                    "operator_intent_policy": operator_intent_payload,
-                    "request_understanding": dict(request_understanding),
-                    "plan_context": validator_plan_context,
-                },
-                metadata={
-                    "surface": "super_organism",
-                    "mode": "live",
-                    "tool_budget_profile": "super_dan_live",
-                    "trace_id": run_trace_id,
-                    "root_task_id": run_task_id,
-                    "organism_id": report.organism_id,
-                    "organ_id": "super-dan.live.general",
-                    "worker_id": validator_worker_id,
-                    "organism_stage": "validation",
-                    "operator_intent_policy": operator_intent_payload,
-                },
-            )
+                _super_plan_validation_contract(validator_plan_context),
+            ],
+            sampling_policy={
+                "profile": "deterministic",
+                "temperature": 0.0,
+                "max_tokens": _SUPER_DAN_VALIDATOR_MAX_TOKENS,
+            },
+            output_contract=OutputContract(
+                definition_of_done="Return the validation report only.",
+                expected_return_shape=_live_validation_return_shape(),
+            ),
+            input_payload={
+                "objective": report.target,
+                "workspace_root": str(workspace_root),
+                "mutated_paths": list(paths),
+                "pre_run_file_state": pre_run_file_state,
+                "post_run_file_state": post_run_file_state,
+                "operator_intent_policy": operator_intent_payload,
+                "request_understanding": dict(request_understanding),
+                "plan_context": validator_plan_context,
+            },
+            metadata={
+                "surface": "super_organism",
+                "mode": "live",
+                "tool_budget_profile": "super_dan_live",
+                "trace_id": run_trace_id,
+                "root_task_id": run_task_id,
+                "organism_id": report.organism_id,
+                "organ_id": "super-dan.live.general",
+                "worker_id": validator_worker_id,
+                "organism_stage": "validation",
+                "operator_intent_policy": operator_intent_payload,
+            },
+        )
         validator_worker = _live_cell_from_brief(
             model=model,
             brief=validator_brief,
@@ -10408,7 +11291,10 @@ async def _run_live_generic_execution(
         answer_quality = await run_generic_answer_recovery()
         validation = _answer_validation_payload(answer_quality)
         if not bool(validation.get("passed")) and not error:
-            error = str(validation.get("repair_brief") or "").strip() or "final answer missing"
+            error = (
+                str(validation.get("repair_brief") or "").strip()
+                or "final answer missing"
+            )
     else:
         validation = _failed_validation_payload(
             reason=error or "live execution did not meet the exit contract",
@@ -10463,10 +11349,7 @@ async def _run_live_generic_execution(
             if tool_id in set(recovery_tool_ids)
         ]
         builder_retry_limit = _live_max_builder_retry_attempts(args)
-        while (
-            not mutated_paths
-            and builder_retry_attempts < builder_retry_limit
-        ):
+        while not mutated_paths and builder_retry_attempts < builder_retry_limit:
             builder_retry_attempts += 1
             recovery_reason = (
                 error
@@ -10557,7 +11440,11 @@ async def _run_live_generic_execution(
                     "temperature": 0.25,
                     "max_tokens": _SUPER_DAN_REPAIR_MAX_TOKENS,
                 },
-                evidence=[] if prompt_only_creation_target else _super_report_evidence_blocks(report),
+                evidence=(
+                    []
+                    if prompt_only_creation_target
+                    else _super_report_evidence_blocks(report)
+                ),
                 input_payload={
                     "objective": report.target,
                     "workspace_root": str(workspace_root),
@@ -10605,7 +11492,9 @@ async def _run_live_generic_execution(
                     "builder_retry": True,
                     "operator_intent_policy": operator_intent_payload,
                     "repair_policy": {
-                        "forbid_shrinking_existing_artifacts": bool(additive_recovery_required),
+                        "forbid_shrinking_existing_artifacts": bool(
+                            additive_recovery_required
+                        ),
                         "target_paths": list(pre_existing_workspace_paths),
                     },
                 },
@@ -10616,15 +11505,17 @@ async def _run_live_generic_execution(
                 worker_id=recovery_worker_id,
                 organism_stage="execution",
             )
-            recovery_result, recovery_tools, recovery_events = await _execute_live_request(
-                worker=recovery_worker,
-                request=_request_from_live_brief(recovery_brief, args=args),
-                tool_ids=recovery_tool_ids,
-                workspace_root=workspace_root,
-                args=args,
-                model=model,
-                provider=provider,
-                event_logger=event_logger,
+            recovery_result, recovery_tools, recovery_events = (
+                await _execute_live_request(
+                    worker=recovery_worker,
+                    request=_request_from_live_brief(recovery_brief, args=args),
+                    tool_ids=recovery_tool_ids,
+                    workspace_root=workspace_root,
+                    args=args,
+                    model=model,
+                    provider=provider,
+                    event_logger=event_logger,
+                )
             )
             result = recovery_result
             executed_tools.extend(recovery_tools)
@@ -10640,11 +11531,16 @@ async def _run_live_generic_execution(
                 workspace_root=workspace_root,
                 exclude_roots=_super_plan_exclude_roots(plan_context),
             )
-            if not mutated_paths and operator_intent_policy.allow_existing_artifact_reuse:
-                alias_tool = _materialize_missing_explicit_target_from_existing_artifact(
-                    report.target,
-                    workspace_root=workspace_root,
-                    recommended_write_paths=recommended_write_paths,
+            if (
+                not mutated_paths
+                and operator_intent_policy.allow_existing_artifact_reuse
+            ):
+                alias_tool = (
+                    _materialize_missing_explicit_target_from_existing_artifact(
+                        report.target,
+                        workspace_root=workspace_root,
+                        recommended_write_paths=recommended_write_paths,
+                    )
                 )
                 if alias_tool is not None:
                     executed_tools.append(alias_tool)
@@ -10685,7 +11581,10 @@ async def _run_live_generic_execution(
                 record_validation_usage(validation)
                 return
 
-            error = recovery_result.error or "live execution finished without any workspace file mutations"
+            error = (
+                recovery_result.error
+                or "live execution finished without any workspace file mutations"
+            )
             validation = _failed_validation_payload(
                 reason=error,
                 missing_requirements=["No workspace file mutations were observed."],
@@ -10706,15 +11605,21 @@ async def _run_live_generic_execution(
         and repair_attempts < repair_limit
     ):
         repair_attempts += 1
-        repair_reason = _generic_validation_repair_brief(validation, plan_context=plan_context)
+        repair_reason = _generic_validation_repair_brief(
+            validation, plan_context=plan_context
+        )
         repair_validation = _generic_repair_validation_payload(
             validation,
             repair_brief=repair_reason,
             plan_context=plan_context,
         )
-        repair_pre_run_file_state = _file_metadata_for_paths(pre_run_workspace_state, mutated_paths)
+        repair_pre_run_file_state = _file_metadata_for_paths(
+            pre_run_workspace_state, mutated_paths
+        )
         repair_current_file_state = _current_file_metadata_for_paths(mutated_paths)
-        additive_repair_required = _generic_validation_requests_additive_repair(validation)
+        additive_repair_required = _generic_validation_requests_additive_repair(
+            validation
+        )
         _log_live_event(
             event_logger,
             "live.generic_repair.started",
@@ -10830,7 +11735,9 @@ async def _run_live_generic_execution(
                 "recommended_write_paths": list(mutated_paths),
                 "required_repair_paths": list(mutated_paths),
                 "repair_policy": {
-                    "forbid_shrinking_existing_artifacts": bool(additive_repair_required),
+                    "forbid_shrinking_existing_artifacts": bool(
+                        additive_repair_required
+                    ),
                     "target_paths": list(mutated_paths),
                 },
             },
@@ -10905,11 +11812,15 @@ async def _run_live_generic_execution(
                 ]
             )
         )
-        ready_next_task_ids = _super_plan_string_list(validation.get("ready_next_task_ids") or [])
+        ready_next_task_ids = _super_plan_string_list(
+            validation.get("ready_next_task_ids") or []
+        )
         if ready_next_task_ids:
             ready_next_set = set(ready_next_task_ids)
             completed_task_ids = [
-                task_id for task_id in completed_task_ids if task_id not in ready_next_set
+                task_id
+                for task_id in completed_task_ids
+                if task_id not in ready_next_set
             ]
         task_graph = _super_plan_task_graph(plan_context.get("task_graph") or [])
         if bool(validation.get("passed")):
@@ -11024,9 +11935,7 @@ async def _run_live_generic_execution(
         else str(result.outputs or "")
     )
     final_summary = (
-        str(answer_quality.get("answer") or "").strip()
-        if not mutation_required
-        else ""
+        str(answer_quality.get("answer") or "").strip() if not mutation_required else ""
     ) or str(raw_summary or "")
     return {
         "status": status,
@@ -11126,9 +12035,15 @@ def _mutation_paths_from_tools(
     excluded = [root.resolve(strict=False) for root in exclude_roots]
     for tool in executed_tools:
         tool_id = str(tool.get("tool_id") or "")
-        if not tool.get("ok") or tool_id not in {"file_write", "file_edit", "shell_command"}:
+        if not tool.get("ok") or tool_id not in {
+            "file_write",
+            "file_edit",
+            "shell_command",
+        }:
             continue
-        arguments = tool.get("arguments") if isinstance(tool.get("arguments"), dict) else {}
+        arguments = (
+            tool.get("arguments") if isinstance(tool.get("arguments"), dict) else {}
+        )
         result = tool.get("result") if isinstance(tool.get("result"), dict) else {}
         if tool_id == "shell_command":
             try:
@@ -11136,15 +12051,21 @@ def _mutation_paths_from_tools(
             except (TypeError, ValueError):
                 exit_code = 0
             changes = result.get("workspace_changes") if exit_code == 0 else {}
-            raw_paths = changes.get("changed_paths") if isinstance(changes, dict) else []
-            if not isinstance(raw_paths, SequenceABC) or isinstance(raw_paths, (str, bytes)):
+            raw_paths = (
+                changes.get("changed_paths") if isinstance(changes, dict) else []
+            )
+            if not isinstance(raw_paths, SequenceABC) or isinstance(
+                raw_paths, (str, bytes)
+            ):
                 continue
             for raw_path in raw_paths:
                 text = str(raw_path or "").strip()
                 if not text:
                     continue
                 candidate = Path(text).expanduser()
-                path = candidate if candidate.is_absolute() else workspace_root / candidate
+                path = (
+                    candidate if candidate.is_absolute() else workspace_root / candidate
+                )
                 resolved = path.resolve(strict=False)
                 if any(_path_is_under(resolved, root) for root in excluded):
                     continue
@@ -11154,12 +12075,16 @@ def _mutation_paths_from_tools(
                 seen.add(rendered)
                 paths.append(rendered)
             continue
-        if (
-            tool_id == "file_edit"
-            and (result.get("changed") is False or result.get("no_op") is True)
+        if tool_id == "file_edit" and (
+            result.get("changed") is False or result.get("no_op") is True
         ):
             continue
-        raw_path = str(result.get("path") or arguments.get("path") or arguments.get("file_path") or "").strip()
+        raw_path = str(
+            result.get("path")
+            or arguments.get("path")
+            or arguments.get("file_path")
+            or ""
+        ).strip()
         if not raw_path:
             continue
         candidate = Path(raw_path).expanduser()
@@ -11394,12 +12319,13 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         live_task_id = f"super-dan-live:{live_turn_number}"
         objective_kind = "general"
         progress_renderer_factory = getattr(args, "_progress_renderer_factory", None)
-        progress_enabled = (
-            not bool(getattr(args, "json", False))
-            and not bool(getattr(args, "quiet_progress", False))
+        progress_enabled = not bool(getattr(args, "json", False)) and not bool(
+            getattr(args, "quiet_progress", False)
         )
         if callable(progress_renderer_factory):
-            progress_renderer = progress_renderer_factory(enabled=progress_enabled, args=args)
+            progress_renderer = progress_renderer_factory(
+                enabled=progress_enabled, args=args
+            )
         else:
             progress_renderer = SuperProgressRenderer(enabled=progress_enabled)
         hook_runtime = SuperHookRuntime(
@@ -11408,8 +12334,12 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
             turn_id=str(live_turn_number),
             task_id=live_task_id,
             trace_id=live_trace_id,
-            reactivity_profile=str(getattr(args, "reactivity", "balanced") or "balanced"),
-            worktree_parallelism=max(0, int(getattr(args, "worktree_parallelism", 0) or 0)),
+            reactivity_profile=str(
+                getattr(args, "reactivity", "balanced") or "balanced"
+            ),
+            worktree_parallelism=max(
+                0, int(getattr(args, "worktree_parallelism", 0) or 0)
+            ),
         )
         blueprint_bridge = SuperBlueprintEventBridge(
             task_id=live_task_id,
@@ -11446,7 +12376,9 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         )
         try:
             selected_skill_mentions = _selected_super_dan_skill_mentions_from_args(args)
-            selected_skill_preflight_notes = _selected_super_dan_skill_preflight_notes_from_args(args)
+            selected_skill_preflight_notes = (
+                _selected_super_dan_skill_preflight_notes_from_args(args)
+            )
             _log_live_event(
                 event_logger,
                 "run.log.started",
@@ -11468,12 +12400,18 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
             for note in preflight_notes:
                 _log_live_event(
                     event_logger,
-                    "skill.preflight.failed" if not preflight_ok and "failed" in note else "skill.preflight.completed",
+                    (
+                        "skill.preflight.failed"
+                        if not preflight_ok and "failed" in note
+                        else "skill.preflight.completed"
+                    ),
                     selected_skill_mentions=selected_skill_mentions,
                     note=note,
                 )
             if not preflight_ok:
-                message = "; ".join(preflight_notes) or "selected skill preflight failed"
+                message = (
+                    "; ".join(preflight_notes) or "selected skill preflight failed"
+                )
                 _log_live_event(
                     event_logger,
                     "run.log.failed",
@@ -11622,7 +12560,12 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         if bool(getattr(args, "verbose", False)):
             _print_text_report(report)
             if paths:
-                artifact_lines = ["", "Materialized Artifacts:", *[f"- {path}" for path in paths], ""]
+                artifact_lines = [
+                    "",
+                    "Materialized Artifacts:",
+                    *[f"- {path}" for path in paths],
+                    "",
+                ]
                 print("\n".join(artifact_lines), end="\n")
         else:
             _print_compact_report(report, artifact_paths=paths)
@@ -11734,7 +12677,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(raw_argv)
     setattr(args, "_live_explicit", _argv_has_option(raw_argv, "--live"))
     setattr(args, "_model_explicit", _argv_has_option(raw_argv, "--model"))
-    setattr(args, "_artifact_dir_explicit", _argv_has_option(raw_argv, "--artifact-dir"))
+    setattr(
+        args, "_artifact_dir_explicit", _argv_has_option(raw_argv, "--artifact-dir")
+    )
     setattr(args, "_implicit_live", False)
     setattr(args, "_code_like_live", False)
     setattr(args, "_stdin_is_tty", sys.stdin.isatty())
@@ -11746,8 +12691,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(format_super_queue_status(workspace_root))
         return 0
     report_mode_requested = any(
-        bool(getattr(args, field, False))
-        for field in ("plan_only", "json", "verbose")
+        bool(getattr(args, field, False)) for field in ("plan_only", "json", "verbose")
     ) or bool(getattr(args, "output", None))
     if no_objective and not report_mode_requested and stdin_is_tty:
         return _interactive_loop(args, parser)

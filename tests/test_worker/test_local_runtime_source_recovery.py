@@ -79,8 +79,12 @@ class _SourceStructureRecoveryProvider:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    async def complete(self, messages, model, temperature=0.7, max_tokens=None, **kwargs):
-        self.calls.append({"messages": messages, "model": model, "tools": kwargs.get("tools")})
+    async def complete(
+        self, messages, model, temperature=0.7, max_tokens=None, **kwargs
+    ):
+        self.calls.append(
+            {"messages": messages, "model": model, "tools": kwargs.get("tools")}
+        )
         call_index = len(self.calls)
         if call_index == 1:
             return self._tool_result(
@@ -90,8 +94,14 @@ class _SourceStructureRecoveryProvider:
                 {"path": "website/index.html"},
             )
         if call_index == 2:
-            assert _tool_names(kwargs.get("tools")) == ["file_read", "file_edit", "file_write"]
-            assert "make the first concrete project write now" in str(messages[-1]["content"])
+            assert _tool_names(kwargs.get("tools")) == [
+                "file_read",
+                "file_edit",
+                "file_write",
+            ]
+            assert "make the first concrete project write now" in str(
+                messages[-1]["content"]
+            )
             return self._tool_result(
                 model,
                 "call-2",
@@ -100,7 +110,9 @@ class _SourceStructureRecoveryProvider:
             )
         if call_index == 3:
             assert _tool_names(kwargs.get("tools")) == ["file_edit", "file_write"]
-            assert "already used the final targeted `file_read`" in str(messages[-1]["content"])
+            assert "already used the final targeted `file_read`" in str(
+                messages[-1]["content"]
+            )
             return self._tool_result(
                 model,
                 "call-3",
@@ -113,7 +125,11 @@ class _SourceStructureRecoveryProvider:
                 },
             )
         if call_index == 4:
-            assert _tool_names(kwargs.get("tools")) == ["file_read", "file_edit", "file_write"]
+            assert _tool_names(kwargs.get("tools")) == [
+                "file_read",
+                "file_edit",
+                "file_write",
+            ]
             latest = str(messages[-1]["content"])
             assert "Source-structure guard:" in latest
             assert "one focused `file_read`" in latest
@@ -126,7 +142,9 @@ class _SourceStructureRecoveryProvider:
             )
         if call_index == 5:
             assert _tool_names(kwargs.get("tools")) == ["file_edit", "file_write"]
-            assert "already used the final targeted `file_read`" in str(messages[-1]["content"])
+            assert "already used the final targeted `file_read`" in str(
+                messages[-1]["content"]
+            )
             return self._tool_result(
                 model,
                 "call-5",
@@ -177,12 +195,18 @@ class _SourceStructureRecoveryProvider:
 
 
 @pytest.mark.asyncio
-async def test_source_structure_rejection_reopens_focused_recovery_read(tmp_path) -> None:
+async def test_source_structure_rejection_reopens_focused_recovery_read(
+    tmp_path,
+) -> None:
     events: list[dict[str, object]] = []
     website_dir = tmp_path / "website"
     website_dir.mkdir()
-    (website_dir / "index.html").write_text("<main class=\"card\">Demo</main>\n", encoding="utf-8")
-    (website_dir / "styles.css").write_text(".card {\n  color: red;\n}\n", encoding="utf-8")
+    (website_dir / "index.html").write_text(
+        '<main class="card">Demo</main>\n', encoding="utf-8"
+    )
+    (website_dir / "styles.css").write_text(
+        ".card {\n  color: red;\n}\n", encoding="utf-8"
+    )
 
     runtime = LocalOrganismToolRuntime(
         tool_ids=["file_read", "file_edit", "file_write"],
@@ -231,15 +255,47 @@ async def test_source_structure_rejection_reopens_focused_recovery_read(tmp_path
         ".card {\n  color: blue;\n}\n"
     )
     source_nudge_event = next(
-        event for event in events if event["event"] == "toolloop.source_structure_nudged"
+        event
+        for event in events
+        if event["event"] == "toolloop.source_structure_nudged"
     )
     assert source_nudge_event["tool_ids"] == ["file_edit"]
-    assert source_nudge_event["enabled_tools"] == ["file_read", "file_edit", "file_write"]
+    assert source_nudge_event["enabled_tools"] == [
+        "file_read",
+        "file_edit",
+        "file_write",
+    ]
     assert _tool_names(provider_impl.calls[3]["tools"]) == [
         "file_read",
         "file_edit",
         "file_write",
     ]
+
+
+def test_materialized_file_snapshot_excludes_binary_and_oversized_files(
+    tmp_path,
+) -> None:
+    (tmp_path / "app.js").write_text("console.log('ready');\n", encoding="utf-8")
+    (tmp_path / "screenshot.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+    (tmp_path / "large.txt").write_text("x" * 256_001, encoding="utf-8")
+
+    snapshots = local_runtime_module._materialized_file_content_snapshot(
+        ["app.js", "screenshot.png", "large.txt"],
+        workspace_root=tmp_path,
+    )
+
+    assert snapshots == {"app.js": "console.log('ready');\n"}
+
+
+def test_materialized_file_snapshot_excludes_non_utf8_without_nul(tmp_path) -> None:
+    (tmp_path / "artifact.bin").write_bytes(b"\xff\xfe\xfd")
+
+    snapshots = local_runtime_module._materialized_file_content_snapshot(
+        ["artifact.bin"],
+        workspace_root=tmp_path,
+    )
+
+    assert snapshots == {}
 
 
 def test_compact_messages_for_provider_prompt_preserves_image_data_urls() -> None:
@@ -249,18 +305,23 @@ def test_compact_messages_for_provider_prompt_preserves_image_data_urls() -> Non
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": "Please inspect this screenshot. " + ("x" * 5_000)},
+                {
+                    "type": "text",
+                    "text": "Please inspect this screenshot. " + ("x" * 5_000),
+                },
                 {"type": "image_url", "image_url": {"url": data_url}},
             ],
         },
     ]
 
-    compacted_messages, stats = local_runtime_module._compact_messages_for_provider_prompt(
-        messages,
-        budget_chars=1_200,
-        emergency_budget_chars=1_200,
-        tool_schema_chars=0,
-        emergency=True,
+    compacted_messages, stats = (
+        local_runtime_module._compact_messages_for_provider_prompt(
+            messages,
+            budget_chars=1_200,
+            emergency_budget_chars=1_200,
+            tool_schema_chars=0,
+            emergency=True,
+        )
     )
 
     assert stats["prompt_context_hard_compaction"] is True

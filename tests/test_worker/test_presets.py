@@ -19,7 +19,13 @@ from dan.models.control_flow import (
 from dan.models.edges import DataEdge
 from dan.models.graph import Graph
 from dan.models.node_taxonomy import RUNTIME_NODE_TYPE_MAP
-from dan.models.nodes import CodeOperator, LLMOperator, RAGOperator, ReflectionNode, ToolOperator
+from dan.models.nodes import (
+    CodeOperator,
+    LLMOperator,
+    RAGOperator,
+    ReflectionNode,
+    ToolOperator,
+)
 from dan.models.ports import InputPort, OutputPort
 from dan.worker import (
     BRIDGED_LEGACY_NODE_TYPES,
@@ -86,7 +92,9 @@ def test_role_factory_returns_standard_worker() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tissue_member_completion_callback_observes_each_member_before_merge() -> None:
+async def test_tissue_member_completion_callback_observes_each_member_before_merge() -> (
+    None
+):
     members = [
         TissueMember(
             member_id="worker-1",
@@ -141,7 +149,10 @@ async def test_tissue_member_completion_callback_observes_each_member_before_mer
 
     assert execution.result.status == "completed"
     assert sorted(observed) == [("worker-1", 1), ("worker-2", 2)]
-    assert sorted(execution.result.outputs["member_results"]) == ["worker-1", "worker-2"]
+    assert sorted(execution.result.outputs["member_results"]) == [
+        "worker-1",
+        "worker-2",
+    ]
 
 
 def test_legacy_llm_round_trips_through_worker_bridge() -> None:
@@ -233,7 +244,9 @@ def test_convert_graph_workerizes_convertible_nodes_and_preserves_structure() ->
         },
         entry_points=["entry"],
         exit_points=["format"],
-        worker_resources={"instruction_profiles": {"review": {"instruction": "Review"}}},
+        worker_resources={
+            "instruction_profiles": {"review": {"instruction": "Review"}}
+        },
     )
 
     converted = convert_graph(graph)
@@ -264,7 +277,9 @@ def test_structured_outcome_normalization_repairs_char_split_fields() -> None:
     assert normalized["workspace_effect"] == "verified"
 
 
-def test_structured_outcome_mutation_proof_policy_keys_off_effect_not_file_presence() -> None:
+def test_structured_outcome_mutation_proof_policy_keys_off_effect_not_file_presence() -> (
+    None
+):
     verified = structured_outcome_view(
         {
             "candidate_id": "candidate-verified",
@@ -315,7 +330,9 @@ def test_compact_universal_validator_reuses_report_contract_without_quorum() -> 
     assert organ.metadata["validation_mode"] == "compact_model_review"
 
 
-def test_coding_orchestrator_plan_collapses_duplicate_briefs_back_to_one_worker() -> None:
+def test_coding_orchestrator_plan_collapses_duplicate_briefs_back_to_one_worker() -> (
+    None
+):
     plan = _normalize_orchestrator_plan(
         outputs={
             "worker_count": 3,
@@ -326,14 +343,18 @@ def test_coding_orchestrator_plan_collapses_duplicate_briefs_back_to_one_worker(
             ],
         },
         organism=coding_execution_organism(model="gpt-test"),
-        task=CodingTask(task_id="coding-task", objective="Fix the navbar hover effect."),
+        task=CodingTask(
+            task_id="coding-task", objective="Fix the navbar hover effect."
+        ),
     )
 
     assert plan.worker_count == 1
     assert plan.worker_briefs == ["Fix the navbar hover effect in styles.css."]
 
 
-def test_deterministic_validation_precheck_selects_compact_policy_for_static_blockers(tmp_path) -> None:
+def test_deterministic_validation_precheck_selects_compact_policy_for_static_blockers(
+    tmp_path,
+) -> None:
     (tmp_path / "index.html").write_text(
         """
 <!doctype html>
@@ -383,7 +404,9 @@ def test_deterministic_validation_precheck_selects_compact_policy_for_static_blo
     assert report["checks"] == ["frontend_static_contract"]
 
 
-def test_orchestrator_plan_records_scheduler_action_selection_for_artifact_partitions(tmp_path) -> None:
+def test_orchestrator_plan_records_scheduler_action_selection_for_artifact_partitions(
+    tmp_path,
+) -> None:
     for path in ("index.html", "styles.css", "app.js"):
         (tmp_path / path).write_text(f"/* {path} */\n", encoding="utf-8")
     task = CodingTask(
@@ -413,7 +436,9 @@ def test_orchestrator_plan_records_scheduler_action_selection_for_artifact_parti
     assert plan.artifact_owner_paths == ["index.html", "styles.css", "app.js"]
 
 
-def test_orchestrator_plan_avoids_owner_lanes_for_non_mutated_artifacts(tmp_path) -> None:
+def test_orchestrator_plan_avoids_owner_lanes_for_non_mutated_artifacts(
+    tmp_path,
+) -> None:
     for path in ("index.html", "styles.css", "app.js", "index_backup.html"):
         (tmp_path / path).write_text(f"/* {path} */\n", encoding="utf-8")
     task = CodingTask(
@@ -494,8 +519,9 @@ async def test_file_edit_missing_content_fails_before_approval(tmp_path) -> None
 
     assert approval_calls == []
     assert [event["event"] for event in events] == ["tool.started", "tool.failed"]
-    assert "tool_arguments_invalid: missing required arguments for file_edit: content" in str(
-        events[1]["error"]
+    assert (
+        "tool_arguments_invalid: missing required arguments for file_edit: content"
+        in str(events[1]["error"])
     )
 
 
@@ -570,7 +596,54 @@ async def test_file_edit_delete_replacement_fails_before_approval(tmp_path) -> N
     assert "new_string cannot be used with delete mode" in str(events[1]["error"])
 
 
-def test_worker_material_yield_signal_separates_candidate_from_written_artifact() -> None:
+@pytest.mark.asyncio
+async def test_file_edit_rejects_whole_document_in_narrow_range(tmp_path) -> None:
+    events: list[dict[str, object]] = []
+    target = tmp_path / "index.html"
+    original = "\n".join(
+        [
+            "<!DOCTYPE html>",
+            '<html lang="en">',
+            "<head>",
+            '  <meta charset="UTF-8">',
+            "  <title>Example</title>",
+            "</head>",
+            "<body>",
+            *[
+                f'  <section id="section-{index}">Section {index}</section>'
+                for index in range(40)
+            ],
+            "</body>",
+            "</html>",
+            "",
+        ]
+    )
+    target.write_text(original, encoding="utf-8")
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["file_edit"],
+        workspace_root=tmp_path,
+        event_callback=events.append,
+    )
+
+    with pytest.raises(ValueError, match="whole-file content in a narrow"):
+        await runtime.call(
+            "file_edit",
+            {
+                "path": "index.html",
+                "start_line": 1,
+                "end_line": 5,
+                "content": original,
+            },
+            worker_id="coding-build.worker-1",
+        )
+
+    assert target.read_text(encoding="utf-8") == original
+    assert [event["event"] for event in events] == ["tool.started", "tool.failed"]
+
+
+def test_worker_material_yield_signal_separates_candidate_from_written_artifact() -> (
+    None
+):
     read_only_signal = _worker_material_yield_signal(
         member_id="worker-1",
         payload={
@@ -968,7 +1041,9 @@ async def test_coding_execution_reuses_speculative_compact_validation_from_incre
     assert speculative_history[0]["status"] == "completed"
 
 
-def test_frontend_contract_hygiene_runs_for_normal_timeout_parallel_owner_merge(tmp_path) -> None:
+def test_frontend_contract_hygiene_runs_for_normal_timeout_parallel_owner_merge(
+    tmp_path,
+) -> None:
     (tmp_path / "index.html").write_text(
         """
 <!doctype html>
@@ -1093,7 +1168,9 @@ def test_worker_metadata_bridges_project_specialized_legacy_nodes() -> None:
         name="Validate",
         role="validator",
         metadata={
-            "validation_rules": [{"rule_type": "required_keys", "config": {"keys": ["summary"]}}],
+            "validation_rules": [
+                {"rule_type": "required_keys", "config": {"keys": ["summary"]}}
+            ],
             "validator_on_failure": "halt",
             "validator_strict_mode": True,
         },
@@ -1310,14 +1387,19 @@ def test_preset_bridge_explicitly_partitions_runtime_taxonomy() -> None:
     runtime_legacy_types = set(RUNTIME_NODE_TYPE_MAP) - {"worker"}
 
     assert BRIDGED_LEGACY_NODE_TYPES.isdisjoint(EXPLICIT_NON_BRIDGED_LEGACY_NODE_TYPES)
-    assert BRIDGED_LEGACY_NODE_TYPES | EXPLICIT_NON_BRIDGED_LEGACY_NODE_TYPES == runtime_legacy_types
+    assert (
+        BRIDGED_LEGACY_NODE_TYPES | EXPLICIT_NON_BRIDGED_LEGACY_NODE_TYPES
+        == runtime_legacy_types
+    )
 
 
 def test_supports_legacy_conversion_matches_bridge_constant() -> None:
     runtime_legacy_types = set(RUNTIME_NODE_TYPE_MAP) - {"worker"}
 
     assert {
-        node_type for node_type in runtime_legacy_types if supports_legacy_conversion(node_type)
+        node_type
+        for node_type in runtime_legacy_types
+        if supports_legacy_conversion(node_type)
     } == BRIDGED_LEGACY_NODE_TYPES
 
 
@@ -1362,7 +1444,10 @@ def test_legacy_to_worker_supports_each_bridged_runtime_type() -> None:
             id="merge",
             name="Merge",
             reducer="sum",
-            input_ports=[InputPort(name="left", required=False), InputPort(name="right", required=False)],
+            input_ports=[
+                InputPort(name="left", required=False),
+                InputPort(name="right", required=False),
+            ],
             output_ports=[OutputPort(name="result")],
         ),
         "validator": ValidatorNode(

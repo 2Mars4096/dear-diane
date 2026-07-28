@@ -9,6 +9,8 @@ import sys
 
 import pytest
 
+from dan.tools import _atomic_file
+from dan.tools.file_write import file_write
 from dan.agent_runtime.capability_calls import (
     PendingCapabilityCall,
     annotate_capability_call_plan,
@@ -104,6 +106,43 @@ def test_completion_request_user_content_includes_image_attachments(tmp_path):
     assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
+def test_structured_surface_policy_keeps_transient_browser_open_separate_from_workspace_write():
+    request = CompletionRequest(
+        model="test",
+        system_prompt="Keep the workspace read-only.",
+        user_prompt="Open the local browser demo and inspect it.",
+        metadata={
+            "surface_policy": {
+                "permission_scope": "transient_execute",
+                "capability_packs": ["browser_control"],
+            }
+        },
+    )
+
+    allowed = local_runtime_module._structured_surface_ui_tool_ids(
+        request,
+        ["browser_open", "browser_click", "file_write"],
+    )
+
+    assert allowed == ["browser_open"]
+
+
+def test_structured_surface_policy_does_not_infer_browser_authority_from_prompt_text():
+    request = CompletionRequest(
+        model="test",
+        system_prompt="You can discuss browser control.",
+        user_prompt="Explain browser navigation.",
+        metadata={},
+    )
+
+    allowed = local_runtime_module._structured_surface_ui_tool_ids(
+        request,
+        ["browser_open", "browser_click"],
+    )
+
+    assert allowed == []
+
+
 def _first_event(events: list[dict[str, object]], event_name: str) -> dict[str, object]:
     return next(event for event in events if event.get("event") == event_name)
 
@@ -112,7 +151,9 @@ class _ContextLengthAfterOldWriteProvider:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    async def complete(self, messages, model, temperature=0.7, max_tokens=None, **kwargs):
+    async def complete(
+        self, messages, model, temperature=0.7, max_tokens=None, **kwargs
+    ):
         self.calls.append(
             {
                 "messages": messages,
@@ -187,8 +228,12 @@ class _RepeatedFileReadProvider:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    async def complete(self, messages, model, temperature=0.7, max_tokens=None, **kwargs):
-        self.calls.append({"messages": messages, "model": model, "tools": kwargs.get("tools")})
+    async def complete(
+        self, messages, model, temperature=0.7, max_tokens=None, **kwargs
+    ):
+        self.calls.append(
+            {"messages": messages, "model": model, "tools": kwargs.get("tools")}
+        )
         call_index = len(self.calls)
         if call_index <= 2:
             tool_call = {
@@ -219,8 +264,51 @@ class _RepeatedFileReadProvider:
         )
 
 
+class _CheckpointSteeringProvider:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def complete(
+        self, messages, model, temperature=0.7, max_tokens=None, **kwargs
+    ):
+        self.calls.append(
+            {"messages": messages, "model": model, "tools": kwargs.get("tools")}
+        )
+        if len(self.calls) == 1:
+            tool_call = {
+                "id": "call-read-before-steer",
+                "type": "function",
+                "function": {
+                    "name": "file_read",
+                    "arguments": json.dumps({"path": "notes/context.txt"}),
+                },
+            }
+            return CompletionResult(
+                text="",
+                model=model,
+                tool_calls=[tool_call],
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [tool_call],
+                },
+            )
+        return CompletionResult(
+            text=json.dumps({"candidate_id": "steered", "validated_with": "pytest"}),
+            model=model,
+            raw_assistant_message={
+                "role": "assistant",
+                "content": json.dumps(
+                    {"candidate_id": "steered", "validated_with": "pytest"}
+                ),
+            },
+        )
+
+
 def test_default_distribution_builds_20_logical_cells() -> None:
-    distribution = resolve_super_organism_distribution(DEFAULT_SUPER_ORGANISM_CELL_COUNT)
+    distribution = resolve_super_organism_distribution(
+        DEFAULT_SUPER_ORGANISM_CELL_COUNT
+    )
 
     assert distribution == {
         "brain": 1,
@@ -288,6 +376,386 @@ async def test_super_dan_runtime_resolves_relative_shell_cwd_against_workspace(
 
 
 @pytest.mark.asyncio
+async def test_atomic_file_write_preserves_original_when_replace_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "out.txt"
+    target.write_text("original\n", encoding="utf-8")
+    monkeypatch.setenv("DAN_WORKSPACE_ROOT", str(tmp_path))
+
+    def _fail_replace(_source, _target):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(_atomic_file.os, "replace", _fail_replace)
+
+    with pytest.raises(OSError, match="simulated replace failure"):
+        await file_write(path="out.txt", content="replacement\n")
+
+    assert target.read_text(encoding="utf-8") == "original\n"
+    assert list(tmp_path.glob(".out.txt.dan-tmp-*")) == []
+
+
+@pytest.mark.asyncio
+async def test_atomic_file_write_new_file_honors_process_umask(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    previous_umask = os.umask(0o022)
+    try:
+        monkeypatch.setenv("DAN_WORKSPACE_ROOT", str(tmp_path))
+        await file_write(path="new.txt", content="new\n")
+    finally:
+        os.umask(previous_umask)
+
+    assert (tmp_path / "new.txt").stat().st_mode & 0o777 == 0o644
+
+
+@pytest.mark.asyncio
+async def test_super_dan_runtime_blocks_in_place_shell_text_mutation(
+    tmp_path,
+) -> None:
+    target = tmp_path / "index.html"
+    original = "<main>" + ("stable-content\n" * 80) + "</main>\n"
+    target.write_text(original, encoding="utf-8")
+    events: list[dict[str, object]] = []
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["file_read", "shell_command"],
+        workspace_root=tmp_path,
+        event_callback=events.append,
+    )
+
+    await runtime.call("file_read", {"path": "index.html"})
+    with pytest.raises(ValueError, match="in-place sed is disabled"):
+        await runtime.call(
+            "shell_command",
+            {"command": "sed -i '' '0,/<\\/html>/!d' index.html"},
+        )
+
+    assert target.read_text(encoding="utf-8") == original
+    assert any(
+        event.get("event") == "tool.failed"
+        and "unsafe direct shell mutation" in str(event.get("error") or "")
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    [
+        "printf broken > index.html",
+        "rm index.html",
+        "env rm index.html",
+        "find . -name index.html -delete",
+        "git reset --hard HEAD",
+        "command sed -i.bak 's/stable/broken/' index.html",
+    ],
+)
+async def test_super_dan_runtime_blocks_direct_destructive_shell_commands(
+    tmp_path,
+    command,
+) -> None:
+    target = tmp_path / "index.html"
+    original = "<main>stable</main>\n"
+    target.write_text(original, encoding="utf-8")
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["shell_command"],
+        workspace_root=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="unsafe direct shell mutation"):
+        await runtime.call("shell_command", {"command": command})
+
+    assert target.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git restore index.html",
+        "git checkout HEAD -- index.html",
+        "git checkout -- index.html",
+        "env git restore index.html",
+        "git -C . restore index.html",
+    ],
+)
+async def test_super_dan_runtime_blocks_git_workspace_restoration(
+    tmp_path,
+    command,
+) -> None:
+    target = tmp_path / "index.html"
+    target.write_text("<main>stable</main>\n", encoding="utf-8")
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["shell_command"],
+        workspace_root=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="destructive git restoration"):
+        await runtime.call("shell_command", {"command": command})
+
+
+@pytest.mark.asyncio
+async def test_super_dan_git_guard_ignores_non_executed_words(tmp_path) -> None:
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["shell_command"],
+        workspace_root=tmp_path,
+    )
+
+    result = await runtime.call(
+        "shell_command",
+        {"command": "echo git restore index.html"},
+    )
+
+    assert result["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo rm index.html",
+        "printf truncate",
+        "echo sed -i index.html",
+    ],
+)
+async def test_super_dan_shell_guard_ignores_non_executed_words(
+    tmp_path,
+    command,
+) -> None:
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["shell_command"],
+        workspace_root=tmp_path,
+    )
+
+    result = await runtime.call("shell_command", {"command": command})
+
+    assert result["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_super_dan_runtime_rolls_back_catastrophic_shell_shrink(
+    tmp_path,
+) -> None:
+    target = tmp_path / "index.html"
+    original = "<main>" + ("stable-content\n" * 80) + "</main>\n"
+    target.write_text(original, encoding="utf-8")
+    events: list[dict[str, object]] = []
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["file_read", "shell_command"],
+        workspace_root=tmp_path,
+        event_callback=events.append,
+    )
+
+    await runtime.call("file_read", {"path": "index.html"})
+    script = "from pathlib import Path; Path('index.html').write_text('')"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+    result = await runtime.call(
+        "shell_command",
+        {"command": command, "timeout": 5},
+    )
+
+    assert result["exit_code"] == 125
+    assert result["transaction"]["status"] == "rolled_back"
+    assert target.read_text(encoding="utf-8") == original
+    assert result["workspace_changes"]["changed_paths"] == []
+    assert any(event.get("event") == "tool.rolled_back" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_super_dan_runtime_rolls_back_short_file_catastrophic_shrink(
+    tmp_path,
+) -> None:
+    target = tmp_path / "config.txt"
+    original = "x" * 200
+    target.write_text(original, encoding="utf-8")
+    original_mtime_ns = 1_700_000_000_000_000_000
+    os.utime(target, ns=(original_mtime_ns, original_mtime_ns))
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["file_read", "shell_command"],
+        workspace_root=tmp_path,
+    )
+
+    await runtime.call("file_read", {"path": "config.txt"})
+    script = "from pathlib import Path; Path('config.txt').write_text('x')"
+    result = await runtime.call(
+        "shell_command",
+        {
+            "command": f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}",
+            "timeout": 5,
+        },
+    )
+
+    assert result["exit_code"] == 125
+    assert result["transaction"]["status"] == "rolled_back"
+    assert target.read_text(encoding="utf-8") == original
+    assert target.stat().st_mtime_ns == original_mtime_ns
+
+
+@pytest.mark.asyncio
+async def test_super_dan_runtime_protects_path_embedded_in_script(tmp_path) -> None:
+    target = tmp_path / "notes.txt"
+    original = "important\n" * 80
+    target.write_text(original, encoding="utf-8")
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["shell_command"],
+        workspace_root=tmp_path,
+    )
+
+    script = "from pathlib import Path; Path('notes.txt').write_text('')"
+    result = await runtime.call(
+        "shell_command",
+        {
+            "command": f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}",
+            "timeout": 5,
+        },
+    )
+
+    assert result["exit_code"] == 125
+    assert result["transaction"]["status"] == "rolled_back"
+    assert target.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.asyncio
+async def test_super_dan_runtime_move_exemption_is_source_path_specific(
+    tmp_path,
+) -> None:
+    protected = tmp_path / "protected.txt"
+    protected.write_text("protected\n" * 80, encoding="utf-8")
+    other = tmp_path / "other.txt"
+    other.write_text("other\n", encoding="utf-8")
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["file_read", "shell_command"],
+        workspace_root=tmp_path,
+    )
+
+    await runtime.call("file_read", {"path": "protected.txt"})
+    script = "from pathlib import Path; Path('protected.txt').unlink()"
+    command = (
+        "mv other.txt moved.txt && "
+        f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+    )
+    result = await runtime.call(
+        "shell_command",
+        {"command": command, "timeout": 5},
+    )
+
+    assert result["exit_code"] == 125
+    assert result["transaction"]["status"] == "rolled_back"
+    assert protected.read_text(encoding="utf-8") == "protected\n" * 80
+
+
+@pytest.mark.asyncio
+async def test_super_dan_runtime_commits_move_of_protected_source(tmp_path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("move me\n", encoding="utf-8")
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["file_read", "shell_command"],
+        workspace_root=tmp_path,
+    )
+
+    await runtime.call("file_read", {"path": "source.txt"})
+    result = await runtime.call(
+        "shell_command",
+        {"command": "mv source.txt renamed.txt", "timeout": 5},
+    )
+
+    assert result["exit_code"] == 0
+    assert result["transaction"]["status"] == "committed"
+    assert not source.exists()
+    assert (tmp_path / "renamed.txt").read_text(encoding="utf-8") == "move me\n"
+
+
+@pytest.mark.asyncio
+async def test_super_dan_runtime_rolls_back_failed_shell_mutation(
+    tmp_path,
+) -> None:
+    target = tmp_path / "notes.txt"
+    original = "stable notes\n"
+    target.write_text(original, encoding="utf-8")
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["file_read", "shell_command"],
+        workspace_root=tmp_path,
+    )
+
+    await runtime.call("file_read", {"path": "notes.txt"})
+    script = (
+        "from pathlib import Path; "
+        "Path('notes.txt').write_text('damaged notes\\n'); "
+        "raise SystemExit(2)"
+    )
+    result = await runtime.call(
+        "shell_command",
+        {
+            "command": f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}",
+            "timeout": 5,
+        },
+    )
+
+    assert result["exit_code"] == 2
+    assert result["transaction"]["status"] == "rolled_back"
+    assert target.read_text(encoding="utf-8") == original
+    assert result["workspace_changes"]["changed_paths"] == []
+
+
+@pytest.mark.asyncio
+async def test_super_dan_runtime_commits_non_destructive_shell_update(
+    tmp_path,
+) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("draft notes\n", encoding="utf-8")
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["file_read", "shell_command"],
+        workspace_root=tmp_path,
+    )
+
+    await runtime.call("file_read", {"path": "notes.txt"})
+    script = (
+        "from pathlib import Path; "
+        "path = Path('notes.txt'); "
+        "path.write_text(path.read_text().replace('draft', 'final'))"
+    )
+    result = await runtime.call(
+        "shell_command",
+        {
+            "command": f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}",
+            "timeout": 5,
+        },
+    )
+
+    assert result["exit_code"] == 0
+    assert result["transaction"]["status"] == "committed"
+    assert target.read_text(encoding="utf-8") == "final notes\n"
+
+
+@pytest.mark.asyncio
+async def test_super_dan_runtime_bounds_protected_shell_snapshot_memory(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("a" * 8, encoding="utf-8")
+    second.write_text("b" * 8, encoding="utf-8")
+    monkeypatch.setattr(
+        local_runtime_module,
+        "_SHELL_PROTECTED_TOTAL_MAX_BYTES",
+        10,
+    )
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["file_read", "shell_command"],
+        workspace_root=tmp_path,
+    )
+
+    await runtime.call("file_read", {"path": "first.txt"})
+    await runtime.call("file_read", {"path": "second.txt"})
+
+    assert set(runtime._protected_workspace_files) == {str(second.resolve())}
+    assert runtime._protected_workspace_bytes == 8
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("sandbox_enabled", ["true", "0"])
 async def test_super_dan_shell_timeout_kills_child_processes(
     tmp_path,
@@ -320,10 +788,14 @@ async def test_super_dan_shell_timeout_kills_child_processes(
 
 
 @pytest.mark.asyncio
-async def test_tool_loop_reuses_unchanged_file_read_without_repeating_tool_events(tmp_path) -> None:
+async def test_tool_loop_reuses_unchanged_file_read_without_repeating_tool_events(
+    tmp_path,
+) -> None:
     events: list[dict[str, object]] = []
     (tmp_path / "notes").mkdir()
-    (tmp_path / "notes" / "context.txt").write_text("stable context\n", encoding="utf-8")
+    (tmp_path / "notes" / "context.txt").write_text(
+        "stable context\n", encoding="utf-8"
+    )
     runtime = LocalOrganismToolRuntime(
         tool_ids=["file_read"],
         workspace_root=tmp_path,
@@ -369,9 +841,105 @@ async def test_tool_loop_reuses_unchanged_file_read_without_repeating_tool_event
 
 
 @pytest.mark.asyncio
+async def test_tool_loop_applies_checkpoint_operator_update_before_next_model_round(
+    tmp_path,
+) -> None:
+    events: list[dict[str, object]] = []
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "notes" / "context.txt").write_text("initial scope\n", encoding="utf-8")
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["file_read"],
+        workspace_root=tmp_path,
+        event_callback=events.append,
+    )
+    provider_impl = _CheckpointSteeringProvider()
+    polls = 0
+    acknowledgements: list[tuple[list[str], str]] = []
+
+    def _operator_messages():
+        nonlocal polls
+        polls += 1
+        if polls != 2:
+            return []
+        return [
+            {
+                "queue_item_id": "queue-steer-1",
+                "checkpoint": "tool.completed:file_read",
+                "text": "Also cover keyboard navigation and validate the result with pytest.",
+                "operator_context": {
+                    "target_paths": ["README.md"],
+                    "validation_requirements": ["pytest"],
+                },
+            }
+        ]
+
+    provider = ToolLoopCompletionProvider(
+        provider=provider_impl,
+        tool_runtime=runtime,
+        default_model="gpt-test",
+        max_rounds=3,
+        max_tool_calls=3,
+        event_callback=events.append,
+        operator_message_provider=_operator_messages,
+        operator_message_acknowledger=lambda queue_item_ids, model_call_id: (
+            acknowledgements.append((list(queue_item_ids), model_call_id))
+        ),
+    )
+
+    response = await provider.complete(
+        CompletionRequest(
+            model="gpt-test",
+            system_prompt="Inspect the workspace and return JSON.",
+            user_prompt="Read the current scope.",
+            metadata={"worker_id": "worker-steer"},
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "file_read",
+                        "description": "Read a file.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                        },
+                    },
+                }
+            ],
+        )
+    )
+
+    assert json.loads(response.text)["candidate_id"] == "steered"
+    assert len(provider_impl.calls) == 2
+    second_messages = json.dumps(provider_impl.calls[1]["messages"])
+    assert "keyboard navigation" in second_messages
+    assert "validate the result with pytest" in second_messages
+    assert "README.md" in second_messages
+    applied = next(
+        event
+        for event in events
+        if event.get("event") == "toolloop.operator_messages.applied"
+    )
+    assert applied["queue_item_ids"] == ["queue-steer-1"]
+    assert applied["checkpoints"] == ["tool.completed:file_read"]
+    assert acknowledgements == [(["queue-steer-1"], "model-call:0002")]
+    delivered = next(
+        event
+        for event in events
+        if event.get("event") == "toolloop.operator_messages.delivered"
+    )
+    assert delivered["queue_item_ids"] == ["queue-steer-1"]
+    assert delivered["model_call_id"] == "model-call:0002"
+
+
+@pytest.mark.asyncio
 async def test_capability_file_read_cache_requires_current_fingerprint() -> None:
     pending = annotate_capability_call_plan(
-        [PendingCapabilityCall("file_read", {"path": "notes.md"}, '{"path": "notes.md"}', "event_1")],
+        [
+            PendingCapabilityCall(
+                "file_read", {"path": "notes.md"}, '{"path": "notes.md"}', "event_1"
+            )
+        ],
         is_cacheable=lambda name: True,
         cache_key_for=capability_cache_key,
     )[0]
@@ -383,8 +951,12 @@ async def test_capability_file_read_cache_requires_current_fingerprint() -> None
     outcome = await execute_capability_call(
         pending,
         dispatch=_dispatch,
-        make_error_result=lambda exc: _FakeCapabilityResult(success=False, message=str(exc)),
-        tool_result_cache={pending.cache_key: _FakeCapabilityResult(message="untrusted exact cache")},
+        make_error_result=lambda exc: _FakeCapabilityResult(
+            success=False, message=str(exc)
+        ),
+        tool_result_cache={
+            pending.cache_key: _FakeCapabilityResult(message="untrusted exact cache")
+        },
         file_read_cache={"notes.md": [(1, float("inf"), ("fingerprint", 1), cached)]},
         file_fingerprint_for=lambda _path: ("fingerprint", 1),
         max_retryable_retries=1,
@@ -397,7 +969,11 @@ async def test_capability_file_read_cache_requires_current_fingerprint() -> None
 @pytest.mark.asyncio
 async def test_capability_file_read_cache_rereads_after_fingerprint_change() -> None:
     pending = annotate_capability_call_plan(
-        [PendingCapabilityCall("file_read", {"path": "notes.md"}, '{"path": "notes.md"}', "event_1")],
+        [
+            PendingCapabilityCall(
+                "file_read", {"path": "notes.md"}, '{"path": "notes.md"}', "event_1"
+            )
+        ],
         is_cacheable=lambda name: True,
         cache_key_for=capability_cache_key,
     )[0]
@@ -411,14 +987,22 @@ async def test_capability_file_read_cache_rereads_after_fingerprint_change() -> 
             data={"returned_start_line": 1, "returned_end_line": 4, "truncated": False},
         )
 
-    file_read_cache: dict[str, list[tuple[int, float, object, _FakeCapabilityResult]]] = {
-        "notes.md": [(1, float("inf"), ("old", 1), _FakeCapabilityResult(message="stale"))]
+    file_read_cache: dict[
+        str, list[tuple[int, float, object, _FakeCapabilityResult]]
+    ] = {
+        "notes.md": [
+            (1, float("inf"), ("old", 1), _FakeCapabilityResult(message="stale"))
+        ]
     }
     outcome = await execute_capability_call(
         pending,
         dispatch=_dispatch,
-        make_error_result=lambda exc: _FakeCapabilityResult(success=False, message=str(exc)),
-        tool_result_cache={pending.cache_key: _FakeCapabilityResult(message="untrusted exact cache")},
+        make_error_result=lambda exc: _FakeCapabilityResult(
+            success=False, message=str(exc)
+        ),
+        tool_result_cache={
+            pending.cache_key: _FakeCapabilityResult(message="untrusted exact cache")
+        },
         file_read_cache=file_read_cache,
         file_fingerprint_for=lambda _path: ("new", 2),
         max_retryable_retries=1,
@@ -553,7 +1137,10 @@ def test_super_organism_report_shows_organized_synergy() -> None:
     assert sum(1 for cell in report.cells if cell.status == "retired") == 2
     assert "LangGraph" in report.final_memo
     assert "Board tickets: 8." in report.final_memo
-    assert "deterministic coordination demo" in report.caveat or "deterministic" in report.caveat
+    assert (
+        "deterministic coordination demo" in report.caveat
+        or "deterministic" in report.caveat
+    )
 
 
 def test_default_super_organism_is_universal_agent_showcase() -> None:
@@ -575,7 +1162,10 @@ def test_scenario_resolver_compatibility_always_returns_universal_agent() -> Non
         )
         == SuperOrganismScenario.UNIVERSAL_AGENT
     )
-    assert resolve_super_organism_scenario("LangGraph") == SuperOrganismScenario.UNIVERSAL_AGENT
+    assert (
+        resolve_super_organism_scenario("LangGraph")
+        == SuperOrganismScenario.UNIVERSAL_AGENT
+    )
     assert (
         resolve_super_organism_scenario("audit LangGraph benchmark claims")
         == SuperOrganismScenario.UNIVERSAL_AGENT
@@ -634,7 +1224,9 @@ def test_active_cell_cap_controls_scheduler_waves() -> None:
     assert report.active_cell_cap == 7
     assert report.max_active_observed <= 7
     assert any(len(wave.cell_ids) == 7 for wave in report.activity_waves)
-    assert any(signal.phase == "contract_immune_check" for signal in report.board_signals)
+    assert any(
+        signal.phase == "contract_immune_check" for signal in report.board_signals
+    )
 
 
 def test_super_organism_shared_board_accounts_for_all_cells() -> None:
@@ -646,16 +1238,18 @@ def test_super_organism_shared_board_accounts_for_all_cells() -> None:
         accounted.update(ticket.cell_ids)
 
     assert accounted == {cell.cell_id for cell in report.cells}
-    assert any(ticket.owner_cell_id == "brain-001" for ticket in report.coordination_tickets[:2])
+    assert any(
+        ticket.owner_cell_id == "brain-001"
+        for ticket in report.coordination_tickets[:2]
+    )
     assert report.shared_board.reserve_cell_ids == ["scout-005"]
 
 
 def test_runtime_downshift_detects_truncated_existing_file_overwrite(tmp_path) -> None:
-    (tmp_path / "module.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
-    raw_arguments = (
-        '{"path":"module.py","content":"def alpha():\\n'
-        '    return 10\\n'
+    (tmp_path / "module.py").write_text(
+        "def alpha():\n    return 1\n", encoding="utf-8"
     )
+    raw_arguments = '{"path":"module.py","content":"def alpha():\\n' "    return 10\\n"
     raw_call = {
         "function": {
             "name": "file_write",
@@ -723,8 +1317,16 @@ def test_interactive_source_requests_force_earlier_first_write() -> None:
         },
     )
 
-    assert local_runtime_module._prewrite_successful_read_nudge_threshold(normal_request) == 3
-    assert local_runtime_module._prewrite_successful_read_nudge_threshold(interactive_request) == 2
+    assert (
+        local_runtime_module._prewrite_successful_read_nudge_threshold(normal_request)
+        == 3
+    )
+    assert (
+        local_runtime_module._prewrite_successful_read_nudge_threshold(
+            interactive_request
+        )
+        == 2
+    )
 
 
 def test_operator_intent_policy_narrows_runtime_tools_before_model() -> None:
@@ -750,10 +1352,10 @@ def test_operator_intent_policy_narrows_runtime_tools_before_model() -> None:
 
     narrowed = local_runtime_module._operator_intent_tool_schemas(request, tools)
 
-    assert [
-        local_runtime_module._tool_schema_name(tool)
-        for tool in narrowed
-    ] == ["file_read", "workspace_check"]
+    assert [local_runtime_module._tool_schema_name(tool) for tool in narrowed] == [
+        "file_read",
+        "workspace_check",
+    ]
 
 
 def test_operator_intent_policy_suppresses_first_write_nudge(tmp_path) -> None:
@@ -801,7 +1403,9 @@ def test_operator_intent_policy_suppresses_first_write_nudge(tmp_path) -> None:
     assert reason is None
 
 
-def test_validation_repair_requires_all_required_paths_before_finalize(tmp_path) -> None:
+def test_validation_repair_requires_all_required_paths_before_finalize(
+    tmp_path,
+) -> None:
     request = CompletionRequest(
         model="fake",
         system_prompt="Return compact JSON.",
@@ -819,7 +1423,10 @@ def test_validation_repair_requires_all_required_paths_before_finalize(tmp_path)
         ),
         metadata={
             "validation_repair": True,
-            "required_repair_paths": ["src/core/GameLoop.gd", "src/core/PlayabilityValidator.gd"],
+            "required_repair_paths": [
+                "src/core/GameLoop.gd",
+                "src/core/PlayabilityValidator.gd",
+            ],
         },
     )
     executed_tools = [
@@ -834,25 +1441,34 @@ def test_validation_repair_requires_all_required_paths_before_finalize(tmp_path)
         }
     ]
 
-    reason = local_runtime_module._write_capable_coding_stage_direct_write_required_reason(
-        request=request,
-        tool_ids=["file_read", "file_edit", "file_write"],
-        executed_tools=executed_tools,
-        workspace_root=tmp_path,
-        direct_write_required=False,
+    reason = (
+        local_runtime_module._write_capable_coding_stage_direct_write_required_reason(
+            request=request,
+            tool_ids=["file_read", "file_edit", "file_write"],
+            executed_tools=executed_tools,
+            workspace_root=tmp_path,
+            direct_write_required=False,
+        )
     )
 
     assert reason == "validation_repair_missing_required_paths:src/core/GameLoop.gd"
-    message = local_runtime_module._write_capable_coding_stage_direct_write_required_message(
-        reason,
-        request=request,
+    message = (
+        local_runtime_module._write_capable_coding_stage_direct_write_required_message(
+            reason,
+            request=request,
+        )
     )
-    assert "validation-repair stage has not yet mutated every required repair target" in message
+    assert (
+        "validation-repair stage has not yet mutated every required repair target"
+        in message
+    )
     assert "src/core/GameLoop.gd" in message
     assert "Do not re-audit the whole project" in message
 
 
-def test_prompt_replay_compaction_preserves_tool_call_structure_under_pressure() -> None:
+def test_prompt_replay_compaction_preserves_tool_call_structure_under_pressure() -> (
+    None
+):
     old_write_content = "old write body\n" * 500
     old_edit_content = "old edit body\n" * 500
     latest_write_content = "latest write body\n" * 500
@@ -975,10 +1591,12 @@ def test_prompt_replay_compaction_preserves_tool_call_structure_under_pressure()
         {"role": "user", "content": "Latest validation feedback must remain exact."},
     ]
 
-    compacted_messages, stats = local_runtime_module._compact_messages_for_provider_prompt(
-        messages,
-        budget_chars=2_000,
-        tool_schema_chars=500,
+    compacted_messages, stats = (
+        local_runtime_module._compact_messages_for_provider_prompt(
+            messages,
+            budget_chars=2_000,
+            tool_schema_chars=500,
+        )
     )
 
     assert stats["prompt_context_budget_triggered"] is True
@@ -986,7 +1604,10 @@ def test_prompt_replay_compaction_preserves_tool_call_structure_under_pressure()
     assert stats["prompt_context_compacted_tool_call_args"] == 2
     assert stats["prompt_context_compacted_assistant_messages"] == 1
     assert compacted_messages[1]["content"] == "Initial task prompt must remain exact."
-    assert compacted_messages[10]["content"] == "Latest validation feedback must remain exact."
+    assert (
+        compacted_messages[10]["content"]
+        == "Latest validation feedback must remain exact."
+    )
 
     old_tool_calls = compacted_messages[2]["tool_calls"]
     assert old_tool_calls[0]["id"] == "call-old-write"
@@ -1011,14 +1632,19 @@ def test_prompt_replay_compaction_preserves_tool_call_structure_under_pressure()
 
     assert compacted_messages[2]["content"] != old_assistant_text
     assert compacted_messages[8]["tool_calls"][0]["id"] == "call-latest-write"
-    assert "latest write body" in compacted_messages[8]["tool_calls"][0]["function"]["arguments"]
+    assert (
+        "latest write body"
+        in compacted_messages[8]["tool_calls"][0]["function"]["arguments"]
+    )
     assert messages[2]["content"] == old_assistant_text
     assert "old write body" in messages[2]["tool_calls"][0]["function"]["arguments"]
     assert "old edit body" in messages[2]["tool_calls"][1]["function"]["arguments"]
 
 
 @pytest.mark.asyncio
-async def test_super_dan_context_length_retry_uses_emergency_prompt_compaction(tmp_path) -> None:
+async def test_super_dan_context_length_retry_uses_emergency_prompt_compaction(
+    tmp_path,
+) -> None:
     events: list[dict[str, object]] = []
     runtime = LocalOrganismToolRuntime(
         tool_ids=["file_write", "list_directory"],

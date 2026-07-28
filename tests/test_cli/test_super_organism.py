@@ -124,7 +124,11 @@ def _fake_request_understanding_completion(messages, model) -> CompletionResult 
                     "changed_task_ids": changed_task_ids,
                     "reason": "Test request-understanding preflight.",
                 },
-                "source_tracking": {"files_read": [], "links_opened": [], "commands_run": []},
+                "source_tracking": {
+                    "files_read": [],
+                    "links_opened": [],
+                    "commands_run": [],
+                },
             },
             sort_keys=True,
         ),
@@ -156,12 +160,12 @@ class _FakeLiveWebsiteProvider:
                     "call-index",
                     "website/index.html",
                     (
-                        "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
-                        "<body><header><a href=\"#demo\">See Demo</a></header><main><section><p>20 cells, one build lane.</p>"
+                        '<!doctype html><html><head><link rel="stylesheet" href="./styles.css"></head>'
+                        '<body><header><a href="#demo">See Demo</a></header><main><section><p>20 cells, one build lane.</p>'
                         "<h1>Build with organized AI execution.</h1><p>Super DAN coordinates scouting, memory, and delivery into one product website.</p>"
-                        "<button>Launch Super DAN</button></section><section id=\"demo\"><h2>How it works</h2>"
+                        '<button>Launch Super DAN</button></section><section id="demo"><h2>How it works</h2>'
                         "<p>Cells specialize, synchronize, and ship concrete artifacts.</p></section></main>"
-                        "<script src=\"./app.js\"></script></body></html>\n"
+                        '<script src="./app.js"></script></body></html>\n'
                     ),
                 ),
                 _file_write_call(
@@ -183,7 +187,11 @@ class _FakeLiveWebsiteProvider:
             return CompletionResult(
                 text="",
                 model=model,
-                usage={"prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50},
+                usage={
+                    "prompt_tokens": 40,
+                    "completion_tokens": 10,
+                    "total_tokens": 50,
+                },
                 tool_calls=tool_calls,
                 finish_reason="tool_calls",
                 raw_assistant_message={
@@ -216,7 +224,11 @@ class _FakeLiveWebsiteProvider:
                     sort_keys=True,
                 ),
                 model=model,
-                usage={"prompt_tokens": 30, "completion_tokens": 20, "total_tokens": 50},
+                usage={
+                    "prompt_tokens": 30,
+                    "completion_tokens": 20,
+                    "total_tokens": 50,
+                },
                 finish_reason="stop",
             )
         return CompletionResult(
@@ -292,18 +304,21 @@ class _FakePatchContinuationWebsiteProvider:
                 for message in messages
                 if isinstance(message, dict)
             )
-            assert "Execute the operator objective in the current workspace now" in rendered_messages
+            assert (
+                "Execute the operator objective in the current workspace now"
+                in rendered_messages
+            )
             assert "can you keep patching this website" in rendered_messages
             tool_calls = [
                 _file_write_call(
                     "call-index",
                     "index.html",
                     (
-                        "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
-                        "<body><main><section id=\"component-map\"><h1>Patchable Product Website</h1>"
+                        '<!doctype html><html><head><link rel="stylesheet" href="./styles.css"></head>'
+                        '<body><main><section id="component-map"><h1>Patchable Product Website</h1>'
                         "<p>Editable sections, component map, and changelog guidance are now visible.</p></section>"
-                        "<section id=\"changelog\"><h2>Patch Notes</h2><p>Record future website changes here.</p></section>"
-                        "</main><script src=\"./app.js\"></script></body></html>\n"
+                        '<section id="changelog"><h2>Patch Notes</h2><p>Record future website changes here.</p></section>'
+                        '</main><script src="./app.js"></script></body></html>\n'
                     ),
                 ),
                 _file_write_call(
@@ -335,7 +350,11 @@ class _FakePatchContinuationWebsiteProvider:
             return CompletionResult(
                 text="",
                 model=model,
-                usage={"prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50},
+                usage={
+                    "prompt_tokens": 40,
+                    "completion_tokens": 10,
+                    "total_tokens": 50,
+                },
                 tool_calls=tool_calls,
                 finish_reason="tool_calls",
                 raw_assistant_message={
@@ -349,16 +368,29 @@ class _FakePatchContinuationWebsiteProvider:
                 text=json.dumps(
                     {
                         "candidate_id": "patch-continuation-001",
-                        "change_summary": ["expanded a vague continuation request into a maintainable multi-file website patch"],
-                        "target_files": ["index.html", "styles.css", "app.js", "README.md"],
-                        "test_plan": ["open index.html and inspect README.md patch guidance"],
+                        "change_summary": [
+                            "expanded a vague continuation request into a maintainable multi-file website patch"
+                        ],
+                        "target_files": [
+                            "index.html",
+                            "styles.css",
+                            "app.js",
+                            "README.md",
+                        ],
+                        "test_plan": [
+                            "open index.html and inspect README.md patch guidance"
+                        ],
                         "risks": [],
                         "files_created": [],
                     },
                     sort_keys=True,
                 ),
                 model=model,
-                usage={"prompt_tokens": 30, "completion_tokens": 20, "total_tokens": 50},
+                usage={
+                    "prompt_tokens": 30,
+                    "completion_tokens": 20,
+                    "total_tokens": 50,
+                },
                 finish_reason="stop",
             )
         rendered_messages = "\n".join(
@@ -406,7 +438,9 @@ class _FakeOverloadedThenLiveWebsiteProvider:
     ) -> CompletionResult:
         if self.overloads == 0:
             self.overloads += 1
-            raise RuntimeError("engine_overloaded_error: The engine is currently overloaded")
+            raise RuntimeError(
+                "engine_overloaded_error: The engine is currently overloaded"
+            )
         return await self.inner.complete(
             messages,
             model,
@@ -510,11 +544,11 @@ class _FakeRecoveringLiveWebsiteProvider:
                     "call-index",
                     "website/index.html",
                     (
-                        "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
+                        '<!doctype html><html><head><link rel="stylesheet" href="./styles.css"></head>'
                         "<body><main><section><p>20 cells, one resilient tool lane.</p>"
                         "<h1>Super DAN keeps building through malformed tool calls.</h1>"
                         "<p>The organism recovers, keeps its write lane open, and ships a coherent website.</p>"
-                        "</section></main><script src=\"./app.js\"></script></body></html>\n"
+                        '</section></main><script src="./app.js"></script></body></html>\n'
                     ),
                 ),
                 _file_write_call(
@@ -536,7 +570,11 @@ class _FakeRecoveringLiveWebsiteProvider:
             return CompletionResult(
                 text="",
                 model=model,
-                usage={"prompt_tokens": 42, "completion_tokens": 12, "total_tokens": 54},
+                usage={
+                    "prompt_tokens": 42,
+                    "completion_tokens": 12,
+                    "total_tokens": 54,
+                },
                 tool_calls=tool_calls,
                 finish_reason="tool_calls",
                 raw_assistant_message={
@@ -550,7 +588,9 @@ class _FakeRecoveringLiveWebsiteProvider:
                 text=json.dumps(
                     {
                         "candidate_id": "live-website-builder-retry-001",
-                        "change_summary": ["recovered from malformed write calls and completed the website"],
+                        "change_summary": [
+                            "recovered from malformed write calls and completed the website"
+                        ],
                         "target_files": [
                             "website/index.html",
                             "website/styles.css",
@@ -569,7 +609,11 @@ class _FakeRecoveringLiveWebsiteProvider:
                     sort_keys=True,
                 ),
                 model=model,
-                usage={"prompt_tokens": 24, "completion_tokens": 14, "total_tokens": 38},
+                usage={
+                    "prompt_tokens": 24,
+                    "completion_tokens": 14,
+                    "total_tokens": 38,
+                },
                 finish_reason="stop",
             )
         assert "file_write" not in tool_names
@@ -655,11 +699,11 @@ class _FakeSoftBudgetLiveWebsiteProvider:
                     "call-index",
                     "website/index.html",
                     (
-                        "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
+                        '<!doctype html><html><head><link rel="stylesheet" href="./styles.css"></head>'
                         "<body><main><section><p>20 cells, paced execution.</p>"
                         "<h1>Super DAN moves from scouting to writing before the hard cap.</h1>"
                         "<p>The runtime narrowed the tool lane once discovery had done its job.</p>"
-                        "</section></main><script src=\"./app.js\"></script></body></html>\n"
+                        '</section></main><script src="./app.js"></script></body></html>\n'
                     ),
                 ),
                 _file_write_call(
@@ -681,7 +725,11 @@ class _FakeSoftBudgetLiveWebsiteProvider:
             return CompletionResult(
                 text="",
                 model=model,
-                usage={"prompt_tokens": 24, "completion_tokens": 10, "total_tokens": 34},
+                usage={
+                    "prompt_tokens": 24,
+                    "completion_tokens": 10,
+                    "total_tokens": 34,
+                },
                 tool_calls=tool_calls,
                 finish_reason="tool_calls",
                 raw_assistant_message={
@@ -695,7 +743,9 @@ class _FakeSoftBudgetLiveWebsiteProvider:
                 text=json.dumps(
                     {
                         "candidate_id": "live-website-soft-budget-001",
-                        "change_summary": ["shifted from bounded discovery into concrete website writes"],
+                        "change_summary": [
+                            "shifted from bounded discovery into concrete website writes"
+                        ],
                         "target_files": [
                             "website/index.html",
                             "website/styles.css",
@@ -852,7 +902,9 @@ class _FakeGenericReportPostwriteBudgetProvider:
                 text=json.dumps(
                     {
                         "candidate_id": "generic-report-postwrite-budget",
-                        "change_summary": ["expanded the report after the initial write"],
+                        "change_summary": [
+                            "expanded the report after the initial write"
+                        ],
                         "target_files": ["equity_report.md"],
                         "test_plan": ["inspect equity_report.md"],
                         "risks": [],
@@ -896,7 +948,7 @@ def _file_write_call(call_id: str, path: str, content: str) -> dict:
             "name": "file_write",
             "arguments": json.dumps({"path": path, "content": content}),
         },
-        }
+    }
 
 
 class _FakeLiveCodingProvider:
@@ -973,7 +1025,11 @@ class _FakeLiveCodingProvider:
                             "changed_task_ids": ["1", "2"],
                             "reason": "Initial fake request-understanding graph.",
                         },
-                        "source_tracking": {"files_read": [], "links_opened": [], "commands_run": []},
+                        "source_tracking": {
+                            "files_read": [],
+                            "links_opened": [],
+                            "commands_run": [],
+                        },
                     },
                     sort_keys=True,
                 ),
@@ -1007,7 +1063,9 @@ class _FakeLiveCodingProvider:
                 text=json.dumps(
                     {
                         "candidate_id": "live-coding-001",
-                        "change_summary": ["created one live note file in the workspace"],
+                        "change_summary": [
+                            "created one live note file in the workspace"
+                        ],
                         "target_files": ["SUPER_DAN_LIVE_NOTE.md"],
                         "test_plan": ["inspect SUPER_DAN_LIVE_NOTE.md"],
                         "risks": [],
@@ -1115,7 +1173,11 @@ class _FakeLivePlannerProvider:
                             "changed_task_ids": ["1", "2"],
                             "reason": "Initial fake broad-work graph.",
                         },
-                        "source_tracking": {"files_read": [], "links_opened": [], "commands_run": []},
+                        "source_tracking": {
+                            "files_read": [],
+                            "links_opened": [],
+                            "commands_run": [],
+                        },
                     },
                     sort_keys=True,
                 ),
@@ -1240,7 +1302,11 @@ class _FakeLivePlannerProvider:
             return CompletionResult(
                 text="",
                 model=model,
-                usage={"prompt_tokens": 30, "completion_tokens": 10, "total_tokens": 40},
+                usage={
+                    "prompt_tokens": 30,
+                    "completion_tokens": 10,
+                    "total_tokens": 40,
+                },
                 tool_calls=tool_calls,
                 finish_reason="tool_calls",
                 raw_assistant_message={
@@ -1372,7 +1438,11 @@ class _FakeLiveDagPlannerProvider:
                             "changed_task_ids": ["1-1", "1-2", "2-1"],
                             "reason": "Initial fake DAG from request understanding.",
                         },
-                        "source_tracking": {"files_read": [], "links_opened": [], "commands_run": []},
+                        "source_tracking": {
+                            "files_read": [],
+                            "links_opened": [],
+                            "commands_run": [],
+                        },
                     },
                     sort_keys=True,
                 ),
@@ -1466,7 +1536,11 @@ class _FakeLiveDagPlannerProvider:
             return CompletionResult(
                 text="",
                 model=model,
-                usage={"prompt_tokens": 30, "completion_tokens": 10, "total_tokens": 40},
+                usage={
+                    "prompt_tokens": 30,
+                    "completion_tokens": 10,
+                    "total_tokens": 40,
+                },
                 tool_calls=tool_calls,
                 finish_reason="tool_calls",
                 raw_assistant_message={
@@ -1611,7 +1685,11 @@ class _FakeLiveWorktreeParallelProvider:
                             "changed_task_ids": ["1-1", "1-2", "2-1"],
                             "reason": "Initial fake parallel DAG from request understanding.",
                         },
-                        "source_tracking": {"files_read": [], "links_opened": [], "commands_run": []},
+                        "source_tracking": {
+                            "files_read": [],
+                            "links_opened": [],
+                            "commands_run": [],
+                        },
                     },
                     sort_keys=True,
                 ),
@@ -1641,7 +1719,11 @@ class _FakeLiveWorktreeParallelProvider:
                 return CompletionResult(
                     text="",
                     model=model,
-                    usage={"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
+                    usage={
+                        "prompt_tokens": 20,
+                        "completion_tokens": 8,
+                        "total_tokens": 28,
+                    },
                     tool_calls=tool_calls,
                     finish_reason="tool_calls",
                     raw_assistant_message={
@@ -1690,7 +1772,10 @@ class _FakeLiveWorktreeParallelProvider:
                 finish_reason="stop",
             )
 
-        if "Execute one dependency-frontier task inside this isolated worktree" in rendered:
+        if (
+            "Execute one dependency-frontier task inside this isolated worktree"
+            in rendered
+        ):
             assert "Task id: 1-2" in rendered
             assert "Do not implement sibling ready tasks" in rendered
             if not has_tool_response:
@@ -1704,7 +1789,11 @@ class _FakeLiveWorktreeParallelProvider:
                 return CompletionResult(
                     text="",
                     model=model,
-                    usage={"prompt_tokens": 24, "completion_tokens": 7, "total_tokens": 31},
+                    usage={
+                        "prompt_tokens": 24,
+                        "completion_tokens": 7,
+                        "total_tokens": 31,
+                    },
                     tool_calls=tool_calls,
                     finish_reason="tool_calls",
                     raw_assistant_message={
@@ -1717,7 +1806,9 @@ class _FakeLiveWorktreeParallelProvider:
                 text=json.dumps(
                     {
                         "candidate_id": "worktree-1-2",
-                        "change_summary": ["created the gallery shell in an isolated worktree"],
+                        "change_summary": [
+                            "created the gallery shell in an isolated worktree"
+                        ],
                         "target_files": ["apps/index.html"],
                         "test_plan": ["read apps/index.html"],
                         "risks": [],
@@ -1745,7 +1836,11 @@ class _FakeLiveWorktreeParallelProvider:
                 return CompletionResult(
                     text="",
                     model=model,
-                    usage={"prompt_tokens": 30, "completion_tokens": 10, "total_tokens": 40},
+                    usage={
+                        "prompt_tokens": 30,
+                        "completion_tokens": 10,
+                        "total_tokens": 40,
+                    },
                     tool_calls=tool_calls,
                     finish_reason="tool_calls",
                     raw_assistant_message={
@@ -1817,7 +1912,7 @@ class _FakeLiveCodingValidationFailureProvider(_FakeLiveCodingProvider):
                 _file_write_call(
                     "call-generic",
                     "index.html",
-                    "<!doctype html><html><body><canvas id=\"scene\"></canvas></body></html>\n",
+                    '<!doctype html><html><body><canvas id="scene"></canvas></body></html>\n',
                 ),
             ]
             return CompletionResult(
@@ -1892,7 +1987,7 @@ class _FakeLiveCodingRepairProvider:
                 _file_write_call(
                     "call-initial-animation",
                     "index.html",
-                    "<!doctype html><html><body><canvas id=\"smoke\">chunky smoke</canvas></body></html>\n",
+                    '<!doctype html><html><body><canvas id="smoke">chunky smoke</canvas></body></html>\n',
                 ),
             ]
             return CompletionResult(
@@ -1951,7 +2046,7 @@ class _FakeLiveCodingRepairProvider:
                     "call-repair-animation",
                     "index.html",
                     (
-                        "<!doctype html><html><body><canvas id=\"smoke\">"
+                        '<!doctype html><html><body><canvas id="smoke">'
                         "flowy smoke with smaller particles, turbulence, and lighter blending"
                         "</canvas></body></html>\n"
                     ),
@@ -1974,7 +2069,9 @@ class _FakeLiveCodingRepairProvider:
                 text=json.dumps(
                     {
                         "candidate_id": "live-coding-repaired-smoke",
-                        "change_summary": ["repaired the smoke to be lighter and flowier"],
+                        "change_summary": [
+                            "repaired the smoke to be lighter and flowier"
+                        ],
                         "target_files": ["index.html"],
                         "test_plan": ["open index.html"],
                         "risks": [],
@@ -2071,7 +2168,9 @@ class _FakeGenericReportGitBaselineRepairProvider:
                     {
                         "candidate_id": "report-initial",
                         "change_summary": ["appended financial and valuation sections"],
-                        "target_files": ["semiconductor_supply_chain_equity_research.md"],
+                        "target_files": [
+                            "semiconductor_supply_chain_equity_research.md"
+                        ],
                         "test_plan": ["read the markdown report"],
                         "risks": [],
                         "files_created": [],
@@ -2113,7 +2212,10 @@ class _FakeGenericReportGitBaselineRepairProvider:
                 finish_reason="stop",
             )
         if self.calls == 4:
-            assert "Do not create, overwrite, or commit a baseline artifact" in rendered_messages
+            assert (
+                "Do not create, overwrite, or commit a baseline artifact"
+                in rendered_messages
+            )
             assert "file-state metadata" in rendered_messages
             assert "Locate or create a baseline" not in rendered_messages
             tool_calls = [
@@ -2154,8 +2256,12 @@ class _FakeGenericReportGitBaselineRepairProvider:
                 text=json.dumps(
                     {
                         "candidate_id": "report-repaired",
-                        "change_summary": ["added scenario framework without replacing the report"],
-                        "target_files": ["semiconductor_supply_chain_equity_research.md"],
+                        "change_summary": [
+                            "added scenario framework without replacing the report"
+                        ],
+                        "target_files": [
+                            "semiconductor_supply_chain_equity_research.md"
+                        ],
                         "test_plan": ["read the markdown report"],
                         "risks": [],
                         "files_created": [],
@@ -2306,7 +2412,9 @@ class _FakeMissingThenRecoveredAnswerProvider:
                         "This project is a Super DAN workspace for coordinating durable agent runs, "
                         "tool use, validation, and the Work Plan UI around one operator request."
                     ),
-                    "summary": ["Super DAN coordinates read-only answers and workspace-changing tasks."],
+                    "summary": [
+                        "Super DAN coordinates read-only answers and workspace-changing tasks."
+                    ],
                     "risks": [],
                     "remaining_work": [],
                 },
@@ -2361,10 +2469,10 @@ class _FakeBuilderRetryWebsiteProvider:
                     "call-retry-index",
                     "website/index.html",
                     (
-                        "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
+                        '<!doctype html><html><head><link rel="stylesheet" href="./styles.css"></head>'
                         "<body><main><section><h1>Super DAN: execution as an organism</h1>"
                         "<p>Twenty cells coordinate scouting, memory, validation, and repair into one live build lane.</p>"
-                        "</section></main><script src=\"./app.js\"></script></body></html>\n"
+                        '</section></main><script src="./app.js"></script></body></html>\n'
                     ),
                 ),
                 _file_write_call(
@@ -2389,7 +2497,9 @@ class _FakeBuilderRetryWebsiteProvider:
                 text=json.dumps(
                     {
                         "candidate_id": "builder-retry-001",
-                        "change_summary": ["recovered with concrete HTML and CSS edits"],
+                        "change_summary": [
+                            "recovered with concrete HTML and CSS edits"
+                        ],
                         "target_files": ["website/index.html", "website/styles.css"],
                         "test_plan": ["open website/index.html"],
                         "risks": [],
@@ -2453,7 +2563,10 @@ class _FakeTargetedBuilderRetryHtmlProvider:
         if self.calls == 1:
             assert "Run context packet" in rendered_messages
             assert "Context hooks:" in rendered_messages
-            assert "project files, project rules, links, and web_search" in rendered_messages
+            assert (
+                "project files, project rules, links, and web_search"
+                in rendered_messages
+            )
             assert "latest graph/version" in rendered_messages
             assert "You are one execution cell" not in rendered_messages
             assert "Available tool guide" in rendered_messages
@@ -2466,7 +2579,9 @@ class _FakeTargetedBuilderRetryHtmlProvider:
                 text=json.dumps(
                     {
                         "candidate_id": "noop-html-animation-before-recovery",
-                        "change_summary": ["timed out before creating the requested animation"],
+                        "change_summary": [
+                            "timed out before creating the requested animation"
+                        ],
                         "target_files": [],
                         "test_plan": ["no validation possible"],
                         "risks": ["no workspace mutation"],
@@ -2493,8 +2608,8 @@ class _FakeTargetedBuilderRetryHtmlProvider:
                     "call-html-animation",
                     "animation-two-stick-figures-battling.html",
                     (
-                        "<!doctype html><html><head><meta charset=\"utf-8\">"
-                        "<title>Stick Figure Arena</title></head><body><canvas id=\"arena\"></canvas>"
+                        '<!doctype html><html><head><meta charset="utf-8">'
+                        '<title>Stick Figure Arena</title></head><body><canvas id="arena"></canvas>'
                         "<script>const c=document.getElementById('arena');"
                         "const ctx=c.getContext('2d');function frame(){requestAnimationFrame(frame);}"
                         "frame();</script></body></html>\n"
@@ -2517,7 +2632,9 @@ class _FakeTargetedBuilderRetryHtmlProvider:
                 text=json.dumps(
                     {
                         "candidate_id": "targeted-html-builder-retry",
-                        "change_summary": ["created the requested HTML animation artifact"],
+                        "change_summary": [
+                            "created the requested HTML animation artifact"
+                        ],
                         "target_files": ["animation-two-stick-figures-battling.html"],
                         "test_plan": ["open the HTML file in a browser"],
                         "risks": [],
@@ -2637,7 +2754,10 @@ class _FakeOperatorPolicyOtherFileReadProvider:
         if self.calls == 1:
             self.initial_tool_names = list(tool_names)
             assert "Work contract:" in rendered_messages
-            assert "Do not read, inspect, list, or otherwise use other workspace files" in rendered_messages
+            assert (
+                "Do not read, inspect, list, or otherwise use other workspace files"
+                in rendered_messages
+            )
             assert "Constrained creation condition" in rendered_messages
             assert '"delivery_plan"' not in rendered_messages
             assert "list_directory" not in tool_names
@@ -2648,8 +2768,8 @@ class _FakeOperatorPolicyOtherFileReadProvider:
                     "call-create-arena-from-prompt",
                     "arena.html",
                     (
-                        "<!doctype html><html><head><meta charset=\"utf-8\">"
-                        "<title>Original Arena</title></head><body><canvas id=\"arena\"></canvas>"
+                        '<!doctype html><html><head><meta charset="utf-8">'
+                        '<title>Original Arena</title></head><body><canvas id="arena"></canvas>'
                         "<script>const ctx=document.getElementById('arena').getContext('2d');"
                         "function frame(){ctx.fillRect(0,0,20,20);requestAnimationFrame(frame);}frame();"
                         "</script></body></html>\n"
@@ -2673,7 +2793,9 @@ class _FakeOperatorPolicyOtherFileReadProvider:
                 text=json.dumps(
                     {
                         "candidate_id": "policy-created-arena",
-                        "change_summary": ["created arena.html without reading other workspace files"],
+                        "change_summary": [
+                            "created arena.html without reading other workspace files"
+                        ],
                         "target_files": ["arena.html"],
                         "test_plan": ["open arena.html"],
                         "risks": [],
@@ -2746,7 +2868,10 @@ class _FakeAdditiveBuilderRetryReportProvider:
             assert "builder retry" in rendered_messages
             assert "additive/enrichment objective" in rendered_messages
             assert "preserve existing content" in rendered_messages.lower()
-            assert "preserving existing tables and quantitative content" in rendered_messages.lower()
+            assert (
+                "preserving existing tables and quantitative content"
+                in rendered_messages.lower()
+            )
             tool_calls = [
                 _file_write_call(
                     "call-shrinking-report-overwrite",
@@ -2805,8 +2930,12 @@ class _FakeAdditiveBuilderRetryReportProvider:
                 text=json.dumps(
                     {
                         "candidate_id": "report-builder-retry",
-                        "change_summary": ["enriched section 3 without replacing the report"],
-                        "target_files": ["semiconductor_supply_chain_equity_research.md"],
+                        "change_summary": [
+                            "enriched section 3 without replacing the report"
+                        ],
+                        "target_files": [
+                            "semiconductor_supply_chain_equity_research.md"
+                        ],
                         "test_plan": ["read sections 3 and 4"],
                         "risks": [],
                         "files_created": [],
@@ -2865,9 +2994,15 @@ class _FakeTemplateWebsiteProvider:
                         "</body></html>\n"
                     ),
                 ),
-                _file_write_call("call-css", "website/styles.css", "body { margin: 0; }\n"),
-                _file_write_call("call-js", "website/app.js", "console.log('template');\n"),
-                _file_write_call("call-readme", "website/README.md", "# Template Website\n"),
+                _file_write_call(
+                    "call-css", "website/styles.css", "body { margin: 0; }\n"
+                ),
+                _file_write_call(
+                    "call-js", "website/app.js", "console.log('template');\n"
+                ),
+                _file_write_call(
+                    "call-readme", "website/README.md", "# Template Website\n"
+                ),
             ]
             return CompletionResult(
                 text="",
@@ -2950,16 +3085,22 @@ class _FakeTemplateRepairWebsiteProvider:
                     "call-index",
                     "website/index.html",
                     (
-                        "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
+                        '<!doctype html><html><head><link rel="stylesheet" href="./styles.css"></head>'
                         "<body><main><h1>Super DAN turns one objective into coordinated execution.</h1>"
                         "<section><h2>Execution contract</h2><p>Objective contract</p>"
-                        "<p>Native execution lane</p></section></main><script src=\"./app.js\"></script>"
+                        '<p>Native execution lane</p></section></main><script src="./app.js"></script>'
                         "</body></html>\n"
                     ),
                 ),
-                _file_write_call("call-css", "website/styles.css", "body { margin: 0; }\n"),
-                _file_write_call("call-js", "website/app.js", "console.log('template');\n"),
-                _file_write_call("call-readme", "website/README.md", "# Template Website\n"),
+                _file_write_call(
+                    "call-css", "website/styles.css", "body { margin: 0; }\n"
+                ),
+                _file_write_call(
+                    "call-js", "website/app.js", "console.log('template');\n"
+                ),
+                _file_write_call(
+                    "call-readme", "website/README.md", "# Template Website\n"
+                ),
             ]
             return CompletionResult(
                 text="",
@@ -3024,11 +3165,11 @@ class _FakeTemplateRepairWebsiteProvider:
             assert "fewer than 2 exact template hits remain" in rendered_messages
             if self.repair_removes_hits:
                 html = (
-                    "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
+                    '<!doctype html><html><head><link rel="stylesheet" href="./styles.css"></head>'
                     "<body><main><h1>Coordinate AI work as a live product system</h1>"
                     "<section><h2>From objective to shipped artifact</h2>"
                     "<p>Specialized cells gather context, build, validate, and repair visible outcomes.</p>"
-                    "</section></main><script src=\"./app.js\"></script></body></html>\n"
+                    '</section></main><script src="./app.js"></script></body></html>\n'
                 )
                 css = (
                     "body { margin: 0; font-family: Inter, system-ui, sans-serif; "
@@ -3037,10 +3178,10 @@ class _FakeTemplateRepairWebsiteProvider:
                 )
             else:
                 html = (
-                    "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
+                    '<!doctype html><html><head><link rel="stylesheet" href="./styles.css"></head>'
                     "<body><main><h1>Super DAN turns one objective into coordinated execution.</h1>"
                     "<section><h2>Execution contract</h2><p>Objective contract</p>"
-                    "<p>Native execution lane</p></section></main><script src=\"./app.js\"></script>"
+                    '<p>Native execution lane</p></section></main><script src="./app.js"></script>'
                     "</body></html>\n"
                 )
                 css = "body { margin: 0; background: white; color: black; }\n"
@@ -3064,7 +3205,9 @@ class _FakeTemplateRepairWebsiteProvider:
                 text=json.dumps(
                     {
                         "candidate_id": "template-repair-final",
-                        "change_summary": ["attempted to repair static template language"],
+                        "change_summary": [
+                            "attempted to repair static template language"
+                        ],
                         "target_files": ["website/index.html", "website/styles.css"],
                         "test_plan": ["open website/index.html"],
                         "risks": [],
@@ -3118,10 +3261,10 @@ class _FakeSingleFileExistingWebsiteProvider:
                     "call-index",
                     "website/index.html",
                     (
-                        "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
+                        '<!doctype html><html><head><link rel="stylesheet" href="./styles.css"></head>'
                         "<body><main><section><h1>Distributed AI teams, visibly synchronized.</h1>"
                         "<p>Cells move from scouting into building with one shared memory board.</p>"
-                        "</section></main><script src=\"./app.js\"></script></body></html>\n"
+                        '</section></main><script src="./app.js"></script></body></html>\n'
                     ),
                 )
             ]
@@ -3195,10 +3338,10 @@ class _FakeRepairingExistingWebsiteProvider:
                     "call-index",
                     "website/index.html",
                     (
-                        "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
+                        '<!doctype html><html><head><link rel="stylesheet" href="./styles.css"></head>'
                         "<body><main><section><h1>Patchable Super DAN Site</h1>"
                         "<p>The first pass changed only the page shell.</p></section>"
-                        "</main><script src=\"./app.js\"></script></body></html>\n"
+                        '</main><script src="./app.js"></script></body></html>\n'
                     ),
                 )
             ]
@@ -3241,7 +3384,9 @@ class _FakeRepairingExistingWebsiteProvider:
                             "execution_quality": 0.35,
                         },
                         "repair_brief": "Change at least one more required website file.",
-                        "missing_requirements": ["styles.css, app.js, or README.md must be updated too"],
+                        "missing_requirements": [
+                            "styles.css, app.js, or README.md must be updated too"
+                        ],
                         "comparison_note": "Only index.html changed.",
                     },
                     sort_keys=True,
@@ -3304,8 +3449,14 @@ class _FakeRepairingExistingWebsiteProvider:
                 text=json.dumps(
                     {
                         "candidate_id": "repair-success-001",
-                        "change_summary": ["repaired the site with coordinated CSS, JS, and README changes"],
-                        "target_files": ["website/styles.css", "website/app.js", "website/README.md"],
+                        "change_summary": [
+                            "repaired the site with coordinated CSS, JS, and README changes"
+                        ],
+                        "target_files": [
+                            "website/styles.css",
+                            "website/app.js",
+                            "website/README.md",
+                        ],
                         "test_plan": ["open website/index.html"],
                         "risks": [],
                         "files_created": [],
@@ -3372,7 +3523,9 @@ def test_build_parser_rejects_public_scenario_flag() -> None:
 
 def test_live_objective_routing_uses_shared_dispatch_selector() -> None:
     website = super_cli.run_super_organism_demo("build a product website")
-    research = super_cli.run_super_organism_demo("research current evidence about this market")
+    research = super_cli.run_super_organism_demo(
+        "research current evidence about this market"
+    )
 
     assert super_cli._is_website_objective(website) is False
     assert super_cli._supports_live_execution(website) is True
@@ -3380,10 +3533,14 @@ def test_live_objective_routing_uses_shared_dispatch_selector() -> None:
     assert super_cli._supports_live_execution(research) is False
 
 
-def test_existing_website_workspace_layout_request_routes_to_generic_live(tmp_path) -> None:
+def test_existing_website_workspace_layout_request_routes_to_generic_live(
+    tmp_path,
+) -> None:
     website = tmp_path / "website"
     website.mkdir()
-    (website / "index.html").write_text("<!doctype html><html><body>old</body></html>\n", encoding="utf-8")
+    (website / "index.html").write_text(
+        "<!doctype html><html><body>old</body></html>\n", encoding="utf-8"
+    )
     (website / "styles.css").write_text("body { margin: 0; }\n", encoding="utf-8")
     args = build_parser().parse_args(
         [
@@ -3405,7 +3562,9 @@ def test_existing_website_workspace_layout_request_routes_to_generic_live(tmp_pa
     assert choice.intent_signal.artifact_target == "website"
 
 
-def test_existing_website_workspace_context_accepts_named_roots_and_artifact_dirs(tmp_path) -> None:
+def test_existing_website_workspace_context_accepts_named_roots_and_artifact_dirs(
+    tmp_path,
+) -> None:
     named_root = tmp_path / "public"
     named_root.mkdir()
     named_args = build_parser().parse_args(
@@ -3426,7 +3585,9 @@ def test_existing_website_workspace_context_accepts_named_roots_and_artifact_dir
     artifact_root = tmp_path / "client"
     artifact_root.mkdir()
     (artifact_root / "index.html").write_text("<main>old</main>\n", encoding="utf-8")
-    (artifact_root / "app.js").write_text("document.body.dataset.old = 'true';\n", encoding="utf-8")
+    (artifact_root / "app.js").write_text(
+        "document.body.dataset.old = 'true';\n", encoding="utf-8"
+    )
     artifact_args = build_parser().parse_args(
         [
             "polish mobile alignment and visual style",
@@ -3447,7 +3608,9 @@ def test_existing_website_workspace_context_accepts_named_roots_and_artifact_dir
     assert artifact_choice.tool_policy["profile"] == "generic"
 
 
-def test_live_context_routes_ambiguous_request_to_generic_workspace_lane(tmp_path) -> None:
+def test_live_context_routes_ambiguous_request_to_generic_workspace_lane(
+    tmp_path,
+) -> None:
     args = build_parser().parse_args(
         [
             "can you think harder, the layout now is completely messy",
@@ -3489,7 +3652,9 @@ def test_live_context_forwards_surface_capability_packs_to_dispatch(tmp_path) ->
     assert "desktop_observe" in choice.tool_policy["allowed_tool_ids"]
 
 
-def test_live_context_routes_creation_request_to_generic_workspace_lane_without_text_cues(tmp_path) -> None:
+def test_live_context_routes_creation_request_to_generic_workspace_lane_without_text_cues(
+    tmp_path,
+) -> None:
     animation_root = tmp_path / "animation"
     args = build_parser().parse_args(
         [
@@ -3516,7 +3681,9 @@ def test_live_context_routes_creation_request_to_generic_workspace_lane_without_
     assert choice.intent_signal.source == "super-dan-live-context"
 
 
-def test_live_context_routes_markdown_report_request_to_generic_workspace_lane(tmp_path) -> None:
+def test_live_context_routes_markdown_report_request_to_generic_workspace_lane(
+    tmp_path,
+) -> None:
     research_root = tmp_path / "research"
     args = build_parser().parse_args(
         [
@@ -3551,7 +3718,9 @@ def test_live_context_routes_markdown_report_request_to_generic_workspace_lane(t
     assert "web_search" in task
 
 
-def test_super_dan_request_understanding_packet_is_rule_generation_brief(tmp_path) -> None:
+def test_super_dan_request_understanding_packet_is_rule_generation_brief(
+    tmp_path,
+) -> None:
     objective = (
         "Build a production-ready app for analysts at app/index.html "
         "with search and mobile layout."
@@ -3593,14 +3762,18 @@ def test_super_dan_request_understanding_packet_is_rule_generation_brief(tmp_pat
     assert "meta-guidance only" in contract
     assert "Resolved work contract" in contract
     assert "Context hooks:" in contract
-    assert "recent chats, prior requests, and prior responses only when needed" in contract
+    assert (
+        "recent chats, prior requests, and prior responses only when needed" in contract
+    )
     assert "Criteria hooks:" in contract
     assert "Model-generated aspect review comments" not in contract
     assert "Model-generated confidence-scoped acceptance criteria" not in contract
     assert "Stop rule" not in contract
     assert "include `request_understanding`" in contract
 
-    planner_contract = super_cli._request_understanding_contract(payload, stage="planner")
+    planner_contract = super_cli._request_understanding_contract(
+        payload, stage="planner"
+    )
     assert "Current stage: planner" in planner_contract
     assert "project rules, important files, links, and web_search" in planner_contract
     assert "Completion must satisfy the semantic user request" in planner_contract
@@ -3610,11 +3783,15 @@ def test_super_dan_request_understanding_packet_is_rule_generation_brief(tmp_pat
     assert "Track sources used and files changed" in repair_contract
 
 
-def test_super_dan_model_authored_request_understanding_supplies_generated_rules(tmp_path) -> None:
+def test_super_dan_model_authored_request_understanding_supplies_generated_rules(
+    tmp_path,
+) -> None:
     fallback = super_cli._request_understanding_payload(
         "wait, don't edit anything; help me summarize what this project is about",
         workspace_root=tmp_path,
-        operator_intent_policy=super_cli.OperatorIntentPolicy(allow_workspace_mutation=False),
+        operator_intent_policy=super_cli.OperatorIntentPolicy(
+            allow_workspace_mutation=False
+        ),
     )
 
     payload = super_cli._extract_request_understanding_from_outputs(
@@ -3649,7 +3826,9 @@ def test_super_dan_model_authored_request_understanding_supplies_generated_rules
     assert "project summary" in payload["stop_rule"]
 
 
-def test_super_dan_request_understanding_contract_rejects_partial_model_output(tmp_path) -> None:
+def test_super_dan_request_understanding_contract_rejects_partial_model_output(
+    tmp_path,
+) -> None:
     fallback = super_cli._request_understanding_payload(
         "Polish the game UI and make swarm controls feel classic and convenient.",
         workspace_root=tmp_path,
@@ -3743,11 +3922,15 @@ def test_super_dan_validation_payload_unwraps_structured_result_dict() -> None:
 
     unwrapped = super_cli._extract_validation_payload(payload)
 
-    assert unwrapped["request_understanding"]["stop_rule"].startswith("Stop after controls")
+    assert unwrapped["request_understanding"]["stop_rule"].startswith(
+        "Stop after controls"
+    )
     assert unwrapped["task_graph"][0]["task_id"] == "1"
 
 
-def test_super_dan_generic_prompts_include_request_understanding_contract(tmp_path) -> None:
+def test_super_dan_generic_prompts_include_request_understanding_contract(
+    tmp_path,
+) -> None:
     objective = (
         "Build a production-ready app for analysts at app/index.html "
         "with search and mobile layout."
@@ -3811,10 +3994,14 @@ def test_super_dan_generic_prompts_include_request_understanding_contract(tmp_pa
         request_understanding=understanding,
     )
 
-    understanding_shape = json.loads(super_cli._live_request_understanding_return_shape())
+    understanding_shape = json.loads(
+        super_cli._live_request_understanding_return_shape()
+    )
     assert "request_understanding" in understanding_shape
     assert "aspect_reviews" in understanding_shape["request_understanding"]
-    assert "confidence_scoped_acceptance" in understanding_shape["request_understanding"]
+    assert (
+        "confidence_scoped_acceptance" in understanding_shape["request_understanding"]
+    )
     assert "stop_rule" in understanding_shape["request_understanding"]
     assert "task_graph" in understanding_shape
     assert "ready_task_ids" in understanding_shape
@@ -3829,7 +4016,9 @@ def test_super_dan_generic_prompts_include_request_understanding_contract(tmp_pa
     assert "meta-guidance only" in builder
     assert "Current stage: builder" in builder
     assert "Context hooks:" in builder
-    assert "recent chats, prior requests, and prior responses only when needed" in builder
+    assert (
+        "recent chats, prior requests, and prior responses only when needed" in builder
+    )
     assert "project rules, important files, links, and web_search" in builder
     assert "Criteria hooks:" in builder
     assert "what is this" in builder
@@ -3854,7 +4043,10 @@ def test_super_dan_generic_prompts_include_request_understanding_contract(tmp_pa
     assert "Repair only the current ready/frontier blocker" in repair
 
     validation_shape = json.loads(super_cli._live_validation_return_shape())
-    assert validation_shape["validation_scope"] == "branch_frontier | graph_level | answer_delivery"
+    assert (
+        validation_shape["validation_scope"]
+        == "branch_frontier | graph_level | answer_delivery"
+    )
     assert "validated_branch_ids" in validation_shape
     assert "validated_task_ids" in validation_shape
     assert "branch_results" in validation_shape
@@ -3929,7 +4121,9 @@ def test_implicit_live_probe_allows_markdown_report_with_model(tmp_path) -> None
     assert super_cli._should_implicit_live(report, args) is True
 
 
-def test_single_file_html_workspace_routes_to_generic_workspace_lane_despite_html_cues(tmp_path) -> None:
+def test_single_file_html_workspace_routes_to_generic_workspace_lane_despite_html_cues(
+    tmp_path,
+) -> None:
     animation_root = tmp_path / "animation"
     animation_root.mkdir()
     (animation_root / "index.html").write_text(
@@ -3962,10 +4156,14 @@ def test_single_file_html_workspace_routes_to_generic_workspace_lane_despite_htm
     assert "existing_artifact:single_file_html" in choice.intent_signal.evidence
 
 
-def test_research_design_request_in_website_workspace_uses_generic_lane_with_artifact_hint(tmp_path) -> None:
+def test_research_design_request_in_website_workspace_uses_generic_lane_with_artifact_hint(
+    tmp_path,
+) -> None:
     website = tmp_path / "website"
     website.mkdir()
-    (website / "index.html").write_text("<!doctype html><html><body>old</body></html>\n", encoding="utf-8")
+    (website / "index.html").write_text(
+        "<!doctype html><html><body>old</body></html>\n", encoding="utf-8"
+    )
     (website / "styles.css").write_text("body { margin: 0; }\n", encoding="utf-8")
     args = build_parser().parse_args(
         [
@@ -4000,7 +4198,11 @@ def test_live_worker_contracts_include_paced_large_context_write_guidance() -> N
         task="Produce the requested workspace deliverable.",
         contract_snippets=[super_cli._live_pacing_contract()],
         tool_policy={"allowed_tool_ids": choice.tool_policy["allowed_tool_ids"]},
-        sampling_policy={"profile": choice.sampling_policy, "temperature": 0.35, "max_tokens": 64000},
+        sampling_policy={
+            "profile": choice.sampling_policy,
+            "temperature": 0.35,
+            "max_tokens": 64000,
+        },
     )
     generic_worker = super_cli._live_cell_from_brief(
         model="fake-model",
@@ -4025,11 +4227,15 @@ def test_live_worker_contracts_include_paced_large_context_write_guidance() -> N
     assert "use larger direct writes" in pacing_text
 
 
-def test_tui_selected_skill_mentions_force_super_dan_skill_packet(tmp_path, monkeypatch) -> None:
+def test_tui_selected_skill_mentions_force_super_dan_skill_packet(
+    tmp_path, monkeypatch
+) -> None:
     skill_root = tmp_path / "skills" / "scaffold-research"
     skill_root.mkdir(parents=True)
     skill_path = skill_root / "SKILL.md"
-    skill_path.write_text("# Scaffold Research\n\nCreate the research scaffold.\n", encoding="utf-8")
+    skill_path.write_text(
+        "# Scaffold Research\n\nCreate the research scaffold.\n", encoding="utf-8"
+    )
     references = skill_root / "references"
     references.mkdir()
     (references / "scaffold-research-spec.md").write_text(
@@ -4052,9 +4258,14 @@ def test_tui_selected_skill_mentions_force_super_dan_skill_packet(tmp_path, monk
         ],
     )
     brief = super_cli.role_brief(
-        role=super_cli.RoleSpec(role_label="workspace_worker", responsibility="Execute the task."),
+        role=super_cli.RoleSpec(
+            role_label="workspace_worker", responsibility="Execute the task."
+        ),
         task="Capture follow-up decisions.",
-        input_payload={"workspace_root": str(tmp_path), "objective": "Capture follow-up decisions."},
+        input_payload={
+            "workspace_root": str(tmp_path),
+            "objective": "Capture follow-up decisions.",
+        },
         metadata={"surface": "super_organism", "mode": "live"},
     )
     args = argparse.Namespace(_tui_selected_skill_mentions=["scaffold-research"])
@@ -4065,7 +4276,9 @@ def test_tui_selected_skill_mentions_force_super_dan_skill_packet(tmp_path, monk
     assert request.metadata["selected_skill_mentions"] == ["scaffold-research"]
     assert request.metadata["active_skill_ids"] == ["scaffold_research"]
     assert request.metadata["active_skills"][0]["match_score"] == "explicit"
-    assert request.metadata["active_skills"][0]["match_reason"] == "explicit_skill_mention"
+    assert (
+        request.metadata["active_skills"][0]["match_reason"] == "explicit_skill_mention"
+    )
     assert "explicitly selected these DAN skills: $scaffold-research" in prompt
     assert "Create the research scaffold." in prompt
     assert "Selected skill companion reference excerpts" in prompt
@@ -4078,9 +4291,14 @@ def test_super_dan_live_brief_includes_workspace_agents_md(tmp_path) -> None:
         encoding="utf-8",
     )
     brief = super_cli.role_brief(
-        role=super_cli.RoleSpec(role_label="workspace_worker", responsibility="Execute the task."),
+        role=super_cli.RoleSpec(
+            role_label="workspace_worker", responsibility="Execute the task."
+        ),
         task="Update the project.",
-        input_payload={"workspace_root": str(tmp_path), "objective": "Update the project."},
+        input_payload={
+            "workspace_root": str(tmp_path),
+            "objective": "Update the project.",
+        },
         metadata={"surface": "super_organism", "mode": "live"},
     )
 
@@ -4103,19 +4321,29 @@ def test_super_dan_live_brief_carries_surface_conversation_context(tmp_path) -> 
         "conversation": {"recent_turns": history},
     }
     brief = super_cli.role_brief(
-        role=super_cli.RoleSpec(role_label="workspace_worker", responsibility="Execute the task."),
+        role=super_cli.RoleSpec(
+            role_label="workspace_worker", responsibility="Execute the task."
+        ),
         task="Review the report.",
-        input_payload={"workspace_root": str(tmp_path), "objective": "Review the report."},
+        input_payload={
+            "workspace_root": str(tmp_path),
+            "objective": "Review the report.",
+        },
         metadata={"surface": "super_organism", "mode": "live"},
     )
-    args = argparse.Namespace(_surface_history=history, _surface_context=surface_context)
+    args = argparse.Namespace(
+        _surface_history=history, _surface_context=surface_context
+    )
 
     request = super_cli._request_from_live_brief(brief, args=args)
     prompt = request.metadata["brief_rendered_user_prompt"]
 
     assert request.input_payload["surface_history"] == history
     assert request.input_payload["surface_context"] == surface_context
-    assert request.input_payload["surface_already_known"]["content"] == "Created the combined report."
+    assert (
+        request.input_payload["surface_already_known"]["content"]
+        == "Created the combined report."
+    )
     assert "Here is what we already know from the recent surface conversation" in prompt
     assert "Treat clearly stated prior assistant findings as starting facts" in prompt
     assert request.metadata["surface_history"] == history
@@ -4167,8 +4395,14 @@ def test_super_dan_live_brief_uses_compact_operator_prompt(tmp_path) -> None:
     assert "Current step:\nstage=execution" in prompt
     assert "Available tools:\nallowed=file_read, list_directory" in prompt
     assert "Context hooks:" in prompt
-    assert "Use recent chats, prior requests, and prior responses only when they clarify" in prompt
-    assert "Explore project files, project rules, links, and web_search only when they provide evidence" in prompt
+    assert (
+        "Use recent chats, prior requests, and prior responses only when they clarify"
+        in prompt
+    )
+    assert (
+        "Explore project files, project rules, links, and web_search only when they provide evidence"
+        in prompt
+    )
     assert "Return format:" in prompt
     assert "Role:\n{" not in prompt
     assert '"role_label"' not in prompt
@@ -4177,9 +4411,14 @@ def test_super_dan_live_brief_uses_compact_operator_prompt(tmp_path) -> None:
 
 def test_super_dan_live_brief_applies_tui_execution_policy(tmp_path) -> None:
     brief = super_cli.role_brief(
-        role=super_cli.RoleSpec(role_label="workspace_worker", responsibility="Execute the task."),
+        role=super_cli.RoleSpec(
+            role_label="workspace_worker", responsibility="Execute the task."
+        ),
         task="Repair until validation passes.",
-        input_payload={"workspace_root": str(tmp_path), "objective": "Repair until validation passes."},
+        input_payload={
+            "workspace_root": str(tmp_path),
+            "objective": "Repair until validation passes.",
+        },
         metadata={"surface": "super_organism", "mode": "live"},
     )
     args = argparse.Namespace(
@@ -4200,13 +4439,20 @@ def test_super_dan_live_brief_applies_tui_execution_policy(tmp_path) -> None:
     assert super_cli._live_repair_loop_limit(args) == 2
     assert super_cli._live_max_builder_retry_attempts(args) == 4
 
-    args._tui_execution_policy = {"allow_repair_cycles": False, "max_auto_fix_rounds": 4}
+    args._tui_execution_policy = {
+        "allow_repair_cycles": False,
+        "max_auto_fix_rounds": 4,
+    }
     assert super_cli._live_repair_loop_limit(args) == 0
     assert super_cli._live_max_builder_retry_attempts(args) == 0
 
 
-def test_live_generic_task_guides_indirect_artifact_scope_without_canned_targets(tmp_path) -> None:
-    report = super_cli.run_super_organism_demo("clean up the extra artifacts from the previous turn")
+def test_live_generic_task_guides_indirect_artifact_scope_without_canned_targets(
+    tmp_path,
+) -> None:
+    report = super_cli.run_super_organism_demo(
+        "clean up the extra artifacts from the previous turn"
+    )
 
     task = super_cli._live_generic_task(report, workspace_root=tmp_path)
 
@@ -4216,7 +4462,9 @@ def test_live_generic_task_guides_indirect_artifact_scope_without_canned_targets
     assert "unless the operator explicitly names them" in task
 
 
-def test_mutation_paths_from_tools_includes_shell_workspace_change_diff(tmp_path) -> None:
+def test_mutation_paths_from_tools_includes_shell_workspace_change_diff(
+    tmp_path,
+) -> None:
     mutated = super_cli._mutation_paths_from_tools(
         [
             {
@@ -4238,7 +4486,9 @@ def test_mutation_paths_from_tools_includes_shell_workspace_change_diff(tmp_path
     assert mutated == [str((tmp_path / "combined.md").resolve(strict=False))]
 
 
-def test_super_organism_main_parses_skill_mentions_before_runner(tmp_path, monkeypatch) -> None:
+def test_super_organism_main_parses_skill_mentions_before_runner(
+    tmp_path, monkeypatch
+) -> None:
     catalog = [
         {
             "id": "idea_cart",
@@ -4259,10 +4509,14 @@ def test_super_organism_main_parses_skill_mentions_before_runner(tmp_path, monke
         observed["source"] = args._selected_skill_source
         return 0
 
-    monkeypatch.setattr(super_cli, "_load_super_dan_skill_catalog", lambda workspace_root: catalog)
+    monkeypatch.setattr(
+        super_cli, "_load_super_dan_skill_catalog", lambda workspace_root: catalog
+    )
     monkeypatch.setattr(super_cli, "_run_super_turn", fake_run)
 
-    exit_code = main(["$idea-cart capture the open loops", "--workspace", str(tmp_path)])
+    exit_code = main(
+        ["$idea-cart capture the open loops", "--workspace", str(tmp_path)]
+    )
 
     assert exit_code == 0
     assert observed == {
@@ -4289,16 +4543,24 @@ def test_passive_super_dan_skill_selection_still_works(tmp_path, monkeypatch) ->
         ],
     )
     brief = super_cli.role_brief(
-        role=super_cli.RoleSpec(role_label="workspace_worker", responsibility="Build the UI."),
+        role=super_cli.RoleSpec(
+            role_label="workspace_worker", responsibility="Build the UI."
+        ),
         task="Build a frontend dashboard with a polished UI.",
-        input_payload={"workspace_root": str(tmp_path), "objective": "Build a frontend dashboard."},
+        input_payload={
+            "workspace_root": str(tmp_path),
+            "objective": "Build a frontend dashboard.",
+        },
     )
 
     request = super_cli._request_from_live_brief(brief)
 
     assert request.metadata["active_skill_ids"] == ["frontend_design"]
     assert request.metadata["active_skills"][0]["match_score"] != "explicit"
-    assert "Use polished production frontend design guidance." in request.metadata["brief_rendered_user_prompt"]
+    assert (
+        "Use polished production frontend design guidance."
+        in request.metadata["brief_rendered_user_prompt"]
+    )
 
 
 def test_live_tasks_include_paced_incremental_execution_guidance(tmp_path) -> None:
@@ -4318,7 +4580,10 @@ def test_live_tasks_include_paced_incremental_execution_guidance(tmp_path) -> No
     assert "requested deliverable" in generic_task
     assert "because the request asks for a workspace change" in generic_task
     assert "return a precise blocker" in generic_task
-    assert "Treat `return`, `tell me`, `explain`, `summarize`, `review`, `remind`, and `what is this`" in generic_task
+    assert (
+        "Treat `return`, `tell me`, `explain`, `summarize`, `review`, `remind`, and `what is this`"
+        in generic_task
+    )
     assert "use larger direct writes" in pacing_contract
     assert "Run context packet" in stage_contract
     assert "latest graph/version" in stage_contract
@@ -4341,7 +4606,9 @@ def test_super_dan_shell_tool_guide_describes_terminal_filesystem_operations() -
     assert "local platform's command-line toolbox" in stage_contract
     assert "actively choose the existing CLI" in stage_contract
     assert "mkdir/cp/mv/rsync/find/du/wc/checksums/archive commands" in stage_contract
-    assert "more faithfully than reconstructing text through file tools" in stage_contract
+    assert (
+        "more faithfully than reconstructing text through file tools" in stage_contract
+    )
 
 
 def test_super_progress_renderer_prints_compact_live_events(capsys) -> None:
@@ -4404,11 +4671,17 @@ def test_super_progress_renderer_prints_compact_live_events(capsys) -> None:
     assert stdout.startswith("[")
     assert "] [run] normalized vague website continuation" in stdout
     assert "[run] normalized vague website continuation" in stdout
-    assert "[run] previous validation feedback: Existing website changed only one file." in stdout
+    assert (
+        "[run] previous validation feedback: Existing website changed only one file."
+        in stdout
+    )
     assert "[builder][model] request round=1 model=fake-live-model tools=4" in stdout
     assert "[builder][tool] file_read: index.html" in stdout
     assert "[builder][tool] ok file_read: lines=42 bytes=900 path=index.html" in stdout
-    assert "[status] still running model (12s idle): round=1 model=fake-live-model tools=4" in stdout
+    assert (
+        "[status] still running model (12s idle): round=1 model=fake-live-model tools=4"
+        in stdout
+    )
     assert "[validation] failed 0.49" in stdout
     assert "[validation] gap: Existing website changed only one file." in stdout
 
@@ -4594,7 +4867,9 @@ def test_main_no_objective_tty_reset_state_only_archives_queue_state(
     assert (backups[0] / "inboxes.json").exists()
 
 
-def test_operator_intent_policy_runtime_decision_blocks_other_workspace_inputs(tmp_path) -> None:
+def test_operator_intent_policy_runtime_decision_blocks_other_workspace_inputs(
+    tmp_path,
+) -> None:
     policy = super_cli._operator_intent_policy_from_objective(
         "create arena.html and do not read other files in this folder",
         workspace_root=tmp_path,
@@ -4667,7 +4942,10 @@ def test_operator_intent_policy_blocks_no_edit_and_external_commands(tmp_path) -
     assert policy.allow_workspace_mutation is False
     assert policy.allow_shell_command is False
     assert policy.allowed_write_paths == ()
-    assert "Allowed workspace writes: none." in super_cli._operator_intent_policy_prompt(policy)
+    assert (
+        "Allowed workspace writes: none."
+        in super_cli._operator_intent_policy_prompt(policy)
+    )
 
     filtered = super_cli._filter_tool_ids_for_operator_intent(
         ["file_read", "file_edit", "file_write", "shell_command", "workspace_check"],
@@ -4711,10 +4989,19 @@ def test_operator_intent_policy_plain_chat_answer_gets_no_tools(tmp_path) -> Non
     assert policy.allow_workspace_mutation is False
     assert policy.allow_shell_command is False
     assert policy.source_scope == "conversation_only"
-    assert super_cli._filter_tool_ids_for_operator_intent(
-        ["file_read", "file_edit", "file_write", "shell_command", "workspace_check"],
-        policy,
-    ) == []
+    assert (
+        super_cli._filter_tool_ids_for_operator_intent(
+            [
+                "file_read",
+                "file_edit",
+                "file_write",
+                "shell_command",
+                "workspace_check",
+            ],
+            policy,
+        )
+        == []
+    )
     allowed, reason = super_cli._operator_policy_tool_decision(
         policy,
         tool_id="file_read",
@@ -4734,7 +5021,9 @@ def test_operator_intent_policy_plain_chat_answer_gets_no_tools(tmp_path) -> Non
     assert "answer should come from the conversation" in task
 
 
-def test_operator_intent_policy_defaults_review_requests_to_answer_only(tmp_path) -> None:
+def test_operator_intent_policy_defaults_review_requests_to_answer_only(
+    tmp_path,
+) -> None:
     objective = "help me review this project?"
     report = super_cli.run_super_organism_demo(objective)
     policy = super_cli._operator_intent_policy_from_objective(
@@ -4819,6 +5108,21 @@ def test_operator_intent_policy_keeps_explicit_edit_request_write_capable(
         assert policy.mutation_policy == "required"
         assert policy.allow_workspace_mutation is True
         assert policy.allow_shell_command is True
+
+
+def test_operator_intent_policy_scopes_read_only_checks_after_explicit_edits(
+    tmp_path,
+) -> None:
+    policy = super_cli._operator_intent_policy_from_objective(
+        "Repair index.html and add focus styles to styles.css. "
+        "After the bounded edits, use read-only checks only.",
+        workspace_root=tmp_path,
+    )
+
+    assert policy.work_mode == "workspace_change"
+    assert policy.mutation_policy == "required"
+    assert policy.allow_workspace_mutation is True
+    assert "index.html" in policy.allowed_write_paths
 
 
 @pytest.mark.parametrize(
@@ -4976,7 +5280,9 @@ def test_operator_intent_policy_write_followup_keeps_original_no_edits_binding(
     assert "Do not write" in " ".join(policy.constraints)
 
 
-def test_operator_intent_policy_defaults_ambiguous_workspace_work_to_read_only(tmp_path) -> None:
+def test_operator_intent_policy_defaults_ambiguous_workspace_work_to_read_only(
+    tmp_path,
+) -> None:
     objective = "help me improve this project"
     report = super_cli.run_super_organism_demo(objective)
     policy = super_cli._operator_intent_policy_from_objective(
@@ -5022,7 +5328,9 @@ def test_operator_intent_policy_allows_project_summary_file_when_explicit(
     assert "assessment request" not in " ".join(policy.constraints)
 
 
-def test_operator_intent_policy_allows_review_requests_with_explicit_edits(tmp_path) -> None:
+def test_operator_intent_policy_allows_review_requests_with_explicit_edits(
+    tmp_path,
+) -> None:
     policy = super_cli._operator_intent_policy_from_objective(
         "Review this project and update README.md with your findings.",
         workspace_root=tmp_path,
@@ -5064,7 +5372,9 @@ def test_main_text_summary_keeps_objective_first(capsys) -> None:
     assert "OpenHands" in stdout
 
 
-def test_main_text_summary_does_not_materialize_specialized_artifact_without_live(tmp_path, capsys) -> None:
+def test_main_text_summary_does_not_materialize_specialized_artifact_without_live(
+    tmp_path, capsys
+) -> None:
     exit_code = main(
         [
             "please build our product website. make it cool, with cool animation dynamic effects",
@@ -5087,7 +5397,9 @@ def test_main_text_summary_does_not_materialize_specialized_artifact_without_liv
     assert not (tmp_path / "website").exists()
 
 
-def test_main_text_summary_normalizes_pasted_multiline_objective(tmp_path, capsys) -> None:
+def test_main_text_summary_normalizes_pasted_multiline_objective(
+    tmp_path, capsys
+) -> None:
     target = (
         "please build our product\n"
         "  website. make it cool, with cool animation dynamic\n"
@@ -5108,7 +5420,9 @@ def test_main_text_summary_normalizes_pasted_multiline_objective(tmp_path, capsy
     assert not (tmp_path / "website" / "index.html").exists()
 
 
-def test_main_verbose_text_summary_keeps_cli_rows_on_separate_lines(tmp_path, capsys) -> None:
+def test_main_verbose_text_summary_keeps_cli_rows_on_separate_lines(
+    tmp_path, capsys
+) -> None:
     exit_code = main(
         [
             "can you build a website to for this product? make it look cool",
@@ -5121,11 +5435,17 @@ def test_main_verbose_text_summary_keeps_cli_rows_on_separate_lines(tmp_path, ca
     assert exit_code == 0
     stdout = capsys.readouterr().out
     assert "\n- node-004 | ready | 4 cells | Work graph decomposition\n" in stdout
-    assert "\n- node-005 | ready | 4 cells | Immune risk and ambiguity challenge\n" in stdout
+    assert (
+        "\n- node-005 | ready | 4 cells | Immune risk and ambiguity challenge\n"
+        in stdout
+    )
     assert "\nReallocations:\n- realloc-001:" in stdout
     assert "\nMaterialized Artifacts:\n- " not in stdout
     assert "Work graph decomposition  - node-005" not in stdout
-    assert "Reallocations:                                         - realloc-001" not in stdout
+    assert (
+        "Reallocations:                                         - realloc-001"
+        not in stdout
+    )
 
 
 def test_main_compact_summary_avoids_long_delivery_rows(tmp_path, capsys) -> None:
@@ -5163,7 +5483,9 @@ def test_main_plan_only_does_not_materialize(tmp_path, capsys) -> None:
     assert not (tmp_path / "website").exists()
 
 
-def test_main_live_website_build_uses_native_tool_loop(tmp_path, capsys, monkeypatch) -> None:
+def test_main_live_website_build_uses_native_tool_loop(
+    tmp_path, capsys, monkeypatch
+) -> None:
     fake_provider = _FakeLiveWebsiteProvider()
     monkeypatch.setattr(
         super_cli,
@@ -5184,13 +5506,13 @@ def test_main_live_website_build_uses_native_tool_loop(tmp_path, capsys, monkeyp
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "[run] started: can you build a website for this product? make it look cool" in stdout
+    assert (
+        "[run] started: can you build a website for this product? make it look cool"
+        in stdout
+    )
     assert "[model] preparing provider: fake-live-model" in stdout
     assert "[build] generic lane started:" in stdout
-    assert (
-        "[builder][tool] file_write:" in stdout
-        or "[tool] file_write:" in stdout
-    )
+    assert "[builder][tool] file_write:" in stdout or "[tool] file_write:" in stdout
     assert "[validation] started" in stdout
     assert "[done] completed" in stdout
     assert "Live Run: completed" in stdout
@@ -5200,7 +5522,9 @@ def test_main_live_website_build_uses_native_tool_loop(tmp_path, capsys, monkeyp
     assert "Tool Calls: 4" in stdout
     assert "Token Usage: prompt=80, completion=35, total=115" in stdout
     assert "Validation: passed" in stdout
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     assert f"Event Log: {event_log_path}" in stdout
     assert "Full trace: rerun with --verbose or --json." in stdout
     event_rows = [
@@ -5218,8 +5542,14 @@ def test_main_live_website_build_uses_native_tool_loop(tmp_path, capsys, monkeyp
     assert event_rows[-1]["event_log_path"] == str(event_log_path)
     assert all(row["schema"] == "organism_log_v1" for row in event_rows)
     assert all(row["product"] == "dan_super" for row in event_rows)
-    assert (tmp_path / "website" / "index.html").read_text(encoding="utf-8").startswith("<!doctype html>")
-    assert "fake live provider" in (tmp_path / "website" / "README.md").read_text(encoding="utf-8")
+    assert (
+        (tmp_path / "website" / "index.html")
+        .read_text(encoding="utf-8")
+        .startswith("<!doctype html>")
+    )
+    assert "fake live provider" in (tmp_path / "website" / "README.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_main_live_closes_provider_before_event_loop_shutdown(
@@ -5259,7 +5589,9 @@ def test_main_live_existing_website_layout_prompt_uses_generic_lane(
 ) -> None:
     website = tmp_path / "website"
     website.mkdir()
-    (website / "index.html").write_text("<!doctype html><html><body>old</body></html>\n", encoding="utf-8")
+    (website / "index.html").write_text(
+        "<!doctype html><html><body>old</body></html>\n", encoding="utf-8"
+    )
     (website / "styles.css").write_text("body { margin: 0; }\n", encoding="utf-8")
     fake_provider = _FakeLiveWebsiteProvider()
     monkeypatch.setattr(
@@ -5284,7 +5616,11 @@ def test_main_live_existing_website_layout_prompt_uses_generic_lane(
     assert "[build] generic lane started:" in stdout
     assert "Live Run: completed" in stdout
     assert "currently supports website-like" not in stdout
-    assert (website / "index.html").read_text(encoding="utf-8").startswith("<!doctype html>")
+    assert (
+        (website / "index.html")
+        .read_text(encoding="utf-8")
+        .startswith("<!doctype html>")
+    )
 
 
 def test_main_live_progress_can_be_disabled(
@@ -5357,7 +5693,9 @@ def test_main_live_queue_status_persists_hook_inbox_state(
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["worktree_parallelism"] == 2
     assert state["inboxes"]["validation"]["metrics"]["enqueued"] >= 1
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -5500,8 +5838,13 @@ def test_vague_website_continuation_objective_expands_from_workspace_and_prior_f
     assert context["normalized"] is True
     assert context["reason"] == "vague_website_continuation"
     assert context["original_objective"] == "can you keep patching this website"
-    assert "coordinated, inspectable changes across index.html, styles.css, app.js, and README.md" in context["effective_objective"]
-    assert "Existing website redesign changed only 1" in context["previous_failure_hint"]
+    assert (
+        "coordinated, inspectable changes across index.html, styles.css, app.js, and README.md"
+        in context["effective_objective"]
+    )
+    assert (
+        "Existing website redesign changed only 1" in context["previous_failure_hint"]
+    )
 
 
 def test_main_vague_website_continuation_uses_generic_workspace_lane(
@@ -5573,7 +5916,9 @@ def test_main_live_website_build_retries_transient_provider_overload(
     assert exit_code == 0
     stdout = capsys.readouterr().out
     assert "Live Run: completed" in stdout
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -5611,13 +5956,17 @@ def test_main_live_website_build_recovers_from_invalid_direct_write_calls(
     assert "Validation: passed" in stdout
     assert "Tool Calls: 6" in stdout
     assert "Token Usage: prompt=114, completion=42, total=156" in stdout
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert any(row["event"] == "toolloop.invalid_tool_arguments_nudged" for row in event_rows)
+    assert any(
+        row["event"] == "toolloop.invalid_tool_arguments_nudged" for row in event_rows
+    )
     assert not any(
         row["event"] == "toolloop.temporarily_disabled_tools"
         and "file_write" in list(row.get("tool_ids") or [])
@@ -5628,9 +5977,10 @@ def test_main_live_website_build_recovers_from_invalid_direct_write_calls(
         and row.get("reason") == "disabled_direct_write_tool_after_workspace_patch"
         for row in event_rows
     )
-    assert "recovered from malformed file_write calls" in (
-        tmp_path / "website" / "README.md"
-    ).read_text(encoding="utf-8").lower()
+    assert (
+        "recovered from malformed file_write calls"
+        in (tmp_path / "website" / "README.md").read_text(encoding="utf-8").lower()
+    )
 
 
 def test_main_live_website_build_write_stage_nudges_before_hard_cap(
@@ -5668,7 +6018,9 @@ def test_main_live_website_build_write_stage_nudges_before_hard_cap(
     stdout = capsys.readouterr().out
     assert "Live Run: completed" in stdout
     assert "Validation: passed" in stdout
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -5694,9 +6046,10 @@ def test_main_live_website_build_write_stage_nudges_before_hard_cap(
         for row in event_rows
         if row.get("event") == "completion.completed"
     )
-    assert "soft budget website" in (
-        tmp_path / "website" / "README.md"
-    ).read_text(encoding="utf-8").lower()
+    assert (
+        "soft budget website"
+        in (tmp_path / "website" / "README.md").read_text(encoding="utf-8").lower()
+    )
 
 
 def test_main_live_generic_report_can_continue_after_first_postwrite_edit(
@@ -5739,7 +6092,9 @@ def test_main_live_generic_report_can_continue_after_first_postwrite_edit(
     report_text = (tmp_path / "equity_report.md").read_text(encoding="utf-8")
     assert "Initial investment thesis" in report_text
     assert "Comps, estimate bridge" in report_text
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -5753,7 +6108,9 @@ def test_main_live_generic_report_can_continue_after_first_postwrite_edit(
     )
 
 
-def test_main_live_json_outputs_report_and_live_build(tmp_path, capsys, monkeypatch) -> None:
+def test_main_live_json_outputs_report_and_live_build(
+    tmp_path, capsys, monkeypatch
+) -> None:
     fake_provider = _FakeLiveWebsiteProvider()
     monkeypatch.setattr(
         super_cli,
@@ -5782,7 +6139,10 @@ def test_main_live_json_outputs_report_and_live_build(tmp_path, capsys, monkeypa
     assert payload["live_build"]["missing_files"] == []
     event_log_path = Path(payload["live_build"]["event_log_path"])
     assert payload["live_build"]["event_log_schema"] == "organism_log_v1"
-    assert event_log_path == (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    assert (
+        event_log_path
+        == (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    )
     assert event_log_path.exists()
     assert payload["live_build"]["token_usage"] == {
         "prompt_tokens": 80,
@@ -5793,7 +6153,9 @@ def test_main_live_json_outputs_report_and_live_build(tmp_path, capsys, monkeypa
     assert (tmp_path / "website" / "app.js").exists()
 
 
-def test_main_live_general_coding_run_mutates_workspace(tmp_path, capsys, monkeypatch) -> None:
+def test_main_live_general_coding_run_mutates_workspace(
+    tmp_path, capsys, monkeypatch
+) -> None:
     fake_provider = _FakeLiveCodingProvider()
     monkeypatch.setattr(
         super_cli,
@@ -5820,11 +6182,16 @@ def test_main_live_general_coding_run_mutates_workspace(tmp_path, capsys, monkey
     assert "Tool Calls: 1" in stdout
     assert "Token Usage: prompt=37, completion=17, total=54" in stdout
     assert "Validation: passed" in stdout
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     assert f"Event Log: {event_log_path}" in stdout
     assert event_log_path.exists()
     assert (tmp_path / "SUPER_DAN_LIVE_NOTE.md").exists()
-    assert "native live run" in (tmp_path / "SUPER_DAN_LIVE_NOTE.md").read_text(encoding="utf-8").lower()
+    assert (
+        "native live run"
+        in (tmp_path / "SUPER_DAN_LIVE_NOTE.md").read_text(encoding="utf-8").lower()
+    )
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -5870,14 +6237,18 @@ def test_main_live_validation_command_error_output_fails_even_when_model_passes(
     assert "Live Run: failed" in stdout
     assert "Validation: failed" in stdout
     assert "runtime/compiler errors" in stdout
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     shell_checks = [
-        row for row in event_rows if row.get("event") == "live.validation.shell_check.completed"
+        row
+        for row in event_rows
+        if row.get("event") == "live.validation.shell_check.completed"
     ]
     assert shell_checks
     assert shell_checks[-1]["exit_code"] == 0
@@ -5923,14 +6294,18 @@ def test_main_live_validation_command_fail_output_fails_even_with_zero_exit(
     stdout = capsys.readouterr().out
     assert "Live Run: failed" in stdout
     assert "runtime/compiler errors" in stdout
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     shell_checks = [
-        row for row in event_rows if row.get("event") == "live.validation.shell_check.completed"
+        row
+        for row in event_rows
+        if row.get("event") == "live.validation.shell_check.completed"
     ]
     assert shell_checks
     assert shell_checks[-1]["exit_code"] == 0
@@ -5971,14 +6346,18 @@ def test_main_live_validation_command_nonzero_exit_fails(
     stdout = capsys.readouterr().out
     assert "Live Run: failed" in stdout
     assert "exited 3" in stdout
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     shell_checks = [
-        row for row in event_rows if row.get("event") == "live.validation.shell_check.completed"
+        row
+        for row in event_rows
+        if row.get("event") == "live.validation.shell_check.completed"
     ]
     assert shell_checks
     assert shell_checks[-1]["exit_code"] == 3
@@ -6018,19 +6397,25 @@ def test_main_live_validation_commands_fail_fast_by_default(
     assert exit_code == 1
     capsys.readouterr()
     assert not marker.exists()
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     shell_checks = [
-        row for row in event_rows if row.get("event") == "live.validation.shell_check.completed"
+        row
+        for row in event_rows
+        if row.get("event") == "live.validation.shell_check.completed"
     ]
     assert shell_checks
     assert all(row["command"] == first for row in shell_checks)
     short_circuits = [
-        row for row in event_rows if row.get("event") == "live.validation.shell_check.short_circuited"
+        row
+        for row in event_rows
+        if row.get("event") == "live.validation.shell_check.short_circuited"
     ]
     assert short_circuits
     assert short_circuits[-1]["skipped_count"] == 1
@@ -6070,10 +6455,14 @@ def test_main_live_generic_uses_optional_run_local_planner_for_broad_work(
     plan_root = tmp_path / ".dan-super" / "runs" / "turn-01" / "plans"
     assert (plan_root / "1-dataset-cleaning-pipeline.md").exists()
     assert (plan_root / "1-1-profile-and-rules.md").exists()
-    plan_text = (plan_root / "1-dataset-cleaning-pipeline.md").read_text(encoding="utf-8")
+    plan_text = (plan_root / "1-dataset-cleaning-pipeline.md").read_text(
+        encoding="utf-8"
+    )
     assert "- [x] 1. Profile the source columns" in plan_text
     assert "- [x] 1-1. Identify likely missingness" in plan_text
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -6085,7 +6474,9 @@ def test_main_live_generic_uses_optional_run_local_planner_for_broad_work(
     assert graph_updates
     assert graph_updates[0]["source"] == "request_understanding"
     assert any(row.get("event") == "live.planning.started" for row in event_rows)
-    assert any(row.get("event") == "live.plan_validation.completed" for row in event_rows)
+    assert any(
+        row.get("event") == "live.plan_validation.completed" for row in event_rows
+    )
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
@@ -6133,7 +6524,9 @@ def test_main_live_interactive_source_objective_skips_run_local_planner(
     assert "Do not use `.dan-super` plan files" in first_builder_prompt
     assert "Current step:" in first_builder_prompt
     assert (tmp_path / "SUPER_DAN_LIVE_NOTE.md").exists()
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -6285,14 +6678,18 @@ def test_main_live_generic_dag_deferred_tasks_do_not_trigger_repair(
     assert "Live Run: completed" in stdout
     assert fake_provider.calls == 6
     assert (tmp_path / "src" / "core.js").exists()
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     plan_validation = next(
-        row for row in event_rows if row.get("event") == "live.plan_validation.completed"
+        row
+        for row in event_rows
+        if row.get("event") == "live.plan_validation.completed"
     )
     assert plan_validation["ready_task_ids"] == ["1-1", "1-2"]
     assert plan_validation["deferred_task_ids"] == ["2-1"]
@@ -6312,14 +6709,22 @@ def test_main_live_generic_dag_deferred_tasks_do_not_trigger_repair(
         "execution_result",
         "validator",
     ]
-    assert [
-        row["task_graph_state"]["revision"]
-        for row in graph_updates
-    ] == [1, 2, 3, 4, 5, 6]
-    assert [
-        row["task_graph_state"]["version_id"]
-        for row in graph_updates
-    ] == ["v1", "v2", "v3", "v3.b1.1", "v3.b1.2", "v3.b1.3"]
+    assert [row["task_graph_state"]["revision"] for row in graph_updates] == [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+    ]
+    assert [row["task_graph_state"]["version_id"] for row in graph_updates] == [
+        "v1",
+        "v2",
+        "v3",
+        "v3.b1.1",
+        "v3.b1.2",
+        "v3.b1.3",
+    ]
     assert graph_updates[-1]["task_graph_state"]["root_version_id"] == "v3"
     assert graph_updates[-1]["task_graph_state"]["parent_version_ids"] == ["v3.b1.2"]
     assert graph_updates[0]["task_graph_state"]["schema"] == "super_dan_task_graph_v1"
@@ -6339,7 +6744,9 @@ def test_main_live_generic_dag_deferred_tasks_do_not_trigger_repair(
         "1-2": "ready",
         "2-1": "deferred",
     }
-    assert not any(row.get("event") == "live.generic_repair.started" for row in event_rows)
+    assert not any(
+        row.get("event") == "live.generic_repair.started" for row in event_rows
+    )
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
@@ -6384,24 +6791,34 @@ def test_main_live_generic_admits_ready_frontier_worktree_task(
     assert (tmp_path / "src" / "core.js").read_text(encoding="utf-8") == (
         "export const coreReady = true;\n"
     )
-    assert "Super DAN Apps" in (tmp_path / "apps" / "index.html").read_text(encoding="utf-8")
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    assert "Super DAN Apps" in (tmp_path / "apps" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert any(row.get("event") == "live.worktree_frontier.started" for row in event_rows)
+    assert any(
+        row.get("event") == "live.worktree_frontier.started" for row in event_rows
+    )
     assert any(row.get("event") == "super.worktree.task_planned" for row in event_rows)
     assert any(row.get("event") == "super.worktree.diff_admitted" for row in event_rows)
     assert any(row.get("event") == "live.worktree.diff_applied" for row in event_rows)
     graph_updates = [
         row for row in event_rows if row.get("event") == "live.task_graph.updated"
     ]
-    assert [
-        row["task_graph_state"]["version_id"]
-        for row in graph_updates
-    ] == ["v1", "v2", "v3", "v3.b1.1", "v3.b1.2", "v3.b1.3+b2.1"]
+    assert [row["task_graph_state"]["version_id"] for row in graph_updates] == [
+        "v1",
+        "v2",
+        "v3",
+        "v3.b1.1",
+        "v3.b1.2",
+        "v3.b1.3+b2.1",
+    ]
     execution_tasks = {
         task["task_id"]: task["state"]
         for task in graph_updates[4]["task_graph_state"]["tasks"]
@@ -6415,14 +6832,23 @@ def test_main_live_generic_admits_ready_frontier_worktree_task(
     assert validator_tasks["1-1"] == "done"
     assert validator_tasks["1-2"] == "done"
     assert validator_tasks["2-1"] == "ready"
-    assert graph_updates[-1]["task_graph_state"]["parent_version_ids"] == ["v3.b1.2", "v3"]
+    assert graph_updates[-1]["task_graph_state"]["parent_version_ids"] == [
+        "v3.b1.2",
+        "v3",
+    ]
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
     assert final_validation["passed"] is True
     assert final_validation["completion_scope"] == "current_frontier"
-    assert str((tmp_path / "src" / "core.js").resolve()) in final_validation["changed_required_files"]
-    assert str((tmp_path / "apps" / "index.html").resolve()) in final_validation["changed_required_files"]
+    assert (
+        str((tmp_path / "src" / "core.js").resolve())
+        in final_validation["changed_required_files"]
+    )
+    assert (
+        str((tmp_path / "apps" / "index.html").resolve())
+        in final_validation["changed_required_files"]
+    )
     state = json.loads(
         (tmp_path / ".dan-super" / "state" / "inboxes.json").read_text(encoding="utf-8")
     )
@@ -6489,14 +6915,18 @@ def test_main_live_general_coding_repairs_after_validation_failure(
     assert "[repair] attempt 1 completed" in stdout
     assert "Validation: passed" in stdout
     assert "flowy smoke" in (tmp_path / "index.html").read_text(encoding="utf-8")
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     assert any(row.get("event") == "live.generic_repair.started" for row in event_rows)
-    assert any(row.get("event") == "live.generic_repair.completed" for row in event_rows)
+    assert any(
+        row.get("event") == "live.generic_repair.completed" for row in event_rows
+    )
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
@@ -6542,7 +6972,9 @@ def test_main_live_generic_repair_uses_file_state_not_git_baseline(
     assert "Financial Summary" in text
     assert "Scenario Framework" in text
     assert fake_provider.calls == 6
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -6559,10 +6991,14 @@ def test_main_live_generic_repair_uses_file_state_not_git_baseline(
     assert final_validation["repair_attempted"] is True
 
 
-def test_main_live_generic_fails_without_workspace_mutations(tmp_path, capsys, monkeypatch) -> None:
+def test_main_live_generic_fails_without_workspace_mutations(
+    tmp_path, capsys, monkeypatch
+) -> None:
     website = tmp_path / "website"
     website.mkdir()
-    (website / "index.html").write_text("<!doctype html><html><body>old site</body></html>\n", encoding="utf-8")
+    (website / "index.html").write_text(
+        "<!doctype html><html><body>old site</body></html>\n", encoding="utf-8"
+    )
     (website / "styles.css").write_text("body { margin: 0; }\n", encoding="utf-8")
     (website / "app.js").write_text("console.log('old');\n", encoding="utf-8")
     (website / "README.md").write_text("# Old site\n", encoding="utf-8")
@@ -6593,19 +7029,27 @@ def test_main_live_generic_fails_without_workspace_mutations(tmp_path, capsys, m
     assert "[builder] retry 1 started" in stdout
     assert "[builder] retry 2 started" in stdout
     assert fake_provider.calls == 3
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     assert not any(str(row["event"]).startswith("live.website_") for row in event_rows)
-    assert sum(
-        1 for row in event_rows if row.get("event") == "live.builder_retry.started"
-    ) == 2
-    assert sum(
-        1 for row in event_rows if row.get("event") == "live.builder_retry.completed"
-    ) == 2
+    assert (
+        sum(1 for row in event_rows if row.get("event") == "live.builder_retry.started")
+        == 2
+    )
+    assert (
+        sum(
+            1
+            for row in event_rows
+            if row.get("event") == "live.builder_retry.completed"
+        )
+        == 2
+    )
     assert not any(row["event"] == "live.website_repair.started" for row in event_rows)
     assert not any(
         row.get("event") == "super.hook.packet_enqueued"
@@ -6655,14 +7099,18 @@ def test_main_live_generic_no_edit_direct_reply_completes_without_retry(
     assert "shell_command" not in fake_provider.tool_names_by_call[0]
     assert "Allowed workspace writes: none." in fake_provider.rendered_messages[0]
 
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     assert not any(row.get("event") == "live.planning.started" for row in event_rows)
-    assert not any(row.get("event") == "live.builder_retry.started" for row in event_rows)
+    assert not any(
+        row.get("event") == "live.builder_retry.started" for row in event_rows
+    )
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
@@ -6710,14 +7158,20 @@ def test_main_live_generic_answer_only_recovers_missing_final_answer(
     assert "file_write" not in fake_provider.tool_names_by_call[1]
     assert "shell_command" not in fake_provider.tool_names_by_call[1]
 
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert [row.get("event") for row in event_rows].count("live.answer_recovery.started") == 1
-    assert [row.get("event") for row in event_rows].count("live.answer_recovery.completed") == 1
+    assert [row.get("event") for row in event_rows].count(
+        "live.answer_recovery.started"
+    ) == 1
+    assert [row.get("event") for row in event_rows].count(
+        "live.answer_recovery.completed"
+    ) == 1
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
@@ -6732,7 +7186,9 @@ def test_main_live_generic_uses_generic_builder_retry(
 ) -> None:
     website = tmp_path / "website"
     website.mkdir()
-    (website / "index.html").write_text("<!doctype html><html><body>old site</body></html>\n", encoding="utf-8")
+    (website / "index.html").write_text(
+        "<!doctype html><html><body>old site</body></html>\n", encoding="utf-8"
+    )
     (website / "styles.css").write_text("body { margin: 0; }\n", encoding="utf-8")
     (website / "app.js").write_text("console.log('old');\n", encoding="utf-8")
     (website / "README.md").write_text("# Old site\n", encoding="utf-8")
@@ -6760,7 +7216,9 @@ def test_main_live_generic_uses_generic_builder_retry(
     assert "Live Run: completed" in stdout
     assert "[builder] retry 1 started" in stdout
     assert fake_provider.calls == 4
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -6821,7 +7279,9 @@ def test_main_live_generic_builder_retry_targets_html_animation_write(
     assert html_path.exists()
     assert "Stick Figure Arena" in html_path.read_text(encoding="utf-8")
 
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -6854,7 +7314,7 @@ def test_main_live_generic_builder_retry_materializes_named_html_alias_after_tim
 ) -> None:
     source_html = (
         "<!doctype html><html><head><title>Arena</title></head>"
-        "<body><canvas id=\"arena\"></canvas><script>requestAnimationFrame(()=>{});</script></body></html>\n"
+        '<body><canvas id="arena"></canvas><script>requestAnimationFrame(()=>{});</script></body></html>\n'
     )
     (tmp_path / "arena-kimi-k26.html").write_text(source_html, encoding="utf-8")
     fake_provider = _FakeBuilderRetryTimeoutThenAliasProvider()
@@ -6893,7 +7353,9 @@ def test_main_live_generic_builder_retry_materializes_named_html_alias_after_tim
     }
     assert (tmp_path / "arena.html").read_text(encoding="utf-8") == source_html
 
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -6925,7 +7387,7 @@ def test_main_live_generic_operator_policy_blocks_other_file_reads_and_alias_reu
 ) -> None:
     source_html = (
         "<!doctype html><html><head><title>Copied Arena</title></head>"
-        "<body><canvas id=\"copied\"></canvas></body></html>\n"
+        '<body><canvas id="copied"></canvas></body></html>\n'
     )
     (tmp_path / "arena-kimi-k26.html").write_text(source_html, encoding="utf-8")
     fake_provider = _FakeOperatorPolicyOtherFileReadProvider()
@@ -6958,7 +7420,9 @@ def test_main_live_generic_operator_policy_blocks_other_file_reads_and_alias_reu
     assert fake_provider.initial_tool_names == ["file_write"]
     assert (tmp_path / "arena.html").read_text(encoding="utf-8") != source_html
 
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -6973,7 +7437,8 @@ def test_main_live_generic_operator_policy_blocks_other_file_reads_and_alias_reu
         for row in event_rows
     )
     assert not any(
-        row.get("event") == "tool.completed" and row.get("tool_id") in {"git_status", "git_diff", "git_log"}
+        row.get("event") == "tool.completed"
+        and row.get("tool_id") in {"git_status", "git_diff", "git_log"}
         for row in event_rows
     )
     assert not any(
@@ -6983,8 +7448,7 @@ def test_main_live_generic_operator_policy_blocks_other_file_reads_and_alias_reu
         for row in event_rows
     )
     assert not any(
-        row.get("event") == "live.builder_retry.started"
-        for row in event_rows
+        row.get("event") == "live.builder_retry.started" for row in event_rows
     )
     build_started = next(
         row
@@ -7006,7 +7470,7 @@ def test_main_live_generic_operator_policy_disables_alias_materialization_after_
 ) -> None:
     source_html = (
         "<!doctype html><html><head><title>Arena</title></head>"
-        "<body><canvas id=\"arena\"></canvas><script>requestAnimationFrame(()=>{});</script></body></html>\n"
+        '<body><canvas id="arena"></canvas><script>requestAnimationFrame(()=>{});</script></body></html>\n'
     )
     (tmp_path / "arena-kimi-k26.html").write_text(source_html, encoding="utf-8")
     fake_provider = _FakeBuilderRetryTimeoutThenAliasProvider()
@@ -7038,7 +7502,9 @@ def test_main_live_generic_operator_policy_disables_alias_materialization_after_
     assert not (tmp_path / "arena.html").exists()
     assert fake_provider.calls == 6
 
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -7109,7 +7575,9 @@ def test_main_live_generic_builder_retry_blocks_additive_report_shrink(
     assert "| ASML | Lithography |" in text
     assert "Additional Section 3 evidence" in text
 
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -7158,7 +7626,9 @@ def test_main_live_generic_does_not_apply_website_template_static_gate(
     assert "Live Run: completed" in stdout
     assert "Validation: passed" in stdout
     assert "Template phrase hits in index.html" not in stdout
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -7199,7 +7669,9 @@ def test_website_static_validation_names_template_phrase_hits(tmp_path) -> None:
     assert "fewer than 2 remain" in message
 
 
-def test_live_website_repair_task_includes_template_hit_repair_instruction(tmp_path) -> None:
+def test_live_website_repair_task_includes_template_hit_repair_instruction(
+    tmp_path,
+) -> None:
     report = super_cli.run_super_organism_demo("Build a product website")
 
     task = super_cli._live_website_repair_task(
@@ -7247,13 +7719,17 @@ def test_main_live_generic_template_pass_does_not_run_website_repair(
     stdout = capsys.readouterr().out
     assert "Status: completed" in stdout
     assert "[repair] attempt 1 started" not in stdout
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert not any(row.get("event") == "live.website_repair.started" for row in event_rows)
+    assert not any(
+        row.get("event") == "live.website_repair.started" for row in event_rows
+    )
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
@@ -7291,7 +7767,9 @@ def test_main_live_generic_template_pass_suppresses_website_repair_hooks(
     stdout = capsys.readouterr().out
     assert "Status: completed" in stdout
     assert "Template phrase hits in index.html" not in stdout
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -7350,7 +7828,9 @@ def test_main_live_website_build_allows_material_single_file_existing_site_patch
     assert "Live Run: completed" in stdout
     assert "Validation: passed" in stdout
     assert "coordinated required files" not in stdout
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -7405,7 +7885,9 @@ def test_main_live_website_build_repairs_failed_validation_once(
     assert "Live Run: completed" in stdout
     assert "[repair] attempt 1 started" in stdout
     assert "[repair] attempt 1 completed" in stdout
-    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_log_path = (
+        tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    ).resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
@@ -7421,7 +7903,10 @@ def test_main_live_website_build_repairs_failed_validation_once(
         row for row in event_rows if row.get("event") == "live.generic_repair.completed"
     ][-1]
     assert len(repair_completed["changed_required_files"]) >= 2
-    assert "coordinated repair pass" in (website / "README.md").read_text(encoding="utf-8").lower()
+    assert (
+        "coordinated repair pass"
+        in (website / "README.md").read_text(encoding="utf-8").lower()
+    )
 
 
 def test_main_live_rejects_plan_only() -> None:

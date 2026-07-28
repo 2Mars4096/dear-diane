@@ -11,6 +11,7 @@ import os
 import platform
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import tempfile
 from typing import Any, Callable, Mapping, Sequence
@@ -22,6 +23,7 @@ from dan.providers.multimodal import (
     parse_data_url_image,
 )
 from dan.tools import get_all_tools
+from dan.tools._atomic_file import atomic_write_bytes
 from dan.tools._git_helpers import _find_repo, _git_binary
 from dan.worker.context_capsules import (
     build_tool_context_capsules,
@@ -64,6 +66,24 @@ _READ_ONLY_TOOL_EXCLUSIONS = frozenset(
         "browser_type",
         "browser_select",
         "browser_download",
+        "desktop_focus",
+        "desktop_click",
+        "desktop_type",
+        "desktop_hotkey",
+    }
+)
+_TRANSIENT_BROWSER_TOOL_IDS = frozenset({"browser_open"})
+_EXTERNAL_BROWSER_TOOL_IDS = frozenset(
+    {
+        "browser_click",
+        "browser_fill",
+        "browser_type",
+        "browser_select",
+        "browser_download",
+    }
+)
+_EXTERNAL_DESKTOP_TOOL_IDS = frozenset(
+    {
         "desktop_focus",
         "desktop_click",
         "desktop_type",
@@ -124,14 +144,23 @@ _SHELL_WORKSPACE_CHANGE_SKIP_DIR_NAMES = _INTERNAL_WORKSPACE_DIR_NAMES | frozens
     }
 )
 _SHELL_WORKSPACE_CHANGE_MAX_FILES = 12_000
-_GREENFIELD_OPERATOR_ARTIFACTS = frozenset({"prompt.md", "acceptance.md", "report.json"})
+_SHELL_PROTECTED_FILE_MAX_BYTES = 16 * 1024 * 1024
+_SHELL_PROTECTED_TOTAL_MAX_BYTES = 128 * 1024 * 1024
+_SHELL_CATASTROPHIC_SHRINK_RATIO = 0.05
+_GREENFIELD_OPERATOR_ARTIFACTS = frozenset(
+    {"prompt.md", "acceptance.md", "report.json"}
+)
 ToolRuntimeEventCallback = Callable[[dict[str, Any]], None]
 ToolApprovalCallback = Callable[[str, dict[str, Any], dict[str, Any]], bool]
 _CODING_OUTPUT_COMMON_REQUIRED_KEYS = frozenset(
     {"change_summary", "target_files", "test_plan", "risks"}
 )
-_CODING_CANDIDATE_REQUIRED_KEYS = frozenset({"candidate_id"}) | _CODING_OUTPUT_COMMON_REQUIRED_KEYS
-_CODING_WORKER_REQUIRED_KEYS = frozenset({"candidate_fragment"}) | _CODING_OUTPUT_COMMON_REQUIRED_KEYS
+_CODING_CANDIDATE_REQUIRED_KEYS = (
+    frozenset({"candidate_id"}) | _CODING_OUTPUT_COMMON_REQUIRED_KEYS
+)
+_CODING_WORKER_REQUIRED_KEYS = (
+    frozenset({"candidate_fragment"}) | _CODING_OUTPUT_COMMON_REQUIRED_KEYS
+)
 _VALIDATION_REPORT_REQUIRED_KEYS = frozenset(
     {
         "passed",
@@ -245,7 +274,9 @@ def _prompt_debug_value(value: Any) -> Any:
 def _debug_prompt_messages(messages: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return a JSON-safe copy of provider-facing messages for debug logs."""
 
-    copied = _prompt_debug_value([message for message in messages if isinstance(message, dict)])
+    copied = _prompt_debug_value(
+        [message for message in messages if isinstance(message, dict)]
+    )
     try:
         json.dumps(copied, ensure_ascii=False, default=str)
     except (TypeError, ValueError):
@@ -293,7 +324,9 @@ def _merge_usage_totals(
     return merged
 
 
-def _truncate_prompt_text(value: str, *, limit: int = _TOOL_PROMPT_TEXT_LIMIT) -> tuple[str, bool]:
+def _truncate_prompt_text(
+    value: str, *, limit: int = _TOOL_PROMPT_TEXT_LIMIT
+) -> tuple[str, bool]:
     if len(value) <= limit:
         return value, False
     clipped = max(limit - 64, 0)
@@ -356,7 +389,9 @@ def _message_content_text(content: Any) -> str:
         return _image_data_url_summary(content) or content
     content_for_count = _prompt_debug_value(content)
     try:
-        return json.dumps(content_for_count, ensure_ascii=False, sort_keys=True, default=str)
+        return json.dumps(
+            content_for_count, ensure_ascii=False, sort_keys=True, default=str
+        )
     except Exception:
         return str(content_for_count)
 
@@ -476,10 +511,13 @@ def _over_prompt_context_budget(
 ) -> bool:
     if budget_chars is None:
         return False
-    return _prompt_context_total_chars(
-        messages,
-        tool_schema_chars=tool_schema_chars,
-    ) > budget_chars
+    return (
+        _prompt_context_total_chars(
+            messages,
+            tool_schema_chars=tool_schema_chars,
+        )
+        > budget_chars
+    )
 
 
 def _protected_prompt_message_indices(
@@ -646,8 +684,13 @@ def _compact_tool_call_arguments_for_prompt(
     if not isinstance(arguments, str):
         return False, 0
     original_chars = len(arguments)
-    function_name = str(function_payload.get("name") or raw_call.get("name") or "").strip()
-    if original_chars <= text_limit and function_name not in {"file_write", "file_edit"}:
+    function_name = str(
+        function_payload.get("name") or raw_call.get("name") or ""
+    ).strip()
+    if original_chars <= text_limit and function_name not in {
+        "file_write",
+        "file_edit",
+    }:
         return False, 0
 
     try:
@@ -811,7 +854,9 @@ def _compact_message_content_hard_for_prompt(
 
     compacted_content, changed = _compact_prompt_value(
         content,
-        text_limit=max(_PROMPT_CONTEXT_HARD_MIN_MESSAGE_TEXT_LIMIT, int(text_limit // 4)),
+        text_limit=max(
+            _PROMPT_CONTEXT_HARD_MIN_MESSAGE_TEXT_LIMIT, int(text_limit // 4)
+        ),
     )
     compacted_chars = len(_message_content_text(compacted_content))
     if changed and compacted_chars <= text_limit:
@@ -838,7 +883,9 @@ def _compact_message_content_hard_for_prompt(
             "The full source remains available through runtime logs or targeted tools."
         ),
     }
-    return True, max(original_chars - len(_message_content_text(message.get("content"))), omitted)
+    return True, max(
+        original_chars - len(_message_content_text(message.get("content"))), omitted
+    )
 
 
 def _hard_prompt_text_limit_for_role(role: str) -> int:
@@ -961,7 +1008,9 @@ def _compact_messages_for_provider_prompt(
     do not keep reloading into every later model call.
     """
 
-    copied = [copy.deepcopy(message) for message in messages if isinstance(message, dict)]
+    copied = [
+        copy.deepcopy(message) for message in messages if isinstance(message, dict)
+    ]
     original_chars = _message_prompt_char_count(copied)
     original_total_chars = original_chars + max(0, int(tool_schema_chars))
     effective_recent_file_reads = (
@@ -1001,9 +1050,11 @@ def _compact_messages_for_provider_prompt(
             continue
         if not isinstance(payload, dict):
             continue
-        compacted_payload, compacted, omitted = _compact_older_file_read_payload_for_prompt(
-            payload,
-            text_limit=file_read_text_limit,
+        compacted_payload, compacted, omitted = (
+            _compact_older_file_read_payload_for_prompt(
+                payload,
+                text_limit=file_read_text_limit,
+            )
         )
         if not compacted:
             continue
@@ -1154,7 +1205,9 @@ def _line_numbered_prompt_content(content: str, *, start_line: int = 1) -> str:
     return "\n".join(f"{first + index:>6}| {line}" for index, line in enumerate(lines))
 
 
-def _file_read_payload_with_line_numbers(tool_payload: dict[str, Any]) -> dict[str, Any]:
+def _file_read_payload_with_line_numbers(
+    tool_payload: dict[str, Any],
+) -> dict[str, Any]:
     prompt_payload = copy.deepcopy(tool_payload)
     result = prompt_payload.get("result")
     if not isinstance(result, dict):
@@ -1162,7 +1215,11 @@ def _file_read_payload_with_line_numbers(tool_payload: dict[str, Any]) -> dict[s
     content = result.get("content")
     if not isinstance(content, str):
         return prompt_payload
-    arguments = prompt_payload.get("arguments") if isinstance(prompt_payload.get("arguments"), dict) else {}
+    arguments = (
+        prompt_payload.get("arguments")
+        if isinstance(prompt_payload.get("arguments"), dict)
+        else {}
+    )
     try:
         start_line = int(result.get("line_start") or arguments.get("start_line") or 1)
     except (TypeError, ValueError):
@@ -1172,7 +1229,9 @@ def _file_read_payload_with_line_numbers(tool_payload: dict[str, Any]) -> dict[s
     return prompt_payload
 
 
-def _completion_request_user_content(request: CompletionRequest) -> str | list[dict[str, Any]]:
+def _completion_request_user_content(
+    request: CompletionRequest,
+) -> str | list[dict[str, Any]]:
     attachments = image_attachments_from_metadata(request.metadata)
     if not attachments:
         return request.user_prompt
@@ -1248,15 +1307,46 @@ def _model_facing_tool_parameters(tool_id: str, parameters: Any) -> dict[str, An
 
 
 def _read_only_tool_ids(tool_ids: Sequence[str]) -> list[str]:
-    return [tool_id for tool_id in _dedupe(tool_ids) if tool_id not in _READ_ONLY_TOOL_EXCLUSIONS]
+    return [
+        tool_id
+        for tool_id in _dedupe(tool_ids)
+        if tool_id not in _READ_ONLY_TOOL_EXCLUSIONS
+    ]
+
+
+def _structured_surface_ui_tool_ids(
+    request: CompletionRequest,
+    tool_ids: Sequence[str],
+) -> list[str]:
+    raw_policy = request.metadata.get("surface_policy")
+    policy = raw_policy if isinstance(raw_policy, Mapping) else {}
+    raw_packs = policy.get("capability_packs")
+    packs = (
+        {str(item).strip().lower() for item in raw_packs if str(item).strip()}
+        if isinstance(raw_packs, Sequence) and not isinstance(raw_packs, (str, bytes))
+        else set()
+    )
+    if "computer_control" in packs:
+        packs.update({"browser_control", "desktop_control"})
+    permission_scope = str(policy.get("permission_scope") or "").strip().lower()
+    allowed: set[str] = set()
+    if "browser_control" in packs and permission_scope in {
+        "transient_execute",
+        "external_write",
+    }:
+        allowed.update(_TRANSIENT_BROWSER_TOOL_IDS)
+    if permission_scope == "external_write":
+        if "browser_control" in packs:
+            allowed.update(_EXTERNAL_BROWSER_TOOL_IDS)
+        if "desktop_control" in packs:
+            allowed.update(_EXTERNAL_DESKTOP_TOOL_IDS)
+    return [tool_id for tool_id in _dedupe(tool_ids) if tool_id in allowed]
 
 
 def _research_read_only_tool_ids(tool_ids: Sequence[str]) -> list[str]:
     read_only = _read_only_tool_ids(tool_ids)
     preferred = [
-        tool_id
-        for tool_id in _RESEARCH_TOOL_PREFERRED_ORDER
-        if tool_id in read_only
+        tool_id for tool_id in _RESEARCH_TOOL_PREFERRED_ORDER if tool_id in read_only
     ]
     extras = [
         tool_id
@@ -1277,7 +1367,8 @@ def _coding_aggregation_tool_ids(tool_ids: Sequence[str]) -> list[str]:
     extras = [
         tool_id
         for tool_id in available
-        if tool_id not in preferred and tool_id not in _CODING_AGGREGATION_TOOL_EXCLUSIONS
+        if tool_id not in preferred
+        and tool_id not in _CODING_AGGREGATION_TOOL_EXCLUSIONS
     ]
     narrowed = preferred + extras
     return narrowed or available
@@ -1285,7 +1376,9 @@ def _coding_aggregation_tool_ids(tool_ids: Sequence[str]) -> list[str]:
 
 def _tool_ids_are_read_only(tool_ids: Sequence[str]) -> bool:
     available = _dedupe(tool_ids)
-    return bool(available) and not any(tool_id in _READ_ONLY_TOOL_EXCLUSIONS for tool_id in available)
+    return bool(available) and not any(
+        tool_id in _READ_ONLY_TOOL_EXCLUSIONS for tool_id in available
+    )
 
 
 def _operator_intent_policy_payload(request: CompletionRequest) -> Mapping[str, Any]:
@@ -1301,11 +1394,7 @@ def _operator_intent_blocked_tool_ids(request: CompletionRequest) -> set[str]:
     blocked: set[str] = set()
     raw_work_contract = policy.get("work_contract")
     work_contract = raw_work_contract if isinstance(raw_work_contract, Mapping) else {}
-    work_mode = str(
-        policy.get("work_mode")
-        or work_contract.get("work_mode")
-        or ""
-    )
+    work_mode = str(policy.get("work_mode") or work_contract.get("work_mode") or "")
     if work_mode == "chat_answer":
         blocked.update(
             {
@@ -1329,7 +1418,9 @@ def _operator_intent_blocked_tool_ids(request: CompletionRequest) -> set[str]:
         blocked.add("list_directory")
     if policy.get("allow_git_context") is False:
         blocked.update({"git_status", "git_diff", "git_log"})
-    if policy.get("forbid_other_workspace_inputs") is True and not policy.get("allowed_read_paths"):
+    if policy.get("forbid_other_workspace_inputs") is True and not policy.get(
+        "allowed_read_paths"
+    ):
         blocked.add("file_read")
     return blocked
 
@@ -1353,12 +1444,13 @@ def _request_forbids_workspace_mutation(request: CompletionRequest) -> bool:
     raw_work_contract = raw_policy.get("work_contract")
     work_contract = raw_work_contract if isinstance(raw_work_contract, Mapping) else {}
     mutation_policy = str(
-        raw_policy.get("mutation_policy")
-        or work_contract.get("mutation_policy")
-        or ""
+        raw_policy.get("mutation_policy") or work_contract.get("mutation_policy") or ""
     ).strip()
     if mutation_policy:
-        return mutation_policy == "forbidden" or raw_policy.get("allow_workspace_mutation") is False
+        return (
+            mutation_policy == "forbidden"
+            or raw_policy.get("allow_workspace_mutation") is False
+        )
     if "allow_workspace_mutation" in raw_policy:
         return raw_policy.get("allow_workspace_mutation") is False
 
@@ -1393,7 +1485,9 @@ def _workspace_supports_git(workspace_root: str | Path) -> bool:
     return True
 
 
-def _workspace_tool_ids(tool_ids: Sequence[str], *, workspace_root: str | Path) -> list[str]:
+def _workspace_tool_ids(
+    tool_ids: Sequence[str], *, workspace_root: str | Path
+) -> list[str]:
     selected = _dedupe(tool_ids)
     if _workspace_supports_git(workspace_root):
         return selected
@@ -1430,9 +1524,13 @@ def _tool_use_policy(tool_ids: Sequence[str]) -> str:
         "- Keep tool calls targeted and incremental. Avoid duplicate discovery once you already have the needed fact.",
     ]
     if "list_directory" in available:
-        lines.append("- Use `list_directory` for directory inspection instead of shell `ls`.")
+        lines.append(
+            "- Use `list_directory` for directory inspection instead of shell `ls`."
+        )
     if "file_read" in available:
-        lines.append("- Use `file_read` for file contents instead of shell `cat`, `head`, or similar fallbacks.")
+        lines.append(
+            "- Use `file_read` for file contents instead of shell `cat`, `head`, or similar fallbacks."
+        )
         lines.append(
             "- Prefer explicit line windows with `start_line`/`end_line` for code inspection. Do not rely on shell `grep`/`sed`/`awk`, regex searches, or other fixed-pattern matching to locate edit sites when `file_read` is available."
         )
@@ -1452,7 +1550,7 @@ def _tool_use_policy(tool_ids: Sequence[str]) -> str:
         )
     if "file_edit" in available:
         lines.append(
-            "- Use `file_edit` for targeted edits to existing files. Before each mutation, do a compact edit-intent check and map it to the schema: replace an existing range with `mode=\"replace\"` plus `content`; insert text with `insert_before`/`insert_after` plus `content`; delete text with `mode=\"delete\"` and no replacement fields; replace exact text with `old_string` plus `new_string` copied from a recent `file_read` and no delete mode."
+            '- Use `file_edit` for targeted edits to existing files. Before each mutation, do a compact edit-intent check and map it to the schema: replace an existing range with `mode="replace"` plus `content`; insert text with `insert_before`/`insert_after` plus `content`; delete text with `mode="delete"` and no replacement fields; replace exact text with `old_string` plus `new_string` copied from a recent `file_read` and no delete mode.'
         )
         lines.append(
             "- For line-based edits, always include `path` and `start_line`, and include `content` for replace/insert edits. When replacing multiple lines, include `end_line` so the full target range is explicit. If you need multiple non-overlapping edits in the same file, prefer one `file_edit` call with `edits=[...]` over repeated single-edit calls; every batch item must include `start_line` or a unique `old_string`/`new_string` pair copied from a recent `file_read`."
@@ -1479,7 +1577,7 @@ def _tool_use_policy(tool_ids: Sequence[str]) -> str:
                 "- If a greenfield brief in an empty workspace needs new files, prefer returning a concrete `candidate_fragment` for later materialization. Use `web_search` only when the brief explicitly needs current external facts, library documentation, or version-specific behavior."
             )
         lines.append(
-            '- When current identity, status, version, availability, or exact source text matters, use `web_search` in grounded mode with `search_depth=\"thorough\"` or `fetch_content=true` so it fetches the top authoritative result pages instead of relying on snippets alone.'
+            '- When current identity, status, version, availability, or exact source text matters, use `web_search` in grounded mode with `search_depth="thorough"` or `fetch_content=true` so it fetches the top authoritative result pages instead of relying on snippets alone.'
         )
         lines.append(
             "- If you already have a specific page URL, pass it as `url` to `web_search` instead of treating it as a separate tool choice."
@@ -1576,13 +1674,18 @@ def _missing_alternative_required_tool_argument_groups(
             required = variant.get("required")
             if not isinstance(required, (list, tuple)):
                 continue
-            group = [str(name or "").strip() for name in required if str(name or "").strip()]
+            group = [
+                str(name or "").strip() for name in required if str(name or "").strip()
+            ]
             if group:
                 alternative_groups.append(group)
 
     if not alternative_groups:
         return []
-    if any(all(not _tool_argument_is_missing(arguments, key) for key in group) for group in alternative_groups):
+    if any(
+        all(not _tool_argument_is_missing(arguments, key) for key in group)
+        for group in alternative_groups
+    ):
         return []
     return alternative_groups
 
@@ -1593,7 +1696,9 @@ def _tool_argument_validation_error(
     alternative_required_groups: Sequence[Sequence[str]] | None = None,
 ) -> str:
     detail_parts: list[str] = []
-    required_text = ", ".join(str(name).strip() for name in missing_required if str(name).strip())
+    required_text = ", ".join(
+        str(name).strip() for name in missing_required if str(name).strip()
+    )
     if required_text:
         detail_parts.append(required_text)
     if alternative_required_groups:
@@ -1630,7 +1735,11 @@ def _file_edit_missing_content_argument(arguments: dict[str, Any]) -> str:
             if not isinstance(edit, dict):
                 continue
             mode = str(edit.get("mode") or "replace").strip().lower()
-            if mode != "delete" and _present(edit.get("start_line")) and not _edit_has_replacement(edit):
+            if (
+                mode != "delete"
+                and _present(edit.get("start_line"))
+                and not _edit_has_replacement(edit)
+            ):
                 return f"edits[{index}].content"
         return ""
 
@@ -1704,7 +1813,13 @@ def _file_edit_empty_batch_argument(arguments: dict[str, Any]) -> str:
 
 
 def _file_edit_delete_replacement_argument(arguments: dict[str, Any]) -> str:
-    replacement_keys = ("content", "new_string", "replace", "replacement", "new_content")
+    replacement_keys = (
+        "content",
+        "new_string",
+        "replace",
+        "replacement",
+        "new_content",
+    )
 
     def _has_replacement_field(container: dict[str, Any]) -> str:
         for key in replacement_keys:
@@ -1803,13 +1918,13 @@ def _tool_argument_failure_nudge(tool_id: str, error_text: str) -> str | None:
     extra_guidance = ""
     if tool_id == "web_search":
         extra_guidance = (
-            ' For `web_search`, retry with exactly one concrete JSON object such as '
+            " For `web_search`, retry with exactly one concrete JSON object such as "
             '`{"query":"Brent crude oil price April 2026"}` or `{"url":"https://example.com/page"}`. '
             "Do not send `{}` and do not batch multiple empty `web_search` calls in the same round."
         )
     elif tool_id == "file_write":
         extra_guidance = (
-            ' For `file_write`, retry with exactly one complete JSON object such as '
+            " For `file_write`, retry with exactly one complete JSON object such as "
             '`{"path":"website/index.html","content":"<!doctype html>..."}`. '
             "Do not omit `path` or `content`, and do not send prose instead of the JSON arguments. "
             "Treat failed monolithic writes as risky: if the provider or tool failure indicates truncation or oversized content, "
@@ -1818,7 +1933,10 @@ def _tool_argument_failure_nudge(tool_id: str, error_text: str) -> str | None:
         )
     elif tool_id == "file_edit":
         stale_anchor_guidance = ""
-        if "old_string was not found" in detail or "old_string matched multiple" in detail:
+        if (
+            "old_string was not found" in detail
+            or "old_string matched multiple" in detail
+        ):
             stale_anchor_guidance = (
                 " The old_string anchor is stale or ambiguous; do not retry the same exact-text edit "
                 "and do not switch to a whole-file rewrite unless the task explicitly asks for a complete overwrite. "
@@ -1826,7 +1944,7 @@ def _tool_argument_failure_nudge(tool_id: str, error_text: str) -> str | None:
                 "`start_line`/`end_line` plus `content` copied against the current file."
             )
         extra_guidance = (
-            ' For `file_edit`, first choose the edit intent: replacement uses '
+            " For `file_edit`, first choose the edit intent: replacement uses "
             '`{"path":"src/app.py","start_line":12,"end_line":14,"mode":"replace","content":"..."}`; '
             'insertion uses `mode:"insert_before"` or `mode:"insert_after"` plus `content`; '
             'deletion uses `mode:"delete"` with no `content`/`new_string`; '
@@ -1930,7 +2048,11 @@ def _raw_tool_call_arguments_text(
         if isinstance(raw_text, str) and raw_text.strip():
             return raw_text
     function = raw_call.get("function") if isinstance(raw_call, dict) else None
-    raw_arguments = function.get("arguments") if isinstance(function, dict) else raw_call.get("arguments")
+    raw_arguments = (
+        function.get("arguments")
+        if isinstance(function, dict)
+        else raw_call.get("arguments")
+    )
     if isinstance(raw_arguments, str) and raw_arguments.strip():
         return raw_arguments
     if isinstance(raw_arguments, dict):
@@ -1993,7 +2115,9 @@ def _extract_jsonish_int_field(raw_text: str, field_name: str) -> int | None:
         return None
 
 
-def _recover_tool_arguments_from_raw_text(tool_id: str, raw_text: str) -> dict[str, Any]:
+def _recover_tool_arguments_from_raw_text(
+    tool_id: str, raw_text: str
+) -> dict[str, Any]:
     parsed = parse_jsonish_payload(raw_text)
     if isinstance(parsed, dict):
         return dict(parsed)
@@ -2030,14 +2154,21 @@ def _is_repeated_tool_call(
 ) -> bool:
     if not isinstance(previous_tool, dict):
         return False
-    if str(previous_tool.get("tool_id") or "").strip() != str(current_tool.get("tool_id") or "").strip():
+    if (
+        str(previous_tool.get("tool_id") or "").strip()
+        != str(current_tool.get("tool_id") or "").strip()
+    ):
         return False
-    if _stable_tool_value(previous_tool.get("arguments")) != _stable_tool_value(current_tool.get("arguments")):
+    if _stable_tool_value(previous_tool.get("arguments")) != _stable_tool_value(
+        current_tool.get("arguments")
+    ):
         return False
     if bool(previous_tool.get("ok")) != bool(current_tool.get("ok")):
         return False
     payload_key = "result" if current_tool.get("ok") else "error"
-    return _stable_tool_value(previous_tool.get(payload_key)) == _stable_tool_value(current_tool.get(payload_key))
+    return _stable_tool_value(previous_tool.get(payload_key)) == _stable_tool_value(
+        current_tool.get(payload_key)
+    )
 
 
 def _repeated_tool_call_nudge(tool_id: str, arguments: dict[str, Any]) -> str:
@@ -2141,37 +2272,53 @@ def _effective_listing_entry_paths(result: Any, *, workspace_root: Path) -> list
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        relative = _relative_workspace_path(entry.get("path") or entry.get("name"), workspace_root=workspace_root)
+        relative = _relative_workspace_path(
+            entry.get("path") or entry.get("name"), workspace_root=workspace_root
+        )
         if relative:
             effective.append(relative)
     return effective
 
 
-def _tool_confirms_effectively_empty_workspace(tool: dict[str, Any], *, workspace_root: Path) -> bool:
+def _tool_confirms_effectively_empty_workspace(
+    tool: dict[str, Any], *, workspace_root: Path
+) -> bool:
     if str(tool.get("tool_id") or "").strip() != "list_directory" or not tool.get("ok"):
         return False
-    relative = _relative_workspace_path(dict(tool.get("arguments") or {}).get("path"), workspace_root=workspace_root)
+    relative = _relative_workspace_path(
+        dict(tool.get("arguments") or {}).get("path"), workspace_root=workspace_root
+    )
     if relative not in {None, ".", ""}:
         return False
-    entries = _effective_listing_entry_paths(tool.get("result"), workspace_root=workspace_root)
+    entries = _effective_listing_entry_paths(
+        tool.get("result"), workspace_root=workspace_root
+    )
     return not entries or all(
         _is_internal_workspace_path(path) or _is_greenfield_operator_artifact(path)
         for path in entries
     )
 
 
-def _tool_targets_internal_workspace_state(tool: dict[str, Any], *, workspace_root: Path) -> bool:
+def _tool_targets_internal_workspace_state(
+    tool: dict[str, Any], *, workspace_root: Path
+) -> bool:
     tool_id = str(tool.get("tool_id") or "").strip()
     if tool_id not in {"list_directory", "file_read"}:
         return False
-    relative = _relative_workspace_path(dict(tool.get("arguments") or {}).get("path"), workspace_root=workspace_root)
+    relative = _relative_workspace_path(
+        dict(tool.get("arguments") or {}).get("path"), workspace_root=workspace_root
+    )
     return _is_internal_workspace_path(relative)
 
 
-def _tool_reads_greenfield_operator_artifact(tool: dict[str, Any], *, workspace_root: Path) -> bool:
+def _tool_reads_greenfield_operator_artifact(
+    tool: dict[str, Any], *, workspace_root: Path
+) -> bool:
     if str(tool.get("tool_id") or "").strip() != "file_read" or not tool.get("ok"):
         return False
-    relative = _relative_workspace_path(dict(tool.get("arguments") or {}).get("path"), workspace_root=workspace_root)
+    relative = _relative_workspace_path(
+        dict(tool.get("arguments") or {}).get("path"), workspace_root=workspace_root
+    )
     return _is_greenfield_operator_artifact(relative)
 
 
@@ -2205,7 +2352,9 @@ def _read_only_finalize_mode(request: CompletionRequest) -> str | None:
         return "validator"
 
     system_prompt = str(request.system_prompt or "")
-    expected_shape = str(getattr(request.output_contract, "expected_return_shape", "") or "")
+    expected_shape = str(
+        getattr(request.output_contract, "expected_return_shape", "") or ""
+    )
     worker_id = str(request.metadata.get("worker_id") or "").strip()
 
     looks_like_coding_worker = (
@@ -2266,10 +2415,7 @@ def _tool_argument_path(tool: dict[str, Any]) -> str:
     arguments = dict(tool.get("arguments") or {})
     result = dict(tool.get("result") or {})
     return str(
-        result.get("path")
-        or arguments.get("path")
-        or arguments.get("file_path")
-        or ""
+        result.get("path") or arguments.get("path") or arguments.get("file_path") or ""
     ).strip()
 
 
@@ -2332,7 +2478,9 @@ def _file_write_invalid_large_overwrite_downshift(
     trimmed = raw_text.rstrip()
     if finish_text == "length":
         return relative_path, "model_output_truncated"
-    if len(raw_text) >= _FILE_WRITE_RAW_ARGUMENT_RISKY_LENGTH and not trimmed.endswith("}"):
+    if len(raw_text) >= _FILE_WRITE_RAW_ARGUMENT_RISKY_LENGTH and not trimmed.endswith(
+        "}"
+    ):
         return relative_path, "oversized_payload_cut_off"
     return None
 
@@ -2409,7 +2557,9 @@ def _repair_policy_shrinking_overwrite_message(
     )
 
 
-def _normalized_tool_path(path: Any, *, workspace_root: Path | None = None) -> str | None:
+def _normalized_tool_path(
+    path: Any, *, workspace_root: Path | None = None
+) -> str | None:
     text = str(path or "").strip()
     if not text:
         return None
@@ -2529,7 +2679,9 @@ def _workspace_snapshot_diff(
     created_all = sorted(after_keys - before_keys)
     deleted_all = sorted(before_keys - after_keys)
     modified_all = sorted(
-        path for path in before_keys & after_keys if before_files.get(path) != after_files.get(path)
+        path
+        for path in before_keys & after_keys
+        if before_files.get(path) != after_files.get(path)
     )
     changed_all = created_all + modified_all + deleted_all
     return {
@@ -2538,10 +2690,453 @@ def _workspace_snapshot_diff(
         "deleted": deleted_all[:max_paths],
         "changed_paths": changed_all[:max_paths],
         "change_count": len(changed_all),
-        "truncated": bool(before.get("truncated") if isinstance(before, Mapping) else False)
+        "truncated": bool(
+            before.get("truncated") if isinstance(before, Mapping) else False
+        )
         or bool(after.get("truncated") if isinstance(after, Mapping) else False)
         or len(changed_all) > max_paths,
     }
+
+
+def _workspace_diff_without_restored_paths(
+    changes: Mapping[str, Any],
+    *,
+    restored_paths: Sequence[Any],
+    workspace_root: Path,
+) -> dict[str, Any]:
+    restored_relative: set[str] = set()
+    for raw_path in restored_paths:
+        try:
+            relative = str(Path(str(raw_path)).resolve().relative_to(workspace_root))
+        except (OSError, ValueError):
+            continue
+        restored_relative.add(relative)
+    if not restored_relative:
+        return dict(changes)
+
+    filtered = dict(changes)
+    for key in ("created", "modified", "deleted", "changed_paths"):
+        values = changes.get(key)
+        if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+            continue
+        filtered[key] = [
+            str(value) for value in values if str(value) not in restored_relative
+        ]
+    changed_paths = filtered.get("changed_paths")
+    if isinstance(changed_paths, list):
+        filtered["change_count"] = len(changed_paths)
+    return filtered
+
+
+def _shell_command_words(command: str) -> list[str]:
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;<>")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        return list(lexer)
+    except ValueError:
+        return []
+
+
+def _shell_command_segments(command: str) -> list[list[str]]:
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for word in _shell_command_words(command):
+        if word in {"|", "||", "&", "&&", ";"}:
+            if current:
+                segments.append(current)
+                current = []
+            continue
+        current.append(word)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _shell_segment_executable_index(segment: Sequence[str]) -> int | None:
+    index = 0
+    while index < len(segment):
+        word = str(segment[index])
+        executable = Path(word).name.lower()
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", word):
+            index += 1
+            continue
+        if executable == "env":
+            index += 1
+            while index < len(segment):
+                option = str(segment[index])
+                if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", option):
+                    index += 1
+                    continue
+                if option in {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}:
+                    index += 2
+                    continue
+                if option.startswith("-"):
+                    index += 1
+                    continue
+                break
+            continue
+        if executable == "command":
+            index += 1
+            if index < len(segment) and str(segment[index]) in {"-v", "-V"}:
+                return None
+            while index < len(segment) and str(segment[index]).startswith("-"):
+                index += 1
+            continue
+        if executable == "nohup":
+            index += 1
+            while index < len(segment) and str(segment[index]).startswith("-"):
+                index += 1
+            continue
+        if executable == "sudo":
+            value_options = {
+                "-C",
+                "-D",
+                "-g",
+                "-h",
+                "-p",
+                "-r",
+                "-R",
+                "-t",
+                "-T",
+                "-u",
+                "--chdir",
+                "--group",
+                "--host",
+                "--prompt",
+                "--role",
+                "--type",
+                "--user",
+            }
+            index += 1
+            while index < len(segment):
+                option = str(segment[index])
+                if option in value_options:
+                    index += 2
+                    continue
+                if any(option.startswith(prefix + "=") for prefix in value_options):
+                    index += 1
+                    continue
+                if option.startswith("-"):
+                    index += 1
+                    continue
+                break
+            continue
+        return index
+    return None
+
+
+def _shell_segment_command_index(
+    segment: Sequence[str],
+    executable_name: str,
+) -> int | None:
+    index = _shell_segment_executable_index(segment)
+    if index is None:
+        return None
+    return index if Path(str(segment[index])).name.lower() == executable_name else None
+
+
+def _shell_word_path_fragments(word: str) -> list[str]:
+    fragments = [word]
+    fragments.extend(
+        match.group(1)
+        for match in re.finditer(r"""["']([^"'\\]*(?:\\.[^"'\\]*)*)["']""", word)
+    )
+    fragments.extend(
+        match.group(0)
+        for match in re.finditer(
+            r"(?<![\w.-])(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,12}(?![\w.-])",
+            word,
+        )
+    )
+    return list(dict.fromkeys(fragments))
+
+
+def _existing_workspace_files_named_by_shell_command(
+    command: str,
+    *,
+    working_directory: Path,
+    workspace_root: Path,
+) -> list[Path]:
+    root = workspace_root.resolve()
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for raw_word in _shell_command_words(command):
+        for raw_fragment in _shell_word_path_fragments(str(raw_word or "")):
+            word = str(raw_fragment or "").strip()
+            if (
+                not word
+                or word.startswith("-")
+                or word in {"|", "||", "&", "&&", ";", "<", ">", ">>"}
+                or any(character in word for character in "*?[]{}")
+            ):
+                continue
+            candidate = Path(word).expanduser()
+            if not candidate.is_absolute():
+                candidate = working_directory / candidate
+            try:
+                resolved = candidate.resolve()
+                resolved.relative_to(root)
+            except (OSError, ValueError):
+                continue
+            if not resolved.is_file() or resolved in seen:
+                continue
+            seen.add(resolved)
+            paths.append(resolved)
+    return paths
+
+
+def _existing_shell_redirection_targets(
+    command: str,
+    *,
+    working_directory: Path,
+    workspace_root: Path,
+) -> list[Path]:
+    words = _shell_command_words(command)
+    targets: list[Path] = []
+    for index, word in enumerate(words[:-1]):
+        if word not in {">", ">>"}:
+            continue
+        raw_target = str(words[index + 1] or "").strip()
+        if not raw_target or raw_target.startswith("&") or raw_target == "/dev/null":
+            continue
+        candidate = Path(raw_target).expanduser()
+        if not candidate.is_absolute():
+            candidate = working_directory / candidate
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(workspace_root.resolve())
+        except (OSError, ValueError):
+            continue
+        if resolved.is_file():
+            targets.append(resolved)
+    return targets
+
+
+def _unsafe_direct_shell_mutation_error(
+    command: str,
+    *,
+    working_directory: Path,
+    workspace_root: Path,
+) -> str:
+    for segment in _shell_command_segments(command):
+        executable_index = _shell_segment_executable_index(segment)
+        if executable_index is None:
+            continue
+        executable = Path(str(segment[executable_index])).name.lower()
+        arguments = [str(word) for word in segment[executable_index + 1 :]]
+        if executable == "sed" and any(
+            argument == "--in-place"
+            or argument.startswith("--in-place=")
+            or (
+                argument.startswith("-")
+                and not argument.startswith("--")
+                and "i" in argument[1:]
+            )
+            for argument in arguments
+        ):
+            return (
+                "unsafe direct shell mutation: in-place sed is disabled for Super DAN "
+                "workspace files; use file_edit or file_write so the replacement is atomic"
+            )
+        if executable == "perl" and any(
+            argument.startswith("-") and "i" in argument[1:] for argument in arguments
+        ):
+            return (
+                "unsafe direct shell mutation: in-place perl editing is disabled for Super "
+                "DAN workspace files; use file_edit or file_write"
+            )
+        if executable == "truncate":
+            return (
+                "unsafe direct shell mutation: truncate is disabled for Super DAN workspace "
+                "files; use an atomic structured file tool"
+            )
+        if executable in {"rm", "rmdir", "unlink"} or (
+            executable == "xargs"
+            and any(
+                Path(argument).name.lower() in {"rm", "rmdir", "unlink"}
+                for argument in arguments
+            )
+        ):
+            return (
+                "unsafe direct shell mutation: direct shell deletion is disabled for Super "
+                "DAN workspace files; use a structured, reviewable file operation"
+            )
+        if executable == "find" and "-delete" in arguments:
+            return (
+                "unsafe direct shell mutation: find -delete is disabled for Super DAN "
+                "workspace files; use a structured, reviewable file operation"
+            )
+    destructive_git = _destructive_git_shell_invocation(command)
+    if destructive_git:
+        return (
+            "unsafe direct shell mutation: destructive git restoration/cleanup is "
+            f"disabled in the Super DAN shell lane ({destructive_git})"
+        )
+    redirection_targets = _existing_shell_redirection_targets(
+        command,
+        working_directory=working_directory,
+        workspace_root=workspace_root,
+    )
+    if redirection_targets:
+        rendered = ", ".join(
+            str(path.relative_to(workspace_root.resolve()))
+            for path in redirection_targets[:3]
+        )
+        return (
+            "unsafe direct shell mutation: shell redirection cannot overwrite existing "
+            f"workspace files ({rendered}); use file_edit or file_write"
+        )
+    return ""
+
+
+def _destructive_git_shell_invocation(command: str) -> str:
+    value_options = {
+        "-C",
+        "-c",
+        "--exec-path",
+        "--git-dir",
+        "--namespace",
+        "--work-tree",
+    }
+    for segment in _shell_command_segments(command):
+        git_index = _shell_segment_command_index(segment, "git")
+        if git_index is None:
+            continue
+        index = git_index + 1
+        while index < len(segment):
+            word = str(segment[index])
+            if word == "--":
+                index += 1
+                continue
+            if word in value_options:
+                index += 2
+                continue
+            if any(word.startswith(option + "=") for option in value_options):
+                index += 1
+                continue
+            if word.startswith("-"):
+                index += 1
+                continue
+            subcommand = word.lower()
+            if subcommand in {"checkout", "clean", "reset", "restore"}:
+                return f"git {subcommand}"
+            break
+    return ""
+
+
+def _protected_workspace_file_state(
+    path: Path,
+    *,
+    workspace_root: Path,
+) -> dict[str, Any] | None:
+    try:
+        resolved = path.resolve()
+        resolved.relative_to(workspace_root.resolve())
+        stat_result = resolved.stat()
+    except (OSError, ValueError):
+        return None
+    if not resolved.is_file() or stat_result.st_size > _SHELL_PROTECTED_FILE_MAX_BYTES:
+        return None
+    try:
+        content = resolved.read_bytes()
+    except OSError:
+        return None
+    return {
+        "path": resolved,
+        "content": content,
+        "mode": int(stat_result.st_mode & 0o7777),
+        "atime_ns": int(stat_result.st_atime_ns),
+        "mtime_ns": int(stat_result.st_mtime_ns),
+    }
+
+
+def _protected_state_changed(before: Mapping[str, Any]) -> bool:
+    path = before.get("path")
+    if not isinstance(path, Path):
+        return False
+    try:
+        return path.read_bytes() != before.get("content")
+    except OSError:
+        return True
+
+
+def _protected_state_has_catastrophic_loss(before: Mapping[str, Any]) -> bool:
+    path = before.get("path")
+    original = before.get("content")
+    if not isinstance(path, Path) or not isinstance(original, bytes) or not original:
+        return False
+    try:
+        current = path.read_bytes()
+    except OSError:
+        return True
+    if not current:
+        return True
+    return len(current) <= int(len(original) * _SHELL_CATASTROPHIC_SHRINK_RATIO)
+
+
+def _restore_protected_file_states(
+    states: Sequence[Mapping[str, Any]],
+) -> tuple[list[str], list[str]]:
+    restored: list[str] = []
+    failed: list[str] = []
+    for state in states:
+        path = state.get("path")
+        content = state.get("content")
+        if not isinstance(path, Path) or not isinstance(content, bytes):
+            continue
+        try:
+            atomic_write_bytes(path, content)
+            mode = state.get("mode")
+            if isinstance(mode, int):
+                os.chmod(path, mode)
+            atime_ns = state.get("atime_ns")
+            mtime_ns = state.get("mtime_ns")
+            if isinstance(atime_ns, int) and isinstance(mtime_ns, int):
+                os.utime(path, ns=(atime_ns, mtime_ns))
+            restored.append(str(path))
+        except OSError as exc:
+            failed.append(f"{path}: {type(exc).__name__}: {exc}")
+    return restored, failed
+
+
+def _shell_move_source_paths(
+    command: str,
+    *,
+    working_directory: Path,
+    workspace_root: Path,
+) -> set[Path]:
+    root = workspace_root.resolve()
+    sources: set[Path] = set()
+    for segment in _shell_command_segments(command):
+        if not segment or Path(str(segment[0])).name.lower() != "mv":
+            continue
+        move_index = 0
+        operands: list[str] = []
+        options_done = False
+        for raw_word in segment[move_index + 1 :]:
+            word = str(raw_word)
+            if word in {"<", ">", ">>"}:
+                break
+            if not options_done and word == "--":
+                options_done = True
+                continue
+            if not options_done and word.startswith("-"):
+                continue
+            operands.append(word)
+        if len(operands) < 2:
+            continue
+        for raw_source in operands[:-1]:
+            candidate = Path(raw_source).expanduser()
+            if not candidate.is_absolute():
+                candidate = working_directory / candidate
+            try:
+                resolved = candidate.resolve()
+                resolved.relative_to(root)
+            except (OSError, ValueError):
+                continue
+            sources.add(resolved)
+    return sources
 
 
 def _tool_path_for_cache(path: Any, *, workspace_root: Path) -> Path | None:
@@ -2562,7 +3157,9 @@ def _tool_path_for_cache(path: Any, *, workspace_root: Path) -> Path | None:
         return None
 
 
-def _tool_file_fingerprint(path: Any, *, workspace_root: Path) -> tuple[str, int, int, int, int] | None:
+def _tool_file_fingerprint(
+    path: Any, *, workspace_root: Path
+) -> tuple[str, int, int, int, int] | None:
     candidate = _tool_path_for_cache(path, workspace_root=workspace_root)
     if candidate is None:
         return None
@@ -2717,7 +3314,9 @@ def _is_temporary_external_path(path: Any, *, workspace_root: Path) -> bool:
         resolved = Path(text).expanduser().resolve()
     except Exception:
         return False
-    return any(resolved == root or root in resolved.parents for root in _temporary_path_roots())
+    return any(
+        resolved == root or root in resolved.parents for root in _temporary_path_roots()
+    )
 
 
 def _tool_mutates_temporary_external_path(
@@ -2824,7 +3423,9 @@ def _verification_like_command(command: str) -> bool:
     return any(marker in text for marker in markers)
 
 
-def _successful_verification_commands(executed_tools: Sequence[dict[str, Any]]) -> list[str]:
+def _successful_verification_commands(
+    executed_tools: Sequence[dict[str, Any]],
+) -> list[str]:
     commands: list[str] = []
     seen: set[str] = set()
     for tool in executed_tools:
@@ -2840,7 +3441,9 @@ def _successful_verification_commands(executed_tools: Sequence[dict[str, Any]]) 
     return commands
 
 
-def _last_successful_mutation_index(executed_tools: Sequence[dict[str, Any]]) -> int | None:
+def _last_successful_mutation_index(
+    executed_tools: Sequence[dict[str, Any]],
+) -> int | None:
     last_index: int | None = None
     for index, tool in enumerate(executed_tools):
         if _tool_materialized_mutation(tool):
@@ -2898,6 +3501,8 @@ def _materialized_file_content_snapshot(
     *,
     workspace_root: Path | None,
 ) -> dict[str, str]:
+    """Read small UTF-8 text artifacts without embedding binary output."""
+
     if workspace_root is None:
         return {}
 
@@ -2915,10 +3520,16 @@ def _materialized_file_content_snapshot(
         if not candidate.is_file():
             continue
         try:
-            snapshots[relative] = candidate.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            snapshots[relative] = candidate.read_text(encoding="utf-8", errors="replace")
+            if candidate.stat().st_size > 256_000:
+                continue
+            content = candidate.read_bytes()
         except OSError:
+            continue
+        if b"\x00" in content:
+            continue
+        try:
+            snapshots[relative] = content.decode("utf-8")
+        except UnicodeDecodeError:
             continue
     return snapshots
 
@@ -2940,7 +3551,9 @@ def _partial_coding_candidate_from_tool_evidence(
         workspace_root=workspace_root,
     )
     if workspace_root is not None:
-        tracked_diff_paths = _tracked_workspace_diff_paths(workspace_root=workspace_root)
+        tracked_diff_paths = _tracked_workspace_diff_paths(
+            workspace_root=workspace_root
+        )
         if tracked_diff_paths:
             tracked_target_files = [
                 path for path in target_files if path in tracked_diff_paths
@@ -2978,17 +3591,16 @@ def _partial_coding_candidate_from_tool_evidence(
         )
     ).strip()
     payload["target_files"] = target_files
-    payload["test_plan"] = (
-        verification_commands
-        or [
+    payload["test_plan"] = verification_commands or [
+        (
             (
                 "Runtime read back the materialized files from disk; inspect the synthesized "
                 "candidate_fragment and rerun bounded validation."
             )
             if file_snapshots
-            else "Inspect the materialized files and rerun the bounded validation step.",
-        ]
-    )
+            else "Inspect the materialized files and rerun the bounded validation step."
+        ),
+    ]
     payload["risks"] = [
         f"The provider completion timed out before the final candidate payload was returned, so this result was synthesized from successful write-tool evidence after {reason_text}.",
         "Review the materialized files and rerun the bounded repair/validation loop before treating this as done.",
@@ -3094,14 +3706,18 @@ def _write_capable_coding_stage_first_write_nudge_reason(
         if exclusive_owner_path in read_paths:
             return "exclusive_write_owner_after_first_read"
     for tool in executed_tools:
-        if _tool_confirms_effectively_empty_workspace(tool, workspace_root=workspace_root):
+        if _tool_confirms_effectively_empty_workspace(
+            tool, workspace_root=workspace_root
+        ):
             return "first_write_after_empty_workspace"
-    if (
-        len(_successful_read_paths(executed_tools, workspace_root=workspace_root))
-        >= _prewrite_successful_read_nudge_threshold(request)
-    ):
+    if len(
+        _successful_read_paths(executed_tools, workspace_root=workspace_root)
+    ) >= _prewrite_successful_read_nudge_threshold(request):
         return "stalled_analysis_before_first_write"
-    if _successful_shell_command_count(executed_tools) >= _PREWRITE_SHELL_ANALYSIS_NUDGE_THRESHOLD:
+    if (
+        _successful_shell_command_count(executed_tools)
+        >= _PREWRITE_SHELL_ANALYSIS_NUDGE_THRESHOLD
+    ):
         return "stalled_analysis_before_first_write"
     return None
 
@@ -3138,7 +3754,9 @@ def _recommended_write_paths(request: CompletionRequest) -> list[str]:
     paths: list[str] = []
     if isinstance(raw_paths, str):
         paths.extend(part.strip() for part in raw_paths.split(","))
-    elif isinstance(raw_paths, Sequence) and not isinstance(raw_paths, (bytes, bytearray)):
+    elif isinstance(raw_paths, Sequence) and not isinstance(
+        raw_paths, (bytes, bytearray)
+    ):
         paths.extend(str(path).strip() for path in raw_paths)
     owner_path = _exclusive_write_owner_path(request)
     if owner_path:
@@ -3162,7 +3780,9 @@ def _required_repair_write_paths(request: CompletionRequest) -> list[str]:
     paths: list[str] = []
     if isinstance(raw_paths, str):
         paths.extend(part.strip() for part in raw_paths.split(","))
-    elif isinstance(raw_paths, Sequence) and not isinstance(raw_paths, (bytes, bytearray)):
+    elif isinstance(raw_paths, Sequence) and not isinstance(
+        raw_paths, (bytes, bytearray)
+    ):
         paths.extend(str(path).strip() for path in raw_paths)
     seen: set[str] = set()
     result: list[str] = []
@@ -3192,7 +3812,9 @@ def _missing_required_repair_write_paths(
     )
     missing: list[str] = []
     for raw_path in required:
-        normalized = _normalized_tool_path(raw_path, workspace_root=workspace_root) or raw_path
+        normalized = (
+            _normalized_tool_path(raw_path, workspace_root=workspace_root) or raw_path
+        )
         if normalized not in materialized:
             missing.append(normalized)
     return missing
@@ -3224,9 +3846,7 @@ def _exclusive_write_owner_prefers_file_edit(
     if not owner_path:
         return False
     if "file_edit" not in {
-        _tool_schema_name(tool)
-        for tool in tool_schemas
-        if isinstance(tool, dict)
+        _tool_schema_name(tool) for tool in tool_schemas if isinstance(tool, dict)
     }:
         return False
     try:
@@ -3256,13 +3876,15 @@ def _write_capable_coding_stage_first_write_nudge_message(
         "The next tool call should be `file_edit` with `path`, `start_line`, `end_line`, and `content` "
         "for a bounded line-range update to the owned file, not another read, search, or final prose-only answer."
         if file_edit_only
-        else "The next tool call should be `file_write` with complete replacement content for the owned file, "
-        "not `file_edit`, another read, search, or final prose-only answer."
-        if file_write_only
         else (
-            "The next tool call should be `file_write`, `file_edit`, or `shell_command` when the direct "
-            "workspace mutation/verification is naturally a command-line operation, not another read, search, "
-            "or final prose-only answer."
+            "The next tool call should be `file_write` with complete replacement content for the owned file, "
+            "not `file_edit`, another read, search, or final prose-only answer."
+            if file_write_only
+            else (
+                "The next tool call should be `file_write`, `file_edit`, or `shell_command` when the direct "
+                "workspace mutation/verification is naturally a command-line operation, not another read, search, "
+                "or final prose-only answer."
+            )
         )
     )
     return (
@@ -3308,7 +3930,9 @@ def _write_capable_coding_stage_finalize_reason(
     for tool in executed_tools:
         if _tool_mutates_temporary_external_path(tool, workspace_root=workspace_root):
             return "temporary_external_write_after_workspace_patch"
-        if _tool_mutates_temporary_workspace_helper_path(tool, workspace_root=workspace_root):
+        if _tool_mutates_temporary_workspace_helper_path(
+            tool, workspace_root=workspace_root
+        ):
             return "temporary_workspace_helper_write_after_workspace_patch"
     if _exclusive_write_owner_path(request):
         return "exclusive_write_owner_workspace_patch_materialized"
@@ -3328,7 +3952,9 @@ def _write_capable_coding_stage_finalize_reason(
     for tool in successful_post_mutation:
         tool_id = str(tool.get("tool_id") or "").strip()
         if tool_id == "shell_command":
-            command = str(dict(tool.get("arguments") or {}).get("command") or "").strip()
+            command = str(
+                dict(tool.get("arguments") or {}).get("command") or ""
+            ).strip()
             if command and _verification_like_command(command):
                 saw_verification = True
                 successful_post_verification_count += 1
@@ -3474,7 +4100,11 @@ def _write_stage_tool_schemas(
     narrowed: list[dict[str, Any]] = []
     for tool in tool_schemas:
         function = tool.get("function") if isinstance(tool, dict) else None
-        name = str(function.get("name") or "").strip() if isinstance(function, dict) else ""
+        name = (
+            str(function.get("name") or "").strip()
+            if isinstance(function, dict)
+            else ""
+        )
         if name in preferred_names:
             narrowed.append(tool)
     return narrowed
@@ -3502,7 +4132,11 @@ def _direct_write_tool_schemas(
     direct_write_tools = []
     for tool in tool_schemas:
         function = tool.get("function") if isinstance(tool, dict) else None
-        name = str(function.get("name") or "").strip() if isinstance(function, dict) else ""
+        name = (
+            str(function.get("name") or "").strip()
+            if isinstance(function, dict)
+            else ""
+        )
         if name in preferred_names:
             direct_write_tools.append(tool)
     return direct_write_tools
@@ -3528,8 +4162,7 @@ def _read_only_finalize_reason(
 
     if mode == "validator":
         saw_git_diff = any(
-            tool.get("ok")
-            and str(tool.get("tool_id") or "").strip() == "git_diff"
+            tool.get("ok") and str(tool.get("tool_id") or "").strip() == "git_diff"
             for tool in executed_tools
         )
         if saw_git_diff and len(normalized_read_paths) >= 3:
@@ -3547,7 +4180,9 @@ def _read_only_finalize_reason(
 
     empty_workspace_index: int | None = None
     for index, tool in enumerate(executed_tools):
-        if _tool_confirms_effectively_empty_workspace(tool, workspace_root=workspace_root):
+        if _tool_confirms_effectively_empty_workspace(
+            tool, workspace_root=workspace_root
+        ):
             empty_workspace_index = index
             break
     if empty_workspace_index is None:
@@ -3556,7 +4191,9 @@ def _read_only_finalize_reason(
     for tool in executed_tools[empty_workspace_index + 1 :]:
         if _tool_targets_internal_workspace_state(tool, workspace_root=workspace_root):
             return "internal_state_probe_after_empty_workspace"
-        if _tool_reads_greenfield_operator_artifact(tool, workspace_root=workspace_root):
+        if _tool_reads_greenfield_operator_artifact(
+            tool, workspace_root=workspace_root
+        ):
             return "operator_artifact_read_after_empty_workspace"
         if _tool_reports_missing_path(tool):
             return "missing_path_after_empty_workspace"
@@ -3755,7 +4392,9 @@ def _soft_budget_action_for_phase(phase: str | None) -> str | None:
     return None
 
 
-def _dynamic_budget_extension_enabled(request: CompletionRequest, *, profile: str | None) -> bool:
+def _dynamic_budget_extension_enabled(
+    request: CompletionRequest, *, profile: str | None
+) -> bool:
     raw = request.metadata.get("dynamic_budget_extension")
     if isinstance(raw, bool):
         return raw
@@ -3768,7 +4407,9 @@ def _dynamic_budget_extension_enabled(request: CompletionRequest, *, profile: st
     return profile == _SOFT_BUDGET_PROFILE_SUPER_DAN
 
 
-def _dynamic_budget_max_leases(request: CompletionRequest, *, profile: str | None) -> int:
+def _dynamic_budget_max_leases(
+    request: CompletionRequest, *, profile: str | None
+) -> int:
     raw = request.metadata.get("max_budget_extension_leases")
     if raw is None:
         raw = request.metadata.get("dynamic_budget_max_leases")
@@ -3809,13 +4450,16 @@ def _budget_audit_prompt_payload(
         result = tool.get("result")
         result_summary = ""
         if isinstance(result, dict):
-            result_summary = _event_text(
-                result.get("path")
-                or result.get("summary")
-                or result.get("message")
-                or result.get("stdout")
-                or result.get("stderr")
-            ) or ""
+            result_summary = (
+                _event_text(
+                    result.get("path")
+                    or result.get("summary")
+                    or result.get("message")
+                    or result.get("stdout")
+                    or result.get("stderr")
+                )
+                or ""
+            )
         elif result is not None:
             result_summary = _short_budget_text(str(result), limit=180)
         recent_tools.append(
@@ -3895,21 +4539,27 @@ def _parse_budget_audit_decision(text: str, *, limit_kind: str) -> dict[str, Any
         try:
             parsed = json.loads(match.group(0))
         except Exception:
-            return {"approved": False, "reason": "Budget auditor returned invalid JSON."}
+            return {
+                "approved": False,
+                "reason": "Budget auditor returned invalid JSON.",
+            }
     if not isinstance(parsed, dict):
-        return {"approved": False, "reason": "Budget auditor returned a non-object decision."}
+        return {
+            "approved": False,
+            "reason": "Budget auditor returned a non-object decision.",
+        }
     approved_raw = parsed.get("approved")
-    approved = (
-        approved_raw is True
-        or (
-            isinstance(approved_raw, str)
-            and approved_raw.strip().lower() in {"true", "yes", "approved", "approve"}
-        )
+    approved = approved_raw is True or (
+        isinstance(approved_raw, str)
+        and approved_raw.strip().lower() in {"true", "yes", "approved", "approve"}
     )
     if not approved:
         return {
             "approved": False,
-            "reason": _short_budget_text(parsed.get("reason") or "Budget auditor denied the extension.", limit=240),
+            "reason": _short_budget_text(
+                parsed.get("reason") or "Budget auditor denied the extension.",
+                limit=240,
+            ),
         }
 
     def clamp_int(value: Any, *, default: int, upper: int) -> int:
@@ -3940,7 +4590,9 @@ def _parse_budget_audit_decision(text: str, *, limit_kind: str) -> dict[str, Any
         "approved": True,
         "extra_rounds": extra_rounds,
         "extra_tool_calls": extra_tool_calls,
-        "reason": _short_budget_text(parsed.get("reason") or "Small continuation lease approved.", limit=240),
+        "reason": _short_budget_text(
+            parsed.get("reason") or "Small continuation lease approved.", limit=240
+        ),
     }
 
 
@@ -3986,6 +4638,7 @@ def _tool_call_allowed_past_soft_budget(
         return allow_final_read and tool_id == "file_read"
     return False
 
+
 def _provider_prompt_filter_error(exc: BaseException) -> bool:
     """Detect provider-side prompt safety/filter rejections without binding to one SDK."""
 
@@ -3998,7 +4651,9 @@ def _provider_prompt_filter_error(exc: BaseException) -> bool:
     text = " ".join(part for part in text_parts if part).lower()
     if "content_filter" in text or "high risk" in text:
         return True
-    return "prompt" in text and ("safety" in text or "rejected" in text or "blocked" in text)
+    return "prompt" in text and (
+        "safety" in text or "rejected" in text or "blocked" in text
+    )
 
 
 def _provider_context_length_error(exc: BaseException) -> bool:
@@ -4070,8 +4725,12 @@ def _provider_overload_retry_delay(attempt: int) -> float:
 
 
 def _provider_safety_retry_messages(request: CompletionRequest) -> list[dict[str, Any]]:
-    expected_shape = str(getattr(request.output_contract, "expected_return_shape", "") or "").strip()
-    schema_text = str(getattr(request.output_contract, "output_schema", "") or "").strip()
+    expected_shape = str(
+        getattr(request.output_contract, "expected_return_shape", "") or ""
+    ).strip()
+    schema_text = str(
+        getattr(request.output_contract, "output_schema", "") or ""
+    ).strip()
     contract_lines = []
     if expected_shape:
         contract_lines.append(f"Expected return shape:\n{expected_shape}")
@@ -4161,7 +4820,9 @@ def _provider_timeout_recovery_messages(
     if tool_policy:
         messages.append({"role": "system", "content": tool_policy})
     if request.user_prompt:
-        messages.append({"role": "user", "content": _completion_request_user_content(request)})
+        messages.append(
+            {"role": "user", "content": _completion_request_user_content(request)}
+        )
 
     timeout_text = ""
     if timeout_seconds is not None:
@@ -4191,9 +4852,7 @@ def _provider_timeout_recovery_messages(
         _successful_read_paths(executed_tools, workspace_root=workspace_root)
     )
     if read_paths:
-        evidence_sections.append(
-            "Grounded file paths: " + ", ".join(read_paths[-6:])
-        )
+        evidence_sections.append("Grounded file paths: " + ", ".join(read_paths[-6:]))
     mutation_paths = _successful_workspace_mutation_paths(
         executed_tools,
         workspace_root=workspace_root,
@@ -4246,7 +4905,9 @@ def _provider_timeout_recovery_messages(
 
 
 def _expected_return_shape_keys(request: CompletionRequest) -> set[str]:
-    raw_shape = str(getattr(request.output_contract, "expected_return_shape", "") or "").strip()
+    raw_shape = str(
+        getattr(request.output_contract, "expected_return_shape", "") or ""
+    ).strip()
     if not raw_shape:
         return set()
     try:
@@ -4258,7 +4919,9 @@ def _expected_return_shape_keys(request: CompletionRequest) -> set[str]:
     return {str(key) for key in parsed}
 
 
-def _provider_safety_fallback_payload(request: CompletionRequest) -> dict[str, Any] | None:
+def _provider_safety_fallback_payload(
+    request: CompletionRequest,
+) -> dict[str, Any] | None:
     keys = _expected_return_shape_keys(request)
     if not keys:
         return None
@@ -4320,13 +4983,17 @@ def _provider_safety_fallback_payload(request: CompletionRequest) -> dict[str, A
             "change_summary": "Provider safety filtering rejected the coding worker prompt before a substantive candidate was generated.",
             "target_files": [],
             "test_plan": [],
-            "risks": ["No code candidate was produced because provider safety filtering blocked generation."],
+            "risks": [
+                "No code candidate was produced because provider safety filtering blocked generation."
+            ],
         }
     elif "worker_count" in keys:
         payload = {
             "public_response": "Provider safety filtering rejected the planning prompt before a substantive plan was generated.",
             "worker_count": 1,
-            "worker_briefs": ["Return a bounded blocked result; provider safety filtering prevented normal planning."],
+            "worker_briefs": [
+                "Return a bounded blocked result; provider safety filtering prevented normal planning."
+            ],
             "aggregation_focus": "Do not synthesize substantive advice or instructions; preserve the blocked status.",
             "validator_focus": "Verify the blocked status is reported clearly.",
             "pass_threshold": 1.0,
@@ -4456,7 +5123,9 @@ def _timeout_recovery_stage_key(
     return "general"
 
 
-def _provider_timeout_fallback_payload(request: CompletionRequest) -> dict[str, Any] | None:
+def _provider_timeout_fallback_payload(
+    request: CompletionRequest,
+) -> dict[str, Any] | None:
     keys = _expected_return_shape_keys(request)
     if not keys:
         return None
@@ -4576,8 +5245,7 @@ def available_local_organism_tools() -> dict[str, dict[str, Any]]:
     """Return the discovered standalone tool metadata keyed by tool id."""
 
     return {
-        tool_id: dict(metadata)
-        for tool_id, (_fn, metadata) in get_all_tools().items()
+        tool_id: dict(metadata) for tool_id, (_fn, metadata) in get_all_tools().items()
     }
 
 
@@ -4601,15 +5269,13 @@ class LocalOrganismToolRuntime:
         missing = [tool_id for tool_id in selected if tool_id not in available]
         if missing:
             raise ValueError(
-                "Unknown local organism tools: "
-                + ", ".join(sorted(missing))
+                "Unknown local organism tools: " + ", ".join(sorted(missing))
             )
-        self._tools = {
-            tool_id: available[tool_id]
-            for tool_id in selected
-        }
+        self._tools = {tool_id: available[tool_id] for tool_id in selected}
         self._approval_callback = approval_callback
         self._event_callback = event_callback
+        self._protected_workspace_files: dict[str, dict[str, Any]] = {}
+        self._protected_workspace_bytes = 0
 
     @property
     def workspace_root(self) -> Path:
@@ -4641,7 +5307,9 @@ class LocalOrganismToolRuntime:
         kwargs["path"] = str(candidate.resolve())
         return kwargs
 
-    def _normalize_shell_working_directory(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_shell_working_directory(
+        self, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
         kwargs = dict(arguments or {})
         raw_path = str(kwargs.get("working_directory") or "").strip()
         if not raw_path:
@@ -4652,6 +5320,150 @@ class LocalOrganismToolRuntime:
             candidate = self._workspace_root / candidate
         kwargs["working_directory"] = str(candidate.resolve())
         return kwargs
+
+    def _refresh_protected_workspace_path(self, raw_path: Any) -> None:
+        candidate = _tool_path_for_cache(
+            raw_path,
+            workspace_root=self._workspace_root,
+        )
+        if candidate is None:
+            return
+        state = _protected_workspace_file_state(
+            candidate,
+            workspace_root=self._workspace_root,
+        )
+        key = str(candidate)
+        previous = self._protected_workspace_files.pop(key, None)
+        if previous is not None and isinstance(previous.get("content"), bytes):
+            self._protected_workspace_bytes -= len(previous["content"])
+        if state is None:
+            return
+        content = state.get("content")
+        content_size = len(content) if isinstance(content, bytes) else 0
+        while (
+            self._protected_workspace_files
+            and self._protected_workspace_bytes + content_size
+            > _SHELL_PROTECTED_TOTAL_MAX_BYTES
+        ):
+            oldest_key = next(iter(self._protected_workspace_files))
+            oldest = self._protected_workspace_files.pop(oldest_key)
+            oldest_content = oldest.get("content")
+            if isinstance(oldest_content, bytes):
+                self._protected_workspace_bytes -= len(oldest_content)
+        self._protected_workspace_files[key] = state
+        self._protected_workspace_bytes += content_size
+
+    def _refresh_protected_path_for_tool(
+        self,
+        tool_id: str,
+        arguments: Mapping[str, Any],
+    ) -> None:
+        if tool_id not in {"file_read", "file_edit", "file_write"}:
+            return
+        self._refresh_protected_workspace_path(
+            arguments.get("path") or arguments.get("file_path")
+        )
+
+    def _prepare_shell_file_transaction(
+        self,
+        arguments: Mapping[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        for raw_path in list(self._protected_workspace_files):
+            self._refresh_protected_workspace_path(raw_path)
+
+        command = str(arguments.get("command") or "")
+        working_directory = Path(
+            str(arguments.get("working_directory") or self._workspace_root)
+        ).resolve()
+        for path in _existing_workspace_files_named_by_shell_command(
+            command,
+            working_directory=working_directory,
+            workspace_root=self._workspace_root,
+        ):
+            self._refresh_protected_workspace_path(path)
+        return {
+            path: dict(state) for path, state in self._protected_workspace_files.items()
+        }
+
+    def _settle_shell_file_transaction(
+        self,
+        *,
+        arguments: Mapping[str, Any],
+        before: Mapping[str, Mapping[str, Any]],
+        result: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        changed = [
+            dict(state) for state in before.values() if _protected_state_changed(state)
+        ]
+        try:
+            exit_code = int(result.get("exit_code", 0))
+        except (TypeError, ValueError):
+            exit_code = 1
+        command = str(arguments.get("command") or "")
+        working_directory = Path(
+            str(arguments.get("working_directory") or self._workspace_root)
+        ).resolve()
+        move_source_paths = _shell_move_source_paths(
+            command,
+            working_directory=working_directory,
+            workspace_root=self._workspace_root,
+        )
+        catastrophic = [
+            state
+            for state in changed
+            if _protected_state_has_catastrophic_loss(state)
+            and not (
+                isinstance(state.get("path"), Path)
+                and state["path"] in move_source_paths
+                and not state["path"].exists()
+            )
+        ]
+        rollback_reason = ""
+        if exit_code != 0 and changed:
+            rollback_reason = f"shell command exited with code {exit_code}"
+        elif catastrophic:
+            rendered = ", ".join(
+                str(state["path"].relative_to(self._workspace_root))
+                for state in catastrophic[:3]
+                if isinstance(state.get("path"), Path)
+            )
+            rollback_reason = (
+                "shell command catastrophically emptied, deleted, or shrank a "
+                f"protected workspace file ({rendered})"
+            )
+
+        transaction: dict[str, Any] | None = None
+        settled_result = dict(result)
+        if rollback_reason:
+            restored, failed = _restore_protected_file_states(changed)
+            transaction = {
+                "status": "rollback_failed" if failed else "rolled_back",
+                "reason": rollback_reason,
+                "restored_paths": restored,
+                "restore_errors": failed,
+            }
+            if exit_code == 0:
+                settled_result["exit_code"] = 126 if failed else 125
+            message = f"Super DAN workspace transaction rolled back: {rollback_reason}."
+            if failed:
+                message += " Some protected paths could not be restored."
+            stderr = str(settled_result.get("stderr") or "")
+            settled_result["stderr"] = f"{stderr.rstrip()}\n{message}".lstrip()
+            settled_result["transaction"] = transaction
+        elif changed:
+            transaction = {
+                "status": "committed",
+                "protected_paths_changed": [
+                    str(state["path"])
+                    for state in changed
+                    if isinstance(state.get("path"), Path)
+                ],
+            }
+            settled_result["transaction"] = transaction
+
+        for raw_path in before:
+            self._refresh_protected_workspace_path(raw_path)
+        return settled_result, transaction
 
     @staticmethod
     def _normalize_tool_arguments(
@@ -4672,7 +5484,11 @@ class LocalOrganismToolRuntime:
                 if offset is not None:
                     kwargs["start_line"] = max(offset, 0) + 1
                     start_line = kwargs["start_line"]
-            if end_line is None and start_line is not None and kwargs.get("limit") is not None:
+            if (
+                end_line is None
+                and start_line is not None
+                and kwargs.get("limit") is not None
+            ):
                 try:
                     limit = int(kwargs.get("limit"))
                 except (TypeError, ValueError):
@@ -4776,6 +5592,27 @@ class LocalOrganismToolRuntime:
                 **shared_context,
             )
             raise ValueError(tool_specific_error)
+        if tool_id == "shell_command":
+            command = str(kwargs.get("command") or "")
+            working_directory = Path(
+                str(kwargs.get("working_directory") or self._workspace_root)
+            ).resolve()
+            direct_mutation_error = _unsafe_direct_shell_mutation_error(
+                command,
+                working_directory=working_directory,
+                workspace_root=self._workspace_root,
+            )
+            if direct_mutation_error:
+                error_text = f"tool_arguments_invalid: {direct_mutation_error}"
+                self._emit_event(
+                    "tool.failed",
+                    tool_id=tool_id,
+                    arguments=dict(kwargs),
+                    metadata=dict(metadata),
+                    error=error_text,
+                    **shared_context,
+                )
+                raise ValueError(error_text)
         if self._approval_callback is not None:
             approved = self._approval_callback(tool_id, dict(kwargs), dict(metadata))
             if not approved:
@@ -4789,6 +5626,11 @@ class LocalOrganismToolRuntime:
                 raise PermissionError(f"tool_call_denied:{tool_id}")
         prior_workspace = os.environ.get("DAN_WORKSPACE_ROOT")
         os.environ["DAN_WORKSPACE_ROOT"] = str(self._workspace_root)
+        shell_transaction_before = (
+            self._prepare_shell_file_transaction(kwargs)
+            if tool_id == "shell_command"
+            else {}
+        )
         workspace_before = (
             _workspace_file_snapshot(self._workspace_root)
             if tool_id == "shell_command"
@@ -4797,6 +5639,23 @@ class LocalOrganismToolRuntime:
         try:
             result = await function(**kwargs)
         except Exception as exc:
+            if shell_transaction_before:
+                changed = [
+                    dict(state)
+                    for state in shell_transaction_before.values()
+                    if _protected_state_changed(state)
+                ]
+                restored, failed = _restore_protected_file_states(changed)
+                if changed:
+                    self._emit_event(
+                        "tool.rolled_back",
+                        tool_id=tool_id,
+                        arguments=dict(kwargs),
+                        reason=f"{type(exc).__name__}: {exc}",
+                        restored_paths=restored,
+                        restore_errors=failed,
+                        **shared_context,
+                    )
             self._emit_event(
                 "tool.failed",
                 tool_id=tool_id,
@@ -4812,12 +5671,36 @@ class LocalOrganismToolRuntime:
             else:
                 os.environ["DAN_WORKSPACE_ROOT"] = prior_workspace
         if tool_id == "shell_command" and isinstance(result, dict):
+            result, transaction = self._settle_shell_file_transaction(
+                arguments=kwargs,
+                before=shell_transaction_before,
+                result=result,
+            )
+            if transaction and transaction.get("status") in {
+                "rolled_back",
+                "rollback_failed",
+            }:
+                self._emit_event(
+                    "tool.rolled_back",
+                    tool_id=tool_id,
+                    arguments=dict(kwargs),
+                    **dict(transaction),
+                    **shared_context,
+                )
             workspace_after = _workspace_file_snapshot(self._workspace_root)
             result = dict(result)
-            result["workspace_changes"] = _workspace_snapshot_diff(
+            workspace_changes = _workspace_snapshot_diff(
                 workspace_before,
                 workspace_after,
             )
+            if transaction and transaction.get("status") == "rolled_back":
+                workspace_changes = _workspace_diff_without_restored_paths(
+                    workspace_changes,
+                    restored_paths=list(transaction.get("restored_paths") or []),
+                    workspace_root=self._workspace_root,
+                )
+            result["workspace_changes"] = workspace_changes
+        self._refresh_protected_path_for_tool(tool_id, kwargs)
         self._emit_event(
             "tool.completed",
             tool_id=tool_id,
@@ -4827,6 +5710,50 @@ class LocalOrganismToolRuntime:
             **shared_context,
         )
         return result
+
+
+def _checkpoint_operator_update_content(item: Mapping[str, Any]) -> str:
+    text = " ".join(str(item.get("text") or "").split())
+    if not text:
+        return ""
+    checkpoint = " ".join(str(item.get("checkpoint") or "").split())
+    operator_context = (
+        dict(item.get("operator_context") or {})
+        if isinstance(item.get("operator_context"), Mapping)
+        else {}
+    )
+    bounded_context = {
+        key: operator_context.get(key)
+        for key in (
+            "target_paths",
+            "hard_constraints",
+            "soft_preferences",
+            "validation_requirements",
+            "attachments",
+        )
+        if operator_context.get(key)
+    }
+    context_text = ""
+    if bounded_context:
+        context_text = json.dumps(
+            bounded_context,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        if len(context_text) > 4000:
+            context_text = context_text[:3997].rstrip() + "..."
+    checkpoint_note = f" at `{checkpoint}`" if checkpoint else ""
+    rendered = (
+        f"Operator update admitted at a safe execution checkpoint{checkpoint_note}:\n"
+        f"{text}\n\n"
+        "Apply this update to remaining work and final validation. Preserve already-completed "
+        "work unless the update explicitly asks to revise it. This message does not widen the "
+        "runtime's file, tool, approval, or external-action authority."
+    )
+    if context_text:
+        rendered += f"\n\nStructured update context:\n{context_text}"
+    return rendered
 
 
 class ToolLoopCompletionProvider:
@@ -4844,6 +5771,12 @@ class ToolLoopCompletionProvider:
         stream_text_responses: bool = False,
         provider_request_overrides: dict[str, Any] | None = None,
         event_callback: ToolRuntimeEventCallback | None = None,
+        operator_message_provider: (
+            Callable[[], Sequence[Mapping[str, Any]]] | None
+        ) = None,
+        operator_message_acknowledger: (
+            Callable[[Sequence[str], str], None] | None
+        ) = None,
     ) -> None:
         self._provider = provider
         self._tool_runtime = tool_runtime
@@ -4862,6 +5795,8 @@ class ToolLoopCompletionProvider:
         self._stream_text_responses = bool(stream_text_responses)
         self._provider_request_overrides = dict(provider_request_overrides or {})
         self._event_callback = event_callback
+        self._operator_message_provider = operator_message_provider
+        self._operator_message_acknowledger = operator_message_acknowledger
         self._model_call_counter = 0
 
     def _emit_event(self, event: str, **payload: Any) -> None:
@@ -4949,7 +5884,8 @@ class ToolLoopCompletionProvider:
                 saw_stream_output = True
                 delta = str(getattr(chunk, "delta", "") or "")
                 accumulated = str(
-                    getattr(chunk, "accumulated", accumulated + delta) or accumulated + delta
+                    getattr(chunk, "accumulated", accumulated + delta)
+                    or accumulated + delta
                 )
                 usage_candidate = getattr(chunk, "usage", None)
                 if usage_candidate:
@@ -4957,7 +5893,9 @@ class ToolLoopCompletionProvider:
                 chunk_model = str(getattr(chunk, "model", "") or "").strip()
                 if chunk_model:
                     streamed_model = chunk_model
-                chunk_finish_reason = str(getattr(chunk, "finish_reason", "") or "").strip()
+                chunk_finish_reason = str(
+                    getattr(chunk, "finish_reason", "") or ""
+                ).strip()
                 if chunk_finish_reason:
                     finish_reason = chunk_finish_reason
                 chunk_tool_calls = getattr(chunk, "tool_calls", None)
@@ -4991,7 +5929,11 @@ class ToolLoopCompletionProvider:
             if raw_assistant_message is None:
                 raw_assistant_message = {
                     "role": "assistant",
-                    "content": accumulated if accumulated.strip() else (None if tool_calls else accumulated),
+                    "content": (
+                        accumulated
+                        if accumulated.strip()
+                        else (None if tool_calls else accumulated)
+                    ),
                 }
                 if tool_calls:
                     raw_assistant_message["tool_calls"] = list(tool_calls)
@@ -5118,6 +6060,16 @@ class ToolLoopCompletionProvider:
                     ]
                 )
             )
+            allowed_read_only_tools.update(
+                _structured_surface_ui_tool_ids(
+                    request,
+                    [
+                        _tool_schema_name(tool)
+                        for tool in requested_tool_schemas
+                        if isinstance(tool, dict) and _tool_schema_name(tool)
+                    ],
+                )
+            )
             tool_schemas = [
                 dict(tool)
                 for tool in requested_tool_schemas
@@ -5183,10 +6135,14 @@ class ToolLoopCompletionProvider:
                     ),
                 }
             )
-        messages.append({"role": "user", "content": _completion_request_user_content(request)})
+        messages.append(
+            {"role": "user", "content": _completion_request_user_content(request)}
+        )
 
         executed_tools: list[dict[str, Any]] = []
-        file_read_result_cache: dict[tuple[Any, ...], tuple[tuple[str, int, int, int, int], Any]] = {}
+        file_read_result_cache: dict[
+            tuple[Any, ...], tuple[tuple[str, int, int, int, int], Any]
+        ] = {}
         rounds = 0
         total_tool_calls = 0
         usage_totals: dict[str, int] = {}
@@ -5221,6 +6177,7 @@ class ToolLoopCompletionProvider:
         )
         dynamic_budget_lease_count = 0
         budget_extensions: list[dict[str, Any]] = []
+        pending_operator_messages: dict[str, dict[str, Any]] = {}
 
         def _soft_budget_phase_consumed(
             phase: str | None,
@@ -5372,6 +6329,59 @@ class ToolLoopCompletionProvider:
             return True
 
         while True:
+            if self._operator_message_provider is not None:
+                try:
+                    admitted_operator_messages = [
+                        dict(item)
+                        for item in self._operator_message_provider()
+                        if isinstance(item, Mapping)
+                    ]
+                except Exception as exc:
+                    admitted_operator_messages = []
+                    self._emit_event(
+                        "toolloop.operator_messages.failed",
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                        **event_context,
+                    )
+                if admitted_operator_messages:
+                    applied_ids: list[str] = []
+                    checkpoints: list[str] = []
+                    for item in admitted_operator_messages:
+                        content = _checkpoint_operator_update_content(item)
+                        if not content:
+                            continue
+                        queue_item_id = str(item.get("queue_item_id") or "").strip()
+                        message_key = queue_item_id or (
+                            "local:"
+                            + hashlib.sha256(
+                                json.dumps(
+                                    item,
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                    default=str,
+                                ).encode("utf-8")
+                            ).hexdigest()[:16]
+                        )
+                        is_new = message_key not in pending_operator_messages
+                        pending_operator_messages[message_key] = {
+                            **item,
+                            "_rendered_content": content,
+                        }
+                        checkpoint = str(item.get("checkpoint") or "").strip()
+                        if is_new and queue_item_id:
+                            applied_ids.append(queue_item_id)
+                        if is_new and checkpoint:
+                            checkpoints.append(checkpoint)
+                    if applied_ids or checkpoints:
+                        self._emit_event(
+                            "toolloop.operator_messages.applied",
+                            queue_item_ids=applied_ids,
+                            checkpoints=list(dict.fromkeys(checkpoints)),
+                            message_count=len(admitted_operator_messages),
+                            tool_calls_executed=len(executed_tools),
+                            **event_context,
+                        )
             request_tool_schemas = _enabled_tool_schemas(
                 active_tool_schemas,
                 disabled_tool_ids=sorted(disabled_tool_ids),
@@ -5398,13 +6408,12 @@ class ToolLoopCompletionProvider:
                     write_stage_first_write_nudged=write_stage_first_write_nudged,
                     write_stage_direct_write_required=write_stage_direct_write_required,
                 )
-                allow_final_read = (
-                    not _interactive_source_implementation_request(request)
-                    and any(
-                        _tool_schema_name(tool) == "file_read"
-                        for tool in request_tool_schemas
-                        if isinstance(tool, dict)
-                    )
+                allow_final_read = not _interactive_source_implementation_request(
+                    request
+                ) and any(
+                    _tool_schema_name(tool) == "file_read"
+                    for tool in request_tool_schemas
+                    if isinstance(tool, dict)
                 )
                 for limit_kind, hard_limit in (
                     ("rounds", self._max_rounds),
@@ -5420,7 +6429,11 @@ class ToolLoopCompletionProvider:
                         hard_limit=hard_limit,
                         progress=soft_progress,
                     )
-                    if soft_phase is None or soft_limit is None or consumed < soft_limit:
+                    if (
+                        soft_phase is None
+                        or soft_limit is None
+                        or consumed < soft_limit
+                    ):
                         continue
                     action = _soft_budget_action_for_phase(soft_phase)
                     if action is None:
@@ -5507,12 +6520,27 @@ class ToolLoopCompletionProvider:
                 _prompt_context_budget_chars(request, profile=soft_budget_profile)
             )
             tool_schema_chars = _tool_schema_prompt_char_count(request_tool_schemas)
-            provider_messages, prompt_context_stats = _compact_messages_for_provider_prompt(
-                messages,
-                budget_chars=prompt_context_budget_chars,
-                emergency_budget_chars=prompt_context_emergency_budget_chars,
-                tool_schema_chars=tool_schema_chars,
-                emergency=prompt_context_emergency_compaction,
+            operator_request_messages = [
+                {
+                    "role": "user",
+                    "content": str(item.get("_rendered_content") or ""),
+                }
+                for item in pending_operator_messages.values()
+                if not bool(item.get("embedded_in_initial_request"))
+                and str(item.get("_rendered_content") or "").strip()
+            ]
+            messages_for_provider = [
+                *messages,
+                *operator_request_messages,
+            ]
+            provider_messages, prompt_context_stats = (
+                _compact_messages_for_provider_prompt(
+                    messages_for_provider,
+                    budget_chars=prompt_context_budget_chars,
+                    emergency_budget_chars=prompt_context_emergency_budget_chars,
+                    tool_schema_chars=tool_schema_chars,
+                    emergency=prompt_context_emergency_compaction,
+                )
             )
             if (
                 not prompt_context_emergency_compaction
@@ -5521,14 +6549,18 @@ class ToolLoopCompletionProvider:
                 > prompt_context_emergency_budget_chars
             ):
                 prompt_context_emergency_compaction = True
-                provider_messages, prompt_context_stats = _compact_messages_for_provider_prompt(
-                    messages,
-                    budget_chars=prompt_context_budget_chars,
-                    emergency_budget_chars=prompt_context_emergency_budget_chars,
-                    tool_schema_chars=tool_schema_chars,
-                    emergency=True,
+                provider_messages, prompt_context_stats = (
+                    _compact_messages_for_provider_prompt(
+                        messages_for_provider,
+                        budget_chars=prompt_context_budget_chars,
+                        emergency_budget_chars=prompt_context_emergency_budget_chars,
+                        tool_schema_chars=tool_schema_chars,
+                        emergency=True,
+                    )
                 )
-            provider_request_messages = apply_cache_hints(self._provider, provider_messages)
+            provider_request_messages = apply_cache_hints(
+                self._provider, provider_messages
+            )
             self._emit_event(
                 "model.requested",
                 model=model,
@@ -5613,9 +6645,7 @@ class ToolLoopCompletionProvider:
                         0
                         if _is_builder_retry_request(request)
                         or _recommended_write_paths(request)
-                        else 1
-                        if exclusive_write_owner
-                        else 2
+                        else 1 if exclusive_write_owner else 2
                     )
                     timeout_recovery_stage = _timeout_recovery_stage_key(
                         write_stage_direct_write_required=write_stage_direct_write_required,
@@ -5637,7 +6667,10 @@ class ToolLoopCompletionProvider:
                         not in provider_timeout_recovery_attempted
                         and not _provider_timeout_recovery_disabled(request)
                         and _coding_output_kind(request) is not None
-                        and any(tool_id in {"file_edit", "file_write"} for tool_id in request_tool_ids)
+                        and any(
+                            tool_id in {"file_edit", "file_write"}
+                            for tool_id in request_tool_ids
+                        )
                         and not _successful_workspace_mutation_paths(
                             executed_tools,
                             workspace_root=self._tool_runtime.workspace_root,
@@ -5645,9 +6678,7 @@ class ToolLoopCompletionProvider:
                         and successful_tool_count >= successful_tool_threshold
                     )
                     if can_retry_timeout:
-                        provider_timeout_recovery_attempted.add(
-                            timeout_recovery_stage
-                        )
+                        provider_timeout_recovery_attempted.add(timeout_recovery_stage)
                         allow_timeout_recovery_final_read = (
                             not write_stage_direct_write_required
                             and not write_stage_final_read_consumed
@@ -5713,7 +6744,9 @@ class ToolLoopCompletionProvider:
                         workspace_root=self._tool_runtime.workspace_root,
                     )
                     fallback_text = (
-                        json.dumps(partial_candidate, ensure_ascii=False, sort_keys=True)
+                        json.dumps(
+                            partial_candidate, ensure_ascii=False, sort_keys=True
+                        )
                         if partial_candidate is not None
                         else _provider_timeout_fallback_text(request)
                     )
@@ -5796,6 +6829,47 @@ class ToolLoopCompletionProvider:
                     **event_context,
                 )
                 continue
+            delivered_operator_messages = list(pending_operator_messages.values())
+            delivered_operator_ids = [
+                str(item.get("queue_item_id") or "").strip()
+                for item in delivered_operator_messages
+                if str(item.get("queue_item_id") or "").strip()
+            ]
+            if (
+                delivered_operator_ids
+                and self._operator_message_acknowledger is not None
+            ):
+                try:
+                    self._operator_message_acknowledger(
+                        delivered_operator_ids,
+                        model_call_id,
+                    )
+                except Exception as exc:
+                    self._emit_event(
+                        "toolloop.operator_messages.ack_failed",
+                        queue_item_ids=delivered_operator_ids,
+                        model_call_id=model_call_id,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                        **event_context,
+                    )
+                    raise
+            for item in delivered_operator_messages:
+                if bool(item.get("embedded_in_initial_request")):
+                    continue
+                content = str(item.get("_rendered_content") or "").strip()
+                if content:
+                    messages.append({"role": "user", "content": content})
+            if delivered_operator_messages:
+                self._emit_event(
+                    "toolloop.operator_messages.delivered",
+                    queue_item_ids=delivered_operator_ids,
+                    model_call_id=model_call_id,
+                    message_count=len(delivered_operator_messages),
+                    tool_calls_executed=len(executed_tools),
+                    **event_context,
+                )
+                pending_operator_messages.clear()
             usage_totals = _merge_usage_totals(
                 usage_totals,
                 getattr(last_result, "usage", None),
@@ -5809,17 +6883,29 @@ class ToolLoopCompletionProvider:
                 model=last_result.model or model,
                 round=rounds + 1,
                 model_call_id=model_call_id,
-                tool_calls=[call.get("function", {}).get("name") or call.get("name") for call in tool_calls if isinstance(call, dict)],
+                tool_calls=[
+                    call.get("function", {}).get("name") or call.get("name")
+                    for call in tool_calls
+                    if isinstance(call, dict)
+                ],
                 finish_reason=getattr(last_result, "finish_reason", None),
                 usage=_normalize_usage_totals(getattr(last_result, "usage", None)),
                 usage_totals=dict(usage_totals),
                 text=(last_result.text or "")[:400],
                 response_text=last_result.text or "",
                 assistant_message=_debug_prompt_messages([assistant_message])[0],
-                streamed=bool((getattr(last_result, "provider_metadata", None) or {}).get("streamed_response")),
+                streamed=bool(
+                    (getattr(last_result, "provider_metadata", None) or {}).get(
+                        "streamed_response"
+                    )
+                ),
                 **event_context,
             )
-            if forced_finalize_without_tools and not request_tool_schemas and tool_calls:
+            if (
+                forced_finalize_without_tools
+                and not request_tool_schemas
+                and tool_calls
+            ):
                 stop_reason = "forced_finalize_guardrail_unheeded"
                 partial_candidate = _partial_coding_candidate_from_tool_evidence(
                     request=request,
@@ -5894,7 +6980,8 @@ class ToolLoopCompletionProvider:
                                 for tool in active_tool_schemas
                                 if isinstance(tool, dict)
                             ],
-                            blocked_by_tool_call_ids=list(blocked_by_tool_call_ids) or None,
+                            blocked_by_tool_call_ids=list(blocked_by_tool_call_ids)
+                            or None,
                             **event_context,
                         )
                         continue
@@ -5978,7 +7065,9 @@ class ToolLoopCompletionProvider:
                         workspace_root=self._tool_runtime.workspace_root,
                     )
                     fallback_text = (
-                        json.dumps(partial_candidate, ensure_ascii=False, sort_keys=True)
+                        json.dumps(
+                            partial_candidate, ensure_ascii=False, sort_keys=True
+                        )
                         if partial_candidate is not None
                         else (last_result.text or "")
                     )
@@ -6037,7 +7126,9 @@ class ToolLoopCompletionProvider:
                 ):
                     prompt_text_limit = _EXCLUSIVE_OWNER_FILE_READ_PROMPT_TEXT_LIMIT
                     if exclusive_owner_prefers_file_edit:
-                        tool_payload = _file_read_payload_with_line_numbers(tool_payload)
+                        tool_payload = _file_read_payload_with_line_numbers(
+                            tool_payload
+                        )
                 executed_tools.append(
                     {
                         "tool_id": tool_id,
@@ -6145,8 +7236,8 @@ class ToolLoopCompletionProvider:
                 reason: str,
             ) -> None:
                 for skipped_call in remaining_calls:
-                    skipped_tool_id, skipped_tool_call_id, skipped_arguments = self._parse_tool_call(
-                        skipped_call
+                    skipped_tool_id, skipped_tool_call_id, skipped_arguments = (
+                        self._parse_tool_call(skipped_call)
                     )
                     round_tool_call_ids.append(skipped_tool_call_id)
                     _record_tool_result(
@@ -6299,7 +7390,9 @@ class ToolLoopCompletionProvider:
                     )
                     is not None
                     and (
-                        downshift_reason := file_write_incremental_edit_paths.get(target_path)
+                        downshift_reason := file_write_incremental_edit_paths.get(
+                            target_path
+                        )
                     )
                     is not None
                 ):
@@ -6330,7 +7423,10 @@ class ToolLoopCompletionProvider:
                     repair_policy_nudges.append((blocked_path, current_size, new_size))
                 elif (
                     tool_id in {"file_edit", "file_write"}
-                    and (write_stage_first_write_nudged or write_stage_direct_write_required)
+                    and (
+                        write_stage_first_write_nudged
+                        or write_stage_direct_write_required
+                    )
                     and _coding_output_kind(request) is not None
                     and not _successful_workspace_mutation_paths(
                         executed_tools,
@@ -6361,7 +7457,9 @@ class ToolLoopCompletionProvider:
                     )
                 else:
                     file_read_cache_key = (
-                        _file_read_cache_key(arguments, workspace_root=self._tool_runtime.workspace_root)
+                        _file_read_cache_key(
+                            arguments, workspace_root=self._tool_runtime.workspace_root
+                        )
                         if tool_id == "file_read"
                         else None
                     )
@@ -6377,7 +7475,8 @@ class ToolLoopCompletionProvider:
                     )
                     cached_file_read = (
                         file_read_result_cache.get(file_read_cache_key)
-                        if file_read_cache_key is not None and file_read_fingerprint_before is not None
+                        if file_read_cache_key is not None
+                        and file_read_fingerprint_before is not None
                         else None
                     )
                     if (
@@ -6428,7 +7527,10 @@ class ToolLoopCompletionProvider:
                                     or arguments.get("filepath"),
                                     workspace_root=self._tool_runtime.workspace_root,
                                 )
-                                if file_read_fingerprint_after == file_read_fingerprint_before:
+                                if (
+                                    file_read_fingerprint_after
+                                    == file_read_fingerprint_before
+                                ):
                                     file_read_result_cache[file_read_cache_key] = (
                                         file_read_fingerprint_after,
                                         copy.deepcopy(result),
@@ -6493,7 +7595,9 @@ class ToolLoopCompletionProvider:
                         )
                         if downshift is not None:
                             downshift_path, downshift_reason = downshift
-                            file_write_incremental_edit_paths[downshift_path] = downshift_reason
+                            file_write_incremental_edit_paths[downshift_path] = (
+                                downshift_reason
+                            )
                             file_write_downshift_nudges.append(
                                 (downshift_path, downshift_reason)
                             )
@@ -6550,13 +7654,12 @@ class ToolLoopCompletionProvider:
             if phase_budget_nudges:
                 phase, limit_kind, soft_limit, progress = phase_budget_nudges[0]
                 action = _soft_budget_action_for_phase(phase)
-                allow_final_read = (
-                    not _interactive_source_implementation_request(request)
-                    and any(
-                        _tool_schema_name(tool) == "file_read"
-                        for tool in request_tool_schemas
-                        if isinstance(tool, dict)
-                    )
+                allow_final_read = not _interactive_source_implementation_request(
+                    request
+                ) and any(
+                    _tool_schema_name(tool) == "file_read"
+                    for tool in request_tool_schemas
+                    if isinstance(tool, dict)
                 )
                 if action == "narrow_write_stage":
                     write_stage_first_write_nudged = True
@@ -6625,7 +7728,9 @@ class ToolLoopCompletionProvider:
                 for path, reason in file_write_downshift_nudges:
                     affected_paths.append(path)
                     reasons.append(reason)
-                    message = _file_write_incremental_edit_required_message(path, reason)
+                    message = _file_write_incremental_edit_required_message(
+                        path, reason
+                    )
                     if message in seen_messages:
                         continue
                     seen_messages.add(message)
@@ -6878,7 +7983,9 @@ class ToolLoopCompletionProvider:
                 messages.append(
                     {
                         "role": "user",
-                        "content": _temporarily_disabled_tool_message(newly_disabled_tool_ids),
+                        "content": _temporarily_disabled_tool_message(
+                            newly_disabled_tool_ids
+                        ),
                     }
                 )
                 self._emit_event(
@@ -6959,7 +8066,10 @@ class ToolLoopCompletionProvider:
                 executed_tools=executed_tools,
                 round_number=rounds,
             )
-            if research_finalize_reason is not None and not research_note_finalize_nudged:
+            if (
+                research_finalize_reason is not None
+                and not research_note_finalize_nudged
+            ):
                 research_note_finalize_nudged = True
                 forced_finalize_without_tools = True
                 active_tool_schemas = []
@@ -6992,10 +8102,9 @@ class ToolLoopCompletionProvider:
             )
             if write_nudge_reason is not None and not write_stage_first_write_nudged:
                 write_stage_first_write_nudged = True
-                allow_write_nudge_final_read = (
-                    not _exclusive_write_owner_path(request)
-                    and not _interactive_source_implementation_request(request)
-                )
+                allow_write_nudge_final_read = not _exclusive_write_owner_path(
+                    request
+                ) and not _interactive_source_implementation_request(request)
                 write_stage_final_read_available = allow_write_nudge_final_read and any(
                     _tool_schema_name(tool) == "file_read"
                     for tool in request_tool_schemas
@@ -7041,8 +8150,8 @@ class ToolLoopCompletionProvider:
                         if isinstance(tool, dict)
                     ],
                     blocked_by_tool_call_ids=list(blocked_by_tool_call_ids) or None,
-                        **event_context,
-                    )
+                    **event_context,
+                )
             write_finalize_reason = _write_capable_coding_stage_finalize_reason(
                 request=request,
                 tool_ids=[
@@ -7074,13 +8183,19 @@ class ToolLoopCompletionProvider:
                 )
                 continue
 
-    def _resolve_tool_schemas(self, request_tools: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _resolve_tool_schemas(
+        self, request_tools: Sequence[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         allowed = set(self._tool_runtime.tool_ids)
         filtered: list[dict[str, Any]] = []
         seen: set[str] = set()
         for tool in request_tools:
             function = tool.get("function") if isinstance(tool, dict) else None
-            name = str(function.get("name") or "").strip() if isinstance(function, dict) else ""
+            name = (
+                str(function.get("name") or "").strip()
+                if isinstance(function, dict)
+                else ""
+            )
             if name and name in allowed:
                 if name in seen:
                     continue
@@ -7093,7 +8208,11 @@ class ToolLoopCompletionProvider:
                 )
                 filtered.append(
                     {
-                        "type": str(tool.get("type") or "function") if isinstance(tool, dict) else "function",
+                        "type": (
+                            str(tool.get("type") or "function")
+                            if isinstance(tool, dict)
+                            else "function"
+                        ),
                         "function": {
                             "name": name,
                             "description": str(
@@ -7131,9 +8250,19 @@ class ToolLoopCompletionProvider:
     @staticmethod
     def _parse_tool_call(raw_call: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
         function = raw_call.get("function") if isinstance(raw_call, dict) else None
-        tool_id = str(function.get("name") or raw_call.get("name") or "").strip() if isinstance(function, dict) else ""
-        tool_call_id = str(raw_call.get("id") or f"tool-call-{tool_id or 'unknown'}").strip()
-        raw_arguments = function.get("arguments") if isinstance(function, dict) else raw_call.get("arguments")
+        tool_id = (
+            str(function.get("name") or raw_call.get("name") or "").strip()
+            if isinstance(function, dict)
+            else ""
+        )
+        tool_call_id = str(
+            raw_call.get("id") or f"tool-call-{tool_id or 'unknown'}"
+        ).strip()
+        raw_arguments = (
+            function.get("arguments")
+            if isinstance(function, dict)
+            else raw_call.get("arguments")
+        )
         if isinstance(raw_arguments, dict):
             arguments = dict(raw_arguments)
         elif isinstance(raw_arguments, str) and raw_arguments.strip():
@@ -7143,7 +8272,9 @@ class ToolLoopCompletionProvider:
         return tool_id, tool_call_id, arguments
 
 
-def _worker_with_tool_ids(worker: WorkerDefinition, tool_ids: Sequence[str]) -> WorkerDefinition:
+def _worker_with_tool_ids(
+    worker: WorkerDefinition, tool_ids: Sequence[str]
+) -> WorkerDefinition:
     return worker.model_copy(update={"tool_ids": _dedupe(tool_ids)})
 
 
@@ -7177,7 +8308,9 @@ def _organ_with_tool_ids(
     return organ.model_copy(
         update={
             "lead_worker": _worker_with_tool_ids(organ.lead_worker, lead_tool_ids),
-            "tissue": _tissue_with_tool_ids(organ.tissue, member_tool_ids=member_tool_ids),
+            "tissue": _tissue_with_tool_ids(
+                organ.tissue, member_tool_ids=member_tool_ids
+            ),
         }
     )
 
@@ -7231,7 +8364,9 @@ def attach_local_tooling_to_coding_organism(
     aggregation_tool_ids = _coding_aggregation_tool_ids(full_tool_ids)
     return organism.model_copy(
         update={
-            "orchestrator_worker": _worker_with_tool_ids(organism.orchestrator_worker, []),
+            "orchestrator_worker": _worker_with_tool_ids(
+                organism.orchestrator_worker, []
+            ),
             "worker_tool_ids": list(full_tool_ids),
             "parallel_worker_tool_ids": list(read_only_tool_ids),
             "aggregator_organ": _organ_with_tool_ids(
