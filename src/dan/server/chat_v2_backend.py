@@ -8,7 +8,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, Sequence
 
 from pydantic import BaseModel, Field
 
@@ -443,6 +443,22 @@ class AgentBackendRuntime:
             limit=limit,
         )
 
+    def acknowledge_operator_messages(
+        self,
+        queue_item_ids: Sequence[str],
+        *,
+        model_call_id: str,
+        checkpoint: str,
+    ) -> list[QueueItemRecord]:
+        """Persist delivery only after the provider has returned a response."""
+
+        return self._store.acknowledge_injected_run_items(
+            self.run_id,
+            queue_item_ids,
+            model_call_id=model_call_id,
+            checkpoint=checkpoint,
+        )
+
     def raise_if_stop_requested(self, checkpoint: str) -> None:
         run = self._store.get_run(self.run_id)
         if run is None or not bool(run.metadata.get("stop_requested")):
@@ -862,11 +878,72 @@ class SuperDanBackendAdapter:
                 int(request.tool_policy.get("worktree_parallelism") or 0),
             ),
         )
+        pending_operator_messages: dict[str, dict[str, Any]] = {
+            str(item.get("queue_item_id") or ""): {
+                **dict(item),
+                "embedded_in_initial_request": True,
+            }
+            for item in _admitted_operator_messages(request.metadata)
+            if str(item.get("queue_item_id") or "").strip()
+        }
+
+        def _pending_live_operator_messages() -> list[dict[str, Any]]:
+            return [dict(item) for item in pending_operator_messages.values()]
+
+        def _acknowledge_live_operator_messages(
+            queue_item_ids: Sequence[str],
+            model_call_id: str,
+        ) -> None:
+            wanted = [
+                str(queue_item_id).strip()
+                for queue_item_id in queue_item_ids
+                if str(queue_item_id).strip()
+            ]
+            if not wanted:
+                return
+            if runtime is None:
+                for queue_item_id in wanted:
+                    pending_operator_messages.pop(queue_item_id, None)
+                return
+            completed = runtime.acknowledge_operator_messages(
+                wanted,
+                model_call_id=model_call_id,
+                checkpoint="model.responded",
+            )
+            completed_ids = {item.id for item in completed}
+            missing = set(wanted) - completed_ids
+            if missing:
+                raise RuntimeError(
+                    "operator_message_delivery_ack_failed:"
+                    + ",".join(sorted(missing))
+                )
+            for queue_item_id in completed_ids:
+                pending_operator_messages.pop(queue_item_id, None)
+
+        setattr(
+            args,
+            "_live_operator_message_provider",
+            _pending_live_operator_messages,
+        )
+        setattr(
+            args,
+            "_live_operator_message_acknowledger",
+            _acknowledge_live_operator_messages,
+        )
 
         def _on_raw_row(row: dict[str, Any]) -> None:
             if runtime is not None and _is_safe_backend_checkpoint(row):
                 checkpoint = _checkpoint_name(row)
-                runtime.admit_checkpoint(checkpoint)
+                admitted_items = runtime.admit_checkpoint(checkpoint)
+                pending_operator_messages.update(
+                    {
+                        item.id: _operator_message_from_queue_item(
+                            item,
+                            checkpoint=checkpoint,
+                        )
+                        for item in admitted_items
+                    }
+                )
                 runtime.raise_if_interrupted(checkpoint)
             event = map_organism_log_row_to_agent_event(
                 dict(row),
@@ -1121,6 +1198,10 @@ async def run_agent_backend(
             {"backend_result": result.model_dump(mode="json")},
             status=status,  # type: ignore[arg-type]
         )
+        store.release_injected_run_items(
+            run_id,
+            reason=f"run_{status}_before_delivery",
+        )
         return result
     try:
         selected = adapter or select_agent_backend_adapter(request, backend_name=backend_name)
@@ -1206,13 +1287,35 @@ async def run_agent_backend(
             raw_result={"error": str(exc), "error_type": type(exc).__name__},
         )
 
+    terminal_status = _terminal_status(result.status)
     store.update_run_metadata(
         run_id,
         {
             "selected_backend": selected.backend_name,
             "backend_result": result.model_dump(mode="json"),
         },
-        status=_terminal_status(result.status),
+        status=terminal_status,
+    )
+    if terminal_status == "completed":
+        delivered_queue_item_ids = [
+            item.id
+            for item in initial_operator_items
+        ]
+        continued_queue_item_id = str(run.metadata.get("queue_item_id") or "").strip()
+        if continued_queue_item_id:
+            delivered_queue_item_ids.append(continued_queue_item_id)
+        store.acknowledge_injected_run_items(
+            run_id,
+            delivered_queue_item_ids,
+            checkpoint="backend.completed",
+        )
+    store.release_injected_run_items(
+        run_id,
+        reason=(
+            "run_completed_without_delivery"
+            if terminal_status == "completed"
+            else f"run_{terminal_status}_before_delivery"
+        ),
     )
     _queue_backend_auto_continuation_if_needed(
         store,
@@ -3528,7 +3631,6 @@ def _is_safe_backend_checkpoint(row: dict[str, Any]) -> bool:
         return True
     if event in {
         "live.generic_build.started",
-        "model.responded",
         "tool.completed",
         "tool.ok",
         "live.validation.started",

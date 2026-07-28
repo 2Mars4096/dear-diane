@@ -577,6 +577,55 @@ def test_v2_maps_organism_log_rows_to_normalized_agent_events() -> None:
     assert usage.token_usage_round["round"] == 2
 
 
+def test_v2_maps_completed_mutation_tools_to_concrete_artifact_events() -> None:
+    file_write = map_organism_log_row_to_agent_event(
+        {
+            "event": "tool.completed",
+            "tool_id": "file_write",
+            "arguments": {"path": "index.html"},
+            "result": {"path": "index.html", "bytes_written": 120},
+        },
+        run_id="run-1",
+        task_id="task-1",
+    )
+    shell_change = map_organism_log_row_to_agent_event(
+        {
+            "event": "tool.completed",
+            "tool_id": "shell_command",
+            "arguments": {"command": "npm run build"},
+            "result": {
+                "exit_code": 0,
+                "workspace_changes": {
+                    "created_paths": ["dist/index.html"],
+                    "modified_paths": ["dist/app.js"],
+                },
+            },
+        },
+        run_id="run-1",
+        task_id="task-1",
+    )
+    read_only = map_organism_log_row_to_agent_event(
+        {
+            "event": "tool.completed",
+            "tool_id": "file_read",
+            "arguments": {"path": "README.md"},
+            "result": {"path": "README.md", "content": "# Project"},
+        },
+        run_id="run-1",
+        task_id="task-1",
+    )
+
+    assert file_write.type == "artifact_changed"
+    assert file_write.artifact_refs == [{"path": "index.html"}]
+    assert shell_change.type == "artifact_changed"
+    assert shell_change.artifact_refs == [
+        {"path": "dist/index.html"},
+        {"path": "dist/app.js"},
+    ]
+    assert read_only.type == "tool_used"
+    assert read_only.artifact_refs == []
+
+
 def test_v2_backend_runtime_treats_mutating_tool_start_as_safe_checkpoint() -> None:
     assert _is_safe_backend_checkpoint(
         {"event": "tool.started", "tool_id": "file_write"}
@@ -590,6 +639,7 @@ def test_v2_backend_runtime_treats_mutating_tool_start_as_safe_checkpoint() -> N
     assert not _is_safe_backend_checkpoint(
         {"event": "tool.started", "tool_id": "file_read"}
     )
+    assert not _is_safe_backend_checkpoint({"event": "model.responded"})
 
 
 def test_v2_super_dan_args_forward_structured_surface_context(tmp_path) -> None:
@@ -1565,6 +1615,25 @@ def test_v2_store_recovers_running_agent_runs_after_restart(tmp_path) -> None:
     assert accepted.run_id is not None
     assert accepted.task_id is not None
     assert store.get_run(accepted.run_id).status == "running"
+    store.queue_agent_command(
+        AgentRunCommand(
+            command="append_followup",
+            run_id=accepted.run_id,
+            task_id=accepted.task_id,
+            surface_turn_id="turn-restart-steer",
+            payload={"text": "Keep the accessibility checks in the final validation."},
+        )
+    )
+    claimed = store.claim_queued_run_items(
+        accepted.run_id,
+        checkpoint="tool.completed:file_read",
+    )
+    assert len(claimed) == 1
+    assert claimed[0].status == "injected"
+    in_flight_snapshot = store.get_task_snapshot(accepted.task_id)
+    assert in_flight_snapshot is not None
+    assert in_flight_snapshot.metadata["append_queue_length"] == 1
+    assert in_flight_snapshot.metadata["queue_items"][0]["status"] == "injected"
 
     recovered = ChatV2Store(tmp_path / "chat_v2")
     assert recovered.recover_interrupted_runs_after_restart() == 2
@@ -1577,7 +1646,76 @@ def test_v2_store_recovers_running_agent_runs_after_restart(tmp_path) -> None:
     assert run.metadata["restart_recovery_reason"] == "process_restart"
     assert task_snapshot.status == "stopped"
     assert task_snapshot.metadata["restart_recovery_reason"] == "process_restart"
+    assert task_snapshot.metadata["append_queue_length"] == 1
+    assert task_snapshot.metadata["queue_items"][0]["status"] == "queued"
+    assert task_snapshot.metadata["queue_items"][0]["metadata"]["requeue_reason"] == (
+        "process_restart"
+    )
     assert "backend restarted" in task_snapshot.latest_progress
+
+
+def test_v2_store_promotes_terminal_undelivered_append_into_continuation(
+    tmp_path,
+) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    accepted = store.accept_bridge_context(
+        build_v2_bridge_context(
+            ChatMessageRequest(
+                workflow_id="_scratch",
+                message="build the landing page",
+                mode="agent",
+                surface_type="frontend",
+                surface_id="chunk-workspace",
+                thread_id="thread-terminal-steer",
+            )
+        )
+    )
+    assert accepted.run_id is not None
+    assert accepted.task_id is not None
+    queued = store.queue_agent_command(
+        AgentRunCommand(
+            command="append_followup",
+            run_id=accepted.run_id,
+            task_id=accepted.task_id,
+            surface_turn_id="turn-terminal-steer",
+            payload={"text": "Add keyboard navigation before calling this complete."},
+        )
+    )
+    queue_item_id = str(queued.payload["queue_item_id"])
+    claimed = store.claim_queued_run_items(
+        accepted.run_id,
+        checkpoint="live.validation.started",
+    )
+    assert [item.id for item in claimed] == [queue_item_id]
+
+    store.update_run_metadata(accepted.run_id, {}, status="completed")
+    released = store.release_injected_run_items(
+        accepted.run_id,
+        reason="run_completed_without_delivery",
+    )
+    assert [item.id for item in released] == [queue_item_id]
+
+    continued = store.promote_next_continue_after_current(accepted.run_id)
+    assert continued is not None
+    assert continued.command.payload["text"] == (
+        "Add keyboard navigation before calling this complete."
+    )
+    persisted = store.get_task(accepted.task_id)
+    assert persisted is not None
+    pending = next(item for item in persisted.queue_items if item.id == queue_item_id)
+    assert pending.status == "injected"
+    assert pending.metadata["admitted_run_id"] == continued.run_id
+
+    delivered = store.acknowledge_injected_run_items(
+        continued.run_id,
+        [queue_item_id],
+        model_call_id="model-call:terminal-followup",
+        checkpoint="backend.completed",
+    )
+    assert [item.id for item in delivered] == [queue_item_id]
+    persisted = store.get_task(accepted.task_id)
+    assert persisted is not None
+    assert persisted.queue_items[0].status == "completed"
 
 
 def test_v2_store_inherits_active_task_workspace_for_followups(tmp_path) -> None:
@@ -2069,12 +2207,20 @@ async def test_v2_agent_run_append_command_is_admitted_at_backend_checkpoint(
         "worker_started",
         "token_usage_recorded",
         "completed",
+        "queue_item_completed",
     ]
     injected = events["events"][2]
     assert injected["payload"]["checkpoint"] == "backend.start"
     assert injected["payload"]["text"].startswith("also document keyboard shortcuts")
     injected_context = injected["payload"]["metadata"]["operator_context"]
     assert injected_context["target_paths"] == ["README.md", "app.py"]
+    delivered = events["events"][-1]
+    assert delivered["payload"]["queue_item_id"] == queued["event"]["payload"][
+        "queue_item_id"
+    ]
+    persisted_item = store.get_task(created["v2_control_plane"]["task_id"]).queue_items[0]
+    assert persisted_item.status == "completed"
+    assert persisted_item.metadata["delivered_run_id"] == run_id
 
 
 @pytest.mark.asyncio
@@ -2338,7 +2484,8 @@ async def test_v2_continue_after_current_command_promotes_next_run_after_termina
     )
 
     assert executed["status"] == "completed"
-    assert executed["task"]["metadata"]["continue_queue_length"] == 0
+    assert executed["task"]["metadata"]["continue_queue_length"] == 1
+    assert executed["task"]["metadata"]["queue_items"][0]["status"] == "injected"
     next_run_id = executed["task"]["metadata"]["active_run_id"]
     assert next_run_id != run_id
     next_run = store.get_run(next_run_id)
@@ -2359,6 +2506,12 @@ async def test_v2_continue_after_current_command_promotes_next_run_after_termina
     )
 
     assert next_executed["status"] == "completed"
+    assert next_executed["task"]["metadata"]["continue_queue_length"] == 0
+    next_events = await chat_v2_router.get_agent_run_events(next_run_id)
+    assert [event["type"] for event in next_events["events"]][-2:] == [
+        "completed",
+        "queue_item_completed",
+    ]
 
 
 @pytest.mark.asyncio
@@ -2473,7 +2626,10 @@ async def test_v2_background_execution_auto_runs_promoted_continue(
     first_events = await chat_v2_router.get_agent_run_events(run_id)
     next_events = await chat_v2_router.get_agent_run_events(next_run_id)
     assert first_events["events"][-1]["type"] == "queue_item_injected"
-    assert next_events["events"][-1]["type"] == "completed"
+    assert [event["type"] for event in next_events["events"]][-2:] == [
+        "completed",
+        "queue_item_completed",
+    ]
 
 
 @pytest.mark.asyncio

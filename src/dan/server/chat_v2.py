@@ -63,6 +63,8 @@ AgentRunEventType = Literal[
     "background_run_started",
     "queue_item_added",
     "queue_item_injected",
+    "queue_item_completed",
+    "queue_item_requeued",
     "status_reported",
     "pause_requested",
     "stop_requested",

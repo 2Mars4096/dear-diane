@@ -9,7 +9,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 from pydantic import BaseModel, Field
 
@@ -221,8 +221,12 @@ class V2TaskRecord(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def snapshot(self) -> TaskSnapshot:
-        queued_items = [item for item in self.queue_items if item.status == "queued"]
-        queue_position = min((item.position for item in queued_items), default=None)
+        pending_items = [
+            item
+            for item in self.queue_items
+            if item.status in {"queued", "injected"}
+        ]
+        queue_position = min((item.position for item in pending_items), default=None)
         return TaskSnapshot(
             task_id=self.task_id,
             thread_id=self.thread_id,
@@ -248,18 +252,18 @@ class V2TaskRecord(BaseModel):
                 "token_usage_rounds": list(self.token_usage_rounds),
                 "append_queue_length": sum(
                     1
-                    for item in queued_items
+                    for item in pending_items
                     if item.lane == "append"
                 ),
                 "continue_queue_length": sum(
                     1
-                    for item in queued_items
+                    for item in pending_items
                     if item.lane == "continue_after_current"
                 ),
                 "queue_items": [
                     item.model_dump(mode="json")
                     for item in self.queue_items
-                    if item.status == "queued"
+                    if item.status in {"queued", "injected"}
                 ],
                 "created_at": self.created_at,
                 "updated_at": self.updated_at,
@@ -459,6 +463,7 @@ class ChatV2Store:
             summary = "Stopped because the backend restarted before this run completed."
             recovered = 0
             running_task_ids: set[str] = set()
+            running_run_ids: set[str] = set()
             for run in self._iter_runs():
                 if run.status != "running":
                     continue
@@ -489,11 +494,35 @@ class ChatV2Store:
                     ),
                 )
                 running_task_ids.add(run.task_id)
+                running_run_ids.add(run.run_id)
                 recovered += 1
 
             terminal_statuses = {"completed", "failed", "blocked", "stopped"}
             recovered_tasks = 0
             for task in self._iter_tasks():
+                requeued_item_ids: list[str] = []
+                for item in task.queue_items:
+                    admitted_run_id = str(item.metadata.get("admitted_run_id") or "")
+                    legacy_running_lease = (
+                        not admitted_run_id
+                        and task.task_id in running_task_ids
+                    )
+                    if (
+                        item.status == "injected"
+                        and (
+                            admitted_run_id in running_run_ids
+                            or legacy_running_lease
+                        )
+                    ):
+                        item.status = "queued"
+                        item.updated_at = now
+                        item.metadata["requeued_at"] = now
+                        item.metadata["requeue_reason"] = "process_restart"
+                        requeued_item_ids.append(item.id)
+                if requeued_item_ids:
+                    task.metadata["restart_requeued_queue_item_ids"] = requeued_item_ids
+                    task.updated_at = now
+                    self._save_task(task)
                 if task.task_id not in running_task_ids and task.status != "running":
                     continue
                 if task.status in terminal_statuses:
@@ -1780,7 +1809,11 @@ class ChatV2Store:
                 item.status = "injected"
                 item.updated_at = now
                 item.metadata["admitted_at"] = now
+                item.metadata["admitted_run_id"] = run.run_id
                 item.metadata["admission_checkpoint"] = checkpoint
+                item.metadata["delivery_attempts"] = (
+                    int(item.metadata.get("delivery_attempts") or 0) + 1
+                )
                 events.append(
                     AgentRunEvent(
                         type="queue_item_injected",
@@ -1807,11 +1840,129 @@ class ChatV2Store:
                 self.record_agent_event(event)
             return [item.model_copy(deep=True) for item in queued]
 
+    def acknowledge_injected_run_items(
+        self,
+        run_id: str,
+        queue_item_ids: Sequence[str],
+        *,
+        model_call_id: str = "",
+        checkpoint: str = "",
+    ) -> list[QueueItemRecord]:
+        """Mark leased queue items delivered after a model response succeeds."""
+
+        wanted = {
+            str(queue_item_id).strip()
+            for queue_item_id in queue_item_ids
+            if str(queue_item_id).strip()
+        }
+        if not wanted:
+            return []
+        with self._lock:
+            run = self.get_run(run_id)
+            if run is None:
+                return []
+            task = self.get_task(run.task_id)
+            if task is None:
+                return []
+
+            now = _now()
+            completed: list[QueueItemRecord] = []
+            events: list[AgentRunEvent] = []
+            for item in task.queue_items:
+                if item.id not in wanted or item.status != "injected":
+                    continue
+                admitted_run_id = str(item.metadata.get("admitted_run_id") or "")
+                if admitted_run_id and admitted_run_id != run_id:
+                    continue
+                item.status = "completed"
+                item.updated_at = now
+                item.metadata["delivered_at"] = now
+                item.metadata["delivered_run_id"] = run_id
+                if model_call_id:
+                    item.metadata["delivered_model_call_id"] = model_call_id
+                if checkpoint:
+                    item.metadata["delivery_checkpoint"] = checkpoint
+                completed.append(item.model_copy(deep=True))
+                events.append(
+                    AgentRunEvent(
+                        type="queue_item_completed",
+                        run_id=run_id,
+                        task_id=task.task_id,
+                        summary=f"Delivered checkpoint follow-up {item.id} to the model.",
+                        source_event_type="chat_v2.command.queue_delivered",
+                        payload={
+                            "queue_item_id": item.id,
+                            "lane": item.lane,
+                            "model_call_id": model_call_id,
+                            "checkpoint": checkpoint,
+                            "delivered_at": now,
+                        },
+                    )
+                )
+            if not completed:
+                return []
+            task.updated_at = now
+            self._save_task(task)
+            for event in events:
+                self.record_agent_event(event)
+            return completed
+
+    def release_injected_run_items(
+        self,
+        run_id: str,
+        *,
+        reason: str,
+    ) -> list[QueueItemRecord]:
+        """Return unacknowledged leases owned by a terminal run to its queue."""
+
+        with self._lock:
+            run = self.get_run(run_id)
+            if run is None:
+                return []
+            task = self.get_task(run.task_id)
+            if task is None:
+                return []
+
+            now = _now()
+            released: list[QueueItemRecord] = []
+            events: list[AgentRunEvent] = []
+            for item in task.queue_items:
+                admitted_run_id = str(item.metadata.get("admitted_run_id") or "")
+                if item.status != "injected" or admitted_run_id != run_id:
+                    continue
+                item.status = "queued"
+                item.updated_at = now
+                item.metadata["requeued_at"] = now
+                item.metadata["requeue_reason"] = reason
+                released.append(item.model_copy(deep=True))
+                events.append(
+                    AgentRunEvent(
+                        type="queue_item_requeued",
+                        run_id=run_id,
+                        task_id=task.task_id,
+                        summary=f"Returned undelivered follow-up {item.id} to the queue.",
+                        source_event_type="chat_v2.command.queue_requeued",
+                        payload={
+                            "queue_item_id": item.id,
+                            "lane": item.lane,
+                            "reason": reason,
+                            "requeued_at": now,
+                        },
+                    )
+                )
+            if not released:
+                return []
+            task.updated_at = now
+            self._save_task(task)
+            for event in events:
+                self.record_agent_event(event)
+            return released
+
     def promote_next_continue_after_current(
         self,
         run_id: str,
     ) -> AgentRunRecord | None:
-        """Promote one queued after-current item into the next queued Agent run."""
+        """Promote one pending follow-up into the next queued Agent run."""
 
         with self._lock:
             run = self.get_run(run_id)
@@ -1823,9 +1974,19 @@ class ChatV2Store:
             item = next(
                 (
                     candidate
-                    for candidate in task.queue_items
-                    if candidate.lane == "continue_after_current"
-                    and candidate.status == "queued"
+                    for candidate in sorted(
+                        task.queue_items,
+                        key=lambda queued_item: queued_item.position,
+                    )
+                    if candidate.status == "queued"
+                    and candidate.lane in {"append", "continue_after_current"}
+                    and (
+                        not str(candidate.metadata.get("requeue_reason") or "").startswith(
+                            "run_"
+                        )
+                        or candidate.metadata.get("requeue_reason")
+                        == "run_completed_without_delivery"
+                    )
                 ),
                 None,
             )
@@ -1837,6 +1998,7 @@ class ChatV2Store:
             item.status = "injected"
             item.updated_at = now
             item.metadata["admitted_at"] = now
+            item.metadata["admitted_run_id"] = next_run_id
             item.metadata["admission_checkpoint"] = "terminal"
             item.metadata["continued_run_id"] = next_run_id
             self._save_task(task)
@@ -1846,10 +2008,10 @@ class ChatV2Store:
                 run_id=run.run_id,
                 task_id=task.task_id,
                 summary=(
-                    "Promoted after-current follow-up "
+                    f"Promoted {item.lane.replace('_', '-')} follow-up "
                     f"to queued Agent run {next_run_id}."
                 ),
-                source_event_type="chat_v2.command.continue_promoted",
+                source_event_type="chat_v2.command.followup_promoted",
                 payload={
                     "queue_item_id": item.id,
                     "lane": item.lane,
@@ -1906,9 +2068,10 @@ class ChatV2Store:
             )
             task.active_run_id = next_run_id
             task.status = "queued"
-            task.phase = "queued_continue_after_current"
+            task.phase = f"queued_{item.lane}"
             task.latest_progress = (
-                f"Queued after-current follow-up as Agent run {next_run_id}."
+                f"Queued {item.lane.replace('_', '-')} follow-up "
+                f"as Agent run {next_run_id}."
             )
             task.updated_at = _now()
             self._save_run(next_run)
@@ -2514,7 +2677,11 @@ def _prefer_token_usage_total(
 
 
 def _status_for_event(event_type: str, *, fallback: TaskStatus) -> TaskStatus:
-    if event_type == "queue_item_injected" and fallback in {
+    if event_type in {
+        "queue_item_injected",
+        "queue_item_completed",
+        "queue_item_requeued",
+    } and fallback in {
         "completed",
         "failed",
         "blocked",
@@ -2532,6 +2699,8 @@ def _status_for_event(event_type: str, *, fallback: TaskStatus) -> TaskStatus:
         "validation_started",
         "repair_started",
         "queue_item_injected",
+        "queue_item_completed",
+        "queue_item_requeued",
         "status_reported",
         "pause_requested",
         "stop_requested",

@@ -207,7 +207,12 @@ class AgentProgressStateMachine:
             return "Got it", summary or "accepted Agent task", ""
         if event_type == "queued":
             return "Queued", summary or "waiting for the Agent lane", ""
-        if event_type in {"queue_item_added", "queue_item_injected"}:
+        if event_type in {
+            "queue_item_added",
+            "queue_item_injected",
+            "queue_item_completed",
+            "queue_item_requeued",
+        }:
             return "Queued follow-up", summary or "stored for the active Agent run", ""
         if event_type == "planned":
             detail = summary or _stage_detail(source_lower) or "planning backend work"

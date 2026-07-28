@@ -22,16 +22,22 @@ def map_organism_log_row_to_agent_event(
     """Project a raw organism log row into a normalized Agent event."""
 
     event_name = _event_name(row)
-    event_type = _agent_event_type(event_name, row)
     payload = dict(row)
     artifact_refs = _artifact_refs(payload)
+    event_type = _agent_event_type(
+        event_name,
+        row,
+        artifact_refs=artifact_refs,
+    )
     usage_delta = _token_usage_delta(payload)
     usage_total = _token_usage_total(payload)
     return AgentRunEvent(
         type=event_type,
         run_id=run_id,
         task_id=task_id or _clean(row.get("task_id")),
-        summary=_summary(row, event_name, usage_delta=usage_delta, usage_total=usage_total),
+        summary=_summary(
+            row, event_name, usage_delta=usage_delta, usage_total=usage_total
+        ),
         artifact_refs=artifact_refs,
         source_event_id=_clean(
             row.get("record_id")
@@ -43,7 +49,9 @@ def map_organism_log_row_to_agent_event(
         source_event_path=source_event_path,
         token_usage_delta=usage_delta,
         token_usage_total=usage_total,
-        token_usage_round=_token_usage_round(payload, usage_delta=usage_delta, usage_total=usage_total),
+        token_usage_round=_token_usage_round(
+            payload, usage_delta=usage_delta, usage_total=usage_total
+        ),
         payload=payload,
     )
 
@@ -66,7 +74,12 @@ def map_organism_log_rows_to_agent_events(
     ]
 
 
-def _agent_event_type(event_name: str, row: dict[str, Any]) -> AgentRunEventType:
+def _agent_event_type(
+    event_name: str,
+    row: dict[str, Any],
+    *,
+    artifact_refs: list[dict[str, Any]] | None = None,
+) -> AgentRunEventType:
     status = _clean(row.get("status")).lower()
     lower = event_name.lower()
     if lower == "live.execution_attempt.updated":
@@ -100,6 +113,12 @@ def _agent_event_type(event_name: str, row: dict[str, Any]) -> AgentRunEventType
         return "repair_started"
     if lower == "model.responded" and _token_usage_delta(row):
         return "token_usage_recorded"
+    if artifact_refs and lower in {
+        "tool.completed",
+        "tool.complete",
+        "tool.succeeded",
+    }:
+        return "artifact_changed"
     if lower.startswith("tool."):
         return "tool_used"
     if lower.startswith("model."):
@@ -163,6 +182,8 @@ def _artifact_refs(row: dict[str, Any]) -> list[dict[str, Any]]:
                 payload.get("artifacts"),
                 payload.get("changed_files"),
                 payload.get("changed_paths"),
+                payload.get("changed_required_files"),
+                payload.get("mutated_paths"),
             ]
         )
     candidates.extend(
@@ -171,18 +192,63 @@ def _artifact_refs(row: dict[str, Any]) -> list[dict[str, Any]]:
             row.get("artifacts"),
             row.get("changed_files"),
             row.get("changed_paths"),
+            row.get("changed_required_files"),
+            row.get("mutated_paths"),
         ]
     )
+    result = row.get("result") if isinstance(row.get("result"), dict) else {}
+    workspace_changes = (
+        result.get("workspace_changes")
+        if isinstance(result.get("workspace_changes"), dict)
+        else {}
+    )
+    for key in (
+        "changed_paths",
+        "created_paths",
+        "modified_paths",
+        "files_created",
+        "files_modified",
+    ):
+        candidates.append(workspace_changes.get(key))
+    event_name = _event_name(row).lower()
+    tool_id = _clean(row.get("tool_id")).lower()
+    if event_name in {
+        "tool.completed",
+        "tool.complete",
+        "tool.succeeded",
+    } and tool_id in {
+        "file_write",
+        "file_edit",
+    }:
+        arguments = (
+            row.get("arguments") if isinstance(row.get("arguments"), dict) else {}
+        )
+        candidates.extend([result.get("path"), arguments.get("path")])
+
     refs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add_ref(item: Any) -> None:
+        if isinstance(item, dict):
+            ref = dict(item)
+        elif item:
+            ref = {"path": str(item)}
+        else:
+            return
+        key = _clean(ref.get("path") or ref.get("uri") or ref.get("url"))
+        if not key:
+            key = repr(sorted(ref.items()))
+        if key in seen:
+            return
+        seen.add(key)
+        refs.append(ref)
+
     for value in candidates:
         if isinstance(value, list):
             for item in value:
-                if isinstance(item, dict):
-                    refs.append(dict(item))
-                elif item:
-                    refs.append({"path": str(item)})
-        elif isinstance(value, str) and value:
-            refs.append({"path": value})
+                add_ref(item)
+        else:
+            add_ref(value)
     return refs
 
 
