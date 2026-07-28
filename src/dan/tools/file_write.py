@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import os
 
+from dan.tools._atomic_file import atomic_write_text
 from dan.tools._source_structure import suspicious_source_structure_issues
 from dan.tools._workspace import validate_path
 
@@ -68,7 +69,11 @@ TOOL_METADATA = {
     "examples": [
         {
             "input": {"path": "output/result.txt", "content": "Hello, world!\n"},
-            "output": {"bytes_written": 14, "path": "output/result.txt", "mode": "overwrite"},
+            "output": {
+                "bytes_written": 14,
+                "path": "output/result.txt",
+                "mode": "overwrite",
+            },
         },
         {
             "input": {"path": "log.txt", "content": "new entry\n", "mode": "append"},
@@ -116,7 +121,11 @@ def _guard_suspicious_python_overwrite(
     mode: str,
     encoding: str,
 ) -> None:
-    if mode != "overwrite" or not resolved_path.endswith(".py") or not os.path.exists(resolved_path):
+    if (
+        mode != "overwrite"
+        or not resolved_path.endswith(".py")
+        or not os.path.exists(resolved_path)
+    ):
         return
 
     try:
@@ -223,14 +232,14 @@ async def file_write(
     if not effective_path:
         raise TypeError("file_write() missing 1 required positional argument: 'path'")
     if content is None:
-        raise TypeError("file_write() missing 1 required positional argument: 'content'")
+        raise TypeError(
+            "file_write() missing 1 required positional argument: 'content'"
+        )
 
     resolved = validate_path(effective_path, operation="write")
 
     if mode not in ("overwrite", "append"):
-        raise ValueError(
-            f"Invalid mode '{mode}'. Use 'overwrite' or 'append'."
-        )
+        raise ValueError(f"Invalid mode '{mode}'. Use 'overwrite' or 'append'.")
 
     _guard_suspicious_python_overwrite(
         resolved_path=resolved,
@@ -252,9 +261,11 @@ async def file_write(
 
     os.makedirs(os.path.dirname(resolved), exist_ok=True)
 
-    file_mode = "a" if mode == "append" else "w"
-    with open(resolved, file_mode, encoding=encoding) as f:
-        f.write(content)
+    updated_content = content
+    if mode == "append" and os.path.exists(resolved):
+        with open(resolved, "r", encoding=encoding) as existing_file:
+            updated_content = existing_file.read() + content
+    atomic_write_text(resolved, updated_content, encoding=encoding)
 
     return {
         "bytes_written": len(content.encode(encoding)),

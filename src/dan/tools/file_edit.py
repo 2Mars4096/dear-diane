@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import os
 
+from dan.tools._atomic_file import atomic_write_text
 from dan.tools._source_structure import suspicious_source_structure_issues
 from dan.tools._workspace import validate_path
 
@@ -139,7 +140,12 @@ TOOL_METADATA = {
                         },
                         "mode": {
                             "type": "string",
-                            "enum": ["replace", "insert_before", "insert_after", "delete"],
+                            "enum": [
+                                "replace",
+                                "insert_before",
+                                "insert_after",
+                                "delete",
+                            ],
                             "description": "Edit mode for this batch item. Delete mode removes text only and must not include replacement fields.",
                             "default": "replace",
                         },
@@ -196,8 +202,17 @@ TOOL_METADATA = {
             "input": {
                 "path": "src/main.py",
                 "edits": [
-                    {"start_line": 10, "end_line": 10, "content": "renamed = True\n", "mode": "replace"},
-                    {"start_line": 30, "content": "# trailing note\n", "mode": "insert_after"},
+                    {
+                        "start_line": 10,
+                        "end_line": 10,
+                        "content": "renamed = True\n",
+                        "mode": "replace",
+                    },
+                    {
+                        "start_line": 30,
+                        "content": "# trailing note\n",
+                        "mode": "insert_after",
+                    },
                 ],
             },
             "output": {
@@ -213,7 +228,13 @@ TOOL_METADATA = {
 }
 
 _EDIT_MODES = frozenset({"replace", "insert_before", "insert_after", "delete"})
-_REPLACEMENT_FIELD_NAMES = ("content", "new_string", "replace", "replacement", "new_content")
+_REPLACEMENT_FIELD_NAMES = (
+    "content",
+    "new_string",
+    "replace",
+    "replacement",
+    "new_content",
+)
 
 
 def _tool_argument_error(detail: str) -> ValueError:
@@ -232,9 +253,7 @@ def _require_existing_file(path: str, resolved: str) -> None:
 
 def _normalize_line_number(value: int | None, *, name: str) -> int:
     if value is None:
-        raise _tool_argument_error(
-            f"missing required arguments for file_edit: {name}"
-        )
+        raise _tool_argument_error(f"missing required arguments for file_edit: {name}")
     try:
         parsed = int(value)
     except (TypeError, ValueError):
@@ -278,7 +297,9 @@ def _find_unique_span(text: str, needle: str) -> tuple[int, int]:
     return start_index, start_index + len(needle)
 
 
-def _line_range_from_span(text: str, start_index: int, end_index: int) -> tuple[int, int]:
+def _line_range_from_span(
+    text: str, start_index: int, end_index: int
+) -> tuple[int, int]:
     start_line = len(text[:start_index].splitlines()) + 1
     end_line = max(start_line, len(text[:end_index].splitlines()))
     return start_line, end_line
@@ -507,11 +528,17 @@ def _reinterpret_anchor_heavy_replace(
     target_lines = original_lines[start_line - 1 : end_line]
     target_line_count = end_line - start_line + 1
 
-    if not replacement_lines or not target_lines or len(replacement_lines) <= target_line_count:
+    if (
+        not replacement_lines
+        or not target_lines
+        or len(replacement_lines) <= target_line_count
+    ):
         return spec
 
     first_target_line = target_lines[0]
-    if start_line == end_line and _line_text(replacement_lines[0]) == _line_text(first_target_line):
+    if start_line == end_line and _line_text(replacement_lines[0]) == _line_text(
+        first_target_line
+    ):
         return {
             **spec,
             "mode": "insert_after",
@@ -531,9 +558,8 @@ def _reinterpret_anchor_heavy_replace(
                 if _line_text(replacement_line) != _line_text(target_line):
                     break
                 shared_prefix_length += 1
-            if (
-                shared_prefix_length >= 2
-                and shared_prefix_length == len(candidate_suffix)
+            if shared_prefix_length >= 2 and shared_prefix_length == len(
+                candidate_suffix
             ):
                 return {
                     **spec,
@@ -543,10 +569,9 @@ def _reinterpret_anchor_heavy_replace(
                     "replacement_lines": trailing_lines[:offset],
                 }
 
-    if (
-        _line_text(replacement_lines[0]) == _line_text(previous_line)
-        and _line_text(replacement_lines[-1]) == _line_text(first_target_line)
-    ):
+    if _line_text(replacement_lines[0]) == _line_text(previous_line) and _line_text(
+        replacement_lines[-1]
+    ) == _line_text(first_target_line):
         return {
             **spec,
             "mode": "insert_after",
@@ -587,14 +612,29 @@ def _guard_suspicious_bulk_replace(
     end_line = int(spec["end_line"])
     target_lines = original_lines[start_line - 1 : end_line]
     target_line_count = len(target_lines)
-    if target_line_count < 20:
-        return
-
     replacement_text = "".join(list(spec["replacement_lines"])).strip()
     replacement_line_count = len(replacement_text.splitlines())
     replacement_char_count = len(replacement_text)
     target_char_count = max(len("".join(target_lines).strip()), 1)
     char_ratio = replacement_char_count / target_char_count
+    original_prefix = original_text.strip()[:160]
+
+    if (
+        len(original_lines) >= 40
+        and target_line_count <= max(10, int(len(original_lines) * 0.1))
+        and replacement_line_count >= int(len(original_lines) * 0.75)
+        and len(original_prefix) >= 40
+        and replacement_text.startswith(original_prefix)
+    ):
+        raise _tool_argument_error(
+            "invalid edit shape for file_edit: suspicious whole-file content in a narrow "
+            f"replacement range ({start_line}-{end_line}). This would duplicate the "
+            "unchanged suffix. Use file_write for an intentional whole-file replacement "
+            "or apply a smaller targeted edit."
+        )
+
+    if target_line_count < 20:
+        return
 
     if (
         replacement_line_count <= 3
@@ -694,22 +734,24 @@ def _guard_placeholder_style_python_replace(
         return
 
     normalized = replacement_text.lower()
-    if "shell command output placeholder" in normalized or "git restore placeholder" in normalized:
+    if (
+        "shell command output placeholder" in normalized
+        or "git restore placeholder" in normalized
+    ):
         raise _tool_argument_error(
             "invalid edit shape for file_edit: Suspicious placeholder-style content for Python source. "
             "Apply the real code change instead of shell-note or restore-placeholder text."
         )
 
-    nonempty_lines = [line.strip() for line in replacement_text.splitlines() if line.strip()]
+    nonempty_lines = [
+        line.strip() for line in replacement_text.splitlines() if line.strip()
+    ]
     if not nonempty_lines:
         return
-    if (
-        any(line == "# placeholder" for line in nonempty_lines)
-        or (
-            "placeholder" in normalized
-            and all(line.startswith("#") for line in nonempty_lines)
-            and len(nonempty_lines) <= 3
-        )
+    if any(line == "# placeholder" for line in nonempty_lines) or (
+        "placeholder" in normalized
+        and all(line.startswith("#") for line in nonempty_lines)
+        and len(nonempty_lines) <= 3
     ):
         raise _tool_argument_error(
             "invalid edit shape for file_edit: Suspicious placeholder-style content for Python source. "
@@ -740,7 +782,9 @@ def _guard_placeholder_style_replace(
     if not any(marker in normalized for marker in placeholder_markers):
         return
 
-    nonempty_lines = [line.strip() for line in replacement_text.splitlines() if line.strip()]
+    nonempty_lines = [
+        line.strip() for line in replacement_text.splitlines() if line.strip()
+    ]
     if len(nonempty_lines) > 3:
         return
 
@@ -750,8 +794,12 @@ def _guard_placeholder_style_replace(
 
     start_line = int(spec["start_line"])
     end_line = int(spec["end_line"])
-    whole_fileish_replace = start_line == 1 and end_line >= max(1, total_lines_before - 2)
-    placeholder_only_comment = any("read current content" in line.lower() for line in nonempty_lines)
+    whole_fileish_replace = start_line == 1 and end_line >= max(
+        1, total_lines_before - 2
+    )
+    placeholder_only_comment = any(
+        "read current content" in line.lower() for line in nonempty_lines
+    )
     if not whole_fileish_replace and not placeholder_only_comment:
         return
 
@@ -858,9 +906,7 @@ async def file_edit(
 ) -> dict:
     effective_path = str(path or file_path or "").strip()
     if not effective_path:
-        raise _tool_argument_error(
-            "missing required arguments for file_edit: path"
-        )
+        raise _tool_argument_error("missing required arguments for file_edit: path")
 
     resolved = validate_path(effective_path, operation="write")
     _require_existing_file(effective_path, resolved)
@@ -875,7 +921,10 @@ async def file_edit(
         )
 
     if edits is not None:
-        if any(value is not None for value in (start_line, end_line, content)) or mode != "replace":
+        if (
+            any(value is not None for value in (start_line, end_line, content))
+            or mode != "replace"
+        ):
             raise _tool_argument_error(
                 "invalid argument combination for file_edit: use either top-level start_line/end_line/content/mode or batched edits=..., not both."
             )
@@ -891,21 +940,25 @@ async def file_edit(
                 )
             edit_mode = edit.get("mode")
             if str(edit_mode or "replace").strip() == "delete":
-                replacement_field = _has_replacement_field(edit, *_REPLACEMENT_FIELD_NAMES)
+                replacement_field = _has_replacement_field(
+                    edit, *_REPLACEMENT_FIELD_NAMES
+                )
                 if replacement_field:
                     raise _tool_argument_error(
                         "invalid argument combination for file_edit: "
                         f"edits[{index}] uses delete mode with {replacement_field}. Delete mode removes text only; "
                         "retry with mode 'replace' if you intend to swap text."
                     )
-            edit_start_line, edit_end_line, edit_content = _normalize_replace_compatibility_args(
-                original_text=original_text,
-                start_line=edit.get("start_line"),
-                end_line=edit.get("end_line"),
-                content=_edit_content_argument(edit),
-                mode=str(edit_mode or "replace"),
-                old_string=edit.get("old_string"),
-                new_string=edit.get("new_string"),
+            edit_start_line, edit_end_line, edit_content = (
+                _normalize_replace_compatibility_args(
+                    original_text=original_text,
+                    start_line=edit.get("start_line"),
+                    end_line=edit.get("end_line"),
+                    content=_edit_content_argument(edit),
+                    mode=str(edit_mode or "replace"),
+                    old_string=edit.get("old_string"),
+                    new_string=edit.get("new_string"),
+                )
             )
             edit_specs.append(
                 _build_edit_spec(
@@ -925,7 +978,9 @@ async def file_edit(
                 "replacement": _kwargs.get("replacement"),
                 "new_content": _kwargs.get("new_content"),
             }
-            replacement_field = _has_replacement_field(top_level_args, *_REPLACEMENT_FIELD_NAMES)
+            replacement_field = _has_replacement_field(
+                top_level_args, *_REPLACEMENT_FIELD_NAMES
+            )
             if replacement_field:
                 raise _tool_argument_error(
                     "invalid argument combination for file_edit: "
@@ -989,7 +1044,9 @@ async def file_edit(
 
     updated_lines = list(original_lines)
     changed = False
-    for spec in sorted(edit_specs, key=lambda spec: _occupied_range(spec), reverse=True):
+    for spec in sorted(
+        edit_specs, key=lambda spec: _occupied_range(spec), reverse=True
+    ):
         if _edit_spec_is_noop(spec, current_lines=updated_lines):
             continue
         updated_lines = _apply_edit_to_lines(
@@ -1012,8 +1069,7 @@ async def file_edit(
             path=effective_path,
             updated_text=updated_text,
         )
-        with open(resolved, "w", encoding=encoding) as f:
-            f.write(updated_text)
+        atomic_write_text(resolved, updated_text, encoding=encoding)
 
     if len(edit_specs) == 1:
         spec = edit_specs[0]
