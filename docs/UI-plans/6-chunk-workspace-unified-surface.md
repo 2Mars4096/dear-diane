@@ -5,7 +5,7 @@
 
 ## Tasks
 - [x] 1. Add the first `#workspace` route
-  - [x] 1-1. Keep classic editor and `#v2` routes intact
+  - [x] 1-1. Archive the classic editor and `#v2` routes after the workspace-only product cutover
   - [x] 1-2. Lazy-load the workspace shell as its own frontend chunk
   - [x] 1-3. Avoid Monaco/PDF/graph editor imports on the workspace route
 - [x] 2. Keep notes workspace always loaded and easy to switch to
@@ -279,8 +279,23 @@
   - [x] 6-233. Render Hugo `callout` shortcodes as first-class Notes callout cards instead of shortcode inline-code text or generic quote blocks.
   - [x] 6-234. Decode HTML entities inside Notes KaTeX input so `aligned` ampersands keep their alignment role instead of rendering visible `amp;` text.
   - [x] 6-235. Normalize the five copied math course manuals to explicit KaTeX-compatible LaTeX while preserving their complete learner-facing knowledge, examples, exercises, solutions, and final-review structure.
+  - [x] 6-236. Make the Super DAN universal-cell Work/Notes workspace the only active desktop route and normalize old hashes to `#workspace`.
+  - [x] 6-237. Remove the active Agent-backend dropdown, fix the workspace runtime to Super DAN, and preserve historical run rendering plus stored-selection migration.
+  - [x] 6-238. Carry checkpoint-admitted operator updates into the next live Super DAN model round instead of only recording queue injection.
+  - [x] 6-239. Fail production bundle verification if the classic shell, V2 shell, Operations/network graph, Code, or Research chunks reappear.
+  - [x] 6-240. Browser-smoke the production Work/Notes surface at desktop and phone widths, including legacy-route normalization, mode switching, fixed Super DAN identity, overflow, console checks, and a post-repair phone screenshot.
+  - [x] 6-241. Run and score the premium product-site and browser-RTS acceptance cases through the authenticated live Super DAN provider after outbound execution is explicitly approved; freeze the premium pass and the honest RTS visual rejection as the MVP boundary evidence.
+  - [x] 6-242. Remove the redundant one-option Agent dropdown and keep Super DAN identity inside the model control so the phone composer no longer clips the trailing controls.
+  - [x] 6-243. Make checkpoint steering delivery crash-safe: keep leased items visible, acknowledge them only after a successful model response, requeue interrupted leases on restart, and promote terminal-race follow-ups into a continuation.
+  - [x] 6-244. Keep structured transient browser navigation available in workspace-read-only Super TUI probes without granting browser writes or workspace mutation.
+  - [x] 6-245. Freeze the premium-site and browser-RTS prompts, add a dry-run-first live control-plane runner, and require deterministic, real-browser, independent-rubric, and mid-run-steering evidence before either case can pass.
+  - [x] 6-246. Normalize completed Super DAN file mutations and shell workspace diffs into concrete `artifact_changed` events, and make the flagship runner steer only a non-terminal run with persisted artifact refs.
+  - [x] 6-247. Make the flagship acceptance CLI emit one authoritative pass/fail report that combines artifact, browser, rubric, steering, delivery, validation, token, and wall-time evidence from the exported Agent trace.
 
 ## Decisions
+- The active desktop product is the Super DAN universal-cell workspace. Every hash route normalizes to `#workspace`; Work and Notes are the two peer views, and the earlier mode-first Operations/network, Chat V2, Code, and Research shells are retained only as reversible inactive source during the migration window.
+- The workspace runtime is fixed to Super DAN, so there is no Agent-backend dropdown. The remaining model control identifies `DAN` and selects only Super DAN-compatible model configuration. Historical Codex task/run records remain readable, but new desktop work cannot select the archived Codex execution path.
+- A checkpoint append is not complete when it is merely claimed from the durable queue. `queued` means unclaimed, `injected` means leased but not yet proven delivered, and `completed` requires a successful model response carrying the update. In-flight items stay visible, restart recovery returns interrupted leases to `queued`, terminal `model.responded` events cannot claim new work, and an update caught by a terminal race becomes a real continuation run. The operator update enters the live tool-loop prompt with structured targets/constraints/checks and without widening mutation or external-action authority.
 - The workspace route is a surface, not another product mode.
 - Notes stay loaded and switchable; Work owns files, chat, Agent execution, the live blueprint graph, and sidecar preview.
 - The first route uses local React primitives and lucide icons only; no shadcn or animation dependency.
@@ -288,7 +303,7 @@
 - The fast path is route-level code splitting plus textarea-based note editing; Monaco remains in Development mode.
 - The GUI should reuse Super TUI Agent contracts through `surface_profile=super_tui`; React should not fork backend execution/mutation policy.
 - The `#workspace` composer is Super DAN-only. It does not call `/api/v2/chat/message`; it creates Agent runs, executes them with `backend=super_dan` plus `surface_profile=super_tui`, and uses Agent-run commands for active-run steer/queue behavior.
-- Active Work card prose should expose who is working without becoming a model dump. Codex runs highlight `Codex`; Native runs highlight `DAN`; model/config details stay in the composer controls and task metadata unless the progress text itself mentions them.
+- Active Work card prose should expose Super DAN as `DAN` without becoming a model dump; model/config details stay in the composer controls and task metadata unless the progress text itself mentions them. Historical Codex records may retain their original label.
 - Active-run Stop belongs in the composer action slot, not as a separate button. When a run is active and the composer is empty, the send button becomes Stop; once the user types, the same slot returns to Steer or Next.
 - Stop-requested task snapshots are run-control state, not user-message queue state. They can still explain why the stopped run did not finish, but they must not occupy the Message Queue or make the next typed request look blocked.
 - Notes Source uses the same composer controls as the Work Panel, but Notes-pane submissions carry `workspace_mode=notes` plus a `notes_workspace` packet with Hugo content-tree, frontmatter, bundle, pageID, and root-containment rules.

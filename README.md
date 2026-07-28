@@ -1,26 +1,29 @@
 # Deep Agent Network (DAN)
 
-Typed graph orchestration for the hard 5% of long-running agentic tasks. Design persistent agent networks as directed graphs with typed edges, control-flow primitives, and heterogeneous models — then run them via Python, a visual editor, or (soon) markdown files.
+Durable, steerable execution for the hard 5% of long-running agentic tasks. The active product is Super DAN: a universal-cell runtime that turns a protected Task Blueprint into one or more validated Execution Attempts, with checkpoints, operator steering, recovery, and replayable evidence.
 
-DAN is aimed at deep work that ordinary single-agent copilots handle poorly: multi-stage research, long-running builds, high-trust workflows, and tasks that may genuinely benefit from hierarchical swarms of specialized workers. The goal is not to make everyday chat heavier. The goal is to make rare, high-value tasks tractable, inspectable, and repeatable.
+DAN is aimed at deep work that ordinary single-agent copilots handle poorly: multi-stage research, long-running repository changes, high-trust workflows, and tasks that may genuinely benefit from several bounded cells. The goal is not to make everyday chat heavier. The goal is to make rare, high-value tasks tractable, inspectable, steerable, and repeatable. The earlier mode-first Operations/network UI is archived from the shipped desktop bundle while its source remains temporarily available for migration history.
 
 ## Who DAN Is For
 
 - Long-running tasks that need planning, decomposition, tool use, checkpoints, and recovery over hours or days
 - High-trust research and operational workflows where provenance, reviewability, and explicit control matter
-- Problems that can be broken into many bounded workers, from a few specialists up to large hierarchical swarms when the task justifies it
+- Problems that benefit from one durable universal execution contract and, when justified, several bounded worker cells
 
 ## Who DAN Is Not For
 
 - Everyday chat, shallow one-shot requests, or simple tasks a normal copilot can finish faster
-- Flat “more agents = better” swarm setups without bounded roles, aggregation, or operator control
+- Flat “more agents = better” swarm setups without bounded roles, aggregation, validation, or operator control
 - Teams looking for the lightest possible AI wrapper rather than a durable workflow and execution system
 
 ## Key Concepts
 
-- **Two-level nodes** — atomic operators (LLM call, tool call, code execution) and composite agents (sub-graphs that behave as single nodes with typed interfaces)
-- **Worker-first compute surface** — new compute stages can be authored as `wf.worker(...)` with shared context/tool/memory refs, while pure control primitives stay explicit instead of being forced into one opaque super-node
-- **Typed edges** — data (schema-validated), control (conditionals, loops, routing), and context (shared state)
+- **Universal cells** — one worker contract can reason, use tools, mutate an authorized workspace, emit evidence, and participate in larger bounded execution topologies without becoming a separate product mode
+- **Task Blueprint vs. Execution Attempt** — the protected goal, non-goals, permissions, risk envelope, and acceptance criteria remain stable while concrete workers, models, tools, retries, and schedules can change
+- **Durable steering** — operator follow-ups enter a persisted queue and affect the next safe live checkpoint rather than starting an invisible parallel conversation
+- **Validation before completion** — deterministic checks and semantic review gate terminal success; failed validation feeds a bounded repair attempt instead of being hidden by a completion receipt
+- **Worker-first compute surface** — new compute stages can be authored as `wf.worker(...)` with shared context/tool/memory refs, while pure control primitives stay explicit
+- **Typed internal handoffs** — schema-validated data, control, and context contracts remain available inside the execution substrate
 - **Tiered handoff lint** — optional per-edge structural → semantic → intent validation with autofix blocks bad handoffs before downstream nodes consume them
 - **Control-flow primitives** — GateNode (if/else + while loop), ForEach, Reduce, Router, Human-in-the-Loop
 - **Hierarchical swarms** — scale from one agent to many bounded specialists when decomposition pays off; large swarms are useful only with supervision, aggregation, and recoverability
@@ -111,9 +114,11 @@ cd editor && npm run dev
 
 Open `http://localhost:5173`. The editor connects to the backend at `localhost:8000`.
 
-For the new unified chunk workspace, open `http://localhost:5173/#workspace`. It has one fast Work/Notes surface: Work has a header workspace selector with compact add/open/close controls, a typed root-path field with recent/current/nearby suggestions, a toggleable Codexx-style left session rail with search, collapsible workspace groups, workflow/project grouping for unbound histories, and all visible server chat sessions, a collapsed-by-default VS Code-style development file tree with New folder and drag/drop move support, a Work Panel with broad Run Steps plus a Live Task Graph that stays empty for blank sessions, shows actual structured task-graph versions/branches from model-authored request understanding onward, and keeps future/deferred task nodes visibly lighter, an icon-only right preview panel toggle, and a Super DAN-style composer with separate Agent and Model/config drop-ups. New submissions create and execute Agent runs with `surface_profile=super_tui`; Native/Super DAN remains the default `backend=super_dan`, Kimi K2.6 uses the existing Super DAN model override path, and Codex uses the additive `backend=codex` adapter with Codex model choices plus low/medium/high/xhigh reasoning configs passed into `codex exec`. Active runs steer by default, with a small `Next` toggle for queue-after-current. Agent runs also receive the shared Hugo notes feature context automatically, so DAN knows the notes root, frontmatter/pageID conventions, and write policy without treating every request as permission to edit notes. Running sessions expose safe stop controls in the session rail and active conversation header, while archive/restore buttons or horizontal swipes move sessions into an Archived group without deleting chat history. Session open/restore also rebuilds visible blueprint/details from persisted Super DAN task/run events when a chat-thread message projection is empty, and completed Super DAN summaries render as readable Summary/Files/Risks/Checks Markdown with muted Answer/Outcome accents, inline file/function highlights, and no raw JSON logs. Session cards show elapsed run time as `worked <time>` or `working <time>`, and include a debugging prompt-log button that opens one Markdown log per session in Preview, built from recorded model prompts and responses. Notes switches to a Hugo-aware content tree, raw Markdown editor with the same Super DAN composer stacked under Source, and wider live page preview, with header toggles for the notes rail, editor, and preview; Notes-pane submissions carry explicit Hugo content-tree, frontmatter, bundle, and pageID rules in Agent context. Bundle `index.md` files show as their parent pages, frontmatter stays editable, the Notes `+` menu creates tmp-first note drafts with body focus or folder-backed `index.md` pages with rich Hugo frontmatter presets, explicit save materializes tmp drafts into inferred bundle paths and frontmatter, generated note bundle folders rename to a title-derived slug on save, drag/drop moves notes and bundle folders, `Cmd/Ctrl+S` saves conventionally, two-second idle autosave keeps disk pages current, query-gated `@pageID` autocomplete links pages without opening on a blank `@`, preview renders body-only Markdown plus section/title/date/last-update/pageID/tags/abstract metadata, Hugo `layout: graph` pages render as a pageID citation graph, and clickable Tags/Categories chips filter the content root. Work sessions and Notes content share one persisted resizable left-rail width. Settings can switch the workspace surface between the original unskinned view, Industrial Steel, and the default Factory Worn theme, and can set the workspace surface tone to System, Day, or Night independently from the app/editor theme. Note reads are cached for fast switching without overwriting local dirty edits. On phone-width screens, the same GUI becomes page-based with bottom navigation for Work Chat/Sessions/Files/Preview and Notes Pages/Edit/Read, so the desktop rails do not squeeze into a narrow viewport. The header also shows read-only WireGuard status from `/api/workspace-wireguard`; this follows the phone-app service shape but only reports status and does not start, stop, restart, install, or uninstall existing WireGuard services. Browser-safe `Option+Shift+1..9` switches development workspaces without taking over Chrome's native `Cmd/Ctrl` tab shortcuts. The session rail header `+` creates and selects a new persisted session inside the active workspace, and each workspace group row has its own small `+` for creating directly inside that workspace; the rail footer `New Workspace` action creates a separate development workspace. Pane selection, selected session/blueprint/file, filters, expanded folders, collapsed session groups, and rail visibility persist across refresh. Notes load from `DAN_NOTES_WORKSPACE_ROOT` when set, otherwise from the same knowledge-base bootstrap used by Content mode (`DAN_DEFAULT_CONTENT_ROOTS`, local `my-knowledge-base`, then sibling heuristics), preferring the full Hugo `content` tree before falling back to `content/notes`. Development files load from the selected workspace root. It is intentionally lightweight and does not load the graph editor, Monaco, or PDF surfaces on this route.
+Open `http://localhost:5173/#workspace`. This is the only shipped desktop surface; empty and legacy hashes such as `#v2`, `#chat`, and `#operations` normalize to `#workspace`. Work and Notes are peer views inside one Super DAN universal-cell workspace, and the production bundle excludes the former classic shell, Operations/network graph, standalone Chat V2 shell, Code mode, and Research mode.
 
-The workspace composer remembers the selected Agent and each Agent's own Model/config choice across browser sessions. It also accepts clipboard screenshots in the Work chat bar, shows removable thumbnails before send, and forwards them as structured multimodal attachments when the selected model/provider can use images.
+Work provides workspace/session management, a development file tree, the protected Task Blueprint and current Execution Attempt, live Run Steps, checkpoint steering, durable queueing, and artifact preview. New submissions always execute through `backend=super_dan` with `surface_profile=super_tui`; the model/config selector can use provider default or Kimi K2.6, but there is no alternate active Agent backend. Notes provides the same Super DAN composer beside a Hugo-aware content tree, Markdown source editor, knowledge graph, and rendered preview. Both views preserve pane/session/file state, support phone-width navigation, and share the same durable Agent-run history and authorization rules.
+
+The workspace composer remembers its Super DAN model/config choice across browser sessions. It also accepts clipboard screenshots in the Work chat bar, shows removable thumbnails before send, and forwards them as structured multimodal attachments when the selected model/provider can use images.
 
 The Notes content rail includes a compact Recent shelf with Working Now edit/agent cards and the five most recently modified pages.
 
@@ -121,7 +126,7 @@ Notes also has a folded-by-default Learn panel on the far right. Manuals stay re
 
 Temporary Notes drafts are internal: they can show in Working Now and the editor, but they do not appear as a `tmp` folder, Recent page, taxonomy item, graph node, or `@pageID` suggestion until saved into a real Hugo bundle.
 
-Active Work cards highlight the selected Agent as `Codex` or `DAN`, while model/config detail stays in the composer selectors unless progress text mentions it.
+Active Work cards identify Super DAN as `DAN`, while model/config detail stays in the composer selectors unless progress text mentions it. Historical archived run records keep their original backend label.
 
 In `#workspace`, the Sessions rail timing is the compact session total. The Work Panel also shows one aggregate live `Total` counter in the Run Steps header, ticking while Super DAN is actively working.
 
@@ -129,13 +134,13 @@ When Super DAN emits an explicit plan DAG, the Work Panel shows generated and ex
 
 Super DAN also compiles each request into a canonical, revisioned Task Blueprint. The blueprint keeps the protected goal, non-goals, permissions, risk/budget envelope, and acceptance criteria together with task-native semantic work; its topology can stay direct or branch, parallelize, loop within explicit bounds, split, merge, supersede, and revise as evidence changes. Debugging, research, design, meeting, and manufacturing requests therefore use different semantic shapes without becoming separate runtimes. The Work Panel shows that contract and topology separately from the current Execution Attempt (backend, phase, workers/models/tools, retries, schedule, and runtime node state), while old `live.task_graph.updated` traces remain readable. Manufacturing is a semantic planning family only here: no supplier, purchase, prototype-release, or production action is authorized by this substrate.
 
-Selected Work Preview panels include a compact Evidence section from the same Context Composer packet sent to Native/Super DAN or Codex. It carries prior answers/blockers/validation, selected cards/files, target paths, and promoted worker evidence, while the cards themselves stay focused on current live activity.
+Selected Work Preview panels include a compact Evidence section from the same Context Composer packet sent to Super DAN. It carries prior answers/blockers/validation, selected cards/files, target paths, and promoted worker evidence, while the cards themselves stay focused on current live activity.
 
 The Work pane also includes a Preview Card for output artifacts. It lists backend-reported artifacts plus previewable workspace files such as HTML, PDFs, images, Markdown, and text, and opens them directly in the Preview panel.
 
-For the lighter Chat/Agent V2 frontend, open `http://localhost:5173/#v2`. It shows only `Chat` and `Agent`: Chat uses the V2 chat ingress, and Agent starts durable V2 Agent runs with live progress, `Fast` / `Balanced` / `Deep` / `Max` profiles, file/image/PDF attachment chips, explicit active-run queue gestures (`Enter` appends at the next checkpoint, `Cmd/Ctrl+Enter` queues after the current run), retry/open-log controls, active-run reconnect, and branch creation/lineage in the thread rail. The existing editor stays available at `#chat`.
+The former standalone Chat/Agent V2 and classic editor routes are archived desktop surfaces. Their durable control-plane APIs and historical records remain available to the Super DAN workspace, but their hashes no longer mount separate products.
 
-**Chat: build + run a workflow** — Open a workflow tab, set chat to **Agent**, use `plan_graph_mutations` to edit, then ask the model to **`start_run`** with any `inputs` (e.g. `watchlist_path`). **Author equity/watchlist workflows in DAN (Agent chat), not by pasting large generated graphs/code from outside.** Prompts: [`docs/chat-equity-workflow-cookbook.md`](docs/chat-equity-workflow-cookbook.md).
+The older graph-authoring and specialized-mode cookbooks remain repository references for compatibility and internal development; they are not separate desktop products.
 
 ### Run the Super DAN Organism
 
@@ -191,6 +196,54 @@ To score a real Super DAN trace against the capability benchmark dimensions (del
 ```bash
 PYTHONPATH=src:. python -m tests.eval.super_dan_capability_benchmark \
   .dan-super/runs/turn-01/events.jsonl --case-id medium-source-repair
+```
+
+The two flagship MVP cases add stricter external acceptance: an original premium product site and an original browser RTS must pass deterministic artifact checks, desktop/phone Chromium interactions, clean console and overflow checks, screenshot-backed independent review whose cited image files resolve locally, and a durable mid-run steering trace.
+
+The authenticated 2026-07-25 evaluation is intentionally mixed: the repaired premium site passed the unified gate with a 4.15/5 independent visual score, while the repaired RTS passed every static, real-browser gameplay, steering, and capability check but failed the 4.0 visual bar at 3.60/5. Acceptance now reports `functional_prototype_passed` separately from the fixed `showcase_passed` gate: the RTS is valid evidence for an indie micro-RTS vertical slice, not a claim of Red Alert 2 parity.
+
+Indie-game vertical slices, complete academic first drafts, and falsifiable stock/prediction-market strategy frameworks remain core Super DAN evaluation tracks. Their contracts require human handoffs: playtesting for games; claim, citation, method, result, and reproducibility review for papers; and point-in-time data, leakage, walk-forward, cost, stability, and paper-trading review for market strategies. DAN does not automatically claim AAA quality, journal acceptance, or future profitability.
+
+Academic and market packages have a deterministic review-readiness gate:
+
+```bash
+PYTHONPATH=src:. python -m tests.eval.super_dan_human_assist_acceptance \
+  --case-id long-academic-first-draft \
+  --workspace /path/to/draft-package
+
+PYTHONPATH=src:. python -m tests.eval.super_dan_human_assist_acceptance \
+  --case-id long-market-strategy-framework \
+  --workspace /path/to/strategy-package
+```
+
+These commands validate artifact completeness, domain-specific safety/evidence contracts, and unresolved human checklists. Academic claims must link to the manuscript and resolvable sources. Market tests must import the generated backtest, contain substantive leakage/cost/walk-forward assertions, and pass a fresh bounded pytest run. Because that gate executes workspace Python, run generated or untrusted strategy packages inside an isolated evaluation workspace. Passing means ready for qualified review—not publishable or profitable.
+
+When scoring an academic or market Agent trace, pass the same artifact workspace so capability scoring can require both the declared output paths and the domain gate:
+
+```bash
+PYTHONPATH=src:. python -m tests.eval.super_dan_capability_benchmark \
+  /path/to/agent-events.jsonl \
+  --case-id long-market-strategy-framework \
+  --workspace /path/to/strategy-package
+```
+
+To preview a frozen flagship prompt and runner configuration without contacting a provider:
+
+```bash
+PYTHONPATH=src:. python -m tests.eval.run_super_dan_flagship \
+  --case-id flagship-premium-site \
+  --workspace /private/tmp/super-dan-flagship-site
+```
+
+Live mode uses the loopback Chat V2 server and is intentionally double-gated: the operator must first approve the disclosed model-provider payload scope, then pass both `--execute` and `--approve-provider-disclosure`. After a run, apply the full external gate with its Agent event log and an independent rubric JSON:
+
+```bash
+PYTHONPATH=src:. python -m tests.eval.super_dan_flagship_acceptance \
+  --case-id flagship-premium-site \
+  --workspace /private/tmp/super-dan-flagship-site \
+  --browser \
+  --event-log output/super-dan-flagship/flagship-premium-site/RUN/agent-events.jsonl \
+  --rubric output/super-dan-flagship/flagship-premium-site/RUN/reviewer-rubric.json
 ```
 
 In interactive `dan super-tui`, Ctrl-V screenshot paste saves the clipboard image under `.dan-super/tui/attachments/`, inserts a workspace-relative `@...` mention, and sends it as structured image attachment metadata when the terminal exposes the key.

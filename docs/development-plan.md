@@ -8,6 +8,25 @@ LLM applications are getting complicated. A single API call becomes wrapped in s
 
 The key insight: different tasks need different network topologies, different models at different nodes, and structured management of inputs and outputs across the entire flow. No single agent should do everything.
 
+### Current MVP Scope (updated 2026-07-27)
+
+The shipped MVP is narrower than the original network-builder vision:
+
+- one Super DAN universal-cell execution product, not separate Code, Research, Operations, or network products
+- one integrated desktop workspace with Work and Notes, files, task-blueprint progress, durable steering, evidence, and preview
+- one proof loop: understand → plan when useful → mutate an authorized workspace → accept checkpoint steering → run external acceptance → repair or reject honestly
+- the earlier Operations/network and mode-first shells remain archived migration source and must not return to the production bundle
+
+The premium-site and browser-RTS flagship runs validate this boundary. Super DAN can produce and repair a premium browser artifact, and it can produce a deterministic playable micro-RTS, but the RTS visual rejection shows that “match any category leader on demand” is not an honest MVP promise.
+
+Game, academic, and market work are nevertheless core MVP evaluation tracks rather than deferred ideas. Their near-term target is human leverage:
+
+- an original indie-game vertical slice with a complete tested play loop and human playtest handoff
+- a complete academic first draft with claim/source, uncertainty, reproducibility, and researcher-review layers
+- a falsifiable stock-selection or prediction-market strategy framework with point-in-time data, leakage controls, walk-forward evaluation, realistic costs, paper testing, and human approval
+
+The fixed higher bars remain visible: prototype success is not AAA/showcase success, a complete draft is not top-journal acceptance, and a backtested framework is not proof of future profitability. The MVP should optimize durable execution, bounded repair, trustworthy evidence, and explicit human gates across these tracks without restoring the Operations/network visualization as a product surface.
+
 ### Long-Running Product Goal
 
 Deep Agent Network should win the hard 5% tail tasks: the long-running, high-value tasks that ordinary single-agent tools handle badly because they require decomposition, persistence, tool use, review, and recovery over hours or days. The product goal is not "more agents for everything." It is to make rare but important tasks tractable, inspectable, and repeatable by turning them into persistent workflows and, when the task genuinely justifies it, into large hierarchical swarms of specialized workers. Hundreds or even thousands of agents may matter for some tasks, but only as a means to solve deep work better, not as a product claim by itself.
