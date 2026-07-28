@@ -18,6 +18,11 @@ def test_super_dan_capability_matrix_covers_lengths_families_and_metrics() -> No
         "greenfield_project",
         "followup_adaptation",
         "cross_surface_operator",
+        "human_assist_indie_game",
+        "human_assist_academic_draft",
+        "human_assist_market_strategy",
+        "flagship_product_site",
+        "flagship_browser_rts",
     }
     assert any("browser_control" in case.capability_packs for case in cases)
     assert any(case.requires_validation for case in cases)
@@ -33,15 +38,41 @@ def test_super_dan_capability_matrix_covers_lengths_families_and_metrics() -> No
         <= set(case.scoring_dimensions)
         for case in cases
     )
+    flagship_cases = [case for case in cases if case.family.startswith("flagship_")]
+    assert len(flagship_cases) == 2
+    assert all(
+        "artifact_acceptance" in case.scoring_dimensions for case in flagship_cases
+    )
+    assert all(
+        "steering_delivery" in case.scoring_dimensions for case in flagship_cases
+    )
+    human_assist_cases = [
+        case for case in cases if case.family.startswith("human_assist_")
+    ]
+    assert len(human_assist_cases) == 3
+    assert all(case.requires_validation for case in human_assist_cases)
+    assert all(
+        "human-review.md" in case.required_outputs for case in human_assist_cases
+    )
 
 
-def test_super_dan_capability_scoring_rewards_delivery_and_penalizes_budget_waste() -> None:
-    case = next(case for case in benchmark._benchmark_cases() if case.case_id == "medium-source-repair")
+def test_super_dan_capability_scoring_rewards_delivery_and_penalizes_budget_waste() -> (
+    None
+):
+    case = next(
+        case
+        for case in benchmark._benchmark_cases()
+        if case.case_id == "medium-source-repair"
+    )
     good = benchmark.SuperDanCapabilityObservation(
         case_id=case.case_id,
         status="completed",
         wall_time_seconds=180,
-        token_usage={"prompt_tokens": 9_000, "completion_tokens": 4_000, "total_tokens": 13_000},
+        token_usage={
+            "prompt_tokens": 9_000,
+            "completion_tokens": 4_000,
+            "total_tokens": 13_000,
+        },
         validation_passed=True,
         artifacts_changed=("src/fix.py", "tests/test_fix.py"),
         tests_passed=1,
@@ -54,7 +85,11 @@ def test_super_dan_capability_scoring_rewards_delivery_and_penalizes_budget_wast
         case_id=case.case_id,
         status="completed",
         wall_time_seconds=1_800,
-        token_usage={"prompt_tokens": 300_000, "completion_tokens": 40_000, "total_tokens": 340_000},
+        token_usage={
+            "prompt_tokens": 300_000,
+            "completion_tokens": 40_000,
+            "total_tokens": 340_000,
+        },
         validation_passed=True,
         artifacts_changed=("src/fix.py",),
         tests_passed=1,
@@ -76,7 +111,11 @@ def test_super_dan_capability_scoring_rewards_delivery_and_penalizes_budget_wast
 
 
 def test_super_dan_capability_scoring_uses_latest_test_command_for_validation() -> None:
-    case = next(case for case in benchmark._benchmark_cases() if case.case_id == "medium-source-repair")
+    case = next(
+        case
+        for case in benchmark._benchmark_cases()
+        if case.case_id == "medium-source-repair"
+    )
     observation = benchmark.SuperDanCapabilityObservation(
         case_id=case.case_id,
         status="completed",
@@ -99,8 +138,14 @@ def test_super_dan_capability_scoring_uses_latest_test_command_for_validation() 
     assert score.validation_evidence == 1.0
 
 
-def test_super_dan_capability_scoring_requires_token_accounting_and_validation() -> None:
-    case = next(case for case in benchmark._benchmark_cases() if case.case_id == "short-validation-truth")
+def test_super_dan_capability_scoring_requires_token_accounting_and_validation() -> (
+    None
+):
+    case = next(
+        case
+        for case in benchmark._benchmark_cases()
+        if case.case_id == "short-validation-truth"
+    )
     missing_metrics = benchmark.SuperDanCapabilityObservation(
         case_id=case.case_id,
         status="completed",
@@ -119,7 +164,68 @@ def test_super_dan_capability_scoring_requires_token_accounting_and_validation()
     assert "missing_fresh_validation" in score.reasons
 
 
-def test_super_dan_event_log_reader_extracts_usage_time_delivery_and_validation(tmp_path) -> None:
+def test_super_dan_capability_scoring_requires_declared_output_paths() -> None:
+    case = next(
+        case
+        for case in benchmark._benchmark_cases()
+        if case.case_id == "long-market-strategy-framework"
+    )
+    observation = benchmark.SuperDanCapabilityObservation(
+        case_id=case.case_id,
+        status="completed",
+        wall_time_seconds=120,
+        token_usage={"total_tokens": 20_000},
+        validation_passed=True,
+        artifacts_changed=("a", "b", "c", "d", "e"),
+        tests_passed=1,
+        latest_test_exit_code=0,
+        event_count=20,
+        tool_call_count=8,
+        output_quality_score=0.91,
+        answer_present=True,
+        domain_acceptance_passed=True,
+    )
+
+    score = benchmark.score_observed_run(case, observation)
+
+    assert score.passed is False
+    assert any(
+        reason.startswith("missing_required_outputs:") for reason in score.reasons
+    )
+    assert score.delivered_performance < case.min_delivery_score
+
+
+def test_super_dan_capability_scoring_requires_domain_acceptance() -> None:
+    case = next(
+        case
+        for case in benchmark._benchmark_cases()
+        if case.case_id == "long-market-strategy-framework"
+    )
+    observation = benchmark.SuperDanCapabilityObservation(
+        case_id=case.case_id,
+        status="completed",
+        wall_time_seconds=120,
+        token_usage={"total_tokens": 20_000},
+        validation_passed=True,
+        artifacts_changed=case.required_outputs,
+        tests_passed=1,
+        latest_test_exit_code=0,
+        event_count=20,
+        tool_call_count=8,
+        output_quality_score=0.91,
+        answer_present=True,
+    )
+
+    score = benchmark.score_observed_run(case, observation)
+
+    assert score.passed is False
+    assert "missing_domain_acceptance" in score.reasons
+    assert "missing_fresh_validation" in score.reasons
+
+
+def test_super_dan_event_log_reader_extracts_usage_time_delivery_and_validation(
+    tmp_path,
+) -> None:
     event_log = tmp_path / "events.jsonl"
     rows = [
         {
@@ -156,9 +262,13 @@ def test_super_dan_event_log_reader_extracts_usage_time_delivery_and_validation(
             "overall_score": 0.88,
         },
     ]
-    event_log.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    event_log.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
 
-    observation = benchmark.load_event_log_observation(event_log, case_id="medium-source-repair")
+    observation = benchmark.load_event_log_observation(
+        event_log, case_id="medium-source-repair"
+    )
 
     assert observation.status == "completed"
     assert observation.wall_time_seconds == 15
@@ -171,7 +281,127 @@ def test_super_dan_event_log_reader_extracts_usage_time_delivery_and_validation(
     assert observation.output_quality_score == 0.88
 
 
-def test_super_dan_event_log_reader_handles_live_tool_artifacts_and_usage_totals(tmp_path) -> None:
+def test_super_dan_event_log_reader_scores_exported_chat_v2_agent_events(
+    tmp_path,
+) -> None:
+    event_log = tmp_path / "agent-events.jsonl"
+    rows = [
+        {
+            "type": "worker_started",
+            "source_event_type": "run.log.started",
+            "payload": {"timestamp": "2026-07-24T01:00:00+00:00"},
+        },
+        {
+            "type": "artifact_changed",
+            "source_event_type": "tool.completed",
+            "artifact_refs": [{"path": "index.html"}],
+            "payload": {
+                "timestamp": "2026-07-24T01:00:05+00:00",
+                "event": "tool.completed",
+                "tool_id": "file_write",
+                "result": {"path": "index.html"},
+            },
+        },
+        {
+            "type": "token_usage_recorded",
+            "source_event_type": "model.responded",
+            "token_usage_delta": {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+            },
+            "token_usage_total": {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+            },
+            "payload": {"timestamp": "2026-07-24T01:00:08+00:00"},
+        },
+        {
+            "type": "completed",
+            "source_event_type": "run.log.completed",
+            "summary": "Site completed and validated.",
+            "payload": {
+                "timestamp": "2026-07-24T01:00:15+00:00",
+                "validation_passed": True,
+                "overall_score": 0.91,
+                "tool_calls": 4,
+            },
+        },
+    ]
+    event_log.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    observation = benchmark.load_event_log_observation(
+        event_log,
+        case_id="flagship-premium-site",
+    )
+
+    assert observation.status == "completed"
+    assert observation.wall_time_seconds == 15
+    assert observation.token_usage["total_tokens"] == 120
+    assert observation.validation_passed is True
+    assert observation.artifacts_changed == ("index.html",)
+    assert observation.tool_call_count == 1
+    assert observation.output_quality_score == 0.91
+    assert observation.answer_present is True
+
+
+def test_agent_event_token_round_ids_keep_identical_usage_deltas_distinct(
+    tmp_path,
+) -> None:
+    event_log = tmp_path / "agent-token-events.jsonl"
+    rows = [
+        {
+            "type": "token_usage_recorded",
+            "source_event_type": "model.responded",
+            "token_usage_delta": {
+                "prompt_tokens": 100,
+                "completion_tokens": 10,
+                "total_tokens": 110,
+            },
+            "token_usage_round": {
+                "round": 1,
+                "model_call_id": "model-call-1",
+            },
+        },
+        {
+            "type": "token_usage_recorded",
+            "source_event_type": "model.responded",
+            "token_usage_delta": {
+                "prompt_tokens": 100,
+                "completion_tokens": 10,
+                "total_tokens": 110,
+            },
+            "token_usage_round": {
+                "round": 2,
+                "model_call_id": "model-call-2",
+            },
+        },
+        {"type": "completed", "source_event_type": "run.log.completed"},
+    ]
+    event_log.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    observation = benchmark.load_event_log_observation(
+        event_log,
+        case_id="flagship-premium-site",
+    )
+
+    assert observation.token_usage == {
+        "prompt_tokens": 200,
+        "completion_tokens": 20,
+        "total_tokens": 220,
+    }
+
+
+def test_super_dan_event_log_reader_handles_live_tool_artifacts_and_usage_totals(
+    tmp_path,
+) -> None:
     event_log = tmp_path / "events.jsonl"
     rows = [
         {
@@ -234,9 +464,13 @@ def test_super_dan_event_log_reader_handles_live_tool_artifacts_and_usage_totals
         },
         {"event": "run.log.completed", "status": "completed"},
     ]
-    event_log.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    event_log.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
 
-    observation = benchmark.load_event_log_observation(event_log, case_id="short-note-create")
+    observation = benchmark.load_event_log_observation(
+        event_log, case_id="short-note-create"
+    )
 
     assert observation.token_usage["total_tokens"] == 305
     assert observation.artifacts_changed == ("note.md",)
@@ -244,7 +478,9 @@ def test_super_dan_event_log_reader_handles_live_tool_artifacts_and_usage_totals
     assert observation.output_quality_score == 0.88
 
 
-def test_super_dan_event_log_reader_does_not_treat_tool_completion_as_run_completion(tmp_path) -> None:
+def test_super_dan_event_log_reader_does_not_treat_tool_completion_as_run_completion(
+    tmp_path,
+) -> None:
     event_log = tmp_path / "events.jsonl"
     rows = [
         {"event": "run.log.started", "timestamp": "2026-05-26T01:00:00+00:00"},
@@ -262,9 +498,13 @@ def test_super_dan_event_log_reader_does_not_treat_tool_completion_as_run_comple
             "elapsed_seconds": 70,
         },
     ]
-    event_log.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    event_log.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
 
-    observation = benchmark.load_event_log_observation(event_log, case_id="short-validation-truth")
+    observation = benchmark.load_event_log_observation(
+        event_log, case_id="short-validation-truth"
+    )
 
     assert observation.status == "incomplete"
     assert observation.tests_passed == 1
@@ -294,11 +534,19 @@ def test_super_dan_event_log_reader_keeps_historical_failures_but_latest_test_pa
             "arguments": {"command": "python -m pytest -q"},
             "result": {"exit_code": 0, "stdout": "4 passed\n"},
         },
-        {"event": "run.log.completed", "status": "completed", "validation_passed": True},
+        {
+            "event": "run.log.completed",
+            "status": "completed",
+            "validation_passed": True,
+        },
     ]
-    event_log.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    event_log.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
 
-    observation = benchmark.load_event_log_observation(event_log, case_id="medium-source-repair")
+    observation = benchmark.load_event_log_observation(
+        event_log, case_id="medium-source-repair"
+    )
 
     assert observation.tests_failed == 1
     assert observation.tests_passed == 1
