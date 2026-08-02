@@ -79,6 +79,13 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - Relative workspace paths are bounded to the selected root; destructive authority is never inferred from a task family.
 - Git history, not a source `_archive` tree, stores retired implementations.
 
+## Repository hygiene
+
+- `graphs/chats/` and `graphs/chat_v2/` are the retained repo-local session/task state; `.dan-super/` is retained TUI/run state.
+- Dependencies and build products such as `editor/node_modules`, frontend bundles, Flutter tool state, APKs, and language caches are regenerated locally and are not part of the source tree.
+- Legacy examples, standalone generated websites/animations/reports, old Code/Research histories, root checkpoints, and prior engine memory are absent from the active workspace.
+- Keep new product artifacts in an operator-selected workspace rather than scattering generated deliverables across the repository root.
+
 ## Testing boundaries
 
 - Worker tests cover cell/brief contracts, scheduler policy/replay, context/memory, organism execution, local runtime, and Super DAN.

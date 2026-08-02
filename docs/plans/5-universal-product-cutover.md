@@ -12,6 +12,7 @@
 - [x] Update user, architecture, API, roadmap, todo, and changelog documentation.
 - [x] Run retained Python, frontend, Electron, build, mobile, and product API validation.
 - [x] Commit and push the cutover.
+- [x] Remove post-cutover caches, installed dependencies, obsolete local histories, standalone artifacts, and empty legacy directories.
 
 ## Decisions
 
@@ -23,3 +24,4 @@
 
 - Pre-archive product commits `90cc14af` and `7972238a` were pushed before deletion began.
 - The old ignore policy hid 357 legacy test sources and nine companion assets from that snapshot. They were added and pushed in `8594143c` and `0d630dca` before removal, making `0d630dca` the complete recovery point.
+- The final workspace-hygiene pass preserved `graphs/chats`, `graphs/chat_v2`, `.dan-super`, `.env`, phone source, and WireGuard setup while removing scattered generated and historical directories.

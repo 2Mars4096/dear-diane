@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-08-02
+- [infra] Completed the post-cutover workspace hygiene pass. Removed generated dependency/build/cache trees, obsolete Code/Research/checkpoint/memory histories, legacy examples and standalone website/animation/research/report artifacts, unused editor preview/Vite leftovers, and empty historical directories. Preserved current Work/Notes sessions in `graphs/chats`, Agent V2 task/run/event state in `graphs/chat_v2`, Super DAN TUI state in `.dan-super`, local configuration, retained phone source, and WireGuard setup.
 - [refactor] Cut the repository over to Universal Cell → Universal Organism → Super DAN → Work/Notes. Removed the tracked graph builder/engine/model stack, product-specific organisms, concierge/adapters/publishing/RAG/search layers, legacy CLI commands, editor modes, Electron integrations, tests, examples, sample graphs, and scripts after pushing a complete pre-archive snapshot.
 - [refactor] Rebuilt the FastAPI composition root around Work/Notes, session CRUD, and Agent V2 task/run/event control; narrowed provider startup, tool policies, Electron native bridges, and package dependencies to retained product needs.
 - [infra] Replaced the historical test allowlist in `.gitignore` after it was found to conceal 357 legacy test sources and nine assets from the first snapshot. Preserved those files in pushed commits `8594143c` and `0d630dca`, removed them only after backup, and made future tests track normally.
