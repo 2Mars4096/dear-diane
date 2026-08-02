@@ -1,12 +1,12 @@
 [project]
 name = "dan"
-version = "0.1.1"
-description = "Deep Agent Network — typed graph orchestration for multi-agent workflows"
+version = "0.2.0"
+description = "DAN — Universal Cell, Universal Organism, Super DAN, and its Work/Notes GUI"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 readme = "README.md"
 authors = [{name = "DAN Contributors"}]
-keywords = ["agents", "llm", "orchestration", "workflow", "graph", "multi-agent"]
+keywords = ["agents", "llm", "orchestration", "universal-cell", "multi-agent"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -37,31 +37,10 @@ Issues = "https://github.com/dan-project/dan/issues"
 
 [project.scripts]
 dan = "dan.cli.main:main"
-dan-code = "dan.cli.code:main"
-dancode = "dan.cli.code:main"
-dan-read = "dan.cli.reader:main"
-danread = "dan.cli.reader:main"
-dan-reader = "dan.cli.reader:main"
-danreader = "dan.cli.reader:main"
-dan-research = "dan.cli.research:main"
-danresearch = "dan.cli.research:main"
 dan-serve = "dan.server.__main__:main"
-dan-run = "dan.cli.run:main"
-dan-status = "dan.cli.status:main"
-dan-logs = "dan.cli.logs:main"
-dan-publish = "dan.cli.publish:main"
-dan-adapter = "dan.cli.adapter:main"
-dan-blocks = "dan.cli.blocks:main"
-dan-chat = "dan.cli.chat:main"
-dan-ask = "dan.cli.chat:main_ask"
 dan-up = "dan.cli.up:main"
 dan-down = "dan.cli.down:main"
-dan-service = "dan.cli.service:main"
-dan-bot = "dan.cli.bot:main"
 dan-editor = "dan.cli.editor:main"
-dan-furnace = "dan.cli.furnace:main"
-dan-organism = "dan.cli.organism:main"
-dan-organism-log = "dan.cli.organism_log:main"
 dan-super-organism = "dan.cli.super_organism:main"
 dansuperorganism = "dan.cli.super_organism:main"
 dan-super-tui = "dan.cli.super_tui:main"
@@ -75,41 +54,19 @@ all-tools = ["pypdf>=4.0", "pymupdf>=1.24", "duckduckgo-search>=6.0", "openpyxl>
 anthropic = ["anthropic>=0.40"]
 google = ["google-generativeai>=0.8"]
 all-providers = ["anthropic>=0.40", "google-generativeai>=0.8"]
-faiss = ["faiss-cpu>=1.7"]
-chroma = ["chromadb>=0.5"]
-embeddings = ["sentence-transformers>=3.0"]
 jsonschema = ["jsonschema>=4.0"]
-all-rag = ["faiss-cpu>=1.7", "chromadb>=0.5", "sentence-transformers>=3.0"]
 quant = ["pandas>=2.0", "matplotlib>=3.7"]
 equity = ["yfinance>=0.2.40"]
 cli = ["rich>=13.0", "prompt_toolkit>=3.0"]
-mcp = ["mcp>=1.0"]
-messaging = [
-    "python-telegram-bot>=21.0",
-    "aiosmtplib>=3.0",
-]
-wechat = [
-    "wechatpy",
-    "cryptography",
-]
-whatsapp-web = ["neonize>=0.3"]
 all = [
     "pypdf>=4.0",
     "pymupdf>=1.24",
     "duckduckgo-search>=6.0",
     "anthropic>=0.40",
     "google-generativeai>=0.8",
-    "faiss-cpu>=1.7",
-    "chromadb>=0.5",
-    "sentence-transformers>=3.0",
     "jsonschema>=4.0",
     "rich>=13.0",
     "prompt_toolkit>=3.0",
-    "mcp>=1.0",
-    "python-telegram-bot>=21.0",
-    "aiosmtplib>=3.0",
-    "wechatpy",
-    "cryptography",
 ]
 dev = [
     "pytest>=8.0",

@@ -158,7 +158,6 @@ export interface ChatV2MessageResponse {
 }
 
 export const CHAT_V2_ENDPOINTS = {
-  sendMessage: "/api/v2/chat/message",
   streamEvents: (channelId: string) => `/api/chat/${channelId}/events`,
   stopStream: (channelId: string) => `/api/chat/${channelId}/stop`,
   createAgentRun: "/api/v2/agent-runs",
@@ -334,29 +333,6 @@ export async function archiveChatV2Thread(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ archived }),
-    }),
-  );
-}
-
-export async function postChatV2Message(body: {
-  workflow_id: string;
-  message: string;
-  history: Array<{ role: "user" | "assistant"; content: string }>;
-  thread_id: string;
-  session_id: string;
-  mode: ChatV2Mode;
-  attachment_path?: string | null;
-  mentions?: Array<{ type: string; identifier: string }>;
-  surface: string;
-  surface_type: string;
-  surface_id: string;
-  surface_context: Record<string, unknown>;
-}): Promise<ChatV2MessageResponse> {
-  return readJson<ChatV2MessageResponse>(
-    await fetch(CHAT_V2_ENDPOINTS.sendMessage, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
     }),
   );
 }

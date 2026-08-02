@@ -1,20 +1,10 @@
-"""Lightweight skill library — domain-specific prompt injections for graph nodes.
-
-Skills are prompt-prefix text blocks that can be applied to LLM nodes via the
-``apply_skill`` graph mutation operation.  Each skill targets nodes by tag or
-explicit ID, prepending domain expertise to ``system_prompt`` or
-``prompt_template``.
-
-This is a build-time mechanism (graph mutation), not a runtime hook.
-"""
+"""Built-in prompt guidance exposed to the Super DAN skill catalog."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from dan.models.hyperedges import Hyperedge
-
-__all__ = ["SKILL_LIBRARY", "get_builtin_hyperedges"]
+__all__ = ["SKILL_LIBRARY"]
 
 
 SKILL_LIBRARY: dict[str, dict[str, Any]] = {
@@ -82,50 +72,3 @@ SKILL_LIBRARY: dict[str, dict[str, Any]] = {
         ),
     },
 }
-
-
-_BUILTIN_HYPEREDGE_DEFS: list[dict[str, Any]] = [
-    {
-        "key": "management_science_writing",
-        "id": "builtin_management_science_writing",
-        "name": "Management Science Writing",
-        "hyperedge_type": "skill",
-        "hook": "pre_prompt",
-        "attach_to_tags": ["writing", "review"],
-    },
-    {
-        "key": "informs_latex_style",
-        "id": "builtin_informs_latex_style",
-        "name": "INFORMS LaTeX Style",
-        "hyperedge_type": "style",
-        "hook": "pre_prompt",
-        "attach_to_tags": ["latex"],
-    },
-    {
-        "key": "skill_creation",
-        "id": "builtin_skill_creation",
-        "name": "DAN Skill Creation",
-        "hyperedge_type": "skill",
-        "hook": "pre_prompt",
-        "attach_to_tags": ["skill", "skills", "authoring", "capability"],
-    },
-]
-
-
-def get_builtin_hyperedges() -> list[Hyperedge]:
-    """Convert SKILL_LIBRARY entries into Hyperedge model instances."""
-    result: list[Hyperedge] = []
-    for defn in _BUILTIN_HYPEREDGE_DEFS:
-        skill = SKILL_LIBRARY[defn["key"]]
-        result.append(
-            Hyperedge(
-                id=defn["id"],
-                name=defn["name"],
-                hyperedge_type=defn["hyperedge_type"],
-                hook=defn["hook"],
-                content=skill["text"],
-                attach_to_tags=defn["attach_to_tags"],
-                propagate=True,
-            )
-        )
-    return result

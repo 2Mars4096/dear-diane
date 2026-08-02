@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any, Literal, Mapping, Sequence
 
 from pydantic import BaseModel, Field
-
-from dan.cli.main import _SUBCOMMANDS
-
 
 _WEBSITE_INTENT_CUES = (
     "website",
@@ -97,6 +93,7 @@ _SUPER_DAN_WEBSITE_TEMPLATE_PHRASES = (
     "super dan turns one objective into coordinated execution",
 )
 _SUPER_DAN_EXISTING_WEBSITE_PREFERRED_COORDINATED_FILES = 2
+_ACTIVE_ORCHESTRATOR_COMMANDS = {"super-organism", "super-tui"}
 
 
 class IntentSignal(BaseModel):
@@ -252,7 +249,7 @@ def _command_from_context(context: Mapping[str, Any] | None) -> str:
     if isinstance(argv, (list, tuple)) and argv:
         for item in argv:
             value = _normalize(item)
-            if value in _SUBCOMMANDS:
+            if value in _ACTIVE_ORCHESTRATOR_COMMANDS:
                 return value
     return ""
 
@@ -359,25 +356,6 @@ def resolve_intent_signal(
     evidence.extend(f"operation_cue:{cue}" for cue in build_cues)
     evidence.extend(artifact_evidence)
 
-    if command in {"research", "read", "reader"}:
-        return IntentSignal(
-            operation="read_only",
-            artifact_target=artifact_target,
-            mutation_permission=False,
-            confidence=0.95,
-            rationale="explicit read-only CLI command",
-            evidence=evidence,
-        )
-    if command == "code":
-        return IntentSignal(
-            operation="mutate",
-            artifact_target="workspace",
-            mutation_permission=True,
-            confidence=0.95,
-            rationale="explicit coding CLI command",
-            evidence=evidence,
-        )
-
     if execution_family in CODE_EXECUTION_FAMILIES:
         return IntentSignal(
             operation="mutate",
@@ -469,42 +447,6 @@ def select_orchestrator(intent: str, context: Mapping[str, Any] | None = None) -
         signal_context = dict(context or {})
         signal_context.pop("execution_family", None)
     intent_signal = resolve_intent_signal(intent, signal_context)
-    if command in ("read", "reader"):
-        return _choice(
-            orchestrator_id="dan-reader",
-            brief_composer="templates.research_brief",
-            plan_template="document-reader",
-            rationale="reader command maps to document research/review brief",
-            tool_policy={"mode": "read-only"},
-            intent_signal=intent_signal,
-        )
-    if command == "research":
-        return _choice(
-            orchestrator_id="dan-research",
-            brief_composer="templates.research_brief",
-            plan_template="deep-research",
-            rationale="research command maps to evidence-grounded research organism",
-            tool_policy={"mode": "read-only-with-retrieval"},
-            intent_signal=intent_signal,
-        )
-    if command == "code":
-        return _choice(
-            orchestrator_id="dan-code",
-            brief_composer="templates.coding_brief",
-            plan_template="coding",
-            rationale="code command maps to coding brief composer",
-            sampling_policy="creative",
-            tool_policy={"mode": "workspace-mutation"},
-            intent_signal=intent_signal,
-        )
-    if command == "organism":
-        return _choice(
-            orchestrator_id="dan-reference-organism",
-            brief_composer="templates.role_brief",
-            plan_template="reference-project-execution",
-            rationale="organism command maps to the reference project-execution brief graph",
-            intent_signal=intent_signal,
-        )
     if command == "super-organism":
         website_cues = _matched_cues(text, _WEBSITE_INTENT_CUES)
         build_cues = _matched_cues(text, _BUILD_INTENT_CUES)
@@ -533,14 +475,6 @@ def select_orchestrator(intent: str, context: Mapping[str, Any] | None = None) -
                 "preferred_tool_ids": list(_super_dan_generic_preferred_tool_ids(context)),
             },
             acceptance_policy={"requires_live_artifact": True},
-            intent_signal=intent_signal,
-        )
-    if command in _SUBCOMMANDS:
-        return _choice(
-            orchestrator_id=f"dan-{re.sub(r'[^a-z0-9-]+', '-', command)}",
-            brief_composer="templates.role_brief",
-            plan_template=command,
-            rationale="known CLI command has no specialized Plan 56 brief composer yet",
             intent_signal=intent_signal,
         )
     website_cues = _matched_cues(text, _WEBSITE_INTENT_CUES)

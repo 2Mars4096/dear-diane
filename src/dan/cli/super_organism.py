@@ -29,7 +29,6 @@ from dan.cli.super_hooks import (
 )
 from dan.providers import LLMProvider
 from dan.skills import invocation as skill_invocation
-from dan.server.runtime_config import build_engine_config_from_env
 from dan.worker.brief import RoleSpec, WorkerBrief, request_from_brief
 from dan.worker.cell import build_cell
 from dan.worker.contracts import snippets
@@ -3760,8 +3759,7 @@ def _live_model_configured(requested_model: str | None) -> bool:
     config = resolve_config()
     if str(config.get("model") or "").strip():
         return True
-    engine_config = build_engine_config_from_env()
-    fallback = str(engine_config.llm_default_model or "").strip()
+    fallback = str(os.environ.get("DAN_LLM_MODEL") or "").strip()
     return bool(fallback and fallback != "stub-model")
 
 
@@ -3823,8 +3821,7 @@ def _resolve_live_model(requested_model: str | None) -> str:
     env_model = str(config.get("model") or "").strip()
     if env_model:
         return env_model
-    engine_config = build_engine_config_from_env()
-    fallback = str(engine_config.llm_default_model or "").strip()
+    fallback = str(os.environ.get("DAN_LLM_MODEL") or "").strip()
     if fallback and fallback != "stub-model":
         return fallback
     raise ValueError(

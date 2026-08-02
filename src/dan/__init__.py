@@ -1,85 +1,33 @@
-"""Deep Agent Network — typed graph orchestration for multi-agent workflows."""
+"""DAN — Universal Cell, Universal Organism, and Super DAN."""
 
-from dan.models.ports import InputPort, OutputPort
-from dan.models.context import (
-    ContextMode,
-    ContextDeclaration,
-    CompactionStrategy,
-    CompactionRule,
-    MergeStrategy,
-    FailurePolicy,
-    NodeLocalState,
-    SharedContextDeclaration,
-    ArtifactRef,
-    ContextProjection,
-)
-from dan.models.legacy import (
-    CodeOperator,
-    HumanInTheLoopNode,
-    HumanNode,
-    LLMOperator,
-    ReduceNode,
-    RouterNode,
-    ToolOperator,
-)
-from dan.models.control_flow import (
-    IfElseNode,
-    GateNode,
-    WhileLoopNode,
-    ForEachNode,
-    ParallelSubagentsNode,
-    OrchestratorNode,
-    CompositeNode,
-)
-from dan.models.nodes import Position, NodeBase
-from dan.models.edges import EdgeBase, DataEdge, ControlEdge, ContextEdge
-from dan.models.hyperedges import Hyperedge, HyperedgeViolation, ValidationResult
-from dan.models.graph import Graph, GraphMetadata, Node, Edge
-from dan.registry import NodeTypeRegistry
-from dan.worker import ControlFlowConfig, Worker, WorkerAuthority
+from __future__ import annotations
 
-__all__ = [
-    "InputPort",
-    "OutputPort",
-    "ContextMode",
-    "ContextDeclaration",
-    "CompactionStrategy",
-    "CompactionRule",
-    "MergeStrategy",
-    "FailurePolicy",
-    "NodeLocalState",
-    "SharedContextDeclaration",
-    "ArtifactRef",
-    "ContextProjection",
-    "Position",
-    "NodeBase",
-    "LLMOperator",
-    "ToolOperator",
-    "CodeOperator",
-    "HumanNode",
-    "IfElseNode",
-    "GateNode",
-    "WhileLoopNode",
-    "ForEachNode",
-    "ParallelSubagentsNode",
-    "OrchestratorNode",
-    "ReduceNode",
-    "RouterNode",
-    "HumanInTheLoopNode",
-    "CompositeNode",
-    "EdgeBase",
-    "DataEdge",
-    "ControlEdge",
-    "ContextEdge",
-    "Hyperedge",
-    "HyperedgeViolation",
-    "ValidationResult",
-    "Worker",
-    "ControlFlowConfig",
-    "WorkerAuthority",
-    "Graph",
-    "GraphMetadata",
-    "Node",
-    "Edge",
-    "NodeTypeRegistry",
-]
+from importlib import import_module
+from typing import Any
+
+__version__ = "0.2.0"
+
+_EXPORTS = {
+    "build_cell": ("dan.worker.cell", "build_cell"),
+    "OrganismPlan": ("dan.worker.organisms.universal_organism", "OrganismPlan"),
+    "execute_universal_organism": (
+        "dan.worker.organisms.universal_organism",
+        "execute_universal_organism",
+    ),
+    "run_super_organism_demo": (
+        "dan.worker.organisms.super_organism",
+        "run_super_organism_demo",
+    ),
+}
+
+__all__ = ["__version__", *sorted(_EXPORTS)]
+
+
+def __getattr__(name: str) -> Any:
+    target = _EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute = target
+    value = getattr(import_module(module_name), attribute)
+    globals()[name] = value
+    return value

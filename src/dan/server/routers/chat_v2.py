@@ -15,6 +15,7 @@ from dan.agent_runtime.super_tui_contract import (
     is_super_tui_surface_profile,
     normalize_super_tui_surface_profile,
 )
+from dan.server.chat_request import ChatMessageRequest
 from dan.server.chat_v2 import (
     AgentRunCommand,
     AgentRunEvent,
@@ -36,8 +37,6 @@ from dan.server.chat_v2_scheduler_budget import (
     scheduler_continuation_budget_decision,
 )
 from dan.server.chat_v2_store import ChatV2Store
-from dan.server.routers.chat import ChatMessageRequest, chat_message
-from dan.server.routers.dependencies import get_chat_v2_store
 
 logger = logging.getLogger(__name__)
 
@@ -67,58 +66,6 @@ class AgentRunAdmissionRequest(BaseModel):
         default_factory=lambda: AgentRunExecuteRequest(background=True)
     )
     max_parallel_runs: int = 4
-
-
-@router.post("/api/v2/chat/message")
-async def chat_v2_message(
-    request: Request = None,
-    req: ChatMessageRequest | None = None,
-    concierge: bool = True,
-) -> dict[str, Any]:
-    """V2 chat ingress.
-
-    This endpoint is the new surface-facing entry point. For the first cutover
-    slice it normalizes the request into V2 ingress metadata, forces the DAN-v2
-    control-plane selector, and delegates execution to the existing chat stream
-    machinery so legacy clients keep working.
-    """
-
-    if req is None and isinstance(request, ChatMessageRequest):
-        req = request
-        request = None
-    if req is None:
-        raise TypeError("req is required")
-
-    bridged_req = legacy_request_with_v2_context(req)
-    response = await chat_message(request=request, req=bridged_req, concierge=concierge)
-    if isinstance(response, dict):
-        bridge_context = bridged_req.surface_context.get("v2_control_plane")
-        acceptance = None
-        store = _optional_chat_v2_store(request)
-        if store is not None:
-            acceptance = store.accept_bridge_context(
-                bridge_context,
-                stream_channel_id=str(response.get("stream_channel_id") or ""),
-            )
-        response.setdefault(
-            "v2_control_plane",
-            summarize_v2_bridge_context(bridge_context),
-        )
-        if acceptance is not None:
-            response["v2_control_plane"].update(
-                {
-                    "task_id": acceptance.task_id,
-                    "run_id": acceptance.run_id,
-                    "queue_item_id": acceptance.queue_item_id,
-                    "queue_position": acceptance.queue_position,
-                }
-            )
-            task_run_ref = _task_run_ref_from_acceptance(acceptance)
-            if task_run_ref is not None:
-                response["task_run_ref"] = task_run_ref
-                response["v2_control_plane"]["task_run_ref"] = task_run_ref
-        response["v2_endpoint"] = True
-    return response
 
 
 @router.post("/api/v2/agent-runs")
@@ -475,15 +422,23 @@ async def append_agent_run_command(
     return response
 
 
-def _optional_chat_v2_store(request: Request | None) -> ChatV2Store | None:
-    try:
-        return get_chat_v2_store(request)
-    except HTTPException:
+def get_chat_v2_store(request: Request | WebSocket | None = None) -> ChatV2Store | None:
+    """Return the app-scoped V2 store, with a patchable seam for tests."""
+
+    if request is None:
         return None
+    return getattr(request.app.state, "chat_v2_store", None)
+
+
+def _optional_chat_v2_store(request: Request | None) -> ChatV2Store | None:
+    return get_chat_v2_store(request)
 
 
 def _require_chat_v2_store(request: Request | WebSocket | None) -> ChatV2Store:
-    return get_chat_v2_store(request)
+    store = get_chat_v2_store(request)
+    if not isinstance(store, ChatV2Store):
+        raise HTTPException(status_code=503, detail="Agent run store unavailable")
+    return store
 
 
 async def _execute_agent_run_background(

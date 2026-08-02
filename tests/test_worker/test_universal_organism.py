@@ -21,18 +21,6 @@ from dan.worker.organisms.universal_organism import (
     admit_semantic_decision,
     execute_universal_organism,
 )
-from dan.worker.organisms.legacy_facades import (
-    compose_coding_universal_plan,
-    compose_incident_universal_plan,
-    compose_project_execution_universal_plan,
-    compose_super_organism_universal_plan,
-)
-from dan.worker.organisms.contracts import (
-    CodingTask as ContractCodingTask,
-    IncidentExecutionRequest as ContractIncidentExecutionRequest,
-    ProjectExecutionTask as ContractProjectExecutionTask,
-    SuperOrganismScenario as ContractSuperOrganismScenario,
-)
 
 
 class _FakeExecutor:
@@ -196,7 +184,7 @@ async def test_universal_organism_can_persist_organism_log_v1(tmp_path) -> None:
     writer = OrganismLogWriter(
         path=tmp_path / "organism.jsonl",
         stream="universal_organism",
-        base_context={"product": "plan56"},
+        base_context={"product": "universal-organism"},
     )
 
     try:
@@ -340,61 +328,6 @@ async def test_universal_organism_logs_control_plane_decisions_and_progress_rows
     assert result.metadata["decision_ledger"][0]["admission_result"] == "accepted"
     assert result.metadata["admitted_commands"][0]["idempotency_key"]
     assert result.metadata["semantic_snapshots"][0]["task_ids"] == ["a"]
-
-
-@pytest.mark.asyncio
-async def test_legacy_facade_plan_composers_run_through_universal_organism() -> None:
-    coding = compose_coding_universal_plan(
-        {
-            "task_id": "code-1",
-            "objective": "Fix the navbar",
-            "acceptance_criteria": ["hover state works"],
-            "hard_constraints": ["Stay scoped"],
-        }
-    )
-    project = compose_project_execution_universal_plan(
-        {
-            "task_id": "project-1",
-            "objective": "Research and patch a docs issue",
-            "focused_validation_commands": ["pytest -q"],
-        }
-    )
-    incident = compose_incident_universal_plan(
-        {
-            "scenario_id": "failed-run",
-            "action_id": "investigate",
-            "objective": "Recover the failed scheduled run",
-        }
-    )
-    super_dan = compose_super_organism_universal_plan({"target": "Build a website"})
-
-    assert coding.metadata["compatibility_facade"] == "coding_execution_organism"
-    assert project.metadata["compatibility_facade"] == "project_execution_reference_organism"
-    assert incident.metadata["compatibility_facade"] == "execute_incident_action"
-    assert super_dan.metadata["compatibility_facade"] == "run_super_organism_demo"
-    assert {task.brief.role.trace_role for task in coding.tasks} == {
-        "coding.implementer",
-        "coding.validator",
-    }
-    assert any(task.brief.role.trace_role == "project.researcher" for task in project.tasks)
-    assert any(task.brief.role.trace_role == "incident.verifier" for task in incident.tasks)
-    assert any(task.brief.role.trace_role == "super_dan.synthesis" for task in super_dan.tasks)
-
-    result = await execute_universal_organism(coding, executor=_FakeExecutor())
-
-    assert result.status == "completed"
-    assert set(result.task_results) == {"code-1:implement", "code-1:validate"}
-
-
-def test_legacy_contract_namespace_exports_public_models() -> None:
-    coding = ContractCodingTask(task_id="contract-code", objective="Patch")
-    project = ContractProjectExecutionTask(task_id="contract-project", objective="Research")
-    incident = ContractIncidentExecutionRequest(action_id="investigate")
-
-    assert coding.task_id == "contract-code"
-    assert project.objective == "Research"
-    assert incident.action_id == "investigate"
-    assert ContractSuperOrganismScenario.WEBSITE_BUILD.value == "website_build"
 
 
 def test_semantic_observer_queue_batches_status_and_blocks_unadmitted_mutations() -> None:

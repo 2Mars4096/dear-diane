@@ -146,26 +146,3 @@ def test_server_main_seeds_resolved_workspace_root(
 
     assert os.environ["DAN_GRAPHS_DIR"] == str(graphs)
     assert os.environ["DAN_WORKSPACE_ROOT"] == str(workspace)
-
-
-def test_build_engine_config_from_env_resolves_runtime_dirs(
-    monkeypatch, tmp_path: Path
-) -> None:
-    from dan.server import runtime_config as runtime_config_mod
-
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    monkeypatch.setenv("DAN_WORKSPACE_ROOT", str(workspace))
-    monkeypatch.setenv("DAN_CHECKPOINT_DIR", "./checkpoints")
-    monkeypatch.setenv("DAN_MEMORY_DIR", "./memory")
-    monkeypatch.setenv("DAN_RULES_DIR", "./rules")
-    monkeypatch.setenv("DAN_STATE_STORE_DIR", "./state")
-    monkeypatch.setenv("DAN_CACHE_DIR", "./cache")
-
-    config = runtime_config_mod.build_engine_config_from_env()
-
-    assert config.checkpoint_dir == str((workspace / "checkpoints").resolve())
-    assert config.memory_dir == str((workspace / "memory").resolve())
-    assert config.rules_dir == str((workspace / "rules").resolve())
-    assert config.state_store_dir == str((workspace / "state").resolve())
-    assert config.cache_dir == str((workspace / "cache").resolve())

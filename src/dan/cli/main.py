@@ -1,85 +1,38 @@
-"""dan — unified CLI entry point.
-
-Dispatches to subcommands like ``dan bot``, while individual ``dan-*``
-scripts remain available for direct use.
-"""
+"""Unified CLI for the retained DAN product."""
 
 from __future__ import annotations
 
+import importlib
 import sys
 
 _SUBCOMMANDS = {
-    "bot": ("dan.cli.bot", "main"),
-    "code": ("dan.cli.code", "main"),
-    "read": ("dan.cli.reader", "main"),
-    "reader": ("dan.cli.reader", "main"),
-    "research": ("dan.cli.research", "main"),
     "serve": ("dan.server.__main__", "main"),
-    "run": ("dan.cli.run", "main"),
-    "chat": ("dan.cli.chat", "main"),
-    "ask": ("dan.cli.chat", "main_ask"),
-    "adapter": ("dan.cli.adapter", "main"),
     "up": ("dan.cli.up", "main"),
     "down": ("dan.cli.down", "main"),
-    "service": ("dan.cli.service", "main"),
-    "status": ("dan.cli.status", "main"),
-    "logs": ("dan.cli.logs", "main"),
     "editor": ("dan.cli.editor", "main"),
-    "furnace": ("dan.cli.furnace", "main"),
-    "organism": ("dan.cli.organism", "main"),
-    "organism-log": ("dan.cli.organism_log", "main"),
     "super-organism": ("dan.cli.super_organism", "main"),
     "super-tui": ("dan.cli.super_tui", "main"),
 }
 
 
 def main() -> int:
-    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+    if len(sys.argv) < 2 or sys.argv[1] in {"-h", "--help"}:
         _print_help()
         return 0 if len(sys.argv) >= 2 else 1
-
-    subcmd = sys.argv[1]
-    if subcmd not in _SUBCOMMANDS:
-        print(f"Unknown subcommand: {subcmd}")
+    subcommand = sys.argv[1]
+    target = _SUBCOMMANDS.get(subcommand)
+    if target is None:
+        print(f"Unknown subcommand: {subcommand}", file=sys.stderr)
         _print_help()
         return 1
-
-    module_path, func_name = _SUBCOMMANDS[subcmd]
-    sys.argv = [f"dan {subcmd}", *sys.argv[2:]]
-
-    import importlib
-    mod = importlib.import_module(module_path)
-    result = getattr(mod, func_name)()
-    if isinstance(result, int):
-        return result
-    return 0
+    module_name, function_name = target
+    sys.argv = [f"dan {subcommand}", *sys.argv[2:]]
+    result = getattr(importlib.import_module(module_name), function_name)()
+    return result if isinstance(result, int) else 0
 
 
 def _print_help() -> None:
-    print("Usage: dan <subcommand> [args...]\n")
-    print("Subcommands:")
-    print("  bot        Manage Telegram bot fleet")
-    print("  code       Run the DAN Code coding CLI")
-    print("  read       Run the DAN Reader document CLI (alias)")
-    print("  reader     Run the DAN Reader document CLI")
-    print("  research   Run the DAN Research deep-research CLI")
-    print("  serve      Start the DAN server")
-    print("  run        Run a workflow")
-    print("  chat       Interactive chat session")
-    print("  ask        One-shot question")
-    print("  adapter    Start a messaging adapter")
-    print("  up         Start server + services")
-    print("  down       Stop server + services")
-    print("  editor     Start server + visual editor")
-    print("  furnace    Direct furnace control CLI")
-    print("  organism   Run the local bounded organism demo CLI")
-    print("  organism-log Import or summarize organism_log_v1 traces")
-    print("  super-organism Run the deterministic Super DAN organism showcase")
-    print("  super-tui  Run Super DAN through a terminal UI")
-    print("  service    Manage background services")
-    print("  status     Show server status")
-    print("  logs       View server logs")
-    print("\nAll subcommands also available as dan-<subcommand> (e.g., dan-bot).")
+    print("Usage: dan <serve|up|down|editor|super-organism|super-tui> [args...]")
 
 
 if __name__ == "__main__":

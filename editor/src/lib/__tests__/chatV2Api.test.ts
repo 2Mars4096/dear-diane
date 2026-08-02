@@ -11,7 +11,6 @@ import type { ChatMessage } from "../../types/chat";
 
 describe("chatV2Api", () => {
   it("names the DAN chat portal endpoints used by the V2 frontend", () => {
-    expect(CHAT_V2_ENDPOINTS.sendMessage).toBe("/api/v2/chat/message");
     expect(CHAT_V2_ENDPOINTS.streamEvents("chat-abc")).toBe(
       "/api/chat/chat-abc/events",
     );

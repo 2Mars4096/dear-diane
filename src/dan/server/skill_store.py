@@ -24,8 +24,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from dan.models.hyperedges import Hyperedge, HyperedgeType, HookType
-
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -54,8 +52,8 @@ class SkillDescriptor(BaseModel):
 
     # DAN extensions (optional — skills imported from other IDEs won't have these)
     tags: list[str] = Field(default_factory=list)
-    hyperedge_type: HyperedgeType = "skill"
-    hook: HookType = "pre_prompt"
+    hyperedge_type: str = "skill"
+    hook: str = "pre_prompt"
     inject_as: str = "system"
 
     attach_to: list[str] = Field(default_factory=list)
@@ -73,32 +71,6 @@ class SkillDescriptor(BaseModel):
     source_path: Path | None = None
     scope: str = "user"
     skill_id: str = ""
-
-    def to_hyperedge(self) -> Hyperedge:
-        """Convert to a ``Hyperedge`` instance for engine runtime use."""
-        resolved_tags = self.attach_to_tags or self.tags
-        has_selector = (
-            self.attach_globally
-            or bool(self.attach_to)
-            or bool(self.attach_to_type)
-            or bool(resolved_tags)
-            or bool(self.attach_to_subgraph)
-        )
-        return Hyperedge(
-            id=f"skill_{self.skill_id}" if self.skill_id else f"skill_{_slugify(self.name)}",
-            name=self.name,
-            description=self.description,
-            hyperedge_type=self.hyperedge_type,
-            hook=self.hook,
-            content=self.content,
-            attach_to=self.attach_to,
-            attach_to_type=self.attach_to_type,
-            attach_to_tags=resolved_tags,
-            attach_to_subgraph=self.attach_to_subgraph,
-            attach_globally=not has_selector or self.attach_globally,
-            propagate=self.propagate,
-            enabled=self.enabled,
-        )
 
     def to_library_entry(self) -> dict[str, Any]:
         """Convert to the legacy ``SKILL_LIBRARY`` dict format."""

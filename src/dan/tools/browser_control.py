@@ -323,7 +323,7 @@ class PlaywrightBrowserController:
         """Raise if URL violates the domain allowlist."""
         if not self._allowed_domains:
             return
-        from dan.server.concierge.computer_policy import BrowserDomainRule, is_domain_allowed
+        from dan.tools.control_policy import BrowserDomainRule, is_domain_allowed
 
         rules = [
             r if isinstance(r, BrowserDomainRule) else BrowserDomainRule(pattern=str(r))

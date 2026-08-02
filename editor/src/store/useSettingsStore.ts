@@ -1,99 +1,10 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-import { detectCurrentPlatform, getBuiltinTerminalProfiles } from "../lib/terminalProfiles";
-
-export interface TerminalProfile {
-  id: string;
-  name: string;
-  shell: string;
-  args?: string[];
-  cwd?: string;
-  env?: Record<string, string>;
-  isDefault?: boolean;
-}
-
-const DEFAULT_TERMINAL_PROFILES: TerminalProfile[] = getBuiltinTerminalProfiles(
-  detectCurrentPlatform(),
-);
-
-function _defaultTerminalProfileId(profiles: TerminalProfile[]): string {
-  return profiles.find((profile) => profile.isDefault)?.id || profiles[0]?.id || "default";
-}
-
-function _isLegacyUnixTerminalProfiles(profiles: TerminalProfile[]): boolean {
-  if (profiles.length !== 3) return false;
-  const expected = [
-    { id: "zsh", shell: "/bin/zsh" },
-    { id: "bash", shell: "/bin/bash" },
-    { id: "sh", shell: "/bin/sh" },
-  ];
-  return expected.every((entry, index) => {
-    const profile = profiles[index];
-    return (
-      profile?.id === entry.id
-      && profile?.shell === entry.shell
-      && !profile?.args?.length
-    );
-  });
-}
-
-export function normalizeTerminalSettings(
-  state: Pick<EditorSettings, "terminalProfiles" | "defaultTerminalProfile">,
-  rawPlatform = detectCurrentPlatform(),
-): Pick<EditorSettings, "terminalProfiles" | "defaultTerminalProfile"> {
-  const builtinProfiles = getBuiltinTerminalProfiles(rawPlatform);
-  const profiles = Array.isArray(state.terminalProfiles) ? state.terminalProfiles : [];
-  const replacedLegacyProfiles =
-    profiles.length === 0 || _isLegacyUnixTerminalProfiles(profiles);
-  const normalizedProfiles = replacedLegacyProfiles ? builtinProfiles : profiles;
-  const defaultTerminalProfile = replacedLegacyProfiles
-    ? _defaultTerminalProfileId(normalizedProfiles)
-    : normalizedProfiles.some((profile) => profile.id === state.defaultTerminalProfile)
-      ? state.defaultTerminalProfile
-      : _defaultTerminalProfileId(normalizedProfiles);
-
-  return {
-    terminalProfiles: normalizedProfiles,
-    defaultTerminalProfile,
-  };
-}
-
 export interface EditorSettings {
   theme: "system" | "vs-dark" | "vs" | "hc-black";
   workspaceSurfaceTheme: "original" | "industrial" | "factory-worn";
   workspaceSurfaceTone: "system" | "day" | "night";
-  fontSize: number;
-  fontFamily: string;
-  tabSize: number;
-  wordWrap: "on" | "off" | "wordWrapColumn" | "bounded";
-  minimap: boolean;
-  lineNumbers: "on" | "off" | "relative" | "interval";
-  renderWhitespace: "none" | "boundary" | "selection" | "trailing" | "all";
-  bracketPairColorization: boolean;
-  cursorBlinking: "blink" | "smooth" | "phase" | "expand" | "solid";
-  cursorStyle:
-    | "line"
-    | "block"
-    | "underline"
-    | "line-thin"
-    | "block-outline"
-    | "underline-thin";
-  formatOnSave: boolean;
-  autoSaveDelay: number;
-  scrollBeyondLastLine: boolean;
-  stickyScroll: boolean;
-  indentGuides: boolean;
-  bracketPairGuides: boolean;
-  terminalProfiles: TerminalProfile[];
-  defaultTerminalProfile: string;
-  inlineCompletionEnabled: boolean;
-  aiActionsEnabled: boolean;
-  codeActionsOnSave: boolean;
-  iconTheme: string;
-  researchPdfRoots: string[];
-  researchNoteRoots: string[];
-  messagingOnboardingOffered: boolean;
 }
 
 interface SettingsState extends EditorSettings {
@@ -121,31 +32,6 @@ const DEFAULT_SETTINGS: EditorSettings = {
   theme: "system",
   workspaceSurfaceTheme: "factory-worn",
   workspaceSurfaceTone: "system",
-  fontSize: 13,
-  fontFamily: "SF Mono, Menlo, Monaco, monospace",
-  tabSize: 2,
-  wordWrap: "off",
-  minimap: true,
-  lineNumbers: "on",
-  renderWhitespace: "selection",
-  bracketPairColorization: true,
-  cursorBlinking: "blink",
-  cursorStyle: "line",
-  formatOnSave: false,
-  autoSaveDelay: 1000,
-  scrollBeyondLastLine: false,
-  stickyScroll: true,
-  indentGuides: true,
-  bracketPairGuides: true,
-  terminalProfiles: DEFAULT_TERMINAL_PROFILES,
-  defaultTerminalProfile: _defaultTerminalProfileId(DEFAULT_TERMINAL_PROFILES),
-  inlineCompletionEnabled: true,
-  aiActionsEnabled: true,
-  codeActionsOnSave: true,
-  iconTheme: "default",
-  researchPdfRoots: [],
-  researchNoteRoots: [],
-  messagingOnboardingOffered: false,
 };
 
 export const useSettingsStore = create<SettingsState>()(
@@ -194,7 +80,7 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: "dan-editor-settings",
-      version: 5,
+      version: 6,
       migrate: (persistedState, version) => {
         const state = persistedState as Partial<SettingsState> | undefined;
         if (!state) return persistedState as SettingsState;
@@ -205,22 +91,20 @@ export const useSettingsStore = create<SettingsState>()(
           migrated = { ...migrated, theme: "system" };
         }
 
-        if (version < 3) {
-          migrated = {
-            ...migrated,
-            ...normalizeTerminalSettings({
-              terminalProfiles: migrated.terminalProfiles ?? [],
-              defaultTerminalProfile: migrated.defaultTerminalProfile ?? "",
-            }),
-          };
-        }
-
         if (version < 4 && migrated.workspaceSurfaceTheme === undefined) {
           migrated = { ...migrated, workspaceSurfaceTheme: "factory-worn" };
         }
 
         if (version < 5 && migrated.workspaceSurfaceTone === undefined) {
           migrated = { ...migrated, workspaceSurfaceTone: "system" };
+        }
+
+        if (version < 6) {
+          migrated = {
+            theme: migrated.theme ?? "system",
+            workspaceSurfaceTheme: migrated.workspaceSurfaceTheme ?? "factory-worn",
+            workspaceSurfaceTone: migrated.workspaceSurfaceTone ?? "system",
+          };
         }
 
         return migrated as SettingsState;

@@ -206,7 +206,7 @@ def check_window_allowed(
     if config is None:
         return True
     try:
-        from dan.server.concierge.computer_policy import is_app_allowed
+        from dan.tools.control_policy import is_app_allowed
         chunk_policy = getattr(config.chunk_policies, chunk, None)
         if chunk_policy is None:
             return True

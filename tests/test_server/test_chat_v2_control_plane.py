@@ -13,7 +13,6 @@ from dan.server.chat_v2 import (
     AgentRunCommand,
     AgentRunEvent,
     SurfaceTurn,
-    SurfaceUpdateHandle,
     build_surface_turn_from_chat_request,
     build_v2_bridge_context,
     summarize_v2_bridge_context,
@@ -25,7 +24,6 @@ from dan.server.chat_v2_async_core import (
     mark_background_run_started,
     parse_admission_command,
 )
-from dan.server.chat_v2_progress import AgentProgressStateMachine, TelegramProgressSink
 from dan.server.chat_v2_organism import map_organism_log_row_to_agent_event
 from dan.server.chat_v2_backend import (
     AgentBackendRunRequest,
@@ -53,7 +51,7 @@ from dan.server.chat_v2_store import (
     _start_payload_from_queue_item,
     structured_operator_context,
 )
-from dan.server.routers.chat import ChatMessageRequest
+from dan.server.chat_request import ChatMessageRequest
 from dan.server.routers import chat_v2 as chat_v2_router
 
 
@@ -3030,194 +3028,3 @@ def test_v2_agent_run_events_websocket_replays_persisted_events(
                     received.append(websocket.receive_json())
 
     assert [event["type"] for event in received] == ["accepted", "completed"]
-
-
-def test_v2_agent_progress_state_machine_uses_backend_events() -> None:
-    now = 100.0
-
-    def _clock() -> float:
-        return now
-
-    progress = AgentProgressStateMachine(run_id="run-1", clock=_clock)
-    accepted = progress.observe(
-        AgentRunEvent(type="accepted", run_id="run-1", summary="Accepted.")
-    )
-    assert accepted.phase == "Got it"
-
-    now += 2.0
-    web = progress.observe(
-        AgentRunEvent(
-            type="tool_used",
-            run_id="run-1",
-            source_event_type="tool.started",
-            payload={
-                "tool_id": "web_search",
-                "arguments": {"query": "latest model docs"},
-            },
-        )
-    )
-    assert web.phase == "Fetching web evidence"
-    assert "web_search" in web.detail
-
-    now += 10.0
-    heartbeat = progress.render_status(heartbeat=True)
-    assert "Fetching web evidence" in heartbeat
-    assert "Elapsed: 12s" in heartbeat
-    assert "Last backend event: 10s ago" in heartbeat
-
-    now += 1.0
-    summarize = progress.observe(
-        AgentRunEvent(
-            type="model_text_delta",
-            run_id="run-1",
-            source_event_type="model.requested",
-            payload={"tool_count": 0, "round": 2},
-        )
-    )
-    assert summarize.phase == "Summarizing"
-
-    progress.observe(
-        AgentRunEvent(
-            type="token_usage_recorded",
-            run_id="run-1",
-            token_usage_delta={"input_tokens": 10, "output_tokens": 5},
-            token_usage_total={"input_tokens": 10, "output_tokens": 5},
-        )
-    )
-    done = progress.observe(
-        AgentRunEvent(
-            type="completed",
-            run_id="run-1",
-            summary="Done.",
-            artifact_refs=[{"path": "report.md"}],
-        )
-    )
-    rendered = progress.render_status()
-    assert done.terminal is True
-    assert "Done: Done." in rendered
-    assert "Tokens: prompt=10, completion=5, total=15" in rendered
-    assert "- report.md" in rendered
-
-
-@pytest.mark.asyncio
-async def test_v2_telegram_progress_sink_edits_and_falls_back() -> None:
-    class _Adapter:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, Any]] = []
-
-        async def send_or_edit(
-            self,
-            chat_id,
-            text,
-            message_id=None,
-            *,
-            reply_to=None,
-            thread_id=None,
-        ):
-            self.calls.append(
-                {
-                    "chat_id": chat_id,
-                    "text": text,
-                    "message_id": message_id,
-                    "reply_to": reply_to,
-                    "thread_id": thread_id,
-                }
-            )
-            if message_id == 55:
-                raise RuntimeError("edit failed")
-            return 55 if message_id is None else message_id
-
-    adapter = _Adapter()
-    sink = TelegramProgressSink(adapter)
-    handle = SurfaceUpdateHandle(
-        surface_type="telegram",
-        native_chat_id="111",
-        native_thread_id="7",
-        native_message_id="42",
-        reply_to_message_id="41",
-        supports_edit=True,
-    )
-
-    sent = await sink.deliver(
-        AgentRunEvent(type="accepted", summary="Accepted."),
-        handle,
-    )
-    fallback = await sink.deliver(
-        AgentRunEvent(type="completed", summary="Done."),
-        handle,
-        progress_message_id=55,
-    )
-
-    assert sent.delivered is True
-    assert sent.native_message_id == "55"
-    assert fallback.delivered is True
-    assert fallback.used_edit is False
-    assert adapter.calls == [
-        {
-            "chat_id": 111,
-            "text": "Accepted.",
-            "message_id": None,
-            "reply_to": 41,
-            "thread_id": 7,
-        },
-        {
-            "chat_id": 111,
-            "text": "Done.",
-            "message_id": 55,
-            "reply_to": None,
-            "thread_id": 7,
-        },
-        {
-            "chat_id": 111,
-            "text": "Done.",
-            "message_id": None,
-            "reply_to": 41,
-            "thread_id": 7,
-        },
-    ]
-
-
-@pytest.mark.asyncio
-async def test_v2_chat_endpoint_forces_v2_and_delegates_to_legacy_chat(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    captured: dict[str, Any] = {}
-    store = ChatV2Store(tmp_path / "chat_v2")
-
-    async def _fake_chat_message(*, request=None, req=None, concierge=True):
-        captured["request"] = request
-        captured["req"] = req
-        captured["concierge"] = concierge
-        return {
-            "message_id": "msg-1",
-            "stream_channel_id": "chat-1",
-            "status": "processing",
-            "control_plane_mode": req.control_plane_mode,
-        }
-
-    monkeypatch.setattr(chat_v2_router, "chat_message", _fake_chat_message)
-    monkeypatch.setattr(chat_v2_router, "get_chat_v2_store", lambda request=None: store)
-
-    req = ChatMessageRequest(
-        workflow_id="_scratch",
-        message="build the agent dashboard",
-        mode="agent",
-        surface_type="telegram",
-        surface_id="bot",
-        attachment_path="/tmp/mockup.png",
-    )
-
-    response = await chat_v2_router.chat_v2_message(req=req, concierge=True)
-
-    delegated_req = captured["req"]
-    assert delegated_req.control_plane_mode == "v2"
-    assert delegated_req.surface_context["v2_control_plane"]["triage_decision"]["action"] == "agent_requested"
-    assert delegated_req.surface_context["v2_control_plane"]["surface_turn"]["attachments"][0]["kind"] == "image"
-    assert response["v2_endpoint"] is True
-    assert response["v2_control_plane"]["triage_action"] == "agent_requested"
-    assert response["v2_control_plane"]["workspace_root"] == str(Path.home())
-    assert response["v2_control_plane"]["attachment_count"] == 1
-    assert response["v2_control_plane"]["task_id"]
-    assert response["v2_control_plane"]["run_id"]
-    assert store.get_run(response["v2_control_plane"]["run_id"]).stream_channel_id == "chat-1"

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import json
+import os
 import sys
 
 logger = logging.getLogger(__name__)
@@ -106,16 +108,29 @@ async def notify(
 
     if not delivered and channel in ("auto", "webhook"):
         try:
-            from dan.notifications.config import load_notification_config
-            cfg = load_notification_config()
-            wh_cfg = getattr(cfg, "webhook", None)
-            if wh_cfg and getattr(wh_cfg, "url", None):
-                from dan.notifications.webhook import WebhookNotifier
-                notifier = WebhookNotifier(wh_cfg)
-                await notifier.notify({
-                    "event_type": "tool_notification",
-                    "data": {"title": title, "message": message},
-                })
+            webhook_url = os.environ.get("DAN_NOTIFY_WEBHOOK_URL", "").strip()
+            if webhook_url:
+                import httpx
+
+                raw_headers = os.environ.get("DAN_NOTIFY_WEBHOOK_HEADERS", "").strip()
+                parsed_headers = json.loads(raw_headers) if raw_headers else {}
+                headers = (
+                    {str(key): str(value) for key, value in parsed_headers.items()}
+                    if isinstance(parsed_headers, dict)
+                    else {}
+                )
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.post(
+                        webhook_url,
+                        headers=headers,
+                        json={
+                            "event_type": "tool_notification",
+                            "status": "tool_notification",
+                            "message": message,
+                            "title": title,
+                        },
+                    )
+                    response.raise_for_status()
                 delivered = True
                 used_channel = "webhook"
         except Exception:

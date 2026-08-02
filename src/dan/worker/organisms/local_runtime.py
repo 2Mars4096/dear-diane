@@ -30,13 +30,8 @@ from dan.worker.context_capsules import (
     readiness_signal_from_capsules,
 )
 from dan.worker.core.interfaces import CompletionRequest, CompletionResponse
-from dan.worker.core.model import WorkerDefinition
 from dan.worker.organism_log import organism_event_context, stable_output_contract_id
-from dan.worker.organisms.coding_execution import CodingOrganism
-from dan.worker.organisms.project_execution import ProjectExecutionOrganism
-from dan.worker.organs import OrganPattern
 from dan.worker.structured_payload import parse_jsonish_payload
-from dan.worker.tissue import TissuePattern
 
 DEFAULT_LIVE_ORGANISM_TOOL_IDS = [
     "list_directory",
@@ -8272,122 +8267,9 @@ class ToolLoopCompletionProvider:
         return tool_id, tool_call_id, arguments
 
 
-def _worker_with_tool_ids(
-    worker: WorkerDefinition, tool_ids: Sequence[str]
-) -> WorkerDefinition:
-    return worker.model_copy(update={"tool_ids": _dedupe(tool_ids)})
-
-
-def _tissue_with_tool_ids(
-    tissue: TissuePattern | None,
-    *,
-    member_tool_ids: Sequence[str],
-) -> TissuePattern | None:
-    if tissue is None:
-        return None
-    return tissue.model_copy(
-        update={
-            "members": [
-                member.model_copy(
-                    update={
-                        "worker": _worker_with_tool_ids(member.worker, member_tool_ids),
-                    }
-                )
-                for member in tissue.members
-            ]
-        }
-    )
-
-
-def _organ_with_tool_ids(
-    organ: OrganPattern,
-    *,
-    member_tool_ids: Sequence[str],
-    lead_tool_ids: Sequence[str],
-) -> OrganPattern:
-    return organ.model_copy(
-        update={
-            "lead_worker": _worker_with_tool_ids(organ.lead_worker, lead_tool_ids),
-            "tissue": _tissue_with_tool_ids(
-                organ.tissue, member_tool_ids=member_tool_ids
-            ),
-        }
-    )
-
-
-def attach_local_tooling_to_reference_organism(
-    organism: ProjectExecutionOrganism,
-    *,
-    tool_ids: Sequence[str] | None = None,
-) -> ProjectExecutionOrganism:
-    """Return a copy of the reference organism with runtime-selected local tools."""
-
-    full_tool_ids = _dedupe(tool_ids or DEFAULT_LIVE_ORGANISM_TOOL_IDS)
-    read_only_tool_ids = _read_only_tool_ids(full_tool_ids)
-    research_tool_ids = _research_read_only_tool_ids(full_tool_ids)
-    return organism.model_copy(
-        update={
-            "planner_worker": _worker_with_tool_ids(organism.planner_worker, []),
-            "research_organ": _organ_with_tool_ids(
-                organism.research_organ,
-                member_tool_ids=research_tool_ids,
-                lead_tool_ids=research_tool_ids,
-            ),
-            "validator_organ": _organ_with_tool_ids(
-                organism.validator_organ,
-                member_tool_ids=full_tool_ids,
-                lead_tool_ids=full_tool_ids,
-            ),
-            "coding_organ": _organ_with_tool_ids(
-                organism.coding_organ,
-                member_tool_ids=full_tool_ids,
-                lead_tool_ids=full_tool_ids,
-            ),
-            "synthesis_organ": _organ_with_tool_ids(
-                organism.synthesis_organ,
-                member_tool_ids=read_only_tool_ids,
-                lead_tool_ids=read_only_tool_ids,
-            ),
-        }
-    )
-
-
-def attach_local_tooling_to_coding_organism(
-    organism: CodingOrganism,
-    *,
-    tool_ids: Sequence[str] | None = None,
-) -> CodingOrganism:
-    """Return a copy of the coding organism with runtime-selected local tools."""
-
-    full_tool_ids = _dedupe(tool_ids or DEFAULT_LIVE_ORGANISM_TOOL_IDS)
-    read_only_tool_ids = _read_only_tool_ids(full_tool_ids)
-    aggregation_tool_ids = _coding_aggregation_tool_ids(full_tool_ids)
-    return organism.model_copy(
-        update={
-            "orchestrator_worker": _worker_with_tool_ids(
-                organism.orchestrator_worker, []
-            ),
-            "worker_tool_ids": list(full_tool_ids),
-            "parallel_worker_tool_ids": list(read_only_tool_ids),
-            "aggregator_organ": _organ_with_tool_ids(
-                organism.aggregator_organ,
-                member_tool_ids=aggregation_tool_ids,
-                lead_tool_ids=aggregation_tool_ids,
-            ),
-            "validator_organ": _organ_with_tool_ids(
-                organism.validator_organ,
-                member_tool_ids=read_only_tool_ids,
-                lead_tool_ids=read_only_tool_ids,
-            ),
-        }
-    )
-
-
 __all__ = [
     "DEFAULT_LIVE_ORGANISM_TOOL_IDS",
     "LocalOrganismToolRuntime",
     "ToolLoopCompletionProvider",
-    "attach_local_tooling_to_coding_organism",
-    "attach_local_tooling_to_reference_organism",
     "available_local_organism_tools",
 ]

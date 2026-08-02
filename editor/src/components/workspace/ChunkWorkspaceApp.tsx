@@ -108,7 +108,7 @@ import {
   normalizeAttachmentDrafts,
   resolveAttachmentName,
   type ComposerAttachmentDraft,
-} from "../../lib/editorChat";
+} from "../../lib/composerAttachments";
 import {
   isElectron,
   nativeDialog,

@@ -4,17 +4,6 @@ import pytest
 
 import dan.cli.dispatch as dispatch
 from dan.cli.dispatch import resolve_intent_signal, select_orchestrator
-from dan.cli.universal_progress import universal_progress_delta
-
-
-def test_select_orchestrator_for_code_command() -> None:
-    choice = select_orchestrator("implement a feature", {"command": "code"})
-
-    assert choice.orchestrator_id == "dan-code"
-    assert choice.brief_composer == "templates.coding_brief"
-    assert choice.tool_policy["mode"] == "workspace-mutation"
-    assert choice.intent_signal.operation == "mutate"
-    assert choice.intent_signal.mutation_permission is True
 
 
 def test_dispatch_public_exports_keep_fallback_cue_lists_private() -> None:
@@ -28,24 +17,6 @@ def test_dispatch_public_exports_keep_fallback_cue_lists_private() -> None:
     assert not hasattr(dispatch, "WEBSITE_WORKSPACE_PATCH_CUES")
     assert "IntentSignal" in dispatch.__all__
     assert "resolve_intent_signal" in dispatch.__all__
-
-
-def test_select_orchestrator_for_research_and_reader_commands() -> None:
-    research = select_orchestrator("compare sources", {"command": "research"})
-    reader = select_orchestrator("summarize this pdf", {"command": "reader"})
-
-    assert research.orchestrator_id == "dan-research"
-    assert reader.orchestrator_id == "dan-reader"
-    assert reader.tool_policy["mode"] == "read-only"
-    assert research.intent_signal.operation == "read_only"
-    assert reader.intent_signal.mutation_permission is False
-
-
-def test_select_orchestrator_for_reference_organism() -> None:
-    choice = select_orchestrator("run the reference demo", {"command": "organism"})
-
-    assert choice.orchestrator_id == "dan-reference-organism"
-    assert choice.organism_plan_template == "reference-project-execution"
 
 
 def test_select_orchestrator_for_super_organism_uses_generic_lane() -> None:
@@ -370,50 +341,3 @@ def test_select_orchestrator_fallback_website_cues_are_deterministic() -> None:
 
     assert first == second
     assert first.rationale.endswith("without an LLM classifier")
-
-
-def test_universal_progress_delta_reads_event_stream_rows() -> None:
-    delta = universal_progress_delta(
-        {
-            "event": "organism.run_state.delta",
-            "run_id": "run-1",
-            "plan_id": "plan-1",
-            "state_version": 7,
-            "payload": {
-                "run_state": {
-                    "status": "running",
-                    "running_task_ids": ["worker-a"],
-                    "capacity_available": 2,
-                }
-            },
-        }
-    )
-    semantic = universal_progress_delta(
-        {
-            "event": "organism.status.semantic",
-            "run_id": "run-1",
-            "plan_id": "plan-1",
-            "task_id": "worker-a",
-            "state_version": 8,
-            "payload": {
-                "current_focus": "editing files",
-                "risk_flags": ["large-diff"],
-                "artifact_refs": ["artifact:patch"],
-            },
-        }
-    )
-
-    assert delta == {
-        "kind": "run_state",
-        "run_id": "run-1",
-        "plan_id": "plan-1",
-        "state_version": 7,
-        "run_state": {
-            "status": "running",
-            "running_task_ids": ["worker-a"],
-            "capacity_available": 2,
-        },
-    }
-    assert semantic["kind"] == "semantic_status"
-    assert semantic["current_focus"] == "editing files"
-    assert semantic["artifact_refs"] == ["artifact:patch"]

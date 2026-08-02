@@ -1,19 +1,23 @@
 from __future__ import annotations
 
-from dan.worker import (
+from dan.worker.context_capsules import (
+    build_tool_context_capsules,
+    readiness_signal_from_capsules,
+)
+from dan.worker.scheduler import (
     ArtifactPartition,
     SchedulerAction,
     SchedulerGuardrailState,
     SchedulerTask,
     SchedulingProposal,
-    SpecializedAgentKind,
     build_universal_scheduling_worker,
-    build_tool_context_capsules,
     evaluate_artifact_partition_admission,
     evaluate_scheduler_proposal,
     evaluate_task_readiness_from_capsules,
-    readiness_signal_from_capsules,
     select_scheduler_proposal,
+)
+from dan.worker.specialized_agents import (
+    SpecializedAgentKind,
     specialized_agent_membrane,
 )
 
