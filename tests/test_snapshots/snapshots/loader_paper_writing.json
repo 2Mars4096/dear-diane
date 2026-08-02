@@ -1,0 +1,1326 @@
+{
+  "artifact_refs": [],
+  "edges": [
+    {
+      "edge_type": "data",
+      "id": "edge_idea_generator_outline_planner_0",
+      "lint": null,
+      "metadata": {
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/workflow.md",
+          "line": 19
+        }
+      },
+      "source_node_id": "idea_generator",
+      "source_port": "ideas",
+      "spread": false,
+      "target_node_id": "outline_planner",
+      "target_port": "ideas",
+      "ui": {}
+    },
+    {
+      "edge_type": "data",
+      "id": "edge_outline_planner_lit_searcher_1",
+      "lint": null,
+      "metadata": {
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/workflow.md",
+          "line": 20
+        }
+      },
+      "source_node_id": "outline_planner",
+      "source_port": "text",
+      "spread": false,
+      "target_node_id": "lit_searcher",
+      "target_port": "query",
+      "ui": {}
+    },
+    {
+      "edge_type": "data",
+      "id": "edge_outline_planner_outline_planner_each_section_writer_2",
+      "lint": null,
+      "metadata": {
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/workflow.md",
+          "line": 21
+        }
+      },
+      "source_node_id": "outline_planner",
+      "source_port": "sections",
+      "spread": false,
+      "target_node_id": "outline_planner_each_section_writer",
+      "target_port": "items",
+      "ui": {}
+    },
+    {
+      "edge_type": "data",
+      "id": "edge_outline_planner_each_section_writer_assembler_3",
+      "lint": null,
+      "metadata": {
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/workflow.md",
+          "line": 22
+        }
+      },
+      "source_node_id": "outline_planner_each_section_writer",
+      "source_port": "results",
+      "spread": false,
+      "target_node_id": "assembler",
+      "target_port": "results",
+      "ui": {}
+    },
+    {
+      "edge_type": "data",
+      "id": "edge_assembler_reviewer_4",
+      "lint": null,
+      "metadata": {
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/workflow.md",
+          "line": 23
+        }
+      },
+      "source_node_id": "assembler",
+      "source_port": "result",
+      "spread": false,
+      "target_node_id": "reviewer",
+      "target_port": "draft",
+      "ui": {}
+    },
+    {
+      "edge_type": "data",
+      "id": "edge_reviewer_reviewer_loop_reviser_5",
+      "lint": null,
+      "metadata": {
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/workflow.md",
+          "line": 24
+        }
+      },
+      "source_node_id": "reviewer",
+      "source_port": "text",
+      "spread": false,
+      "target_node_id": "reviewer_loop_reviser",
+      "target_port": "input",
+      "ui": {}
+    },
+    {
+      "edge_type": "data",
+      "id": "edge_reviewer_loop_reviser_reviser_6",
+      "lint": null,
+      "metadata": {
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/workflow.md",
+          "line": 24
+        }
+      },
+      "source_node_id": "reviewer_loop_reviser",
+      "source_port": "continue",
+      "spread": false,
+      "target_node_id": "reviser",
+      "target_port": "draft",
+      "ui": {}
+    },
+    {
+      "edge_type": "data",
+      "id": "edge_reviser_reviewer_loop_reviser_7",
+      "lint": null,
+      "metadata": {
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/workflow.md",
+          "line": 24
+        }
+      },
+      "source_node_id": "reviser",
+      "source_port": "text",
+      "spread": false,
+      "target_node_id": "reviewer_loop_reviser",
+      "target_port": "input",
+      "ui": {}
+    },
+    {
+      "edge_type": "data",
+      "id": "edge_reviser_human_reviewer_8",
+      "lint": null,
+      "metadata": {
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/workflow.md",
+          "line": 25
+        }
+      },
+      "source_node_id": "reviser",
+      "source_port": "draft",
+      "spread": false,
+      "target_node_id": "human_reviewer",
+      "target_port": "draft",
+      "ui": {}
+    },
+    {
+      "edge_type": "data",
+      "id": "edge_workflow_inputs_idea_generator_9",
+      "lint": null,
+      "metadata": {},
+      "source_node_id": "workflow_inputs",
+      "source_port": "topic",
+      "spread": false,
+      "target_node_id": "idea_generator",
+      "target_port": "topic",
+      "ui": {}
+    },
+    {
+      "edge_type": "data",
+      "id": "edge_workflow_inputs_assembler_10",
+      "lint": null,
+      "metadata": {},
+      "source_node_id": "workflow_inputs",
+      "source_port": "text",
+      "spread": false,
+      "target_node_id": "assembler",
+      "target_port": "text",
+      "ui": {}
+    },
+    {
+      "edge_type": "data",
+      "id": "edge_workflow_inputs_reviser_11",
+      "lint": null,
+      "metadata": {},
+      "source_node_id": "workflow_inputs",
+      "source_port": "comments",
+      "spread": false,
+      "target_node_id": "reviser",
+      "target_port": "comments",
+      "ui": {}
+    },
+    {
+      "edge_type": "data",
+      "id": "edge_workflow_inputs_human_reviewer_12",
+      "lint": null,
+      "metadata": {},
+      "source_node_id": "workflow_inputs",
+      "source_port": "comments",
+      "spread": false,
+      "target_node_id": "human_reviewer",
+      "target_port": "comments",
+      "ui": {}
+    },
+    {
+      "edge_type": "data",
+      "id": "edge_workflow_inputs_human_reviewer_13",
+      "lint": null,
+      "metadata": {},
+      "source_node_id": "workflow_inputs",
+      "source_port": "verdict",
+      "spread": false,
+      "target_node_id": "human_reviewer",
+      "target_port": "verdict",
+      "ui": {}
+    }
+  ],
+  "entry_points": [
+    "workflow_inputs"
+  ],
+  "exit_points": [
+    "lit_searcher",
+    "human_reviewer"
+  ],
+  "hyperedges": [],
+  "metadata": {
+    "description": "End-to-end academic paper writing workflow with review loop",
+    "name": "Paper Writing Pipeline",
+    "tags": [
+      "paper-writing",
+      "academic",
+      "informs"
+    ]
+  },
+  "nodes": [
+    {
+      "authority": "leaf",
+      "authority_policy": null,
+      "body_graph": null,
+      "boundary_contract": null,
+      "cache_ttl": null,
+      "code": "",
+      "compaction_rule": null,
+      "context": null,
+      "control_flow": null,
+      "control_state_schema": {},
+      "description": "",
+      "execution": null,
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "failure_policy": {
+        "max_iterations": null,
+        "stagnation_threshold": null,
+        "timeout_seconds": null
+      },
+      "id": "idea_generator",
+      "input_mappings": {},
+      "input_ports": [
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "topic",
+          "required": true
+        }
+      ],
+      "instruction": "",
+      "language": "python",
+      "llm_hints": {
+        "history_policy": null,
+        "max_tokens": null,
+        "max_tool_rounds": 10,
+        "output_json_schema": null,
+        "prompt_template": "Generate 3-5 creative and specific research paper ideas about {topic}.\n\nFor each idea, provide:\n- A working title\n- A one-paragraph description of the research question\n- Why this matters to the field\n- What data/methods would be needed\n\nFocus on novel angles that haven't been extensively covered.",
+        "system_prompt": "",
+        "task_tier": null,
+        "temperature": 0.8,
+        "tools": []
+      },
+      "local_state": {
+        "description": "",
+        "json_schema": {}
+      },
+      "memoize": false,
+      "merge_strategy": "append",
+      "metadata": {
+        "loader_default_input_port": "topic",
+        "loader_default_output_port": "text",
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/idea_generator.md",
+          "line": 1
+        }
+      },
+      "model": "claude-sonnet-4-20250514",
+      "name": "idea_generator",
+      "node_type": "worker",
+      "output_mappings": {},
+      "output_ports": [
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "ideas"
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "text"
+        }
+      ],
+      "parallelism": 1,
+      "persona": "",
+      "projections": [],
+      "read_set": [],
+      "retry_policy": null,
+      "role": "",
+      "spawn_policy": null,
+      "sub_workers": {},
+      "tags": [],
+      "tool_ids": [],
+      "ui": {},
+      "validation_rules": [],
+      "write_set": []
+    },
+    {
+      "authority": "leaf",
+      "authority_policy": null,
+      "body_graph": null,
+      "boundary_contract": null,
+      "cache_ttl": null,
+      "code": "",
+      "compaction_rule": null,
+      "context": null,
+      "control_flow": null,
+      "control_state_schema": {},
+      "description": "",
+      "execution": null,
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "failure_policy": {
+        "max_iterations": null,
+        "stagnation_threshold": null,
+        "timeout_seconds": null
+      },
+      "id": "outline_planner",
+      "input_mappings": {},
+      "input_ports": [
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "ideas",
+          "required": true
+        }
+      ],
+      "instruction": "",
+      "language": "python",
+      "llm_hints": {
+        "history_policy": null,
+        "max_tokens": null,
+        "max_tool_rounds": 10,
+        "output_json_schema": {
+          "properties": {
+            "sections": {
+              "items": {
+                "properties": {
+                  "description": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "prompt_template": "",
+        "system_prompt": "You are an expert academic paper planner following INFORMS journal conventions.\n\nBased on the research ideas provided, select the most promising one and create a detailed paper outline.\n\nStructure: Introduction, Literature Review, Methodology, Results, Discussion, Conclusion.\n\nFor each section, provide a title and a 2-3 sentence description of what it should contain.",
+        "task_tier": null,
+        "temperature": 0.3,
+        "tools": []
+      },
+      "local_state": {
+        "description": "",
+        "json_schema": {}
+      },
+      "memoize": false,
+      "merge_strategy": "append",
+      "metadata": {
+        "loader_default_input_port": "ideas",
+        "loader_default_output_port": "text",
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/outline_planner.md",
+          "line": 1
+        }
+      },
+      "model": "claude-sonnet-4-20250514",
+      "name": "outline_planner",
+      "node_type": "worker",
+      "output_mappings": {},
+      "output_ports": [
+        {
+          "description": "",
+          "json_schema": {
+            "type": "array"
+          },
+          "name": "sections"
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "title"
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "description": "Full structured output for gate conditions and pass-through",
+            "type": "object"
+          },
+          "name": "result"
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "text"
+        }
+      ],
+      "parallelism": 1,
+      "persona": "",
+      "projections": [],
+      "read_set": [],
+      "retry_policy": null,
+      "role": "",
+      "spawn_policy": null,
+      "sub_workers": {},
+      "tags": [],
+      "tool_ids": [],
+      "ui": {},
+      "validation_rules": [],
+      "write_set": []
+    },
+    {
+      "authority": "leaf",
+      "authority_policy": null,
+      "body_graph": null,
+      "boundary_contract": null,
+      "cache_ttl": null,
+      "code": "",
+      "compaction_rule": null,
+      "context": null,
+      "control_flow": null,
+      "control_state_schema": {},
+      "description": "",
+      "execution": null,
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "failure_policy": {
+        "max_iterations": null,
+        "stagnation_threshold": null,
+        "timeout_seconds": null
+      },
+      "id": "lit_searcher",
+      "input_mappings": {},
+      "input_ports": [
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "query",
+          "required": true
+        }
+      ],
+      "instruction": "",
+      "language": "python",
+      "llm_hints": null,
+      "local_state": {
+        "description": "",
+        "json_schema": {}
+      },
+      "memoize": false,
+      "merge_strategy": "append",
+      "metadata": {
+        "loader_default_input_port": "query",
+        "loader_default_output_port": "results",
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/lit_searcher.md",
+          "line": 1
+        },
+        "tool_config": {
+          "max_results": 10
+        }
+      },
+      "model": null,
+      "name": "lit_searcher",
+      "node_type": "worker",
+      "output_mappings": {},
+      "output_ports": [
+        {
+          "description": "",
+          "json_schema": {
+            "type": "array"
+          },
+          "name": "results"
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "result"
+        }
+      ],
+      "parallelism": 1,
+      "persona": "",
+      "projections": [],
+      "read_set": [],
+      "retry_policy": null,
+      "role": "",
+      "spawn_policy": null,
+      "sub_workers": {},
+      "tags": [],
+      "tool_ids": [
+        "web_search"
+      ],
+      "ui": {},
+      "validation_rules": [],
+      "write_set": []
+    },
+    {
+      "authority": "leaf",
+      "authority_policy": null,
+      "body_graph": null,
+      "boundary_contract": null,
+      "cache_ttl": null,
+      "code": "# results = list from for_each; text = optional fallback (single section)\nraw = results if (results and isinstance(results, list)) else (text if text else [])\nsections = raw if isinstance(raw, list) else [raw] if raw else []\ndraft_parts = []\nfor i, section in enumerate(sections):\n    if isinstance(section, dict):\n        part = section.get(\"text\", str(section))\n    else:\n        part = str(section)\n    draft_parts.append(part)\nresult = \"\\n\\n---\\n\\n\".join(draft_parts)",
+      "compaction_rule": null,
+      "context": null,
+      "control_flow": null,
+      "control_state_schema": {},
+      "description": "",
+      "execution": null,
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "failure_policy": {
+        "max_iterations": null,
+        "stagnation_threshold": null,
+        "timeout_seconds": null
+      },
+      "id": "assembler",
+      "input_mappings": {},
+      "input_ports": [
+        {
+          "description": "",
+          "json_schema": {
+            "type": "array"
+          },
+          "name": "results",
+          "required": true
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "text",
+          "required": true
+        }
+      ],
+      "instruction": "",
+      "language": "python",
+      "llm_hints": null,
+      "local_state": {
+        "description": "",
+        "json_schema": {}
+      },
+      "memoize": false,
+      "merge_strategy": "append",
+      "metadata": {
+        "loader_default_input_port": "results",
+        "loader_default_output_port": "result",
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/assembler.md",
+          "line": 1
+        }
+      },
+      "model": null,
+      "name": "assembler",
+      "node_type": "worker",
+      "output_mappings": {},
+      "output_ports": [
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "result"
+        }
+      ],
+      "parallelism": 1,
+      "persona": "",
+      "projections": [],
+      "read_set": [],
+      "retry_policy": null,
+      "role": "",
+      "spawn_policy": null,
+      "sub_workers": {},
+      "tags": [],
+      "tool_ids": [],
+      "ui": {},
+      "validation_rules": [],
+      "write_set": []
+    },
+    {
+      "authority": "leaf",
+      "authority_policy": null,
+      "body_graph": null,
+      "boundary_contract": null,
+      "cache_ttl": null,
+      "code": "",
+      "compaction_rule": null,
+      "context": null,
+      "control_flow": null,
+      "control_state_schema": {},
+      "description": "",
+      "execution": null,
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "failure_policy": {
+        "max_iterations": null,
+        "stagnation_threshold": null,
+        "timeout_seconds": null
+      },
+      "id": "reviewer",
+      "input_mappings": {},
+      "input_ports": [
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "draft",
+          "required": true
+        }
+      ],
+      "instruction": "",
+      "language": "python",
+      "llm_hints": {
+        "history_policy": null,
+        "max_tokens": null,
+        "max_tool_rounds": 10,
+        "output_json_schema": {
+          "properties": {
+            "comments": {
+              "type": "string"
+            },
+            "score": {
+              "type": "number"
+            },
+            "verdict": {
+              "enum": [
+                "accept",
+                "minor_revision",
+                "major_revision",
+                "reject"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "prompt_template": "",
+        "system_prompt": "You are a senior reviewer for an INFORMS journal. Be constructive but rigorous.\n\nReview the following paper draft. Evaluate:\n1. Clarity and structure\n2. Methodological rigor\n3. Contribution to the field\n4. Writing quality\n\nProvide a verdict (accept/minor_revision/major_revision/reject), detailed comments, and a score from 0-10.",
+        "task_tier": null,
+        "temperature": 0.3,
+        "tools": []
+      },
+      "local_state": {
+        "description": "",
+        "json_schema": {}
+      },
+      "memoize": false,
+      "merge_strategy": "append",
+      "metadata": {
+        "loader_default_input_port": "draft",
+        "loader_default_output_port": "text",
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/reviewer.md",
+          "line": 1
+        }
+      },
+      "model": "claude-sonnet-4-20250514",
+      "name": "reviewer",
+      "node_type": "worker",
+      "output_mappings": {},
+      "output_ports": [
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "verdict"
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "comments"
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "type": "number"
+          },
+          "name": "score"
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "description": "Full structured output for gate conditions and pass-through",
+            "type": "object"
+          },
+          "name": "result"
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "text"
+        }
+      ],
+      "parallelism": 1,
+      "persona": "",
+      "projections": [],
+      "read_set": [],
+      "retry_policy": null,
+      "role": "",
+      "spawn_policy": null,
+      "sub_workers": {},
+      "tags": [],
+      "tool_ids": [],
+      "ui": {},
+      "validation_rules": [],
+      "write_set": []
+    },
+    {
+      "authority": "leaf",
+      "authority_policy": null,
+      "body_graph": null,
+      "boundary_contract": null,
+      "cache_ttl": null,
+      "code": "",
+      "compaction_rule": null,
+      "context": null,
+      "control_flow": null,
+      "control_state_schema": {},
+      "description": "",
+      "execution": null,
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "failure_policy": {
+        "max_iterations": null,
+        "stagnation_threshold": null,
+        "timeout_seconds": null
+      },
+      "id": "reviser",
+      "input_mappings": {},
+      "input_ports": [
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "draft",
+          "required": true
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "comments",
+          "required": true
+        }
+      ],
+      "instruction": "",
+      "language": "python",
+      "llm_hints": {
+        "history_policy": null,
+        "max_tokens": 4000,
+        "max_tool_rounds": 10,
+        "output_json_schema": null,
+        "prompt_template": "",
+        "system_prompt": "You are an expert academic editor. Revise papers based on reviewer feedback.\n\nRevise the paper draft based on the reviewer's comments.\n\nAddress each comment specifically. Maintain the paper's structure while improving:\n- Clarity of arguments\n- Methodological descriptions\n- Writing quality\n- Any factual or logical issues raised\n\nReturn the complete revised draft.",
+        "task_tier": null,
+        "temperature": 0.4,
+        "tools": []
+      },
+      "local_state": {
+        "description": "",
+        "json_schema": {}
+      },
+      "memoize": false,
+      "merge_strategy": "append",
+      "metadata": {
+        "loader_default_input_port": "draft",
+        "loader_default_output_port": "text",
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/reviser.md",
+          "line": 1
+        }
+      },
+      "model": "claude-sonnet-4-20250514",
+      "name": "reviser",
+      "node_type": "worker",
+      "output_mappings": {},
+      "output_ports": [
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "draft"
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "text"
+        }
+      ],
+      "parallelism": 1,
+      "persona": "",
+      "projections": [],
+      "read_set": [],
+      "retry_policy": null,
+      "role": "",
+      "spawn_policy": null,
+      "sub_workers": {},
+      "tags": [],
+      "tool_ids": [],
+      "ui": {},
+      "validation_rules": [],
+      "write_set": []
+    },
+    {
+      "authority": "leaf",
+      "authority_policy": null,
+      "body_graph": null,
+      "boundary_contract": null,
+      "cache_ttl": null,
+      "code": "",
+      "compaction_rule": null,
+      "context": null,
+      "control_flow": null,
+      "control_state_schema": {},
+      "description": "",
+      "execution": null,
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "failure_policy": {
+        "max_iterations": null,
+        "stagnation_threshold": null,
+        "timeout_seconds": null
+      },
+      "id": "human_reviewer",
+      "input_mappings": {},
+      "input_ports": [
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "draft",
+          "required": true
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "verdict",
+          "required": true
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "comments",
+          "required": true
+        }
+      ],
+      "instruction": "",
+      "language": "python",
+      "llm_hints": null,
+      "local_state": {
+        "description": "",
+        "json_schema": {}
+      },
+      "memoize": false,
+      "merge_strategy": "append",
+      "metadata": {
+        "human_default_action": "approve",
+        "human_input_schema": null,
+        "human_instructions": "",
+        "human_options": null,
+        "human_output_schema": null,
+        "human_prompt": "The automated review is complete.\n\nVerdict: {verdict}\nComments: {comments}\n\nPlease review the draft and provide your feedback, or type \"approve\" to accept.",
+        "human_render_mode": "text",
+        "human_render_target": "dialog",
+        "human_timeout_seconds": 600.0,
+        "loader_default_input_port": "draft",
+        "loader_default_output_port": "response",
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/human_reviewer.md",
+          "line": 1
+        }
+      },
+      "model": null,
+      "name": "human_reviewer",
+      "node_type": "worker",
+      "output_mappings": {},
+      "output_ports": [
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "feedback"
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "response"
+        }
+      ],
+      "parallelism": 1,
+      "persona": "",
+      "projections": [],
+      "read_set": [],
+      "retry_policy": null,
+      "role": "human",
+      "spawn_policy": null,
+      "sub_workers": {},
+      "tags": [],
+      "tool_ids": [],
+      "ui": {},
+      "validation_rules": [],
+      "write_set": []
+    },
+    {
+      "body_graph": "outline_planner_each_section_writer__body",
+      "boundary_contract": null,
+      "cache_ttl": null,
+      "compaction_rule": null,
+      "control_state_schema": {},
+      "description": "",
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "failure_policy": {
+        "max_iterations": null,
+        "stagnation_threshold": null,
+        "timeout_seconds": null
+      },
+      "id": "outline_planner_each_section_writer",
+      "input_ports": [
+        {
+          "description": "",
+          "json_schema": {},
+          "name": "items",
+          "required": true
+        }
+      ],
+      "local_state": {
+        "description": "",
+        "json_schema": {}
+      },
+      "memoize": false,
+      "merge_strategy": "append",
+      "metadata": {
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/workflow.md",
+          "line": 21
+        }
+      },
+      "name": "outline_planner_each_section_writer",
+      "node_type": "for_each",
+      "output_ports": [
+        {
+          "description": "",
+          "json_schema": {},
+          "name": "results"
+        }
+      ],
+      "parallelism": 4,
+      "projections": [],
+      "read_set": [],
+      "retry_policy": null,
+      "tags": [],
+      "ui": {},
+      "write_set": []
+    },
+    {
+      "artifact_ports": null,
+      "cache_ttl": null,
+      "condition": "not (verdict == 'accept')",
+      "description": "",
+      "feedback_selector": null,
+      "gate_mode": "while",
+      "id": "reviewer_loop_reviser",
+      "input_ports": [
+        {
+          "description": "",
+          "json_schema": {},
+          "name": "input",
+          "required": true
+        }
+      ],
+      "max_iterations": 5,
+      "memoize": false,
+      "metadata": {
+        "source": {
+          "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/workflow.md",
+          "line": 24
+        }
+      },
+      "name": "reviewer_loop_reviser",
+      "node_type": "gate",
+      "output_ports": [
+        {
+          "description": "Loop back \u2014 condition still true",
+          "json_schema": {},
+          "name": "continue"
+        },
+        {
+          "description": "Exit loop \u2014 condition is false",
+          "json_schema": {},
+          "name": "done"
+        }
+      ],
+      "read_set": [],
+      "retry_policy": null,
+      "state_defaults": {
+        "verdict": "reject"
+      },
+      "state_schema": {
+        "comments": "string",
+        "draft": "string",
+        "verdict": "string"
+      },
+      "tags": [],
+      "ui": {},
+      "write_set": []
+    },
+    {
+      "authority": "leaf",
+      "authority_policy": null,
+      "body_graph": null,
+      "boundary_contract": null,
+      "cache_ttl": null,
+      "code": "",
+      "compaction_rule": null,
+      "context": null,
+      "control_flow": null,
+      "control_state_schema": {},
+      "description": "",
+      "execution": null,
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "failure_policy": {
+        "max_iterations": null,
+        "stagnation_threshold": null,
+        "timeout_seconds": null
+      },
+      "id": "workflow_inputs",
+      "input_mappings": {},
+      "input_ports": [
+        {
+          "description": "",
+          "json_schema": {},
+          "name": "input",
+          "required": false
+        }
+      ],
+      "instruction": "",
+      "language": "python",
+      "llm_hints": null,
+      "local_state": {
+        "description": "",
+        "json_schema": {}
+      },
+      "memoize": false,
+      "merge_strategy": "append",
+      "metadata": {
+        "generated": true,
+        "input_variables": [
+          {
+            "default": null,
+            "description": "",
+            "name": "comments",
+            "type": "string"
+          },
+          {
+            "default": null,
+            "description": "",
+            "name": "text",
+            "type": "string"
+          },
+          {
+            "default": null,
+            "description": "",
+            "name": "topic",
+            "type": "string"
+          },
+          {
+            "default": null,
+            "description": "",
+            "name": "verdict",
+            "type": "string"
+          }
+        ],
+        "loader_default_input_port": "input",
+        "loader_default_output_port": "comments"
+      },
+      "model": null,
+      "name": "Workflow Inputs",
+      "node_type": "worker",
+      "output_mappings": {},
+      "output_ports": [
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "comments"
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "text"
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "topic"
+        },
+        {
+          "description": "",
+          "json_schema": {
+            "type": "string"
+          },
+          "name": "verdict"
+        }
+      ],
+      "parallelism": 1,
+      "persona": "",
+      "projections": [],
+      "read_set": [],
+      "retry_policy": null,
+      "role": "",
+      "spawn_policy": null,
+      "sub_workers": {},
+      "tags": [],
+      "tool_ids": [],
+      "ui": {},
+      "validation_rules": [],
+      "write_set": []
+    }
+  ],
+  "shared_context": [
+    {
+      "description": "Accumulated paper references",
+      "json_schema": {},
+      "key": "bibliography"
+    },
+    {
+      "description": "INFORMS journal formatting rules",
+      "json_schema": {},
+      "key": "style_guide"
+    }
+  ],
+  "sub_graphs": {
+    "outline_planner_each_section_writer__body": {
+      "artifact_refs": [],
+      "edges": [],
+      "entry_points": [
+        "section_writer"
+      ],
+      "exit_points": [
+        "section_writer"
+      ],
+      "hyperedges": [],
+      "metadata": {
+        "created_at": null,
+        "description": "",
+        "name": "outline_planner_each_section_writer_body",
+        "tags": [],
+        "updated_at": null
+      },
+      "nodes": [
+        {
+          "authority": "leaf",
+          "authority_policy": null,
+          "body_graph": null,
+          "boundary_contract": null,
+          "cache_ttl": null,
+          "code": "",
+          "compaction_rule": null,
+          "context": null,
+          "control_flow": null,
+          "control_state_schema": {},
+          "description": "",
+          "execution": null,
+          "external_input_schema": null,
+          "external_output_schema": null,
+          "failure_policy": {
+            "max_iterations": null,
+            "stagnation_threshold": null,
+            "timeout_seconds": null
+          },
+          "id": "section_writer",
+          "input_mappings": {},
+          "input_ports": [
+            {
+              "description": "",
+              "json_schema": {
+                "type": "string"
+              },
+              "name": "item",
+              "required": true
+            }
+          ],
+          "instruction": "",
+          "language": "python",
+          "llm_hints": {
+            "history_policy": null,
+            "max_tokens": 3000,
+            "max_tool_rounds": 10,
+            "output_json_schema": null,
+            "prompt_template": "",
+            "system_prompt": "You are an expert academic writer. Write in formal academic style suitable for INFORMS journals.\n\nWrite the following section of the paper:\n\nTitle: {item}\n\nProvide well-structured, detailed content with appropriate citations placeholders [Author, Year].\nUse clear topic sentences and logical transitions between paragraphs.",
+            "task_tier": null,
+            "temperature": 0.5,
+            "tools": []
+          },
+          "local_state": {
+            "description": "",
+            "json_schema": {}
+          },
+          "memoize": false,
+          "merge_strategy": "append",
+          "metadata": {
+            "loader_default_input_port": "item",
+            "loader_default_output_port": "text",
+            "source": {
+              "file": "/Volumes/data/Dropbox/Projects/deep-agent-network/examples/paper_writing_md/section_writer.md",
+              "line": 1
+            }
+          },
+          "model": "claude-sonnet-4-20250514",
+          "name": "section_writer",
+          "node_type": "worker",
+          "output_mappings": {},
+          "output_ports": [
+            {
+              "description": "",
+              "json_schema": {
+                "type": "string"
+              },
+              "name": "text"
+            }
+          ],
+          "parallelism": 1,
+          "persona": "",
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "projections": [],
+          "read_set": [],
+          "retry_policy": null,
+          "role": "",
+          "spawn_policy": null,
+          "sub_workers": {},
+          "tags": [],
+          "tool_ids": [],
+          "ui": {},
+          "validation_rules": [],
+          "write_set": []
+        }
+      ],
+      "shared_context": [],
+      "sub_graphs": {},
+      "version": "dan_graph_v1",
+      "worker_resources": {}
+    }
+  },
+  "version": "dan_graph_v1",
+  "worker_resources": {}
+}
