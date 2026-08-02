@@ -486,6 +486,90 @@
     0 1px 2px oklch(0.420 0.012 84 / 0.09) !important;
 }
 
+:root[data-resolved-surface-appearance="dark"] .dan-machine-theme .dan-note-collection-card {
+  background-color: var(--machine-panel) !important;
+  background-image:
+    radial-gradient(
+      ellipse 340px 150px at 100% 0%,
+      color-mix(in oklch, var(--note-collection-accent) 18%, transparent),
+      transparent 72%
+    ),
+    var(--machine-fine-grid),
+    var(--machine-brush),
+    linear-gradient(135deg, var(--machine-panel-hi), var(--machine-panel-low)) !important;
+  background-size:
+    auto,
+    22px 22px,
+    22px 22px,
+    auto !important;
+  border-color: var(--machine-border) !important;
+  border-left-color: var(--note-collection-accent) !important;
+  box-shadow:
+    inset 0 1px 0 oklch(0.58 0.012 78 / 0.05),
+    inset 0 -1px 0 oklch(0.075 0.006 88 / 0.38),
+    0 4px 14px oklch(0.08 0.008 88 / 0.20) !important;
+}
+
+:root[data-resolved-surface-appearance="dark"] .dan-machine-theme .dan-note-collection-card:hover {
+  background-color: var(--machine-panel-hi) !important;
+  background-image:
+    radial-gradient(
+      ellipse 380px 170px at 100% 0%,
+      color-mix(in oklch, var(--note-collection-accent) 25%, transparent),
+      transparent 72%
+    ),
+    var(--machine-fine-grid),
+    var(--machine-brush),
+    linear-gradient(135deg, var(--machine-panel-hi), var(--machine-panel)) !important;
+  border-color: var(--machine-border-strong) !important;
+  border-left-color: var(--note-collection-accent) !important;
+  box-shadow:
+    inset 0 1px 0 oklch(0.62 0.012 78 / 0.07),
+    inset 0 -1px 0 oklch(0.075 0.006 88 / 0.42),
+    0 8px 20px oklch(0.08 0.008 88 / 0.28) !important;
+}
+
+:root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme .dan-note-collection-card {
+  background-color: var(--machine-panel) !important;
+  background-image:
+    radial-gradient(
+      ellipse 340px 150px at 100% 0%,
+      color-mix(in oklch, var(--note-collection-accent) 16%, transparent),
+      transparent 72%
+    ),
+    var(--machine-fine-grid),
+    var(--machine-rail-card-surface) !important;
+  background-size:
+    auto,
+    22px 22px,
+    22px 22px,
+    var(--machine-rail-card-surface-size) !important;
+  border-color: oklch(0.650 0.018 82 / 0.38) !important;
+  border-left-color: var(--note-collection-accent) !important;
+  box-shadow:
+    inset 0 1px 0 oklch(0.995 0.004 88 / 0.46),
+    inset 0 -1px 0 oklch(0.460 0.014 84 / 0.11),
+    0 3px 12px oklch(0.420 0.012 84 / 0.09) !important;
+}
+
+:root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme .dan-note-collection-card:hover {
+  background-color: var(--machine-panel-hi) !important;
+  background-image:
+    radial-gradient(
+      ellipse 380px 170px at 100% 0%,
+      color-mix(in oklch, var(--note-collection-accent) 22%, transparent),
+      transparent 72%
+    ),
+    var(--machine-fine-grid),
+    var(--machine-rail-card-surface-hover) !important;
+  border-color: var(--machine-border) !important;
+  border-left-color: var(--note-collection-accent) !important;
+  box-shadow:
+    inset 0 1px 0 oklch(0.995 0.004 88 / 0.54),
+    inset 0 -1px 0 oklch(0.460 0.014 84 / 0.13),
+    0 7px 18px oklch(0.420 0.012 84 / 0.13) !important;
+}
+
 :root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme
   .dan-rail-card-row[data-active="true"],
 :root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme

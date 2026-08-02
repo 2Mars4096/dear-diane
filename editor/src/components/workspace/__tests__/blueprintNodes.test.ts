@@ -16,7 +16,11 @@ import {
   liveTaskTreeForTest,
   materializeTemporaryDraftNoteForTest,
   formatHugoPreviewBodyForTest,
+  hugoPaperPdfPreviewUrlForTest,
+  hugoPreviewBodyBlocksForTest,
   noteMetaItemsForTest,
+  noteArticleUpFacetForTest,
+  noteCollectionFacetForTest,
   notesComposerRequestsNewDraftForTest,
   noteRailViewForFacetForTest,
   normalizeStructuredMarkdownForTest,
@@ -32,6 +36,7 @@ import {
   sessionProgressTaskForTest,
   sessionReadyResponseAtForTest,
   sharedEvidenceItemsForTest,
+  sortNotesForCollectionForTest,
   selectActiveRunningTaskForTest,
   settleTaskSnapshotsFromEventsForTest,
   sessionStatusTasksForTest,
@@ -60,6 +65,7 @@ import {
   workspaceIdForTasksForTest,
   workspaceRootForTasksForTest,
   workingNoteCardsForTest,
+  relatedNoteCollectionFacetsForTest,
 } from "../ChunkWorkspaceApp";
 import { renderMarkdownToHtml } from "../../shared/MarkdownRenderer";
 import type { WorkspaceFileEntry } from "../../../lib/api";
@@ -1093,6 +1099,142 @@ describe("workspace blueprint nodes", () => {
     expect(noteRailViewForFacetForTest("section:blogs")).toBe("sections");
     expect(noteRailViewForFacetForTest("category:travel")).toBe("sections");
     expect(noteRailViewForFacetForTest("all")).toBeNull();
+  });
+
+  it("opens collection pages only for concrete Notes taxonomies", () => {
+    expect(noteCollectionFacetForTest("tag:italy")).toBe("tag:italy");
+    expect(noteCollectionFacetForTest("section:blogs")).toBe("section:blogs");
+    expect(noteCollectionFacetForTest("category:travel")).toBe("category:travel");
+    expect(noteCollectionFacetForTest("all")).toBeNull();
+    expect(noteCollectionFacetForTest("tag:")).toBeNull();
+  });
+
+  it("returns article up-navigation to its originating collection or category", () => {
+    const note = {
+      id: "server:/kb/content/papers/example/index.md",
+      title: "Example paper",
+      relativePath: "papers/example/index.md",
+      source: "server" as const,
+      content: "",
+      loaded: false,
+      status: "clean" as const,
+      updatedAt: Date.UTC(2026, 6, 29),
+      tags: ["critical-minerals"],
+      categories: [],
+      citations: [],
+    };
+
+    expect(noteArticleUpFacetForTest(note, "/kb/content", null)).toBe("section:papers");
+    expect(noteArticleUpFacetForTest(note, "/kb/content", "all")).toBe("section:papers");
+    expect(
+      noteArticleUpFacetForTest(note, "/kb/content", "tag:critical-minerals"),
+    ).toBe("tag:critical-minerals");
+    expect(noteArticleUpFacetForTest(note, "/kb/content", "category:trade")).toBe(
+      "category:trade",
+    );
+    expect(noteArticleUpFacetForTest(null, "/kb/content", null)).toBeNull();
+  });
+
+  it("sorts Notes collection cards by recent update or title", () => {
+    const notes = [
+      {
+        id: "server:/kb/content/blogs/zebra/index.md",
+        title: "Zebra",
+        relativePath: "blogs/zebra/index.md",
+        source: "server" as const,
+        content: "",
+        loaded: false,
+        status: "clean" as const,
+        updatedAt: Date.UTC(2026, 0, 1),
+        lastmod: "2026-07-01",
+        tags: ["travel"],
+        categories: [],
+        citations: [],
+      },
+      {
+        id: "server:/kb/content/blogs/alpha/index.md",
+        title: "Alpha",
+        relativePath: "blogs/alpha/index.md",
+        source: "server" as const,
+        content: "",
+        loaded: false,
+        status: "clean" as const,
+        updatedAt: Date.UTC(2026, 0, 2),
+        lastmod: "2026-06-01",
+        tags: ["travel", "italy"],
+        categories: [],
+        citations: [],
+      },
+    ];
+
+    expect(sortNotesForCollectionForTest(notes, "recent").map((note) => note.title))
+      .toEqual(["Zebra", "Alpha"]);
+    expect(sortNotesForCollectionForTest(notes, "title").map((note) => note.title))
+      .toEqual(["Alpha", "Zebra"]);
+  });
+
+  it("builds cross-navigation chips for Notes collection pages", () => {
+    const notes = [
+      {
+        id: "server:/kb/content/blogs/turin/index.md",
+        title: "Turin",
+        relativePath: "blogs/turin/index.md",
+        source: "server" as const,
+        content: "",
+        loaded: false,
+        status: "clean" as const,
+        updatedAt: Date.UTC(2026, 6, 1),
+        tags: ["italy", "travel"],
+        categories: [],
+        citations: [],
+      },
+      {
+        id: "server:/kb/content/notes/rome/index.md",
+        title: "Rome",
+        relativePath: "notes/rome/index.md",
+        source: "server" as const,
+        content: "",
+        loaded: false,
+        status: "clean" as const,
+        updatedAt: Date.UTC(2026, 6, 2),
+        tags: ["italy"],
+        categories: [],
+        citations: [],
+      },
+    ];
+
+    expect(
+      relatedNoteCollectionFacetsForTest(notes, "/kb/content", "tag:italy"),
+    ).toEqual({
+      kind: "section",
+      entries: [["blogs", 1], ["notes", 1]],
+    });
+    expect(
+      relatedNoteCollectionFacetsForTest(notes, "/kb/content", "section:blogs"),
+    ).toEqual({
+      kind: "tag",
+      entries: [["italy", 1], ["travel", 1]],
+    });
+  });
+
+  it("keeps all related Notes facets available for the bounded row scroller", () => {
+    const notes = Array.from({ length: 13 }, (_, index) => ({
+      id: `server:/kb/content/papers/paper-${index}/index.md`,
+      title: `Paper ${index}`,
+      relativePath: `papers/paper-${index}/index.md`,
+      source: "server" as const,
+      content: "",
+      loaded: false,
+      status: "clean" as const,
+      updatedAt: Date.UTC(2026, 6, index + 1),
+      tags: [`topic-${index}`],
+      categories: [],
+      citations: [],
+    }));
+
+    expect(
+      relatedNoteCollectionFacetsForTest(notes, "/kb/content", "section:papers").entries,
+    ).toHaveLength(13);
   });
 
   it("resolves a task back to the selected workspace id for session grouping", () => {
@@ -2211,6 +2353,26 @@ describe("workspace blueprint nodes", () => {
     expect(html).toContain("Warning: Critical Caveat</span>");
     expect(html).toContain("Failure rates are extreme for &quot;AI wrapper&quot; products.");
     expect(html).not.toContain("dan-markdown-inline-code");
+  });
+
+  it("renders Hugo paperPDF shortcodes as root-contained document previews", () => {
+    const blocks = hugoPreviewBodyBlocksForTest(
+      'Before\n\n{{< paperPDF filename="mittal2013general.pdf" height="800px" >}}\n\nAfter',
+    );
+
+    expect(blocks).toEqual([
+      { kind: "markdown", content: "Before\n\n" },
+      { kind: "paper-pdf", filename: "mittal2013general.pdf", heightPx: 800 },
+      { kind: "markdown", content: "\n\nAfter" },
+    ]);
+    expect(
+      hugoPaperPdfPreviewUrlForTest(
+        "/Users/lizhi/Downloads/local_projects/my-knowledge-base/content",
+        "mittal2013general.pdf",
+      ),
+    ).toMatch(
+      /\/workspace-files\/preview\/[^/]+\/static\/papers\/mittal2013general\.pdf$/,
+    );
   });
 
   it("restores flattened pipe tables in final-answer markdown", () => {

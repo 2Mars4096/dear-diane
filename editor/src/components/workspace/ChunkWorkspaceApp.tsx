@@ -7,6 +7,7 @@ import {
   useState,
   type ChangeEvent,
   type ClipboardEvent,
+  type CSSProperties,
   type DragEvent,
   type KeyboardEvent,
   type MouseEvent,
@@ -560,6 +561,8 @@ type PhonePage =
   | "note-preview"
   | "note-learn";
 type NoteRailView = "pages" | "tags" | "sections";
+type NoteCollectionSort = "recent" | "title";
+type NoteCollectionLayout = "list" | "grid";
 type ActiveRunPlacement = "steer" | "queue";
 type ComposerSubmitMode = ActiveRunPlacement;
 type WorkspaceComposerTrigger = "/" | "$" | "@";
@@ -935,6 +938,8 @@ interface WorkspaceUiState {
   threadQuery: string;
   noteQuery: string;
   noteFacet: string;
+  noteFacetPage: string | null;
+  noteArticleOriginFacet: string | null;
   noteRailView: NoteRailView;
   devFileQuery: string;
   expandedFileDirs: Record<string, boolean>;
@@ -2161,6 +2166,85 @@ function noteRailViewForFacet(facet: string): NoteRailView | null {
   return null;
 }
 
+function noteCollectionFacet(facet: string) {
+  return noteRailViewForFacet(facet) ? facet : null;
+}
+
+function noteArticleUpFacet(
+  note: WorkspaceNote | null,
+  root: string,
+  originFacet: string | null,
+) {
+  const collectionOrigin = noteCollectionFacet(originFacet ?? "");
+  if (collectionOrigin) return collectionOrigin;
+  if (!note) return null;
+  const section = noteSection(note, root);
+  return section ? noteFacetKey("section", section) : null;
+}
+
+function noteCollectionTimestamp(note: WorkspaceNote) {
+  const metadataTimestamp = Date.parse(note.lastmod || note.date || "");
+  return Number.isFinite(metadataTimestamp) ? metadataTimestamp : note.updatedAt;
+}
+
+function sortNotesForCollection(
+  notes: WorkspaceNote[],
+  sort: NoteCollectionSort,
+) {
+  return [...notes].sort((a, b) => {
+    if (sort === "title") {
+      return (
+        a.title.localeCompare(b.title, undefined, { sensitivity: "base" }) ||
+        noteCollectionTimestamp(b) - noteCollectionTimestamp(a)
+      );
+    }
+    return (
+      noteCollectionTimestamp(b) - noteCollectionTimestamp(a) ||
+      a.title.localeCompare(b.title, undefined, { sensitivity: "base" })
+    );
+  });
+}
+
+function relatedNoteCollectionFacets(
+  notes: WorkspaceNote[],
+  root: string,
+  facet: string,
+) {
+  const kind = facet.split(":")[0];
+  const relatedKind = kind === "tag" ? "section" : "tag";
+  const counts = new Map<string, number>();
+  for (const note of notes) {
+    if (!noteMatchesFacet(note, root, facet)) continue;
+    const values = relatedKind === "section" ? [noteSection(note, root)] : note.tags;
+    for (const value of new Set(values.filter(Boolean))) {
+      counts.set(value, (counts.get(value) ?? 0) + 1);
+    }
+  }
+  return {
+    kind: relatedKind as "section" | "tag",
+    entries: [...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])),
+  };
+}
+
+function noteCollectionAccentColor(note: WorkspaceNote, root: string) {
+  const value = noteSection(note, root) || "root";
+  let hash = 0;
+  for (const character of value) {
+    hash = (hash * 31 + character.charCodeAt(0)) % 360;
+  }
+  return `hsl(${hash} 48% 48%)`;
+}
+
+function noteCollectionDescription(note: WorkspaceNote, root: string) {
+  if (note.loaded && note.content.trim()) {
+    const page = extractHugoPage(note.content, note.title);
+    const summary = page.meta.subtitle || page.meta.abstract;
+    if (summary) return compactNoteSnippet(summary);
+  }
+  return noteDisplayPath(note, root);
+}
+
 function pageIdFromNote(note: WorkspaceNote) {
   return note.pageID?.trim() || "";
 }
@@ -2185,18 +2269,6 @@ function noteParentPathLabel(note: WorkspaceNote, root: string) {
     ? parts.slice(0, -2)
     : parts.slice(0, -1);
   return folderParts.join("/");
-}
-
-function parentNoteFor(note: WorkspaceNote | null, candidates: WorkspaceNote[], root: string) {
-  if (!note) return null;
-  const parent = noteParentPathLabel(note, root);
-  if (!parent) return null;
-  const parentIndexPath = `${parent}/index.md`.toLowerCase();
-  return (
-    candidates.find((candidate) =>
-      noteRelativePath(candidate, root).toLowerCase() === parentIndexPath,
-    ) ?? null
-  );
 }
 
 function normalizeRootPath(path: string) {
@@ -2513,6 +2585,8 @@ function readStoredUiState(): WorkspaceUiState {
     threadQuery: "",
     noteQuery: "",
     noteFacet: "all",
+    noteFacetPage: null,
+    noteArticleOriginFacet: null,
     noteRailView: "pages",
     devFileQuery: "",
     expandedFileDirs: {},
@@ -2540,6 +2614,15 @@ function readStoredUiState(): WorkspaceUiState {
       threadQuery: typeof parsed.threadQuery === "string" ? parsed.threadQuery : "",
       noteQuery: typeof parsed.noteQuery === "string" ? parsed.noteQuery : "",
       noteFacet: storedNoteFacet,
+      noteFacetPage:
+        typeof parsed.noteFacetPage === "string" &&
+        parsed.noteFacetPage === storedNoteFacet
+          ? noteCollectionFacet(parsed.noteFacetPage)
+          : null,
+      noteArticleOriginFacet:
+        typeof parsed.noteArticleOriginFacet === "string"
+          ? noteCollectionFacet(parsed.noteArticleOriginFacet)
+          : null,
       noteRailView:
         normalizedNoteRailView === "pages" && restoredFacetRailView
           ? restoredFacetRailView
@@ -8422,6 +8505,33 @@ export function noteRailViewForFacetForTest(facet: string) {
   return noteRailViewForFacet(facet);
 }
 
+export function noteCollectionFacetForTest(facet: string) {
+  return noteCollectionFacet(facet);
+}
+
+export function noteArticleUpFacetForTest(
+  note: WorkspaceNote | null,
+  root: string,
+  originFacet: string | null,
+) {
+  return noteArticleUpFacet(note, root, originFacet);
+}
+
+export function sortNotesForCollectionForTest(
+  notes: WorkspaceNote[],
+  sort: NoteCollectionSort,
+) {
+  return sortNotesForCollection(notes, sort);
+}
+
+export function relatedNoteCollectionFacetsForTest(
+  notes: WorkspaceNote[],
+  root: string,
+  facet: string,
+) {
+  return relatedNoteCollectionFacets(notes, root, facet);
+}
+
 export function noteMetaItemsForTest(
   note: WorkspaceNote | null,
   content: string,
@@ -9524,6 +9634,187 @@ function FacetArticlePanel({
         </div>
       </div>
     </div>
+  );
+}
+
+function NoteCollectionPage({
+  facet,
+  notes,
+  root,
+  query,
+  onSelectNote,
+  onSelectFacet,
+}: {
+  facet: string;
+  notes: WorkspaceNote[];
+  root: string;
+  query: string;
+  onSelectNote: (note: WorkspaceNote) => void;
+  onSelectFacet: (facet: string) => void;
+}) {
+  const [sort, setSort] = useState<NoteCollectionSort>("recent");
+  const [layout, setLayout] = useState<NoteCollectionLayout>("list");
+  const [kind, ...valueParts] = facet.split(":");
+  const value = valueParts.join(":");
+  const isTag = kind === "tag";
+  const sortedNotes = useMemo(
+    () => sortNotesForCollection(notes, sort),
+    [notes, sort],
+  );
+  const related = useMemo(
+    () => relatedNoteCollectionFacets(notes, root, facet),
+    [facet, notes, root],
+  );
+  const articleLabel = notes.length === 1 ? "article" : "articles";
+  const queryLabel = query.trim();
+
+  return (
+    <section className="w-full min-w-0">
+      <header className="border-b border-slate-200 pb-5 dark:border-slate-800">
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400">
+              {isTag ? "Tag collection" : "Category collection"}
+            </div>
+            <h1 className="mt-2 flex flex-wrap items-baseline gap-x-2 text-2xl font-semibold leading-tight text-slate-950 dark:text-slate-100">
+              <span className="break-words">{isTag ? `#${value}` : value}</span>
+              <span className="font-mono text-sm font-medium tabular-nums text-slate-400">
+                ({notes.length})
+              </span>
+            </h1>
+            {queryLabel && (
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                {notes.length} {articleLabel} matching “{queryLabel}”
+              </p>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSort((current) => current === "recent" ? "title" : "recent")}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-600 shadow-sm transition hover:border-slate-300 hover:text-slate-950 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:border-slate-700 dark:hover:text-white"
+              aria-label={`Sort collection by ${sort === "recent" ? "title" : "recent update"}`}
+            >
+              {sort === "recent" ? <Clock3 size={12} /> : <ArrowUp size={12} />}
+              <span>{sort === "recent" ? "Recent" : "A–Z"}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setLayout((current) => current === "list" ? "grid" : "list")}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-600 shadow-sm transition hover:border-slate-300 hover:text-slate-950 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:border-slate-700 dark:hover:text-white"
+              aria-label={`Show collection as a ${layout === "list" ? "grid" : "list"}`}
+            >
+              {layout === "list" ? <Square size={11} /> : <FileText size={12} />}
+              <span>{layout === "list" ? "Grid" : "List"}</span>
+            </button>
+          </div>
+        </div>
+
+        {related.entries.length > 0 && (
+          <div className="mt-4 overflow-x-auto overscroll-x-contain pb-1">
+            <div className="grid w-max grid-flow-col grid-rows-2 auto-cols-max gap-x-1.5 gap-y-1.5 pr-1">
+              {related.entries.map(([relatedValue, count]) => (
+                <button
+                  key={`${related.kind}:${relatedValue}`}
+                  type="button"
+                  onClick={() => onSelectFacet(noteFacetKey(related.kind, relatedValue))}
+                  className={cx(
+                    "inline-flex h-7 items-center gap-1 rounded-full border px-2.5 text-[11px] font-medium transition",
+                    related.kind === "tag"
+                      ? "border-sky-200 bg-sky-50 text-sky-800 hover:border-sky-300 hover:bg-white dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-200"
+                      : "border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300 hover:bg-white dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200",
+                  )}
+                >
+                  <span>{related.kind === "tag" ? `#${relatedValue}` : relatedValue}</span>
+                  <span className="font-mono text-[9px] tabular-nums opacity-55">{count}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </header>
+
+      {sortedNotes.length > 0 ? (
+        <div
+          className={cx(
+            "mt-5",
+            layout === "grid"
+              ? "grid grid-cols-[repeat(auto-fill,minmax(min(100%,17rem),1fr))] gap-3"
+              : "space-y-2.5",
+          )}
+        >
+          {sortedNotes.map((note) => {
+            const section = noteSection(note, root);
+            const updated = formatNoteUpdatedDate(note, note.lastmod || note.date || "");
+            const accentColor = noteCollectionAccentColor(note, root);
+            return (
+              <button
+                key={note.id}
+                type="button"
+                onClick={() => onSelectNote(note)}
+                className={cx(
+                  "dan-note-collection-card group relative w-full overflow-hidden rounded-xl border border-slate-200 border-l-[3px] bg-white p-4 text-left shadow-sm shadow-slate-950/[0.025] transition duration-200 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md hover:shadow-slate-950/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/40 dark:border-slate-800 dark:bg-slate-950 dark:hover:border-slate-700",
+                  layout === "grid" ? "flex min-h-44 flex-col" : "min-h-28",
+                )}
+                style={{
+                  "--note-collection-accent": accentColor,
+                  borderLeftColor: accentColor,
+                } as CSSProperties}
+              >
+                <span className="flex min-w-0 items-center justify-between gap-3">
+                  <span className="min-w-0 truncate text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">
+                    {section}
+                  </span>
+                  {updated && (
+                    <span className="shrink-0 font-mono text-[10px] tabular-nums text-slate-400">
+                      {updated}
+                    </span>
+                  )}
+                </span>
+                <span className="mt-2 flex min-w-0 items-start gap-2">
+                  <span className="min-w-0 flex-1 text-[15px] font-semibold leading-5 text-slate-900 transition group-hover:text-sky-800 dark:text-slate-100 dark:group-hover:text-sky-200">
+                    {note.title || fileName(note.relativePath || note.path || "Untitled")}
+                  </span>
+                  <ChevronRight
+                    size={14}
+                    className="mt-0.5 shrink-0 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-slate-500 dark:text-slate-700 dark:group-hover:text-slate-400"
+                  />
+                </span>
+                <span className="mt-1.5 line-clamp-2 break-words text-[12px] leading-5 text-slate-500 dark:text-slate-400">
+                  {noteCollectionDescription(note, root)}
+                </span>
+                {note.tags.length > 0 && (
+                  <span className={cx("mt-3 flex flex-wrap gap-1.5", layout === "grid" && "mt-auto pt-3")}>
+                    {note.tags.slice(0, 5).map((tag) => (
+                      <span
+                        key={tag}
+                        className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-slate-900 dark:text-slate-400"
+                      >
+                        #{tag}
+                      </span>
+                    ))}
+                    {note.tags.length > 5 && (
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[10px] text-slate-400 dark:bg-slate-900">
+                        +{note.tags.length - 5}
+                      </span>
+                    )}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="mt-5 rounded-xl border border-dashed border-slate-300 bg-slate-50/80 px-5 py-10 text-center dark:border-slate-800 dark:bg-slate-900/35">
+          <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+            No articles found
+          </div>
+          <div className="mt-1 text-xs text-slate-400">
+            {queryLabel ? "Try a broader content search." : "This collection is currently empty."}
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -12914,6 +13205,12 @@ export default function ChunkWorkspaceApp() {
   const [sending, setSending] = useState(false);
   const [noteQuery, setNoteQuery] = useState(initialUiState.noteQuery);
   const [noteFacet, setNoteFacet] = useState(initialUiState.noteFacet);
+  const [noteFacetPage, setNoteFacetPage] = useState<string | null>(
+    initialUiState.noteFacetPage,
+  );
+  const [noteArticleOriginFacet, setNoteArticleOriginFacet] = useState<string | null>(
+    initialUiState.noteArticleOriginFacet,
+  );
   const [noteRailView, setNoteRailView] = useState<NoteRailView>(
     initialUiState.noteRailView,
   );
@@ -13127,8 +13424,13 @@ export default function ChunkWorkspaceApp() {
       )
       .slice(0, 8);
   }, [noteMention, pageIdSuggestions]);
-  const selectNote = useCallback((note: WorkspaceNote) => {
+  const selectNote = useCallback((
+    note: WorkspaceNote,
+    originFacet: string | null = null,
+  ) => {
     setActiveNoteId(note.id);
+    setNoteFacetPage(null);
+    setNoteArticleOriginFacet(noteCollectionFacet(originFacet ?? ""));
     setSelectedChunkId(null);
     setPromptLogPreview(null);
     if (note.status === "error" && note.path) {
@@ -13143,8 +13445,11 @@ export default function ChunkWorkspaceApp() {
   }, []);
   const selectNoteFacet = useCallback((facet: string) => {
     setNoteFacet(facet);
+    setNoteFacetPage(noteCollectionFacet(facet));
+    setNoteArticleOriginFacet(noteCollectionFacet(facet));
     const nextRailView = noteRailViewForFacet(facet);
     if (nextRailView) setNoteRailView(nextRailView);
+    setShowNotesPreview(true);
     setPhonePage("note-list");
   }, []);
   const handleNotePreviewClick = useCallback(
@@ -13552,6 +13857,8 @@ export default function ChunkWorkspaceApp() {
       threadQuery,
       noteQuery,
       noteFacet,
+      noteFacetPage,
+      noteArticleOriginFacet,
       noteRailView,
       devFileQuery,
       expandedFileDirs,
@@ -13566,6 +13873,8 @@ export default function ChunkWorkspaceApp() {
     expandedFileDirs,
     expandedNoteFolders,
     noteFacet,
+    noteFacetPage,
+    noteArticleOriginFacet,
     noteQuery,
     noteRailView,
     selectedChunkId,
@@ -14274,7 +14583,11 @@ export default function ChunkWorkspaceApp() {
     activeVisibleNoteIndex >= 0 && activeVisibleNoteIndex < visibleNotes.length - 1
       ? visibleNotes[activeVisibleNoteIndex + 1]
       : null;
-  const upperNote = parentNoteFor(activeNote, notes, notesRoot);
+  const upperCollectionFacet = noteArticleUpFacet(
+    activeNote,
+    notesRoot,
+    noteArticleOriginFacet,
+  );
 
   useEffect(() => {
     if (!activeNote) return;
@@ -14805,6 +15118,8 @@ export default function ChunkWorkspaceApp() {
       });
       setNotes((previous) => [note, ...previous.filter((item) => item.id !== note.id)]);
       setActiveNoteId(note.id);
+      setNoteFacetPage(null);
+      setNoteArticleOriginFacet(null);
       setSelectedChunkId(null);
       setActivePane("notes");
       setPhonePage("note-edit");
@@ -14879,6 +15194,8 @@ export default function ChunkWorkspaceApp() {
         };
         setNotes((previous) => [local, ...previous]);
         setActiveNoteId(local.id);
+        setNoteFacetPage(null);
+        setNoteArticleOriginFacet(null);
         setSelectedChunkId(null);
         setActivePane("notes");
         setPhonePage("note-edit");
@@ -14917,6 +15234,8 @@ export default function ChunkWorkspaceApp() {
             } satisfies WorkspaceNote);
         setNotes((previous) => [note, ...previous.filter((item) => item.id !== note.id)]);
         setActiveNoteId(note.id);
+        setNoteFacetPage(null);
+        setNoteArticleOriginFacet(null);
         setSelectedChunkId(null);
         setActivePane("notes");
         setPhonePage("note-edit");
@@ -17368,7 +17687,7 @@ export default function ChunkWorkspaceApp() {
                   {noteFacet !== "all" && (
                     <button
                       type="button"
-                      onClick={() => setNoteFacet("all")}
+                      onClick={() => selectNoteFacet("all")}
                       className="mb-2 flex h-8 w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-2 text-left text-[12px] text-slate-600 transition hover:border-slate-300 hover:bg-white dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
                     >
                       <span className="min-w-0 truncate">{noteFacetTitle(noteFacet)}</span>
@@ -17405,7 +17724,7 @@ export default function ChunkWorkspaceApp() {
                     activeNoteId={activeNoteId}
                     root={notesRoot}
                     onBack={() => selectNoteFacet("all")}
-                    onSelectNote={selectNote}
+                    onSelectNote={(note) => selectNote(note, noteFacet)}
                   />
                 ) : (
                   <FacetIndex
@@ -17426,7 +17745,7 @@ export default function ChunkWorkspaceApp() {
                     activeNoteId={activeNoteId}
                     root={notesRoot}
                     onBack={() => selectNoteFacet("all")}
-                    onSelectNote={selectNote}
+                    onSelectNote={(note) => selectNote(note, noteFacet)}
                   />
                 ) : (
                   <FacetIndex
@@ -17557,10 +17876,19 @@ export default function ChunkWorkspaceApp() {
             <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-200/80 px-4 dark:border-slate-800">
               <div className="min-w-0">
                 <div className="truncate text-[14px] font-semibold leading-5">
-                  Preview
+                  {noteFacetPage ? "Collection" : "Preview"}
                 </div>
                 <div className="flex min-w-0 items-center gap-1.5 overflow-hidden text-[11px] leading-4 text-slate-500">
-                  {activeNote && (
+                  {noteFacetPage ? (
+                    <>
+                      <span className="truncate">{noteFacetTitle(noteFacetPage)}</span>
+                      <span className="shrink-0 text-slate-300 dark:text-slate-700">·</span>
+                      <span className="shrink-0 font-mono tabular-nums">
+                        {visibleNotes.length} {visibleNotes.length === 1 ? "article" : "articles"}
+                      </span>
+                    </>
+                  ) : activeNote ? (
+                    <>
                     <button
                       type="button"
                       onClick={() =>
@@ -17570,53 +17898,82 @@ export default function ChunkWorkspaceApp() {
                     >
                       {activeNoteSection}
                     </button>
-                  )}
-                  {parsedActiveNote.meta.pageID && (
-                    <span className="truncate">{parsedActiveNote.meta.pageID}</span>
-                  )}
-                  {parsedActiveNote.meta.tags.slice(0, 2).map((tag) => (
-                    <button
-                      key={tag}
-                      type="button"
-                      onClick={() => selectNoteFacet(noteFacetKey("tag", tag))}
-                      className="shrink-0 rounded px-1 py-0.5 text-sky-700 transition hover:bg-sky-50 hover:text-sky-900 dark:text-sky-300 dark:hover:bg-sky-950/40"
-                    >
-                      #{tag}
-                    </button>
-                  ))}
+                    {parsedActiveNote.meta.pageID && (
+                      <span className="truncate">{parsedActiveNote.meta.pageID}</span>
+                    )}
+                    {parsedActiveNote.meta.tags.slice(0, 2).map((tag) => (
+                      <button
+                        key={tag}
+                        type="button"
+                        onClick={() => selectNoteFacet(noteFacetKey("tag", tag))}
+                        className="shrink-0 rounded px-1 py-0.5 text-sky-700 transition hover:bg-sky-50 hover:text-sky-900 dark:text-sky-300 dark:hover:bg-sky-950/40"
+                      >
+                        #{tag}
+                      </button>
+                    ))}
+                    </>
+                  ) : null}
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1">
-                <button
-                  type="button"
-                  disabled={!previousNote}
-                  onClick={() => previousNote && selectNote(previousNote)}
-                  className="grid h-7 w-7 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 transition enabled:hover:border-slate-300 enabled:hover:text-slate-800 disabled:opacity-35 dark:border-slate-800 dark:bg-slate-950"
-                  title="Previous page"
-                  aria-label="Previous page"
-                >
-                  <ChevronRight size={13} className="rotate-180" />
-                </button>
-                <button
-                  type="button"
-                  disabled={!upperNote}
-                  onClick={() => upperNote && selectNote(upperNote)}
-                  className="grid h-7 w-7 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 transition enabled:hover:border-slate-300 enabled:hover:text-slate-800 disabled:opacity-35 dark:border-slate-800 dark:bg-slate-950"
-                  title="Parent page"
-                  aria-label="Parent page"
-                >
-                  <ChevronRight size={13} className="-rotate-90" />
-                </button>
-                <button
-                  type="button"
-                  disabled={!nextNote}
-                  onClick={() => nextNote && selectNote(nextNote)}
-                  className="grid h-7 w-7 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 transition enabled:hover:border-slate-300 enabled:hover:text-slate-800 disabled:opacity-35 dark:border-slate-800 dark:bg-slate-950"
-                  title="Next page"
-                  aria-label="Next page"
-                >
-                  <ChevronRight size={13} />
-                </button>
+                {noteFacetPage ? (
+                  <button
+                    type="button"
+                    onClick={() => setNoteFacetPage(null)}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-500 transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:border-slate-700 dark:hover:text-slate-200"
+                    title="Return to the current article"
+                  >
+                    <FileText size={12} />
+                    <span className="hidden sm:inline">Article</span>
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      disabled={!previousNote}
+                      onClick={() =>
+                        previousNote && selectNote(previousNote, noteArticleOriginFacet)
+                      }
+                      className="grid h-7 w-7 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 transition enabled:hover:border-slate-300 enabled:hover:text-slate-800 disabled:opacity-35 dark:border-slate-800 dark:bg-slate-950"
+                      title="Previous page"
+                      aria-label="Previous page"
+                    >
+                      <ChevronRight size={13} className="rotate-180" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!upperCollectionFacet}
+                      onClick={() =>
+                        upperCollectionFacet && selectNoteFacet(upperCollectionFacet)
+                      }
+                      className="grid h-7 w-7 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 transition enabled:hover:border-slate-300 enabled:hover:text-slate-800 disabled:opacity-35 dark:border-slate-800 dark:bg-slate-950"
+                      title={
+                        upperCollectionFacet
+                          ? `Open ${noteFacetTitle(upperCollectionFacet)} collection`
+                          : "No parent collection"
+                      }
+                      aria-label={
+                        upperCollectionFacet
+                          ? `Open ${noteFacetTitle(upperCollectionFacet)} collection`
+                          : "No parent collection"
+                      }
+                    >
+                      <ChevronRight size={13} className="-rotate-90" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!nextNote}
+                      onClick={() =>
+                        nextNote && selectNote(nextNote, noteArticleOriginFacet)
+                      }
+                      className="grid h-7 w-7 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 transition enabled:hover:border-slate-300 enabled:hover:text-slate-800 disabled:opacity-35 dark:border-slate-800 dark:bg-slate-950"
+                      title="Next page"
+                      aria-label="Next page"
+                    >
+                      <ChevronRight size={13} />
+                    </button>
+                  </>
+                )}
                 {!isPhoneViewport && (
                   <PaneHeaderButton
                     title="Collapse note preview"
@@ -17630,8 +17987,17 @@ export default function ChunkWorkspaceApp() {
                 )}
               </div>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto px-7 py-6 lg:px-10">
-              {activeNote?.status === "loading" || activeNote?.status === "error" ? (
+            <div className="min-h-0 flex-1 overflow-auto px-[18px] py-5">
+              {noteFacetPage ? (
+                <NoteCollectionPage
+                  facet={noteFacetPage}
+                  notes={visibleNotes}
+                  root={notesRoot}
+                  query={noteQuery}
+                  onSelectNote={(note) => selectNote(note, noteFacetPage)}
+                  onSelectFacet={selectNoteFacet}
+                />
+              ) : activeNote?.status === "loading" || activeNote?.status === "error" ? (
                 <MarkdownRenderer
                   content={
                     activeNote.status === "loading"
@@ -17642,7 +18008,7 @@ export default function ChunkWorkspaceApp() {
               ) : isKnowledgeGraphPage ? (
                 <KnowledgeGraphView notes={catalogNoteItems} root={notesRoot} onSelect={selectNote} />
               ) : (
-                <article className="mx-auto w-full max-w-6xl">
+                <article className="w-full min-w-0">
                   {parsedActiveNote.hasFrontmatter && (
                     <header className="mb-6 border-b border-slate-200 pb-5 dark:border-slate-800">
                       <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
