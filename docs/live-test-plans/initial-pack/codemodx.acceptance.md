@@ -1,6 +1,0 @@
-- A new user can follow the README and run the tool without guessing missing steps.
-- There is a clear preview mode that shows what would change before files are modified.
-- Applying a rename changes the intended files and leaves unrelated files alone.
-- The tool behaves sensibly on syntax-broken files or unsupported files instead of crashing messily.
-- The project includes tests, and they are relevant to the rename/preview behavior.
-- The code structure looks intentional rather than like one giant script.

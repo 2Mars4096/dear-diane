@@ -51,6 +51,7 @@ htmlcov/
 .env
 .env.*
 !.env.example
+!.env.minimal
 
 # WireGuard peer configs and keys generated for local/device installs
 ops/wireguard/generated/

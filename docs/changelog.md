@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-02
+- [refactor] Cut the repository over to Universal Cell → Universal Organism → Super DAN → Work/Notes. Removed the tracked graph builder/engine/model stack, product-specific organisms, concierge/adapters/publishing/RAG/search layers, legacy CLI commands, editor modes, Electron integrations, tests, examples, sample graphs, and scripts after pushing a complete pre-archive snapshot.
+- [refactor] Rebuilt the FastAPI composition root around Work/Notes, session CRUD, and Agent V2 task/run/event control; narrowed provider startup, tool policies, Electron native bridges, and package dependencies to retained product needs.
+- [infra] Replaced the historical test allowlist in `.gitignore` after it was found to conceal 357 legacy test sources and nine assets from the first snapshot. Preserved those files in pushed commits `8594143c` and `0d630dca`, removed them only after backup, and made future tests track normally.
+- [test] Replaced legacy coverage with focused cell, organism, Super DAN, TUI, Agent V2, Work/Notes product-API, frontend, Electron, build, and benchmark validation.
+- [docs] Replaced the 59-plan historical tree and specialized legacy tracks with a compact numbered 1–5 roadmap plus current Work/Notes and Super DAN live-test plans. Updated the README, architecture, development plan, CLI, command, eval, project, and LLM API references.
+
 ## 2026-07-29
 - [fix] Reframed the Notes article upper arrow as collection-level navigation. Articles entered from a tag/category list now return to that exact collection, ordinary article entry defaults to the article's section category, previous/next keeps the origin, and the target survives refresh. Browser QA covered both the default `papers` category and `#bank-liquidity` tag round trips with no console errors; all 445 frontend tests, the production build, bundle budgets, and diff checks pass.
 - [fix] Expanded Notes article and collection previews to the full available pane width. The React preview now mirrors Hugo embedded mode, which removes its reserved TOC and footnote columns, drops the content max-width, and uses an 18px inner gutter instead of centering content inside a 1152px cap. Maximized-pane browser QA measured a 1,148px preview column at a 1,280px viewport, full-width article and collection bodies, exact 18px left padding, and no console errors; all 444 frontend tests, the production build, bundle budgets, and diff checks pass.

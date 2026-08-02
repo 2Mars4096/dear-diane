@@ -1,7 +1,0 @@
-- A user can start the service and understand how to use it from the README.
-- A job can be submitted and later retrieved by ID.
-- Status changes are visible and believable, not hardcoded.
-- Cancelling a job works or fails honestly with a clear explanation.
-- Results survive restart because they are actually persisted.
-- Tests cover the core API and job lifecycle, not just trivial helpers.
-- The app feels like a real service, not just a demo endpoint.
