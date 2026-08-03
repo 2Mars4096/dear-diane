@@ -11,6 +11,8 @@ Make difficult agent work durable, steerable, verifiable, and understandable wit
 3. [Super DAN](plans/3-super-dan.md) — completed core runtime/TUI.
 4. [Work and Notes GUI](plans/4-work-notes-gui.md) — active UX refinement.
 5. [Universal Product Cutover](plans/5-universal-product-cutover.md) — completed; legacy code/docs are archived in Git and the boundary is locked.
+6. [Structured Universal Cell Prototype](plans/6-structured-universal-cell-prototype.md) — completed initial two-dimensional cell experiment.
+7. [Blended Universal Cell Configuration](plans/7-blended-universal-cell-config.md) — completed reduced context-plus-contract cell, executor binding, external topology, and extensible record ledger.
 
 ## Near-term priorities
 

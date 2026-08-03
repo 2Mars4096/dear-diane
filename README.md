@@ -2,7 +2,7 @@
 
 DAN is a focused agent product built as one stack:
 
-1. **Universal Cell** — one bounded worker primitive driven by typed briefs.
+1. **Universal Cell** — one context-plus-contract cell definition, separately bound to an executor and compiled through typed briefs into a bounded worker primitive.
 2. **Universal Organism** — a dependency-aware plan of Universal Cells.
 3. **Super DAN** — the general-purpose live agent runtime and terminal UI.
 4. **Work/Notes** — the desktop and phone workspace for sessions, progress, artifacts, previews, and Markdown notes.
@@ -102,13 +102,23 @@ The mobile app consumes the same loopback/WireGuard-safe HTTP API. `/api/workspa
 ## Core Python API
 
 ```python
-from dan import build_cell
+from dan.worker import CellContract, bind_cell, build_cell_spec, compile_cell
 
-cell = build_cell(model="gpt-5.4", role_label="implementer")
-assert cell.metadata["universal_cell"] is True
+cell = build_cell_spec(
+    {"task": "Implement the requested change.", "role": "implementer"},
+    CellContract(
+        allowed_tools={"file_read", "file_edit"},
+        dos=("validate the requested behavior",),
+        donts=("modify unrelated files",),
+        preferences=("inspect focused files first",),
+    ),
+)
+invocation = bind_cell(cell, "gpt-5.4", cell_id="implement")
+compiled = compile_cell(invocation)
+assert compiled.worker.metadata["universal_cell"] is True
 ```
 
-For typed briefs and organism plans, see [docs/llm-api-guide.md](docs/llm-api-guide.md).
+Reports carry an extensible record ledger for sources, line-level modifications, output files, deliverables, and future evidence kinds. Relationships are external `CellTopology` sequence/fork-join edges; runtime sampling, context projection, concurrency, retries, and timeout live in `CellRuntimeConfig`. For the complete cell, invocation, tracking, direct-brief, and organism APIs, see [docs/llm-api-guide.md](docs/llm-api-guide.md).
 
 ## Validation
 
@@ -135,7 +145,7 @@ src/dan/tools/           Selectively loaded Super DAN capabilities
 src/dan/skills/          Skill discovery and loading
 editor/                  Work/Notes React + Electron app
 mobile/                  Optional Flutter phone app
-docs/plans/              Active numbered roadmap (1–5)
+docs/plans/              Active numbered roadmap
 ```
 
 ## Archive policy

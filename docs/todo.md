@@ -8,6 +8,9 @@
 - [ ] [4-work-notes-gui](plans/4-work-notes-gui.md) — active Work/Notes UX refinement.
   - [ ] [UI plan](UI-plans/1-work-notes-gui.md)
 - [x] [5-universal-product-cutover](plans/5-universal-product-cutover.md) — deleted the backed-up legacy tree, renumbered docs, validated, committed, and pushed.
+- [x] [6-structured-universal-cell-prototype](plans/6-structured-universal-cell-prototype.md) — added and tested a three-input cell with horizontal inheritance and vertical subsample/fan-out/collapse relationships.
+- [x] [7-blended-universal-cell-config](plans/7-blended-universal-cell-config.md) — promoted the three-input cell to a canonical authoring config with external topology and compilation into the original worker core.
+  - [x] [7-1-reduced-cell-contract](plans/7-1-reduced-cell-contract.md) — reduced the cell to context plus contract, externalized executor binding, and added extensible runtime records.
 
 ## Live evaluation
 
