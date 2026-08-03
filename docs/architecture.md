@@ -11,16 +11,62 @@ Super DAN plan and local tool runtime
             ↓
 Universal Organism scheduler
             ↓
-Universal Cell + typed WorkerBrief
+Structured Cell compiler + Universal Cell
             ↓
 provider / tools / sandbox / memory / structured output
 ```
 
 There is one active agent product. Task families such as coding, research, design, games, academic work, or market analysis are brief/blueprint shapes, not separate runtimes or GUI modes.
 
+## Structured Universal Cell configuration
+
+`src/dan/worker/structured_cell.py` is the canonical high-level cell authoring layer below the organism boundary. The overall configuration separates behavior, structure, and execution machinery:
+
+```text
+UniversalCellConfig
+├── cells
+│   └── CellSpec
+│       ├── context      flexible task/scope/role/evidence/state
+│       └── contract
+│           ├── allowed_tools
+│           ├── dos / donts / preferences
+│           ├── limits
+│           └── acceptance
+├── executors            cell id → ExecutorRef
+├── topology
+│   ├── sequence edges  previous → focal → next
+│   └── fork/join edges parent → parallel children → collapse
+└── runtime              sampling, model view, concurrency, retries, timeout
+```
+
+`CellSpec` is position-independent and has no identity, model, topology position, status, or execution history. `CellInvocation` binds a spec to `cell_id` plus `ExecutorRef`. Relationships live only in `CellTopology`; a cell never owns mutable neighbor pointers. The two dimensions have deliberately different transfer semantics:
+
+```text
+                           parent cell
+                                │
+                 nested ContextView + narrowed contract
+                                ▼
+previous cell ──full──▶ focal cell ──full──▶ next cell
+                                │
+                  parallel child reports
+                                ▼
+                 namespaced collapse / join barrier
+```
+
+- Horizontal inheritance transfers complete committed logical context plus the prior context delta; focal-local keys win collisions. Model compilation separately applies a bounded `ContextView`, so logical inheritance does not imply an unbounded prompt.
+- Vertical delegation transfers only explicitly selected nested paths plus child-local context. Unselected parent data is absent from child state.
+- Child authority is monotone: allowed tools remain a subset, dos/don'ts/preferences accumulate, existing acceptance checks cannot be weakened, and limits cannot increase. Per-fork concurrency belongs to topology/runtime, not the cell.
+- Every declared child settles before join evaluation. `all_success`, `all_settled`, `quorum`, and `at_least_one` policies decide whether the focal cell may advance.
+- `CellReport` contains only outcome, result, context delta, records, and error. Its open record ledger tracks input sources, exact modified line spans, output files, deliverables, execution events, and future fact kinds without changing `CellSpec`.
+- Acceptance can require matching records by kind, role, media type, resource pattern, metadata, and count. Missing required records turn an otherwise completed execution into failure.
+- Collapse stores compact child reports under `_cell_child_reports`; complete child contexts never merge into the focal namespace.
+- `compile_cell(...)` lowers `CellInvocation` through `WorkerBrief` and `ExecutionRequest` into the unchanged `WorkerCoreExecutor`. Direct brief construction remains available for advanced callers.
+- This layer introduces no organism plan, ready queue, or scheduler. It defines one cell and its immediate transfer boundaries.
+
 ## Python layout
 
 - `src/dan/worker/cell.py` — fixed Universal Cell system prompt and `build_cell`.
+- `src/dan/worker/structured_cell.py` — reduced cell/contract, executor binding, record ledger, external topology, context views, compiler, and fork/join boundaries.
 - `src/dan/worker/brief.py` — `RoleSpec`, `WorkerBrief`, prompt rendering, and execution-request conversion.
 - `src/dan/worker/contracts/` — sampling, output, failure, recovery, snippet, and prompt-context contracts.
 - `src/dan/worker/core/` — cell execution interfaces, capabilities, memory, acquisition, and structured output.
@@ -70,8 +116,13 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 
 ## Invariants
 
-- `build_cell(...)` is the only worker-construction primitive.
-- Task behavior enters through `WorkerBrief`; infrastructure does not encode domain roles.
+- `build_cell(...)` remains the only low-level worker-construction primitive.
+- `build_cell_spec(...)` creates the canonical position-independent cell; `bind_cell(...)` creates an invocation. `build_structured_cell(...)` remains a convenience that performs both steps.
+- Cells own only context and contract. Identity/model selection belongs to `CellInvocation`; sequence and parent/child structure belongs to `CellTopology`; sampling and execution machinery belongs to `CellRuntimeConfig`.
+- Cell-level tool authority is a closed `allowed_tools` allowlist. Platform/runtime denials remain outside the cell.
+- Task behavior enters through context plus dos, don'ts, and preferences; infrastructure does not encode domain roles.
+- Observed sources, effects, and artifacts enter through typed `CellRecord` values, preferably collected from runtime/tool facts rather than model claims.
+- Full logical context is never confused with the bounded model projection, and vertical context transfer requires an explicit view.
 - `execute_universal_organism(...)` is the general organism executor.
 - Deterministic policy admits scheduler/semantic proposals before state mutation.
 - Validation and evidence gate terminal success.
