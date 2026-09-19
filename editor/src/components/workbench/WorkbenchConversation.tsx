@@ -70,6 +70,14 @@ export function WorkbenchConversation({ messages, pending, loading, status, onQu
     </div>
     {quote && <div className="wb-quote-action" onMouseDown={(event) => event.preventDefault()}><button onClick={() => { onQuote(quote, quoteMessageIds); setQuote(""); window.getSelection()?.removeAllRanges(); }}><CornerDownRight size={15} />Reply to selection</button>{onSidecar && <button onClick={() => { onSidecar(quote); setQuote(""); }}><MessageSquareText size={15} />Sidecar chat</button>}<button onClick={() => setQuote("")} aria-label="Dismiss selected quote">×</button></div>}
     {showLatest && <button className="wb-jump" onClick={() => { following.current = true; scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "instant" }); }}><ArrowDown size={14} />Latest</button>}
-    <div className="wb-status" role="status">{status}</div>
+    <div className="wb-status" role="status">{workbenchStatus(status)}</div>
   </div>;
+}
+
+/** Idle "Ready" and raw event names are noise; terminal run states get plain words. */
+export function workbenchStatus(status: string): string {
+  const terminal: Record<string, string> = { failed: "Run failed", cancelled: "Run stopped", canceled: "Run stopped", stopped: "Run stopped", interrupted: "Run interrupted" };
+  if (terminal[status]) return terminal[status];
+  if (!status || status === "Ready" || /^[a-z]+(_[a-z]+)*$/.test(status)) return "";
+  return status;
 }

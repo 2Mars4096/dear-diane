@@ -1,6 +1,8 @@
 # Changelog
 
 ## 2026-09-19
+- [fix] The Work status line no longer shows idle "Ready" or raw event names; it appears only for meaningful states (loading, errors, stopped/failed runs) and aligns with the composer text.
+- [feat] Lead and Team composer menus open on mouse hover and close shortly after the mouse leaves; click, keyboard, and touch still work, and clicking a hover-opened menu keeps it open.
 - [feat] Team progress display: a compact strip above the transcript names the lead and up to two live team members with their current action (needs-attention first, "+N" overflow), settling to "N tasks done". Clicking it opens a Team side panel with one lane per task: title, agent, current action, elapsed time, inline Stop, expandable recent actions/output; finished tasks collapse under Done with a one-line result. Replaces the old Subagents list.
 - [feat] Native worker records now carry `activity` and a bounded `actions` history, derived server-side from Codex JSONL, Claude stream-json, Antigravity step, and DAN events, so polling reads small records instead of raw logs. Polling runs every 1.5s while work is live and every 5s otherwise.
 - [docs] Regenerated `CLAUDE.md` from `AGENTS.md` (two-level plan numbering).

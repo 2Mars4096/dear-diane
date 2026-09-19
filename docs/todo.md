@@ -63,3 +63,5 @@
 - [x] Close Lead/Team dropdowns on outside click/touch or keyboard focus leaving, retaining interactions inside the panel.
 
 - [x] Add Delete all archived chats to the archive footer, with count/scope confirmation, progress, retryable failures, and a backend guard preserving unarchived chats.
+
+- [x] Hide idle/raw Work status text; open Lead/Team menus on hover.

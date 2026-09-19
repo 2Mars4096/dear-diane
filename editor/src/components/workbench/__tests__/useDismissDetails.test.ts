@@ -20,3 +20,22 @@ it("retains inside clicks and closes on outside pointer or keyboard focus", () =
     expect(details.open).toBe(false);
   } finally { act(() => root.unmount());host.remove(); }
 });
+it("opens on mouse hover, stays open when its summary is clicked, and closes after the mouse leaves", async () => {
+  function Panel() { const ref=useDismissDetails(); return createElement("details", {ref}, createElement("summary",null,"Lead"), createElement("span",null,"Settings")); }
+  const host=document.createElement("div"); document.body.append(host); const root=createRoot(host);
+  const pointer=(type: string, pointerType="mouse") => Object.assign(new Event(type), { pointerType });
+  try {
+    act(() => root.render(createElement(Panel)));
+    const details=host.querySelector("details")!;
+    details.dispatchEvent(pointer("pointerenter", "touch"));
+    expect(details.open).toBe(false);
+    details.dispatchEvent(pointer("pointerenter"));
+    expect(details.open).toBe(true);
+    const click=new MouseEvent("click",{bubbles:true,cancelable:true});
+    host.querySelector("summary")!.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    details.dispatchEvent(pointer("pointerleave"));
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(details.open).toBe(false);
+  } finally { act(() => root.unmount());host.remove(); }
+});

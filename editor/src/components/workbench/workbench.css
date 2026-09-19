@@ -38,7 +38,7 @@
 .wb-live-dot { width:6px; height:6px; border-radius:50%; background:var(--wb-accent); animation:wb-pulse 1.5s ease-in-out infinite; }
 .wb-muted { color:var(--wb-muted); }
 .wb-attachment { font-size:12px; border:1px solid var(--wb-line); padding:8px 10px; border-radius:6px; margin-top:8px; }
-.wb-status { color:var(--wb-muted); font-size:11px; padding:4px 24px; min-height:24px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.wb-status { box-sizing:border-box; width:100%; max-width:816px; margin:0 auto; color:var(--wb-muted); font-size:11px; padding:4px 42px; min-height:24px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .wb-shell .wb-composer { background:var(--wb-paper); border-top:0; box-shadow:none; padding:12px 28px 22px; }
 .wb-shell .wb-composer > div { max-width:760px; margin:auto; background:var(--wb-soft); border:1px solid var(--wb-line); border-radius:18px; padding:6px; gap:4px; }
 .wb-shell .wb-composer textarea { background:transparent; border:0; box-shadow:none; resize:none; font-size:14px; padding:6px 8px; min-height:36px; }
