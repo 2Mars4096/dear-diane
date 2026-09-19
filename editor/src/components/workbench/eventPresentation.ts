@@ -12,6 +12,8 @@ export function eventAgentName(event: ChatV2AgentRunEvent): string {
   if (name.trim()) return name;
   if (backend.includes("claude")) return "Claude Code";
   if (backend.includes("codex")) return "Codex";
+  if (backend.includes("antigravity")) return "Antigravity";
+  if (backend.includes("cursor")) return "Cursor";
   return "DAN";
 }
 

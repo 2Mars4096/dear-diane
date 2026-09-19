@@ -188,14 +188,14 @@ const NOTES_WORKSPACE_RULES = [
 ];
 const NOTES_WORKSPACE_WRITE_POLICY =
   "Use the notes workspace as context by default; create or edit notes only when the operator asks for notes, memory, documentation, or a saved artifact.";
-type WorkspaceAgentSelectionId = "native" | "codex" | "claude" | "antigravity";
+type WorkspaceAgentSelectionId = "native" | "codex" | "claude" | "antigravity" | "cursor";
 type WorkspaceCodexReasoningEffort = "low" | "medium" | "high" | "xhigh";
 type WorkspaceAutonomyMode = "plan" | "auto" | "full";
 type WorkspaceAgentOption = {
   id: WorkspaceAgentSelectionId;
   label: string;
   shortLabel: string;
-  backend: typeof SUPER_DAN_BACKEND | typeof CODEX_BACKEND | "native_codex" | "claude" | "antigravity";
+  backend: typeof SUPER_DAN_BACKEND | typeof CODEX_BACKEND | "native_codex" | "claude" | "antigravity" | "cursor";
 };
 type WorkspaceModelOption = {
   id: string;
@@ -234,6 +234,7 @@ const WORKSPACE_AGENT_OPTIONS: WorkspaceAgentOption[] = [
   { id: "codex", label: "Codex", shortLabel: "Codex", backend: "native_codex" },
   { id: "claude", label: "Claude Code", shortLabel: "Claude", backend: "claude" },
   { id: "antigravity", label: "Antigravity", shortLabel: "Antigravity", backend: "antigravity" },
+  { id: "cursor", label: "Cursor", shortLabel: "Cursor", backend: "cursor" },
   {
     id: "native",
     label: "Super DAN",
@@ -246,11 +247,13 @@ const DEFAULT_MODEL_SELECTION_BY_AGENT: Record<WorkspaceAgentSelectionId, string
   codex: "codex_default",
   claude: "claude_default",
   antigravity: "antigravity_default",
+  cursor: "cursor_default",
 };
 const WORKSPACE_MODEL_OPTIONS: WorkspaceModelOption[] = [
   { id: "codex_default", agentId: "codex", label: "CLI default", shortLabel: "CLI default" },
   { id: "claude_default", agentId: "claude", label: "CLI default", shortLabel: "CLI default" },
   { id: "antigravity_default", agentId: "antigravity", label: "CLI default", shortLabel: "CLI default" },
+  { id: "cursor_default", agentId: "cursor", label: "CLI default", shortLabel: "CLI default" },
   { id: "openrouter_deepseek_v41_flash", agentId: "native", label: "OpenRouter · DeepSeek V4.1 Flash", shortLabel: "DeepSeek V4.1 Flash", model: "deepseek/deepseek-v4.1-flash", baseUrl: "https://openrouter.ai/api/v1" },
   { id: "openrouter_kimi_k26", agentId: "native", label: "OpenRouter · Kimi K2.6", shortLabel: "Kimi K2.6", model: "moonshotai/kimi-k2.6", baseUrl: "https://openrouter.ai/api/v1" },
   {
@@ -9478,7 +9481,7 @@ async function restoreFullNativeMessages(sourceMessages: ChatMessage[]): Promise
           try {
             const run = await getChatV2AgentRun(message.taskRunRef.runId);
             const result = run.metadata?.backend_result as { backend?: string; summary?: string } | undefined;
-            if (run.status === "completed" && ["codex", "claude", "antigravity"].includes(result?.backend || "") && result?.summary && result.summary.startsWith(message.content) && result.summary.length > message.content.length) {
+            if (run.status === "completed" && ["codex", "claude", "antigravity", "cursor"].includes(result?.backend || "") && result?.summary && result.summary.startsWith(message.content) && result.summary.length > message.content.length) {
               return { ...message, content: result.summary };
             }
           } catch { /* Keep saved text when run history is unavailable. */ }

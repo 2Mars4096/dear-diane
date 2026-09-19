@@ -137,7 +137,7 @@ describe("workspace blueprint nodes", () => {
     expect(payload.profile_policy).toMatchObject({ model: "deepseek/deepseek-v4.1-flash", base_url: "https://openrouter.ai/api/v1" });
   });
 
-  it("exposes four lead agents with a separate model choice", () => {
+  it("exposes the lead agents with a separate model choice", () => {
     const agentOptions = workspaceAgentOptionsForTest();
     const modelOptions = workspaceModelOptionsForTest("native");
     const payload = workspaceAgentExecutePayloadForTest("native", "native_default");
@@ -146,6 +146,7 @@ describe("workspace blueprint nodes", () => {
       expect.objectContaining({ id: "codex", backend: "native_codex" }),
       expect.objectContaining({ id: "claude", backend: "claude" }),
       expect.objectContaining({ id: "antigravity", backend: "antigravity" }),
+      expect.objectContaining({ id: "cursor", backend: "cursor" }),
       expect.objectContaining({ id: "native", label: "Super DAN", backend: "super_dan" }),
     ]);
     expect(modelOptions.map((option) => option.id)).toEqual(["openrouter_deepseek_v41_flash", "openrouter_kimi_k26", "native_default", "native_kimi_k26"]);

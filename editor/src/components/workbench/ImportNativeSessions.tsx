@@ -6,7 +6,7 @@ export function ImportNativeSessions({ workspace, workspaceId, onClose, onImport
 }) {
   const tabId = useId();
   const [activeSource, setActiveSource] = useState("codex");
-  const sourceNames: Record<string, string> = { codex: "Codex", claude: "Claude Code", antigravity: "Antigravity" };
+  const sourceNames: Record<string, string> = { codex: "Codex", claude: "Claude Code", antigravity: "Antigravity", cursor: "Cursor" };
   const dialog = useRef<HTMLDialogElement>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
@@ -29,7 +29,7 @@ export function ImportNativeSessions({ workspace, workspaceId, onClose, onImport
     })();
     return () => { abort.abort(); previous?.focus(); };
   }, [workspace]);
-  const sourceOrder = ["codex", "claude", "antigravity"];
+  const sourceOrder = ["codex", "claude", "antigravity", "cursor"];
   const sources = [...new Set(sessions.map((session) => session.backend))].sort((a, b) => (sourceOrder.indexOf(a) < 0 ? 99 : sourceOrder.indexOf(a)) - (sourceOrder.indexOf(b) < 0 ? 99 : sourceOrder.indexOf(b)));
   const currentSource = sources.includes(activeSource) ? activeSource : sources[0];
   const visibleSessions = sessions.filter((session) => session.backend === currentSource);

@@ -266,6 +266,14 @@ def describe(row: dict) -> str:
             return "Writing response"
         if any(block.get("type") == "thinking" for block in blocks):
             return "Thinking"
+    call = row.get("tool_call") if kind == "tool_call" and row.get("subtype") == "started" else None
+    if isinstance(call, dict) and call:  # Cursor stream-json: {"readToolCall": {"args": {...}}}
+        key, value = next(iter(call.items()))
+        args = (value or {}).get("args") or {} if isinstance(value, dict) else {}
+        name = {"readToolCall": "Read", "editToolCall": "Edit", "writeToolCall": "Write", "shellToolCall": "Bash",
+                "grepToolCall": "Grep", "globToolCall": "Glob", "lsToolCall": "LS", "webSearchToolCall": "WebSearch",
+                "todoToolCall": "TodoWrite"}.get(key, key.removesuffix("ToolCall"))
+        return _tool_phrase(name, {**args, "file_path": args.get("path") or args.get("file_path") or ""})
     step = row.get("step_update")  # Antigravity
     if isinstance(step, dict) and step.get("step_type"):
         return "Writing response" if step["step_type"] == "agent_response" else _short(str(step["step_type"]).replace("_", " ").capitalize())

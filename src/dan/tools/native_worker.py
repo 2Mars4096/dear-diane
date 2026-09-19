@@ -6,7 +6,7 @@ TOOL_METADATA = {
     "description": "Delegate an independent task to an enabled DAN, Codex, Claude Code, or Antigravity worker. Start returns immediately; start multiple workers to run in parallel. Poll status to read results. Use resume for a follow-up to a settled worker. Inspect all results before ending the manager run; running children stop when the manager exits.",
     "parameters": {"type": "object", "properties": {
         "action": {"type": "string", "enum": ["start", "status", "stop", "resume"]},
-        "backend": {"type": "string", "enum": ["dan", "codex", "claude", "antigravity"]},
+        "backend": {"type": "string", "enum": ["dan", "codex", "claude", "antigravity", "cursor"]},
         "prompt": {"type": "string"}, "worker_id": {"type": "string"}}, "required": ["action"]},
     "examples": [{"input": {"action": "start", "backend": "codex", "prompt": "Review the test coverage"}, "output": {"status": "running"}}],
     "returns": {"type": "object", "description": "Worker identity, native session, status and output, or a list of workers."},

@@ -1536,7 +1536,7 @@ def select_agent_backend_adapter(
     normalized = str(requested or "").strip().lower().replace("-", "_")
     if normalized in {"deterministic", "fake", "test"}:
         return DeterministicAgentBackendAdapter()
-    if normalized in {"native_codex", "claude", "antigravity"}:
+    if normalized in {"native_codex", "claude", "antigravity", "cursor"}:
         from dan.native_workers.lead import NativeLeadAdapter
         return NativeLeadAdapter("codex" if normalized == "native_codex" else normalized)
     if normalized in {"codex", "codex_cli", "openai_codex"}:

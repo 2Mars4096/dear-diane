@@ -10,7 +10,7 @@ export function loadWorkerProfiles(key = "dan.nativeWorkerProfiles.v1"): WorkerP
   try {
     const stored = JSON.parse(localStorage.getItem(key) || "{}");
     if (!stored || typeof stored !== "object" || Array.isArray(stored)) return {};
-    return Object.fromEntries(["dan", "codex", "claude", "antigravity"].filter((id) => stored[id] && typeof stored[id] === "object").map((id) => [id, { ...empty, ...stored[id] }]));
+    return Object.fromEntries(["dan", "codex", "claude", "antigravity", "cursor"].filter((id) => stored[id] && typeof stored[id] === "object").map((id) => [id, { ...empty, ...stored[id] }]));
   } catch { return {}; }
 }
 export function NativeWorkerSettings({ profiles, onChange, lead, inline = false, catalog }: { profiles: WorkerProfiles; onChange: (profiles: WorkerProfiles) => void; lead?: string; inline?: boolean; catalog?: Runtime[] }) {

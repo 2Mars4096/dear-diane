@@ -56,3 +56,5 @@
 - [x] Present roles as Lead and Team, separate from provider/model choices.
 - [x] Wire Codex/Claude/Antigravity leads and DAN team members with separate account/model settings, scoped delegation bridge, durable native continuation, imported forks, streaming, queued follow-ups, and stop cleanup.
 - [ ] Complete authenticated mixed-agent acceptance: Codex lead fixed-reply smoke passed; Claude timed out after 45 seconds; Antigravity awaits login. Tests cover all three CLI protocols and DAN delegation using fixtures.
+- [x] Add Cursor (`agent` CLI) as a lead/team runtime with Plan/Auto/Full mapping; docs: https://cursor.com/docs/cli/headless and https://cursor.com/docs/cli/reference/parameters.
+- [ ] Install Cursor CLI, sign in, and run a live Cursor lead/team smoke; confirm stream-json session/result fields and add session import if its local chat store is documented.

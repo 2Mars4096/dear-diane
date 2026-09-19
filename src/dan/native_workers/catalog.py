@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import tomllib
 
-RUNTIMES = {"codex": "Codex", "claude": "Claude Code", "antigravity": "Antigravity"}
+RUNTIMES = {"codex": "Codex", "claude": "Claude Code", "antigravity": "Antigravity", "cursor": "Cursor"}
 
 
 def user_home() -> Path:
@@ -57,10 +57,20 @@ def accounts() -> dict[str, dict[str, dict]]:
 
 
 def binary(runtime: str) -> str | None:
-    name = "agy" if runtime == "antigravity" else runtime
     configured = os.environ.get(f"DAN_{runtime.upper()}_BIN")
     if configured:
         return shutil.which(configured)
+    if runtime == "cursor":
+        # Cursor's CLI installs as `agent` (older releases: `cursor-agent`). `agent` is too
+        # generic to trust by name alone, so it must resolve into Cursor's install.
+        for name in ("cursor-agent", "agent"):
+            for candidate in [shutil.which(name), str(user_home() / ".local/bin" / name)]:
+                if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK) and \
+                        (name == "cursor-agent" or "cursor-agent" in Path(os.path.realpath(candidate)).parts
+                         or Path(os.path.realpath(candidate)).name == "cursor-agent"):
+                    return candidate
+        return None
+    name = "agy" if runtime == "antigravity" else runtime
     found = shutil.which(name)
     if found:
         return found
@@ -103,9 +113,10 @@ def catalog() -> dict:
         claude_fast = bool(parsed and tuple(map(int, parsed.groups())) >= (2, 1, 205))
         result.append({"id": runtime, "label": label, "available": bool(executable), "version": version,
                        "accounts": [{"id": key, "label": value["label"]} for key, value in configured[runtime].items()],
-                       "models": models, "efforts": ["low", "medium", "high"] + (["xhigh", "max", "ultra"] if runtime == "codex" else []),
+                       "models": models, "efforts": [] if runtime == "cursor" else ["low", "medium", "high"] + (["xhigh", "max", "ultra"] if runtime == "codex" else []),
                        "fast": runtime == "codex" or (runtime == "claude" and claude_fast),
-                       "setup": "Install agy and sign in with agy." if not executable and runtime == "antigravity" else ""})
+                       "setup": "" if executable else {"antigravity": "Install agy and sign in with agy.",
+                                                        "cursor": "Install the Cursor CLI (curl https://cursor.com/install -fsS | bash), then run agent login."}.get(runtime, "")})
     result.insert(0, {"id": "dan", "label": "DAN", "available": True, "version": "",
                       "accounts": [{"id": "default", "label": "DAN configuration"}],
                       "models": ["deepseek/deepseek-v4.1-flash", "moonshotai/kimi-k2.6"],
@@ -144,6 +155,19 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
     allowed = {"low", "medium", "high"} | ({"xhigh", "max", "ultra"} if runtime == "codex" else set())
     if effort and effort not in allowed:
         raise ValueError("Unsupported reasoning effort")
+    if runtime == "cursor":
+        if effort:
+            raise ValueError("Cursor has no reasoning-effort setting")
+        if fast:
+            raise ValueError("Cursor has no supported fast-mode switch")
+        cmd = [executable, "-p", "--output-format", "stream-json", "--workspace", workspace]
+        # Plan -> read-only plan mode; Auto -> sandboxed with commands allowed; Full -> no sandbox.
+        cmd += {"plan": ["--mode", "plan"], "auto": ["--sandbox", "enabled", "--force"], "full": ["--sandbox", "disabled", "--force"]}[permission]
+        if model:
+            cmd += ["--model", model]
+        if session:
+            cmd += ["--resume", session]
+        return cmd + [objective], env
     if runtime == "codex":
         cmd = [executable, "exec"] + (["resume", session] if session else [])
         cmd += ["--json", "--skip-git-repo-check"]

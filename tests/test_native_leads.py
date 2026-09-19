@@ -89,6 +89,6 @@ async def test_bridge_can_delegate_to_dan_and_reject_disabled_workers(monkeypatc
         server.cancel(); await asyncio.gather(server, return_exceptions=True); await team.close()
 
 
-@pytest.mark.parametrize("name,runtime", [("native_codex","codex"),("claude","claude"),("antigravity","antigravity")])
+@pytest.mark.parametrize("name,runtime", [("native_codex","codex"),("claude","claude"),("antigravity","antigravity"),("cursor","cursor")])
 def test_backend_routing(tmp_path, name, runtime):
     assert select_agent_backend_adapter(request(tmp_path), backend_name=name).backend_name == runtime

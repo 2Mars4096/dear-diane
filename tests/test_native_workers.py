@@ -173,3 +173,36 @@ def test_dan_modes_map_to_native_permissions(monkeypatch):
     auto = command("claude", "auto")
     assert "--permission-mode acceptEdits" in auto and "autoAllowBashIfSandboxed" in auto
     assert "--dangerously-skip-permissions" in command("claude", "full")
+
+
+def test_cursor_modes_resume_and_binary_detection(monkeypatch, tmp_path):
+    from dan.native_workers import catalog
+    monkeypatch.setattr(catalog, "binary", lambda runtime: "/bin/agent")
+    monkeypatch.setattr(catalog, "accounts", lambda: {"cursor": {"default": {"env": {}}}})
+    def command(permission, session=""):
+        return catalog.launch("cursor", {"permission": permission, "model": "gpt-5"}, "task", "/work", session)[0]
+    plan = command("plan")
+    assert plan[:4] == ["/bin/agent", "-p", "--output-format", "stream-json"] and plan[-1] == "task"
+    assert "--mode" in plan and "--force" not in plan
+    assert " ".join(command("auto", "chat-1")).endswith("--sandbox enabled --force --model gpt-5 --resume chat-1 task")
+    assert "--sandbox disabled" in " ".join(command("full"))
+    # A generic `agent` binary is only trusted when it resolves into Cursor's install.
+    monkeypatch.undo()
+    home = tmp_path / "home"
+    (home / ".local/bin").mkdir(parents=True)
+    other = home / ".local/bin/agent"
+    other.write_text("#!/bin/sh\n"); other.chmod(0o755)
+    monkeypatch.setattr(catalog, "user_home", lambda: home)
+    monkeypatch.setattr(catalog.shutil, "which", lambda name: None)
+    assert catalog.binary("cursor") is None
+    real = home / ".local/share/cursor-agent/agent"
+    real.parent.mkdir(parents=True); real.write_text("#!/bin/sh\n"); real.chmod(0o755)
+    other.unlink(); other.symlink_to(real)
+    assert catalog.binary("cursor") == str(other)
+
+
+def test_describe_cursor_tool_calls():
+    from dan.native_workers.service import describe
+    assert describe({"type": "tool_call", "subtype": "started", "tool_call": {"readToolCall": {"args": {"path": "src/app.py"}}}}) == "Reading app.py"
+    assert describe({"type": "tool_call", "subtype": "started", "tool_call": {"shellToolCall": {"args": {"command": "npm test"}}}}) == "Running npm test"
+    assert describe({"type": "tool_call", "subtype": "completed", "tool_call": {"readToolCall": {}}}) == ""

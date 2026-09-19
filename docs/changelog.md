@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-19
+- [feat] Added Cursor as a lead and team runtime alongside Codex, Claude Code, and Antigravity. Headless CLI `agent` (or legacy `cursor-agent`; a generic `agent` binary is only accepted when it resolves into Cursor's install) with `-p --output-format stream-json --workspace`, `--model`, `--resume`; modes map Plan → `--mode plan`, Auto → `--sandbox enabled --force`, Full access → `--sandbox disabled --force`. Tool-call events feed team progress. Not installed locally, so it shows disabled with the install hint; session import is not wired (Cursor's local chat format is unverified).
 - [feat] Side panel tabs are now contextual: Chat and Files always; Preview once something is selected; Activity once a run has events (live dot while running); Team once a team exists (running count). The open tab never disappears. Restyled as an icon + label segmented track; every tab uses one width (`--wb-side-width`, 380px), including Preview.
 - [feat] The Plan/Auto/Full access menu opens on hover, matching Lead and Team.
 - [fix] Preview showed "_empty file_" for .tex and code files because only csv/json/log/txt were loaded as text; added LaTeX, config, and common source extensions, and unsupported types now say there is no preview.
