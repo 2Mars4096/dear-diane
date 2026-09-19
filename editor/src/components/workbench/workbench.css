@@ -34,6 +34,11 @@
 .wb-message-body { font-size:15px; line-height:1.85; overflow-wrap:anywhere; }
 .wb-message-user { margin-left:12%; border-radius:16px; background:var(--wb-soft); padding:16px 20px; }
 .wb-message-user .wb-message-author { font-size:11px; }
+.wb-live-action { display:flex; align-items:center; gap:10px; color:var(--wb-muted); font-size:14px; }
+.wb-live-action > span:last-child { animation:wb-settle 320ms ease-out; }
+.wb-request-actions { display:flex; justify-content:flex-end; gap:2px; margin:-28px 0 32px; }
+.wb-request-actions button { display:flex; align-items:center; gap:6px; padding:5px 8px; border-radius:6px; font-size:11px; color:var(--wb-muted); }
+.wb-request-actions button:hover { background:var(--wb-soft); color:var(--wb-ink); }
 .wb-message-state { font-size:11px; color:var(--wb-muted); margin-top:10px; }
 .wb-live-dot { width:6px; height:6px; border-radius:50%; background:var(--wb-accent); animation:wb-pulse 1.5s ease-in-out infinite; }
 .wb-muted { color:var(--wb-muted); }

@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 from . import bridge
-from .service import NativeTeam, active_teams
+from .service import NativeTeam, active_teams, describe
 
 _active_sessions: set[str] = set()
 
@@ -61,13 +61,14 @@ class NativeLeadAdapter:
                 event("model_text_delta", text[:300], {"accumulated": text, "text": text, "native_session_id": record["native_session_id"]})
                 last_text = text
             else:
-                event("status_reported", f"{backend}: {row.get('type') or row.get('event') or 'activity'}",
+                event("status_reported", describe(row),
                       {"native_session_id": record["native_session_id"], "raw": row})
 
         try:
             if runtime:
                 runtime.raise_if_interrupted("native_lead.start")
-            if state_path.is_file():
+            # Regenerate discards the last answer; resuming would keep it in the native session.
+            if state_path.is_file() and not request.surface_context.get("regenerate"):
                 saved = json.loads(state_path.read_text())
                 profile["resume_session"] = saved.get("native_session_id", "")
             import_path = base / "native_imports" / f"{request.thread_id}.json"

@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-19
+- [feat] Regenerate and Fork under the latest request. Regenerate drops the answer after it and re-runs the request in place (native leads start a fresh session so the discarded answer is not remembered); Fork copies the conversation into a new chat in the same project with branch lineage. Hidden while a run is active.
+- [fix] Refreshing or reopening a chat with a running task reattaches its event stream and rebuilds the live answer from replayed events; previously live updates stopped until the run finished.
+- [fix] Run progress no longer writes raw event names (e.g. "codex: turn.started") to the status line. The pending answer shows a live dot with the current readable action; native lead status events use the same action phrases as team workers.
 - [fix] Sidebar chat rows share one layout: single-line title at rest, prompt log/archive revealed on hover (taking no space otherwise). A running chat only adds an always-visible progress icon and Stop, placed last so they never shift; the extra status line and blue live styling were removed (details stay in the row tooltip).
 - [fix] The Work status line no longer shows idle "Ready" or raw event names; it appears only for meaningful states (loading, errors, stopped/failed runs) and aligns with the composer text.
 - [feat] Lead and Team composer menus open on mouse hover and close shortly after the mouse leaves; click, keyboard, and touch still work, and clicking a hover-opened menu keeps it open.

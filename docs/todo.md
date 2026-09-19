@@ -67,3 +67,6 @@
 - [x] Hide idle/raw Work status text; open Lead/Team menus on hover.
 
 - [x] Unify idle/running sidebar chat rows; always show progress and Stop for running chats.
+
+- [x] Regenerate/Fork for the latest request; reattach live runs after refresh; replace dev-style run status with readable live actions.
+- [ ] Live-verify Regenerate/Fork and refresh reattach against a real Codex/Claude lead run.

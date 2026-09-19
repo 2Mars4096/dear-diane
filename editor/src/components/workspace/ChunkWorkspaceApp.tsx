@@ -1141,6 +1141,17 @@ function nowId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** Keep readable progress phrases; drop raw event names such as "codex: turn.started". */
+export function liveActionTextForTest(summary: string | undefined) {
+  return liveActionText(summary);
+}
+
+function liveActionText(summary: string | undefined): string {
+  const text = (summary ?? "").trim().replace(/[.…]+$/, "");
+  if (!text || text.length > 90 || /^[\w-]+:\s*[\w.]+$/.test(text) || /^[a-z]+([._][a-z]+)+$/.test(text)) return "";
+  return text;
+}
+
 function makeMessage(role: ChatMessage["role"], content: string): ChatMessage {
   return {
     id: nowId(role),
@@ -13214,6 +13225,8 @@ export default function ChunkWorkspaceApp() {
   useEffect(() => { setSidecarSelection({ text: "", token: Date.now() }); }, [activeThread?.id]);
   const [loadingThreadId, setLoadingThreadId] = useState<string | null>(null);
   const [pendingAssistantIds, setPendingAssistantIds] = useState<Record<string, boolean>>({});
+  const [liveActions, setLiveActions] = useState<Record<string, string>>({});
+  const attachedRunKeyRef = useRef("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [tasks, setTasks] = useState<ChatV2TaskSnapshot[]>([]);
   const [backgroundTasks, setBackgroundTasks] = useState<ChatV2TaskSnapshot[]>([]);
@@ -16010,6 +16023,7 @@ export default function ChunkWorkspaceApp() {
       runWorkspaceId = workspace?.id ?? activeWorkspaceId ?? "",
     ) => {
       agentStreamRef.current?.close();
+      attachedRunKeyRef.current = `${thread.id}:${runId}`;
       agentStreamRef.current = connectChatV2AgentRunEvents(
         runId,
         (event) => {
@@ -16034,7 +16048,8 @@ export default function ChunkWorkspaceApp() {
           if (activeThreadRef.current?.id !== thread.id) return;
           setAgentEvents((previous) => [...previous, event].slice(-80));
           attachRunEventToAssistant(assistantId, runEventPayloadFromAgentEvent(event));
-          if (!agentRunEventIsTerminal(event) && event.summary) setStatus(event.summary);
+          const action = !agentRunEventIsTerminal(event) ? liveActionText(event.summary) : "";
+          if (action) setLiveActions((previous) => previous[assistantId] === action ? previous : { ...previous, [assistantId]: action });
           if (event.type === "model_text_delta") {
             applyMessages((previous) => previous.map((message) => message.id === assistantId
               ? { ...message, content: streamedMessageContent(message.content, event) } : message));
@@ -16068,6 +16083,11 @@ export default function ChunkWorkspaceApp() {
               delete nextPending[assistantId];
               return nextPending;
             });
+            setLiveActions((previous) => {
+              const next = { ...previous };
+              delete next[assistantId];
+              return next;
+            });
             setStatus(event.type === "completed" ? "Ready" : event.type);
           }
         },
@@ -16100,6 +16120,7 @@ export default function ChunkWorkspaceApp() {
         mentionedFiles?: WorkspaceFileEntry[];
         attachments?: ComposerAttachmentDraft[];
         displayText?: string;
+        regenerate?: boolean;
       } = {},
     ) => {
       if (selectedAgentId !== "native") queueCommand = "continue_after_current";
@@ -16159,7 +16180,7 @@ export default function ChunkWorkspaceApp() {
         setPendingAssistantIds((previous) => ({ ...previous, [assistant.id]: true }));
       }
       const initialPersist = persistMessages(thread, nextMessages, "agent");
-      setStatus(`Starting ${selectedAgentOption.shortLabel} · ${selectedModelOption.shortLabel}`);
+      setStatus("");
 
       if (activeRunId && activeRunningTask) {
         const response = await postChatV2AgentRunCommand(activeRunId, {
@@ -16230,7 +16251,7 @@ export default function ChunkWorkspaceApp() {
         surface_type: WORKSPACE_SURFACE_TYPE,
         surface_id: WORKSPACE_SURFACE_ID,
         attachment_path: firstAttachmentPath,
-        surface_context: buildSurfaceContext({
+        surface_context: { ...(options.regenerate ? { regenerate: true } : {}), ...buildSurfaceContext({
           note: activeNote,
           selectedChunk,
           selectedBlueprintNode,
@@ -16247,7 +16268,7 @@ export default function ChunkWorkspaceApp() {
           selectedSkills: options.selectedSkills ?? [],
           mentionedFiles: options.mentionedFiles ?? [],
           attachments,
-        }),
+        }) },
       });
       const createdTaskWorkspaceId =
         (created.task ? workspaceIdForTask(created.task, workspaces) : "") ||
@@ -16458,6 +16479,63 @@ export default function ChunkWorkspaceApp() {
     },
     [composerCaret, input, setComposerInputValue],
   );
+
+  useEffect(() => { attachedRunKeyRef.current = ""; }, [activeThread?.id]);
+  useEffect(() => {
+    if (!activeThread || loadingThreadId !== null || !activeRunId) return;
+    const key = `${activeThread.id}:${activeRunId}`;
+    if (attachedRunKeyRef.current === key) return;
+    const current = messagesRef.current;
+    const linked = current.find((message) => message.role === "assistant" && message.taskRunRef?.runId === activeRunId);
+    const trailing = current.at(-1)?.role === "assistant" ? current.at(-1) : undefined;
+    const target = linked ?? trailing ?? makeMessage("assistant", "");
+    applyMessages((previous) => previous.some((message) => message.id === target.id)
+      ? previous.map((message) => message.id === target.id ? { ...message, content: "", runEvents: [] } : message)
+      : [...previous, target]);
+    setPendingAssistantIds((previous) => ({ ...previous, [target.id]: true }));
+    connectAgentStream(activeRunId, activeThread, target.id);
+  }, [activeRunId, activeThread, applyMessages, connectAgentStream, loadingThreadId]);
+
+  /** Re-run the latest request in place, discarding the answer that followed it. */
+  const regenerateLastRequest = useCallback(async () => {
+    const current = messagesRef.current;
+    let index = current.length - 1;
+    while (index >= 0 && current[index].role !== "user") index -= 1;
+    if (index < 0 || !activeThread || activeRunId) return;
+    const request = current[index];
+    applyMessages(() => current.slice(0, index));
+    try {
+      await sendAgent(request.content, "append_followup", { displayText: request.content, regenerate: true });
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Regenerate failed");
+    }
+  }, [activeRunId, activeThread, applyMessages, sendAgent]);
+
+  /** Copy this conversation into a new chat in the same project; the original is untouched. */
+  const forkConversation = useCallback(async () => {
+    if (!activeThread || activeRunId) return;
+    const source = messagesRef.current;
+    const lastRequest = [...source].reverse().find((message) => message.role === "user");
+    const workspaceId =
+      threadWorkspaces[threadWorkspaceKey(activeThread.workflowId, activeThread.id)] || workspace?.id || activeWorkspaceId || "";
+    try {
+      setStatus("Forking conversation");
+      const created = await createChatV2Thread(activeThread.workflowId, {
+        title: `${activeThread.title || "Conversation"} (fork)`,
+        mode: "agent",
+        parent_thread_id: activeThread.id,
+        branch_point_message_id: lastRequest?.id,
+        branch_type: "explore",
+      });
+      const workflowId = created.workflow_id || activeThread.workflowId;
+      await saveChatV2Thread(workflowId, created.id, { messages: source, mode: "agent" });
+      if (workspaceId) bindThreadToWorkspace(workflowId, created.id, workspaceId);
+      await refreshThreads();
+      await openSession({ id: created.id, workflow_id: workflowId, title: created.title, message_count: source.length, created_at: created.created_at, updated_at: created.updated_at }, workspaceId);
+    } catch (error) {
+      setStatus(error instanceof Error ? `Fork failed: ${error.message}` : "Fork failed");
+    }
+  }, [activeRunId, activeThread, activeWorkspaceId, bindThreadToWorkspace, openSession, refreshThreads, threadWorkspaces, workspace?.id]);
 
   const submit = useCallback(async (modeOverride?: ComposerSubmitMode) => {
     const draftBeforeSubmit = input;
@@ -18509,7 +18587,7 @@ export default function ChunkWorkspaceApp() {
                 />
               </div>
 ) : (
-                <WorkbenchConversation key={activeThread?.id ?? "new"} messages={messages} pending={pendingAssistantIds} loading={loadingThreadId !== null} status={status} onSidecar={activeThread ? (text) => { setSidecarSelection({text, token:Date.now()}); setSidecarChat(true); setWorkbenchActivity(false); setTeamPanel(false); setShowSidecarPreview(false); } : undefined} onQuote={(text, messageIds) => {
+                <WorkbenchConversation key={activeThread?.id ?? "new"} messages={messages} pending={pendingAssistantIds} loading={loadingThreadId !== null} status={status} liveActions={liveActions} onRegenerate={activeThread && !activeRunningTask && !sending ? () => void regenerateLastRequest() : undefined} onFork={activeThread && !activeRunningTask && !sending ? () => void forkConversation() : undefined} onSidecar={activeThread ? (text) => { setSidecarSelection({text, token:Date.now()}); setSidecarChat(true); setWorkbenchActivity(false); setTeamPanel(false); setShowSidecarPreview(false); } : undefined} onQuote={(text, messageIds) => {
                   if (!activeThread) return;
                   setComposerReferences((current) => ({ ...current, [referenceKey]: { text, messageIds, title: activeThread.title || "Conversation", threadId: activeThread.id, workflowId: activeThread.workflowId } }));
                   composerRef.current?.focus();
