@@ -1,0 +1,94 @@
+import asyncio
+import json
+import sys
+
+import pytest
+
+from dan.native_workers.lead import NativeLeadAdapter, _active_sessions
+from dan.native_workers.service import NativeTeam, active_teams
+from dan.server.chat_v2_backend import AgentBackendRunRequest, AgentBackendRunResult, AgentBackendStopped, select_agent_backend_adapter
+
+
+def request(tmp_path, **kwargs):
+    return AgentBackendRunRequest(task_id="task", run_id=kwargs.pop("run_id", "run"), thread_id="chat", workspace_root=str(tmp_path), objective="Hello", **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["codex", "claude", "antigravity"])
+async def test_lead_streams_and_resumes_same_account_only(monkeypatch, tmp_path, backend):
+    monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path / "graphs"))
+    calls = []
+    def launch(runtime, profile, prompt, workspace, session=""):
+        calls.append((runtime, profile, prompt, session))
+        row = {"type": "result", "session_id": "fork-123", "result": "Answer"}
+        return [sys.executable, "-c", f"print({json.dumps(row)!r})"], {}
+    monkeypatch.setattr("dan.native_workers.service.launch", launch)
+    events = []
+    adapter = NativeLeadAdapter(backend)
+    req = request(tmp_path, history=[{"role":"user", "content":"Prior context"}], profile_policy={"lead_profile": {"account":"work", "model":"model", "effort":"high", "fast":True}})
+    result = await adapter.run(req, events.append)
+    assert result.status == "completed" and result.summary == "Answer"
+    assert "Prior context" in calls[0][2]
+    assert calls[0][1]["fast"] is True
+    assert any(event.type == "model_text_delta" and event.payload["accumulated"] == "Answer" for event in events)
+    await adapter.run(req.model_copy(update={"run_id":"next"}), events.append)
+    assert calls[-1][-1] == "fork-123"
+    req.profile_policy["lead_profile"]["account"] = "another"
+    await adapter.run(req, events.append)
+    assert calls[-1][-1] == ""
+    assert not _active_sessions and not active_teams
+
+
+@pytest.mark.asyncio
+async def test_stop_cleans_up_native_lead_and_bridge(monkeypatch, tmp_path):
+    monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path / "graphs"))
+    monkeypatch.setattr("dan.native_workers.service.launch", lambda *args: ([sys.executable, "-c", "import time; time.sleep(30)"], {}))
+    class Runtime:
+        count = 0
+        def raise_if_interrupted(self, checkpoint):
+            self.count += 1
+            if self.count > 2:
+                raise AgentBackendStopped("stop", checkpoint=checkpoint)
+    with pytest.raises(AgentBackendStopped):
+        await NativeLeadAdapter("codex").run(request(tmp_path, profile_policy={"native_workers":{"claude":{"enabled":True}}}), lambda e: None, Runtime())
+    assert not list(tmp_path.glob(".dan-team-*"))
+    assert not active_teams and not _active_sessions
+    records = list((tmp_path / "graphs/native_leads").glob("*.json"))
+    assert json.loads(records[0].read_text())["status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_bridge_can_delegate_to_dan_and_reject_disabled_workers(monkeypatch, tmp_path):
+    from dan.native_workers import bridge
+    from dan.native_workers.service import current_team
+    seen = []
+    async def run(self, req, emit, runtime=None):
+        seen.append(req)
+        assert current_team.get() is None  # no recursive delegation
+        return AgentBackendRunResult(status="completed", backend="super_dan", summary="Reviewed")
+    monkeypatch.setattr("dan.server.chat_v2_backend.SuperDanBackendAdapter._run", run)
+    team = NativeTeam("parent", str(tmp_path), {"dan":{"enabled":True,"model":"test"}}, tmp_path / "records")
+    directory = tmp_path / "bridge"; directory.mkdir()
+    server = asyncio.create_task(bridge.serve(directory, team))
+    async def call(*args):
+        process = await asyncio.create_subprocess_exec(sys.executable, bridge.__file__, "--queue", str(directory), *args, stdout=asyncio.subprocess.PIPE)
+        out, _ = await asyncio.wait_for(process.communicate(), 5)
+        return json.loads(out)
+    try:
+        result = await call("start", "--backend", "dan", "--prompt", "review")
+        assert result["ok"] and "profile" not in result["result"]
+        worker = result["result"]["worker_id"]
+        status = await call("status", "--worker-id", worker)
+        assert status["result"]["response"] == "Reviewed"
+        assert seen[0].profile_policy["model"] == "test"
+        assert not (await call("start", "--backend", "claude", "--prompt", "review"))["ok"]
+        assert (await call("resume", "--worker-id", worker, "--prompt", "follow-up"))["ok"]
+        await call("status", "--worker-id", worker)
+        assert seen[-1].history[1]["content"] == "Reviewed"
+    finally:
+        server.cancel(); await asyncio.gather(server, return_exceptions=True); await team.close()
+
+
+@pytest.mark.parametrize("name,runtime", [("native_codex","codex"),("claude","claude"),("antigravity","antigravity")])
+def test_backend_routing(tmp_path, name, runtime):
+    assert select_agent_backend_adapter(request(tmp_path), backend_name=name).backend_name == runtime

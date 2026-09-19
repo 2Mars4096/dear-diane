@@ -45,3 +45,17 @@ def test_invalid_model_provider_map_falls_back_to_empty(monkeypatch) -> None:
     monkeypatch.setenv("DAN_MODEL_PROVIDER_MAP", "not-json")
 
     assert live_gateway._model_provider_map() == {}
+
+
+def test_openrouter_reuses_key_only_when_existing_gateway_matches(monkeypatch):
+    captured = {}
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("DAN_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(live_gateway, "resolve_config", lambda **kwargs: {"api_key": kwargs.get("api_key") or "existing-key", "base_url": "https://openrouter.ai/api/v1"})
+    monkeypatch.setattr(live_gateway, "build_provider_registry", lambda config: (captured.update(config=config) or SimpleNamespace(resolve=lambda _: "provider")))
+    assert live_gateway.build_gateway_backed_live_provider("deepseek/deepseek-v4.1-flash", api_key=None, base_url="https://openrouter.ai/api/v1") == "provider"
+    assert captured["config"].llm_api_key == "existing-key"
+    monkeypatch.setattr(live_gateway, "resolve_config", lambda **kwargs: {"api_key": "wrong-provider-key", "base_url": "https://other.example/v1"})
+    import pytest
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+        live_gateway.build_gateway_backed_live_provider("deepseek/deepseek-v4.1-flash", api_key=None, base_url="https://openrouter.ai/api/v1")

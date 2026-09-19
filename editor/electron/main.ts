@@ -397,6 +397,15 @@ function createTray() {
 
 // --- IPC Handlers: file operations for the renderer ---
 
+ipcMain.handle("fs:droppedDirectory", async (_event, folderPath: unknown) => {
+  if (typeof folderPath !== "string" || !path.isAbsolute(folderPath)) return null;
+  try {
+    return (await fs.promises.stat(folderPath)).isDirectory() ? folderPath : null;
+  } catch {
+    return null;
+  }
+});
+
 ipcMain.handle("dialog:openDirectory", async () => {
   if (!mainWindow) return null;
   const result = await dialog.showOpenDialog(mainWindow, {

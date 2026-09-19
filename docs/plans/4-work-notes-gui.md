@@ -17,3 +17,7 @@
 - `ChunkWorkspaceApp` is the desktop application root.
 - Electron owns only backend lifecycle and narrow native filesystem/shell/watch bridges.
 - The GUI consumes the same Super DAN control-plane contracts as the terminal UI.
+
+## Workbench refresh
+- [x] [4-1-agent-workbench](4-1-agent-workbench.md): conversation-first shell and spatial project/session navigation.
+- [ ] [Native worker integration](../UI-plans/2-native-agent-workers.md): persistent mixed Codex/Claude children and scoped controls.

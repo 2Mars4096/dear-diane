@@ -1,8 +1,21 @@
+import { ProjectMenu } from "../workbench/ProjectMenu";
+import { SidecarChat } from "../workbench/SidecarChat";
+import { LeadAgentMenu } from "../workbench/LeadAgentMenu";
+import { DanSettings } from "../workbench/DanSettings";
+import { ImportNativeSessions } from "../workbench/ImportNativeSessions";
+import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from "../workbench/NativeWorkers";
+import { TeamPanel, TeamStrip, useTeamWorkers } from "../workbench/TeamProgress";
+import { ProjectSettings } from "../workbench/ProjectSettings";
+import { streamedMessageContent, completedMessageContent } from "../workbench/eventPresentation";
+import { WorkbenchNavigation } from "../workbench/WorkbenchNavigation";
+import { WorkbenchConversation, WorkbenchActivity } from "../workbench/WorkbenchConversation";
+import "../workbench/workbench.css";
 import {
   useCallback,
   useDeferredValue,
   useEffect,
   useMemo,
+  useLayoutEffect,
   useRef,
   useState,
   type ChangeEvent,
@@ -34,7 +47,6 @@ import {
   FolderPlus,
   FolderOpen,
   GitBranch as GitBranchIcon,
-  GripVertical,
   Image as ImageIcon,
   Link as LinkIcon,
   Lightbulb,
@@ -42,6 +54,7 @@ import {
   Maximize2,
   MessageSquareText,
   Minus,
+  MoreHorizontal,
   NotebookPen,
   PanelLeft,
   PanelRight,
@@ -142,14 +155,12 @@ const THREAD_WORKSPACE_STORAGE_KEY = "dan.chunkWorkspace.threadWorkspaces.v1";
 const SESSION_RESPONSE_SEEN_STORAGE_KEY = "dan.chunkWorkspace.sessionResponseSeen.v1";
 const COMPOSER_DRAFT_STORAGE_KEY = "dan.chunkWorkspace.composerDrafts.v1";
 const WORKSPACE_COMPOSER_MAX_SCREENSHOTS = 4;
-const LAYOUT_STORAGE_KEY = "dan.chunkWorkspace.layout.v1";
+const LAYOUT_STORAGE_KEY = "dan.chunkWorkspace.layout.v3";
 const UI_STATE_STORAGE_KEY = "dan.chunkWorkspace.uiState.v1";
 const AGENT_SELECTION_STORAGE_KEY = "dan.chunkWorkspace.agentSelection.v1";
 const MODEL_SELECTION_STORAGE_KEY = "dan.chunkWorkspace.modelSelection.v1";
 const MODEL_SELECTIONS_BY_AGENT_STORAGE_KEY = "dan.chunkWorkspace.modelSelectionsByAgent.v1";
 const AUTONOMY_MODE_STORAGE_KEY = "dan.chunkWorkspace.autonomyMode.v1";
-const WORKSPACE_DRAG_MIME = "application/x-dan-workspace-id";
-type WorkspaceDropPlacement = "before" | "after";
 const WORKSPACE_ROOT_ALIASES = new Map([
   [
     "/Volumes/data/Dropbox/Projects/deep-agent-network",
@@ -169,14 +180,14 @@ const NOTES_WORKSPACE_RULES = [
 ];
 const NOTES_WORKSPACE_WRITE_POLICY =
   "Use the notes workspace as context by default; create or edit notes only when the operator asks for notes, memory, documentation, or a saved artifact.";
-type WorkspaceAgentSelectionId = "native" | "codex";
+type WorkspaceAgentSelectionId = "native" | "codex" | "claude" | "antigravity";
 type WorkspaceCodexReasoningEffort = "low" | "medium" | "high" | "xhigh";
 type WorkspaceAutonomyMode = "auto" | "review";
 type WorkspaceAgentOption = {
   id: WorkspaceAgentSelectionId;
   label: string;
   shortLabel: string;
-  backend: typeof SUPER_DAN_BACKEND | typeof CODEX_BACKEND;
+  backend: typeof SUPER_DAN_BACKEND | typeof CODEX_BACKEND | "native_codex" | "claude" | "antigravity";
 };
 type WorkspaceModelOption = {
   id: string;
@@ -185,6 +196,7 @@ type WorkspaceModelOption = {
   shortLabel: string;
   model?: string;
   reasoningEffort?: WorkspaceCodexReasoningEffort;
+  baseUrl?: string;
 };
 type WorkspaceModelSelectionByAgent = Record<WorkspaceAgentSelectionId, string>;
 type WorkspaceAutonomyOption = {
@@ -215,6 +227,9 @@ const WORKSPACE_AUTONOMY_OPTIONS: WorkspaceAutonomyOption[] = [
   },
 ];
 const WORKSPACE_AGENT_OPTIONS: WorkspaceAgentOption[] = [
+  { id: "codex", label: "Codex", shortLabel: "Codex", backend: "native_codex" },
+  { id: "claude", label: "Claude Code", shortLabel: "Claude", backend: "claude" },
+  { id: "antigravity", label: "Antigravity", shortLabel: "Antigravity", backend: "antigravity" },
   {
     id: "native",
     label: "Super DAN",
@@ -224,9 +239,16 @@ const WORKSPACE_AGENT_OPTIONS: WorkspaceAgentOption[] = [
 ];
 const DEFAULT_MODEL_SELECTION_BY_AGENT: Record<WorkspaceAgentSelectionId, string> = {
   native: "native_default",
-  codex: "native_default",
+  codex: "codex_default",
+  claude: "claude_default",
+  antigravity: "antigravity_default",
 };
 const WORKSPACE_MODEL_OPTIONS: WorkspaceModelOption[] = [
+  { id: "codex_default", agentId: "codex", label: "CLI default", shortLabel: "CLI default" },
+  { id: "claude_default", agentId: "claude", label: "CLI default", shortLabel: "CLI default" },
+  { id: "antigravity_default", agentId: "antigravity", label: "CLI default", shortLabel: "CLI default" },
+  { id: "openrouter_deepseek_v41_flash", agentId: "native", label: "OpenRouter · DeepSeek V4.1 Flash", shortLabel: "DeepSeek V4.1 Flash", model: "deepseek/deepseek-v4.1-flash", baseUrl: "https://openrouter.ai/api/v1" },
+  { id: "openrouter_kimi_k26", agentId: "native", label: "OpenRouter · Kimi K2.6", shortLabel: "Kimi K2.6", model: "moonshotai/kimi-k2.6", baseUrl: "https://openrouter.ai/api/v1" },
   {
     id: "native_default",
     agentId: "native",
@@ -398,6 +420,7 @@ function buildWorkspaceAgentExecutePayload(
     autonomy_mode: autonomyOption.id,
     attention_resolution_mode: autonomyOption.id,
   };
+  if (modelOption.baseUrl) profilePolicy.base_url = modelOption.baseUrl;
   if (modelOption.model) {
     if (agentOption.backend === CODEX_BACKEND) {
       profilePolicy.codex_model = modelOption.model;
@@ -408,7 +431,7 @@ function buildWorkspaceAgentExecutePayload(
   if (agentOption.backend === CODEX_BACKEND && modelOption.reasoningEffort) {
     profilePolicy.codex_reasoning_effort = modelOption.reasoningEffort;
   }
-  if (agentOption.backend === CODEX_BACKEND) {
+  if (agentOption.id !== "native") {
     profilePolicy.auto_backend_continuation = false;
   }
   return {
@@ -429,7 +452,7 @@ function buildWorkspaceAgentExecutePayload(
       autonomy_mode: autonomyOption.id,
       attention_resolution_mode: autonomyOption.id,
       attention_resolution_label: autonomyOption.label,
-      gui_for: agentOption.backend === CODEX_BACKEND ? "codex exec" : "dan super-tui",
+      gui_for: agentOption.id === "native" ? "dan super-tui" : `${agentOption.id} CLI`,
       selected_backend: agentOption.backend,
       selected_agent: agentOption.id,
       selected_agent_label: agentOption.label,
@@ -769,6 +792,7 @@ interface SessionGroup {
   defaultCollapsed?: boolean;
   archived?: boolean;
   subgroups?: SessionGroup[];
+  unassigned?: boolean;
 }
 
 interface QueueRow {
@@ -2495,9 +2519,9 @@ function persistSessionResponseSeen(seen: Record<string, string>) {
 function readStoredLayout(): LayoutPreferences {
   const defaults: LayoutPreferences = {
     showSessionRail: true,
-    showFileExplorer: true,
+    showFileExplorer: false,
     showConversationChunks: true,
-    showSidecarPreview: true,
+    showSidecarPreview: false,
     showNotesRail: true,
     showNoteEditor: true,
     showNotesPreview: true,
@@ -2507,7 +2531,9 @@ function readStoredLayout(): LayoutPreferences {
     rootPickerHeight: ROOT_PICKER_DEFAULT_HEIGHT,
   };
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(LAYOUT_STORAGE_KEY) || "{}") as
+    const saved = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
+    const legacy = JSON.parse(window.localStorage.getItem("dan.chunkWorkspace.layout.v2") || window.localStorage.getItem("dan.chunkWorkspace.layout.v1") || "{}");
+    const parsed = (saved ? JSON.parse(saved) : { ...legacy, showSessionRail: true, showFileExplorer: false, showConversationChunks: true, showSidecarPreview: false }) as
       Partial<LayoutPreferences>;
     return {
       showSessionRail:
@@ -2651,7 +2677,7 @@ function persistUiState(state: WorkspaceUiState) {
 function projectLabelFromWorkflowId(workflowId: string) {
   const normalized = workflowId.trim();
   if (!normalized) return "Unknown Project";
-  if (normalized === DEFAULT_WORKFLOW_ID) return "Scratch";
+  if (normalized === DEFAULT_WORKFLOW_ID || normalized === "_unassigned") return "Other chats";
   return fileName(normalized).replace(/[_-]+/g, " ");
 }
 
@@ -3509,6 +3535,7 @@ function buildSessionGroups(args: {
     pinnedPaths: string[];
     activeThreadId?: string | null;
     openThreadIds: string[];
+    removedFromDan?: boolean;
   }>;
   threadQuery: string;
   threadWorkspaces: Record<string, string>;
@@ -3516,7 +3543,7 @@ function buildSessionGroups(args: {
   taskWorkspaceRootByThreadId: Map<string, string>;
 }) {
   const query = args.threadQuery.trim().toLowerCase();
-  const workspaceGroups: SessionGroup[] = args.workspaces.map((item) => ({
+  const workspaceGroups: SessionGroup[] = args.workspaces.filter((item) => !item.removedFromDan).map((item) => ({
     id: `workspace:${item.id}`,
     name: workspaceDisplayName(item),
     workspaceId: item.id,
@@ -3547,15 +3574,20 @@ function buildSessionGroups(args: {
   const resolvedWorkspaceId = (thread: ChatV2ThreadSummary) => {
     const recoveredRoot = recoveredProjectRoot(thread);
     const taskWorkspaceId = args.taskWorkspaceByThreadId.get(thread.id) ?? "";
-    if (taskWorkspaceId && workspaceIdMatchesRecoveredRoot(taskWorkspaceId, recoveredRoot)) {
+    if (taskWorkspaceId && workspaceById.has(taskWorkspaceId) && workspaceIdMatchesRecoveredRoot(taskWorkspaceId, recoveredRoot)) {
       return taskWorkspaceId;
     }
     const storedWorkspaceId =
       args.threadWorkspaces[threadWorkspaceKey(thread.workflow_id, thread.id)] ??
       storedThreadGroupById.get(thread.id) ??
       "";
-    if (storedWorkspaceId && workspaceIdMatchesRecoveredRoot(storedWorkspaceId, recoveredRoot)) {
+    if (storedWorkspaceId && workspaceById.has(storedWorkspaceId) && workspaceIdMatchesRecoveredRoot(storedWorkspaceId, recoveredRoot)) {
       return storedWorkspaceId;
+    }
+    if (workspaceById.has(thread.workflow_id) && workspaceIdMatchesRecoveredRoot(thread.workflow_id, recoveredRoot)) return thread.workflow_id;
+    if (recoveredRoot) {
+      const matches = args.workspaces.filter((item) => normalizeRootPath(item.pinnedPaths[0] ?? "") === normalizeRootPath(recoveredRoot));
+      return (matches.find((item) => !item.removedFromDan) ?? matches[0])?.id ?? "";
     }
     return "";
   };
@@ -3583,9 +3615,11 @@ function buildSessionGroups(args: {
       projectGroups.get(projectId) ??
       ({
         id: projectId,
-        name: `Project: ${projectLabelFromWorkflowId(workflowId)}`,
+        name: workflowId === DEFAULT_WORKFLOW_ID || workflowId === "_unassigned"
+          ? "Other chats" : `Project: ${projectLabelFromWorkflowId(workflowId)}`,
         workspaceId: null,
-        root: workflowId === DEFAULT_WORKFLOW_ID ? "" : workflowId,
+        root: workflowId === DEFAULT_WORKFLOW_ID || workflowId === "_unassigned" ? "" : workflowId,
+        unassigned: workflowId === DEFAULT_WORKFLOW_ID || workflowId === "_unassigned",
         threads: [],
         defaultCollapsed: true,
       } satisfies SessionGroup);
@@ -3636,7 +3670,8 @@ function buildSessionGroups(args: {
         id: groupId,
         name: projectLabelFromWorkflowId(workflowId),
         workspaceId: null,
-        root: workflowId === DEFAULT_WORKFLOW_ID ? "" : workflowId,
+        root: workflowId === DEFAULT_WORKFLOW_ID || workflowId === "_unassigned" ? "" : workflowId,
+        unassigned: workflowId === DEFAULT_WORKFLOW_ID || workflowId === "_unassigned",
         threads: [],
         defaultCollapsed: !query,
         archived: true,
@@ -3649,6 +3684,7 @@ function buildSessionGroups(args: {
     const haystack = `${thread.title} ${thread.workflow_id} ${thread.id}`.toLowerCase();
     if (query && !haystack.includes(query)) continue;
     const workspaceId = resolvedWorkspaceId(thread);
+    if (workspaceById.get(workspaceId)?.removedFromDan) continue;
     if (thread.archived) {
       archivedGroupFor(thread, workspaceId).threads.push(thread);
       continue;
@@ -9247,7 +9283,7 @@ function buildSurfaceContext(args: {
       ...(selectedModel.model ? { model: selectedModel.model } : {}),
       ...(selectedModel.reasoningEffort ? { reasoning_effort: selectedModel.reasoningEffort } : {}),
     },
-    gui_for: selectedAgent.backend === CODEX_BACKEND ? "codex exec" : "dan super-tui",
+    gui_for: selectedAgent.id === "native" ? "dan super-tui" : `${selectedAgent.id} CLI`,
     ...(selectedSkills.length > 0 ? { selected_skills: selectedSkills } : {}),
     ...workspaceAttachmentSurfaceContext(attachments),
     capabilities: [
@@ -9406,44 +9442,18 @@ function noteStatusText(note: WorkspaceNote | null) {
   return "Saved";
 }
 
-function QueueList({ rows }: { rows: QueueRow[] }) {
-  if (rows.length === 0) {
-    return <div className="px-2 text-xs text-slate-400">No queued messages</div>;
-  }
-  return (
-    <div className="space-y-2">
-      {rows.map((row) => {
-        return (
-          <div
-            key={row.id}
-            className={cx(
-              "rounded-md border bg-white px-2.5 py-2 text-xs dark:bg-slate-950",
-              row.active
-                ? "border-blue-200 dark:border-blue-900/70"
-                : "border-slate-200 dark:border-slate-800",
-            )}
-          >
-            <div className="flex items-center gap-2">
-              {row.active ? (
-                <Loader2 size={13} className="animate-spin text-blue-600" />
-              ) : (
-                <Clock3 size={13} className="text-amber-600" />
-              )}
-              <div className="min-w-0 flex-1 truncate font-medium text-slate-800 dark:text-slate-200">
-                {row.label}
-              </div>
-              <span className="shrink-0 rounded-full border border-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500 dark:border-slate-700">
-                {row.status}
-              </span>
-            </div>
-            <div className="mt-1.5 line-clamp-2 break-words text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-              {row.detail}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
+async function restoreFullNativeMessages(sourceMessages: ChatMessage[]): Promise<ChatMessage[]> {
+  return Promise.all(sourceMessages.map(async (message) => {
+          if (message.role !== "assistant" || !message.taskRunRef?.runId) return message;
+          try {
+            const run = await getChatV2AgentRun(message.taskRunRef.runId);
+            const result = run.metadata?.backend_result as { backend?: string; summary?: string } | undefined;
+            if (run.status === "completed" && ["codex", "claude", "antigravity"].includes(result?.backend || "") && result?.summary && result.summary.startsWith(message.content) && result.summary.length > message.content.length) {
+              return { ...message, content: result.summary };
+            }
+          } catch { /* Keep saved text when run history is unavailable. */ }
+          return message;
+        }));
 }
 
 function WorkspaceComposerSuggestionPopup({
@@ -13174,6 +13184,18 @@ export default function ChunkWorkspaceApp() {
   );
   const [selectedBlueprintNodeId, setSelectedBlueprintNodeId] = useState<string | null>(null);
   const [threads, setThreads] = useState<ChatV2ThreadSummary[]>([]);
+  const [workbenchSettings, setWorkbenchSettings] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [importNativeSessions, setImportNativeSessions] = useState<{ id: string; root: string } | null>(null);
+  const [danSettings, setDanSettings] = useState(false);
+  const [sidecarChat, setSidecarChat] = useState(false);
+  const [sidecarSelection, setSidecarSelection] = useState({ text: "", token: 0 });
+  const [workbenchActivity, setWorkbenchActivity] = useState(false);
+  const [teamPanel, setTeamPanel] = useState(false);
+  const [workbenchOutline, setWorkbenchOutline] = useState(false);
+  const [deletingArchived, setDeletingArchived] = useState(false);
+  const [archiveDeleteProgress, setArchiveDeleteProgress] = useState("");
+  const [sessionShelfScope, setSessionShelfScope] = useState<"all" | "archived">("all");
   const [threadQuery, setThreadQuery] = useState(initialUiState.threadQuery);
   const [threadWorkspaces, setThreadWorkspaces] = useState<Record<string, string>>(
     () => readStoredThreadWorkspaces(),
@@ -13189,6 +13211,7 @@ export default function ChunkWorkspaceApp() {
     workflowId: string;
     title?: string;
   } | null>(null);
+  useEffect(() => { setSidecarSelection({ text: "", token: Date.now() }); }, [activeThread?.id]);
   const [loadingThreadId, setLoadingThreadId] = useState<string | null>(null);
   const [pendingAssistantIds, setPendingAssistantIds] = useState<Record<string, boolean>>({});
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -13196,6 +13219,7 @@ export default function ChunkWorkspaceApp() {
   const [backgroundTasks, setBackgroundTasks] = useState<ChatV2TaskSnapshot[]>([]);
   const [agentEvents, setAgentEvents] = useState<ChatV2AgentRunEvent[]>([]);
   const [input, setInput] = useState("");
+  const [composerReferences, setComposerReferences] = useState<Record<string, { text: string; title: string; workflowId: string; threadId: string; messageIds: string[] }>>({});
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachmentDraft[]>([]);
   const [composerCaret, setComposerCaret] = useState(0);
   const [composerSuggestionIndex, setComposerSuggestionIndex] = useState(0);
@@ -13265,18 +13289,14 @@ export default function ChunkWorkspaceApp() {
   const [wireGuardStatus, setWireGuardStatus] = useState<WorkspaceWireGuardStatus | null>(null);
   const [wireGuardLoading, setWireGuardLoading] = useState(false);
   const [sessionSwipeOffsets, setSessionSwipeOffsets] = useState<Record<string, number>>({});
-  const [draggingWorkspaceId, setDraggingWorkspaceId] = useState<string | null>(null);
-  const [dragOverWorkspaceId, setDragOverWorkspaceId] = useState<string | null>(null);
-  const [dragOverWorkspacePlacement, setDragOverWorkspacePlacement] =
-    useState<WorkspaceDropPlacement>("before");
 
-  const workspaces = useWorkspaceStore((state) => state.workspaces);
+  const allWorkspaces = useWorkspaceStore((state) => state.workspaces);
+  const workspaces = useMemo(() => allWorkspaces.filter((item) => !item.removedFromDan), [allWorkspaces]);
+  const hideWorkspace = useWorkspaceStore((state) => state.hideWorkspace);
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
   const createWorkspace = useWorkspaceStore((state) => state.createWorkspace);
-  const removeWorkspace = useWorkspaceStore((state) => state.removeWorkspace);
   const setActiveWorkspace = useWorkspaceStore((state) => state.setActiveWorkspace);
   const updateWorkspace = useWorkspaceStore((state) => state.updateWorkspace);
-  const reorderWorkspace = useWorkspaceStore((state) => state.reorderWorkspace);
   const workspaceSurfaceTheme = useSettingsStore((state) => state.workspaceSurfaceTheme);
   const workspaceSurfaceTone = useSettingsStore((state) => state.workspaceSurfaceTone);
   const workspaceSurfaceThemeClass = workspaceSurfaceThemeClassName(
@@ -13309,6 +13329,30 @@ export default function ChunkWorkspaceApp() {
   useEffect(() => {
     activeThreadRef.current = activeThread;
   }, [activeThread]);
+
+  const referenceKey = activeThread ? `${activeThread.workflowId}:${activeThread.id}` : "new";
+  const composerReference = composerReferences[referenceKey];
+  useLayoutEffect(() => {
+    const node = composerRef.current;
+    if (!node) return;
+    const resize = () => {
+      const style = getComputedStyle(node);
+      const line = parseFloat(style.lineHeight) || 24;
+      const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+      node.style.height = "auto";
+      const maximum = line * 6 + padding;
+      node.style.height = `${Math.min(node.scrollHeight, maximum)}px`;
+      node.style.overflowY = node.scrollHeight > maximum ? "auto" : "hidden";
+    };
+    resize();
+    let width = node.getBoundingClientRect().width;
+    const observer = new ResizeObserver(() => {
+      const next = node.getBoundingClientRect().width;
+      if (next !== width) { width = next; resize(); }
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [input, activePane, activeThread?.id]);
 
   const commitComposerDraft = useCallback(
     (thread: ThreadIdentity | null | undefined, value: string) => {
@@ -13794,8 +13838,8 @@ export default function ChunkWorkspaceApp() {
   }, [developmentRoot, rootEditing]);
 
   useEffect(() => {
-    if (workspaces.length === 0) createWorkspace("DAN Workspace", "chat");
-  }, [createWorkspace, workspaces.length]);
+    if (allWorkspaces.length === 0) createWorkspace("DAN Workspace", "chat");
+  }, [createWorkspace, allWorkspaces.length]);
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -14020,7 +14064,7 @@ export default function ChunkWorkspaceApp() {
           messages: [] as ChatMessage[],
         }));
         if (sessionSelectionSeqRef.current !== selectionSeq) return;
-        const restoredMessages = thread.messages.length > 0 ? thread.messages : history.messages;
+        const restoredMessages = await restoreFullNativeMessages(thread.messages.length > 0 ? thread.messages : history.messages);
         const restoredWorkspaceId =
           (workspace?.activeThreadId === thread.id ? workspace.id : "") ||
           workspaceIdForTasks(history.tasks, workspaces);
@@ -14468,6 +14512,8 @@ export default function ChunkWorkspaceApp() {
   );
   const activeRunningTask = selectActiveRunningTask(workPanelTasks);
   const activeRunId = activeRunningTask ? taskRunId(activeRunningTask) : "";
+  const teamParentIds = useMemo(() => [...new Set(tasks.map(taskRunId).filter(Boolean))], [tasks]);
+  const team = useTeamWorkers(teamParentIds, Boolean(activeRunningTask));
   const sessionStatusTasks = useMemo(
     () => mergeTaskSnapshots(backgroundTasks, workPanelTasks),
     [backgroundTasks, workPanelTasks],
@@ -14617,43 +14663,23 @@ export default function ChunkWorkspaceApp() {
     () =>
       buildSessionGroups({
         threads,
-        workspaces,
+        workspaces: allWorkspaces,
         threadQuery,
         threadWorkspaces,
         taskWorkspaceByThreadId,
         taskWorkspaceRootByThreadId,
       }),
-    [taskWorkspaceByThreadId, taskWorkspaceRootByThreadId, threadQuery, threadWorkspaces, threads, workspaces],
+    [taskWorkspaceByThreadId, taskWorkspaceRootByThreadId, threadQuery, threadWorkspaces, threads, allWorkspaces],
   );
-  const workspaceDragIdFromEvent = useCallback(
-    (event: DragEvent<HTMLElement>) =>
-      event.dataTransfer.getData(WORKSPACE_DRAG_MIME) ||
-      event.dataTransfer.getData("text/plain") ||
-      draggingWorkspaceId,
-    [draggingWorkspaceId],
-  );
-  const workspaceDropPlacementFromEvent = useCallback((event: DragEvent<HTMLElement>) => {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    return event.clientY - bounds.top > bounds.height / 2 ? "after" : "before";
-  }, []);
-  const reorderWorkspaceById = useCallback(
-    (
-      sourceWorkspaceId: string,
-      targetWorkspaceId: string,
-      placement: WorkspaceDropPlacement = "before",
-    ) => {
-      if (sourceWorkspaceId === targetWorkspaceId) return;
-      const fromIndex = workspaces.findIndex((item) => item.id === sourceWorkspaceId);
-      const toIndex = workspaces.findIndex((item) => item.id === targetWorkspaceId);
-      if (fromIndex < 0 || toIndex < 0) return;
-      const adjustedTargetIndex = placement === "after" ? toIndex + 1 : toIndex;
-      const nextIndex =
-        fromIndex < adjustedTargetIndex ? adjustedTargetIndex - 1 : adjustedTargetIndex;
-      if (fromIndex === nextIndex) return;
-      reorderWorkspace(fromIndex, nextIndex);
-    },
-    [reorderWorkspace, workspaces],
-  );
+  const workbenchProjects = useMemo(() => {
+    const groups = buildSessionGroups({ threads, workspaces: allWorkspaces, threadQuery: "", threadWorkspaces, taskWorkspaceByThreadId, taskWorkspaceRootByThreadId });
+    return workspaces.map((item) => ({
+      id: item.id, name: item.name || workspaceDisplayName(item), root: item.pinnedPaths[0] || "",
+      sessions: groups.filter((group) => !group.archived && group.workspaceId === item.id)
+        .flatMap((group) => group.threads).filter((thread) => !thread.archived)
+        .map((thread) => ({ id: threadWorkspaceKey(thread.workflow_id, thread.id), title: thread.title, createdAt: thread.created_at })),
+    }));
+  }, [threads, workspaces, allWorkspaces, threadWorkspaces, taskWorkspaceByThreadId, taskWorkspaceRootByThreadId]);
   const rootOptions = useMemo(
     () =>
       mergeRootSuggestions(
@@ -14672,7 +14698,11 @@ export default function ChunkWorkspaceApp() {
   const rootBrowsePath = normalizeRootPath(rootInput || developmentRoot || devRoot);
   const rootParentPath = parentRootPath(rootBrowsePath);
   const hasActiveRun = Boolean(activeRunId && activeRunningTask);
-  const [selectedAgentId] = useState<WorkspaceAgentSelectionId>(() => {
+  const [nativeWorkerProfiles, setNativeWorkerProfiles] = useState<WorkerProfiles>(loadWorkerProfiles);
+  useEffect(() => { localStorage.setItem("dan.nativeWorkerProfiles.v1", JSON.stringify(nativeWorkerProfiles)); }, [nativeWorkerProfiles]);
+  const [leadProfiles, setLeadProfiles] = useState<WorkerProfiles>(() => loadWorkerProfiles("dan.leadProfiles.v1"));
+  useEffect(() => { localStorage.setItem("dan.leadProfiles.v1", JSON.stringify(leadProfiles)); }, [leadProfiles]);
+  const [selectedAgentId, setSelectedAgentId] = useState<WorkspaceAgentSelectionId>(() => {
     return readStoredWorkspaceSelection().agentId;
   });
   const [autonomyMode, setAutonomyMode] = useState<WorkspaceAutonomyMode>(() =>
@@ -14681,7 +14711,6 @@ export default function ChunkWorkspaceApp() {
   const [modelSelectionsByAgent, setModelSelectionsByAgent] = useState<WorkspaceModelSelectionByAgent>(() => {
     return readStoredWorkspaceSelection().modelSelectionsByAgent;
   });
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [autonomyMenuOpen, setAutonomyMenuOpen] = useState(false);
   const selectedAgentOption = useMemo(
     () => workspaceAgentOptionForId(selectedAgentId),
@@ -14710,10 +14739,6 @@ export default function ChunkWorkspaceApp() {
     next[selectedAgentId] = selectedModelOption.id;
     return next;
   }, [modelSelectionsByAgent, selectedAgentId, selectedModelOption.id]);
-  const selectableModelOptions = useMemo(
-    () => workspaceModelOptionsForAgent(selectedAgentId),
-    [selectedAgentId],
-  );
   useEffect(() => {
     window.localStorage.setItem(AGENT_SELECTION_STORAGE_KEY, selectedAgentId);
   }, [selectedAgentId]);
@@ -14740,7 +14765,8 @@ export default function ChunkWorkspaceApp() {
   const composerHasPayload = Boolean(composerText || composerAttachments.length > 0);
   const composerActionIsStop = Boolean(activeThread && activeRunningTask && !composerHasPayload);
   const queueRows = useMemo(() => queueRowsFromTasks(workPanelTasks), [workPanelTasks]);
-  const showAgentQueuePanel = queueRows.length > 0;
+  const visibleQueueRows = queueRows.filter((row) => !row.active);
+  const showAgentQueuePanel = visibleQueueRows.length > 0;
   const elapsedCounter = useMemo(
     () => taskGroupElapsedCounter(workPanelTasks, elapsedCounterNow),
     [elapsedCounterNow, workPanelTasks],
@@ -14898,7 +14924,8 @@ export default function ChunkWorkspaceApp() {
 
   useEffect(() => {
     if (!hasActiveRun) setActiveRunPlacement("steer");
-  }, [hasActiveRun]);
+    else if (selectedAgentId !== "native") setActiveRunPlacement("queue");
+  }, [hasActiveRun, selectedAgentId]);
 
   useEffect(() => {
     void refreshWireGuardStatus();
@@ -14947,13 +14974,6 @@ export default function ChunkWorkspaceApp() {
     setExpandedFileDirs((previous) => ({
       ...previous,
       [relativePath]: !previous[relativePath],
-    }));
-  }, []);
-
-  const toggleThreadGroup = useCallback((groupId: string) => {
-    setCollapsedThreadGroups((previous) => ({
-      ...previous,
-      [groupId]: !previous[groupId],
     }));
   }, []);
 
@@ -15418,18 +15438,6 @@ export default function ChunkWorkspaceApp() {
     setRootSuggestions([]);
   }, [developmentRoot]);
 
-  const createDevelopmentWorkspace = useCallback(() => {
-    const id = createWorkspace(undefined, "chat");
-    setActiveWorkspace(id);
-    setActivePane("work");
-    setActiveFilePath(null);
-    setExpandedFileDirs({});
-    setRootEditing(true);
-    setShowSessionRail(true);
-    setShowFileExplorer(true);
-    setRootInput(developmentRoot || rootOptions[0]?.path || "");
-  }, [createWorkspace, developmentRoot, rootOptions, setActiveWorkspace]);
-
   const openFolder = useCallback(async () => {
     const folder = await nativeDialog.openDirectory();
     if (!folder) {
@@ -15497,13 +15505,14 @@ export default function ChunkWorkspaceApp() {
     setActivePane("work");
     if (targetWorkspaceId) setActiveWorkspace(targetWorkspaceId);
     try {
-      const created = await createChatV2Thread(DEFAULT_WORKFLOW_ID, {
+      const workflowId = targetWorkspaceId || "_unassigned";
+      const created = await createChatV2Thread(workflowId, {
         title: "New Super DAN Session",
         mode: "agent",
       });
       const next = {
         id: created.id,
-        workflowId: created.workflow_id || DEFAULT_WORKFLOW_ID,
+        workflowId: created.workflow_id || workflowId,
         title: created.title || "New Super DAN Session",
       };
       if (sessionSelectionSeqRef.current !== selectionSeq) return;
@@ -15590,7 +15599,9 @@ export default function ChunkWorkspaceApp() {
           messages: [] as ChatMessage[],
         }));
         if (sessionSelectionSeqRef.current !== selectionSeq) return;
-        const loadedMessages = thread.messages.length > 0 ? thread.messages : history.messages;
+        const sourceMessages = thread.messages.length > 0 ? thread.messages : history.messages;
+        const loadedMessages = await restoreFullNativeMessages(sourceMessages);
+        if (sessionSelectionSeqRef.current !== selectionSeq) return;
         const resolvedWorkspaceRoot = workspaceRoot || workspaceRootForTasks(history.tasks);
         const resolvedWorkspaceId =
           optimisticWorkspaceId ||
@@ -15628,7 +15639,7 @@ export default function ChunkWorkspaceApp() {
           LAST_THREAD_STORAGE_KEY,
           JSON.stringify({ threadId: thread.id, workflowId: thread.workflow_id }),
         );
-        setStatus(loadedMessages.length === 0 ? "Session has no saved Super DAN history" : "Ready");
+        setStatus("Ready");
       } catch {
         if (sessionSelectionSeqRef.current !== selectionSeq) return;
         const failed = makeMessage(
@@ -15674,6 +15685,17 @@ export default function ChunkWorkspaceApp() {
     },
     [activeThread?.id, openSession],
   );
+
+  const switchWorkbenchProject = useCallback((id: string) => {
+    if (id === activeWorkspaceId) return;
+    const target = workspaces.find((item) => item.id === id);
+    if (!target) return;
+    const thread = threads.find((item) => item.id === target.activeThreadId && !item.archived);
+    setActiveWorkspace(id);
+    setPhonePage("chat");
+    if (thread) void openSession(thread, id, target.pinnedPaths[0]);
+    else void startNewSession(id);
+  }, [activeWorkspaceId, workspaces, threads, setActiveWorkspace, openSession, startNewSession]);
 
   const openSessionPromptLog = useCallback(async (thread: ChatV2ThreadSummary) => {
     if (thread.archived) {
@@ -15792,7 +15814,8 @@ export default function ChunkWorkspaceApp() {
   const deleteArchivedSession = useCallback(
     async (thread: ChatV2ThreadSummary) => {
       if (!thread.archived) return;
-      const title = thread.title || "Untitled session";
+      const sessionTitle = thread.title?.replace(/\s+/g, " ").trim() || "Untitled session";
+      const title = sessionTitle.length > 80 ? `${sessionTitle.slice(0, 79).trimEnd()}…` : sessionTitle;
       const confirmed = window.confirm(`Permanently delete "${title}"? This cannot be undone.`);
       if (!confirmed) return;
 
@@ -15827,6 +15850,36 @@ export default function ChunkWorkspaceApp() {
       removeThreadFromWorkspaceSlots,
     ],
   );
+
+  const deleteAllArchivedSessions = async () => {
+    if (deletingArchived) return;
+    const archived = threads.filter((thread) => thread.archived);
+    if (!archived.length || !window.confirm(`Permanently delete all ${archived.length} archived DAN chats across all projects, including any hidden by search? Active chats, project files, and original Codex/Claude/Antigravity sessions will stay untouched. This cannot be undone.`)) return;
+    setDeletingArchived(true);
+    let deleted = 0;
+    let failed = 0;
+    try {
+      for (const [index, thread] of archived.entries()) {
+        setArchiveDeleteProgress(`Deleting ${index + 1} of ${archived.length}…`);
+        try {
+          await deleteChatV2Thread(thread.workflow_id, thread.id, true);
+          deleted += 1;
+          setThreads((previous) => previous.filter((item) => !(item.id === thread.id && item.workflow_id === thread.workflow_id)));
+          setBackgroundTasks((previous) => previous.filter((task) => task.thread_id !== thread.id));
+          clearStoredThreadSelection(thread);
+          removeThreadFromWorkspaceSlots(thread.id);
+          if (activeThread?.id === thread.id) {
+            sessionSelectionSeqRef.current += 1;
+            clearActiveSessionView();
+          }
+        } catch { failed += 1; }
+      }
+      await refreshThreads();
+      const message = `${deleted} archived chats deleted${failed ? `; ${failed} could not be deleted. You can retry.` : ""}`;
+      setArchiveDeleteProgress(message);
+      setStatus(message);
+    } finally { setDeletingArchived(false); }
+  };
 
   const beginSessionSwipe = useCallback(
     (
@@ -15885,13 +15938,14 @@ export default function ChunkWorkspaceApp() {
       if (activeThread) return activeThread;
       const targetWorkspaceId = workspace?.id ?? activeWorkspaceId;
       const selectionSeq = ++sessionSelectionSeqRef.current;
-      const created = await createChatV2Thread(DEFAULT_WORKFLOW_ID, {
+      const workflowId = targetWorkspaceId || "_unassigned";
+      const created = await createChatV2Thread(workflowId, {
         title: titleFromText(prompt),
         mode: "agent",
       });
       const next = {
         id: created.id,
-        workflowId: created.workflow_id || DEFAULT_WORKFLOW_ID,
+        workflowId: created.workflow_id || workflowId,
         title: created.title,
       };
       if (sessionSelectionSeqRef.current === selectionSeq) {
@@ -15980,6 +16034,12 @@ export default function ChunkWorkspaceApp() {
           if (activeThreadRef.current?.id !== thread.id) return;
           setAgentEvents((previous) => [...previous, event].slice(-80));
           attachRunEventToAssistant(assistantId, runEventPayloadFromAgentEvent(event));
+          if (!agentRunEventIsTerminal(event) && event.summary) setStatus(event.summary);
+          if (event.type === "model_text_delta") {
+            applyMessages((previous) => previous.map((message) => message.id === assistantId
+              ? { ...message, content: streamedMessageContent(message.content, event) } : message));
+          }
+
           if (agentRunEventIsTerminal(event)) {
             refreshThreadTasks(300);
             refreshThreadTasks(1200);
@@ -15990,7 +16050,7 @@ export default function ChunkWorkspaceApp() {
                 message.id === assistantId
                   ? {
                       ...message,
-                      content: message.content || finalText,
+                      content: event.type === "completed" ? completedMessageContent(message.content, humanEventSummary(event), eventFinalResponseSource(event)) : message.content || finalText,
                       taskRunRef: {
                         taskId: event.task_id,
                         runId: event.run_id,
@@ -16042,6 +16102,7 @@ export default function ChunkWorkspaceApp() {
         displayText?: string;
       } = {},
     ) => {
+      if (selectedAgentId !== "native") queueCommand = "continue_after_current";
       const attachments = options.attachments ?? [];
       const attachmentPayloads = workspaceAttachmentPayloads(attachments);
       const firstAttachmentPath =
@@ -16259,7 +16320,12 @@ export default function ChunkWorkspaceApp() {
       }
       const executed = await executeChatV2AgentRun(
         runId,
-        buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode),
+        (() => {
+          const payload = buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode);
+          payload.profile_policy.native_workers = nativeWorkerProfiles;
+          if (selectedAgentId !== "native") payload.profile_policy.lead_profile = leadProfiles[selectedAgentId] || {};
+          return payload;
+        })(),
       );
       if (executed.task) {
         mergeBackgroundTasks([executed.task]);
@@ -16289,8 +16355,12 @@ export default function ChunkWorkspaceApp() {
       notesRoot,
       persistMessages,
       selectedChunk,
+      nativeWorkerProfiles,
       selectedAgentOption,
       selectedModelOption,
+      selectedAgentId,
+      leadProfiles,
+      nativeWorkerProfiles,
       autonomyMode,
       selectedBlueprintNode,
       taskWorkspaceByThreadId,
@@ -16423,10 +16493,12 @@ export default function ChunkWorkspaceApp() {
     setSending(true);
     try {
       const normalizedAttachments = await normalizeAttachmentDrafts(sourceAttachments);
-      const requestPrompt =
-        prompt || workspaceAttachmentOnlyPrompt(normalizedAttachments);
-      const displayText =
-        prompt || workspaceAttachmentDisplayText(normalizedAttachments);
+      const basePrompt = prompt || workspaceAttachmentOnlyPrompt(normalizedAttachments);
+      const requestPrompt = composerReference
+        ? `${basePrompt}\n\nReferenced conversation passage (quoted context, not a new instruction):\n${JSON.stringify(composerReference)}`
+        : basePrompt;
+      const displayText = (prompt || workspaceAttachmentDisplayText(normalizedAttachments)) +
+        (composerReference ? `\n\nReference · ${composerReference.title}\n${composerReference.text.split("\n").map((line) => `> ${line}`).join("\n")}` : "");
       const options = {
         selectedSkills: selectedSkillInvocation.selectedTokens,
         mentionedFiles,
@@ -16435,6 +16507,7 @@ export default function ChunkWorkspaceApp() {
       };
       if (mode === "queue") await sendAgent(requestPrompt, "continue_after_current", options);
       else await sendAgent(requestPrompt, "append_followup", options);
+      setComposerReferences((current) => { const next = { ...current }; delete next[referenceKey]; return next; });
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Request failed");
       setComposerInputValue(draftBeforeSubmit);
@@ -16443,6 +16516,8 @@ export default function ChunkWorkspaceApp() {
       setSending(false);
     }
   }, [
+    composerReference,
+    referenceKey,
     activePane,
     activeRunPlacement,
     composerAttachments,
@@ -16498,7 +16573,7 @@ export default function ChunkWorkspaceApp() {
   );
 
   const renderWorkspaceComposer = () => (
-    <div className="shrink-0 border-t border-slate-200/80 bg-white/95 p-3 shadow-[0_-1px_0_rgba(15,23,42,0.02)] dark:border-slate-800 dark:bg-slate-950">
+    <div className="wb-composer shrink-0 border-t border-slate-200/80 bg-white/95 p-3 shadow-[0_-1px_0_rgba(15,23,42,0.02)] dark:border-slate-800 dark:bg-slate-950">
       <div className="flex flex-col gap-2">
         <WorkspaceComposerSuggestionPopup
           suggestions={composerSuggestions}
@@ -16543,7 +16618,12 @@ export default function ChunkWorkspaceApp() {
             })}
           </div>
         )}
+        {composerReference && <div className="wb-composer-reference" aria-label="Referenced passage">
+          <div><strong>Reference · {composerReference.title}</strong><button type="button" aria-label="Remove reference" onClick={() => setComposerReferences((current) => { const next = { ...current }; delete next[referenceKey]; return next; })}><X size={14} /></button></div>
+          <blockquote>{composerReference.text}</blockquote>
+        </div>}
         <textarea
+          wrap="soft"
           ref={composerRef}
           value={input}
           onChange={handleComposerInputChange}
@@ -16570,9 +16650,9 @@ export default function ChunkWorkspaceApp() {
                   key={mode}
                   type="button"
                   onClick={() => setActiveRunPlacement(mode)}
-                  disabled={queueUnavailable}
+                  disabled={queueUnavailable || (mode === "steer" && hasActiveRun && selectedAgentId !== "native")}
                   title={
-                    mode === "queue"
+                    mode === "steer" && hasActiveRun && selectedAgentId !== "native" ? "Native lead follow-ups run after the current turn" : mode === "queue"
                       ? hasActiveRun
                         ? "Queue this message after the current run (Option+Enter)"
                         : "Next is available while a run is active"
@@ -16657,61 +16737,11 @@ export default function ChunkWorkspaceApp() {
               </div>
             )}
           </div>
-          <div
-            className="relative shrink-0"
-            onBlur={(event) => {
-              const nextFocus = event.relatedTarget;
-              if (nextFocus instanceof Node && event.currentTarget.contains(nextFocus)) {
-                return;
-              }
-              setModelMenuOpen(false);
-            }}
-          >
-            <button
-              type="button"
-              onClick={() => setModelMenuOpen((open) => !open)}
-              className="inline-flex h-7 min-w-24 max-w-[8rem] items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50/95 px-2 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-white dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-700 sm:min-w-28 sm:max-w-[12rem] sm:px-2.5"
-              title="Choose Super DAN model"
-              aria-expanded={modelMenuOpen}
-            >
-              <TerminalSquare size={12} />
-              <span className="truncate">DAN · {selectedModelOption.shortLabel}</span>
-              <ChevronDown size={12} className={cx("transition", modelMenuOpen && "rotate-180")} />
-            </button>
-            {modelMenuOpen && (
-              <div className="absolute bottom-full right-0 z-50 mb-2 max-h-72 w-64 overflow-auto rounded-lg border border-slate-200 bg-white py-1 shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
-                {selectableModelOptions.map((option) => {
-                  const selected = option.id === selectedModelOption.id;
-                  return (
-                    <button
-                      key={option.id}
-                      type="button"
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => {
-                        setModelSelectionsByAgent((current) => ({
-                          ...current,
-                          [selectedAgentId]: option.id,
-                        }));
-                        setModelMenuOpen(false);
-                      }}
-                      className={cx(
-                        "flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition",
-                        selected
-                          ? "bg-slate-100 text-slate-950 dark:bg-slate-800 dark:text-white"
-                          : "text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-white",
-                      )}
-                    >
-                      <TerminalSquare size={13} className="shrink-0" />
-                      <span className="min-w-0 flex-1 truncate text-xs font-semibold">
-                        {option.label}
-                      </span>
-                      {selected && <Check size={13} className="shrink-0" />}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+          <LeadAgentMenu selected={selectedAgentId} onChange={setSelectedAgentId} disabled={hasActiveRun || sending}
+            profiles={leadProfiles} onProfilesChange={setLeadProfiles}
+            modelId={selectedModelOption.id} modelOptions={workspaceModelOptionsForAgent("native")}
+            onModelChange={(id) => setModelSelectionsByAgent((current) => ({ ...current, native: id }))} />
+          <NativeWorkerSettings profiles={nativeWorkerProfiles} onChange={setNativeWorkerProfiles} />
           <button
             type="button"
             onClick={() => {
@@ -16810,7 +16840,7 @@ export default function ChunkWorkspaceApp() {
         const workspaceAtIndex = workspaceSlots[Number(code.replace("Digit", "")) - 1];
         if (!workspaceAtIndex) return;
         event.preventDefault();
-        setActiveWorkspace(workspaceAtIndex.id);
+        switchWorkbenchProject(workspaceAtIndex.id);
         setActivePane("work");
         return;
       }
@@ -16878,14 +16908,14 @@ export default function ChunkWorkspaceApp() {
           event.key === "ArrowRight"
             ? (currentIndex + 1) % workspaceSlots.length
             : (currentIndex - 1 + workspaceSlots.length) % workspaceSlots.length;
-        setActiveWorkspace(workspaceSlots[nextIndex].id);
+        switchWorkbenchProject(workspaceSlots[nextIndex].id);
         setActivePane("work");
       }
     };
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [activeNote, activePane, activeWorkspaceId, saveNoteNow, setActiveWorkspace, workspaceSlots]);
+  }, [activeNote, activePane, activeWorkspaceId, saveNoteNow, setActiveWorkspace, switchWorkbenchProject, workspaceSlots]);
 
   useEffect(() => {
     return () => {
@@ -16894,15 +16924,16 @@ export default function ChunkWorkspaceApp() {
     };
   }, []);
 
-  const renderSessionCountPill = (count: number, active = false) => (
-    <span
-      title={`${count} ${count === 1 ? "session" : "sessions"}`}
-      aria-label={`${count} ${count === 1 ? "session" : "sessions"}`}
-      className={cx("dan-session-count-flap", active && "dan-session-count-flap-active")}
-    >
-      {count}
-    </span>
-  );
+  const registerSessionGroup = (group: SessionGroup) => {
+    if (group.workspaceId) return group.workspaceId;
+    const id = createWorkspace(group.name, "chat", false);
+    // A filtered sidebar may show only part of the recovered project's history.
+    const complete = buildSessionGroups({ threads, workspaces: allWorkspaces, threadQuery: "", threadWorkspaces, taskWorkspaceByThreadId, taskWorkspaceRootByThreadId })
+      .flatMap((item) => item.subgroups ?? [item]).find((item) => item.id === group.id) ?? group;
+    updateWorkspace(id, { pinnedPaths: group.id.startsWith("project-root:") && group.root ? [group.root] : [], openThreadIds: complete.threads.map((thread) => thread.id) });
+    setThreadWorkspaces((previous) => ({ ...previous, ...Object.fromEntries(complete.threads.map((thread) => [threadWorkspaceKey(thread.workflow_id, thread.id), id])) }));
+    return id;
+  };
 
   const renderSessionThreadRows = (group: SessionGroup) =>
     group.threads.map((thread) => {
@@ -16946,6 +16977,7 @@ export default function ChunkWorkspaceApp() {
                 ? "border-slate-900 bg-white text-slate-950 shadow-sm dark:border-slate-100 dark:bg-slate-900 dark:text-slate-100"
                 : "border-transparent bg-slate-50 text-slate-600 hover:border-slate-200 hover:bg-white hover:shadow-sm dark:bg-slate-950/40 dark:text-slate-300 dark:hover:border-slate-800 dark:hover:bg-slate-900",
             )}
+            data-active={active || undefined}
             style={{
               transform: swipeOffset ? `translateX(${swipeOffset}px)` : undefined,
             }}
@@ -16963,6 +16995,7 @@ export default function ChunkWorkspaceApp() {
                   return;
                 }
                 void openSession(thread, group.workspaceId, group.root);
+                setPhonePage("chat");
               }}
               className="flex min-w-0 flex-1 items-start gap-2 px-2.5 py-2 text-left"
             >
@@ -16974,7 +17007,7 @@ export default function ChunkWorkspaceApp() {
               )}
               <span className="min-w-0 flex-1">
                 <span className="dan-rail-card-title block truncate">{sessionDisplay.title}</span>
-                <span className="dan-rail-card-meta">{sessionDisplay.detail}</span>
+                {threadIsRunning && <span className="dan-rail-card-meta">{sessionDisplay.detail}</span>}
               </span>
             </button>
             <div className="flex shrink-0 items-center gap-0.5 py-1 pr-1">
@@ -17045,10 +17078,55 @@ export default function ChunkWorkspaceApp() {
   return (
     <div
       className={cx(
-        workspaceSurfaceThemeClass,
+        activePane === "notes" && workspaceSurfaceThemeClass,
+        activePane === "work" && "wb-shell",
+        isElectron() && "dan-native-window",
         "dan-phone-workspace flex h-screen flex-col overflow-hidden bg-[#f4f7fb] text-slate-950 antialiased dark:bg-slate-950 dark:text-slate-100",
       )}
     >
+      {activePane === "work" && <header className="wb-header">
+        <WorkbenchNavigation
+          sidebarOpen={renderSessionRail}
+          onToggleSidebar={() => { setShowSessionRail(!renderSessionRail); setShowFileExplorer(false); setPhonePage(renderSessionRail ? "chat" : "sessions"); }}
+          projects={workbenchProjects}
+          activeProjectId={activeWorkspaceId}
+          activeSessionId={activeThread ? threadWorkspaceKey(activeThread.workflowId, activeThread.id) : null}
+          onProject={switchWorkbenchProject}
+          onSession={(id) => {
+            const thread = threads.find((item) => threadWorkspaceKey(item.workflow_id, item.id) === id);
+            if (thread) { void openSession(thread, activeWorkspaceId, workspace?.pinnedPaths[0]); setPhonePage("chat"); }
+          }}
+          onNewSession={() => { void startNewSession(); setPhonePage("chat"); }}
+          onNewProject={() => { setCreatingProject(true); setWorkbenchSettings(true); }}
+          onAllSessions={() => { setThreadQuery(""); setShowSessionRail(true); setShowFileExplorer(false); setPhonePage("sessions"); }}
+        />
+        <div className="wb-header-actions">
+          <button aria-label="Sidecar chat" title="Sidecar chat" disabled={!activeThread} aria-pressed={sidecarChat} onClick={() => { setSidecarChat(!sidecarChat); setTeamPanel(false); setWorkbenchActivity(false); setShowSidecarPreview(false); setSidecarSelection({text:"",token:Date.now()}); }}><MessageSquareText size={17} /></button>
+          <button aria-label="Files" title="Files" aria-pressed={showFileExplorer} onClick={() => { setShowFileExplorer(!showFileExplorer); setShowSessionRail(false); setPhonePage("files"); }}><Folder size={17} /></button>
+          <button aria-label="Agent activity" title="Agents & tools" aria-pressed={workbenchActivity} onClick={() => { setWorkbenchActivity(!workbenchActivity); setTeamPanel(false); setShowSidecarPreview(false); setSidecarChat(false); }}><Activity size={17} /></button>
+          <button aria-label="Preview" title="Preview" aria-pressed={showSidecarPreview} onClick={() => { setShowSidecarPreview(!showSidecarPreview); setTeamPanel(false); setWorkbenchActivity(false); setSidecarChat(false); setPhonePage("preview"); }}><PanelRight size={17} /></button>
+          <button aria-label="Notes" title="Notes" onClick={() => { setActivePane("notes"); setPhonePage("note-preview"); }}><NotebookPen size={17} /></button>
+          <button aria-label="Workspace settings" title="Workspace settings" aria-pressed={workbenchSettings} onClick={() => { setCreatingProject(false); setWorkbenchSettings(true); }}><MoreHorizontal size={18} /></button>
+        </div>
+      </header>}
+      {danSettings && <DanSettings onClose={() => setDanSettings(false)} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} />}
+      {importNativeSessions && <ImportNativeSessions workspace={importNativeSessions.root} workspaceId={importNativeSessions.id} onClose={() => setImportNativeSessions(null)} onImport={async (thread) => { bindThreadToWorkspace(thread.workflow_id, thread.id, importNativeSessions.id); await refreshThreads(); }} />}
+      {activePane === "work" && workbenchSettings && <ProjectSettings
+        name={creatingProject ? "" : workspace?.name || "Project"}
+        root={creatingProject ? "" : workspace?.pinnedPaths[0] || ""}
+        creating={creatingProject}
+        onClose={() => setWorkbenchSettings(false)}
+        onBrowse={() => nativeDialog.openDirectory()}
+        onSave={(name, root) => {
+          const id = creatingProject ? createWorkspace(name, "chat") : activeWorkspaceId;
+          if (id) {
+            updateWorkspace(id, { name, pinnedPaths: root ? [root, ...(creatingProject ? [] : workspace?.pinnedPaths.slice(1) ?? [])] : [] });
+            if (creatingProject) { void startNewSession(id); setActiveFilePath(null); }
+          }
+          setWorkbenchSettings(false); setShowSessionRail(true); setShowFileExplorer(false); setShowConversationChunks(true); setPhonePage("chat");
+        }}
+      />}
+      {Boolean(activePane === "notes") && (
       <header className="dan-workspace-header relative z-40 flex h-14 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/95 px-4 shadow-[0_1px_0_rgba(15,23,42,0.03)] backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <div className="inline-flex shrink-0 rounded-lg border border-slate-200 bg-slate-100/70 p-0.5 shadow-inner dark:border-slate-800 dark:bg-slate-900">
@@ -17099,7 +17177,7 @@ export default function ChunkWorkspaceApp() {
                     value={activeWorkspaceId ?? ""}
                     onChange={(event) => {
                       if (!event.target.value) return;
-                      setActiveWorkspace(event.target.value);
+                      switchWorkbenchProject(event.target.value);
                       setActivePane("work");
                       setPhonePage("chat");
                     }}
@@ -17480,7 +17558,7 @@ export default function ChunkWorkspaceApp() {
             )}
           </span>
         </div>
-      </header>
+      </header>)}
 
       {activePane === "notes" ? (
         <section
@@ -18129,315 +18207,55 @@ export default function ChunkWorkspaceApp() {
               <PanelLeft size={14} />
             </CollapsedPaneRail>
           )}
-          {renderSessionRail && (
-            <aside
-              className="dan-phone-page dan-session-page relative flex min-h-0 shrink-0 flex-col border-r border-slate-200/80 bg-white/85 shadow-[1px_0_0_rgba(15,23,42,0.02)] dark:border-slate-800 dark:bg-slate-950 md:order-1"
-              style={isPhoneViewport ? undefined : { width: leftRailWidth }}
-            >
-              <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 px-3 dark:border-slate-800">
-                <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
-                  Sessions
-                </div>
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={createDevelopmentWorkspace}
-                    title="New workspace"
-                    aria-label="New workspace"
-                    className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
-                  >
-                    <Plus size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={openFolder}
-                    title="Open root folder"
-                    aria-label="Open root folder"
-                    className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
-                  >
-                    <FolderOpen size={13} />
-                  </button>
-                  {workspaces.length > 1 && activeWorkspaceId && (
-                    <button
-                      type="button"
-                      onClick={() => removeWorkspace(activeWorkspaceId)}
-                      title="Close workspace"
-                      aria-label="Close workspace"
-                      className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-400 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
-                    >
-                      <X size={12} />
-                    </button>
-                  )}
-                  {!isPhoneViewport && (
-                    <PaneHeaderButton
-                      title="Collapse sessions pane"
-                      onClick={() => setShowSessionRail(false)}
-                    >
-                      <ChevronRight size={13} className="rotate-180" />
-                    </PaneHeaderButton>
-                  )}
-                </div>
-              </div>
-              <div className="shrink-0 border-b border-slate-200/80 p-3 dark:border-slate-800">
-                <label className="flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50/90 px-2.5 shadow-inner dark:border-slate-800 dark:bg-slate-900">
-                  <Search size={13} className="text-slate-400" />
-                  <input
-                    value={threadQuery}
-                    onChange={(event) => setThreadQuery(event.target.value)}
-                    placeholder="Search sessions"
-                    className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-slate-400"
-                  />
-                </label>
-              </div>
-              <div className="min-h-0 flex-1 overflow-auto p-3">
-                <div className="space-y-2">
-                  {sessionGroups.map((group) => {
-                    const collapsed = threadQuery.trim()
-                      ? false
-                      : (collapsedThreadGroups[group.id] ?? group.defaultCollapsed ?? false);
-                    const workspaceGroupActive =
-                      !group.archived && group.workspaceId === activeWorkspaceId;
-                    const workspaceGroupDraggable = Boolean(group.workspaceId && !group.archived);
-                    const workspaceGroupDragging = draggingWorkspaceId === group.workspaceId;
-                    const workspaceGroupDropTarget =
-                      workspaceGroupDraggable &&
-                      dragOverWorkspaceId === group.workspaceId &&
-                      draggingWorkspaceId !== group.workspaceId;
-                    const workspaceGroupDropPlacement = workspaceGroupDropTarget
-                      ? dragOverWorkspacePlacement
-                      : null;
-                    return (
-                      <div key={group.id} className="group/workspace">
-                        <div
-                          data-drop-placement={workspaceGroupDropPlacement ?? undefined}
-                          draggable={workspaceGroupDraggable}
-                          onDragStart={(event) => {
-                            if (!group.workspaceId || group.archived) return;
-                            if (
-                              event.target instanceof HTMLElement &&
-                              event.target.closest("[data-workspace-action]")
-                            ) {
-                              event.preventDefault();
-                              return;
-                            }
-                            setDraggingWorkspaceId(group.workspaceId);
-                            event.dataTransfer.effectAllowed = "move";
-                            event.dataTransfer.setData(WORKSPACE_DRAG_MIME, group.workspaceId);
-                            event.dataTransfer.setData("text/plain", group.workspaceId);
-                          }}
-                          onDragEnter={(event) => {
-                            if (!group.workspaceId || group.archived) return;
-                            const sourceWorkspaceId = workspaceDragIdFromEvent(event);
-                            if (!sourceWorkspaceId || sourceWorkspaceId === group.workspaceId) {
-                              return;
-                            }
-                            setDragOverWorkspaceId(group.workspaceId);
-                            setDragOverWorkspacePlacement(workspaceDropPlacementFromEvent(event));
-                          }}
-                          onDragOver={(event) => {
-                            if (!group.workspaceId || group.archived) return;
-                            const sourceWorkspaceId = workspaceDragIdFromEvent(event);
-                            if (!sourceWorkspaceId || sourceWorkspaceId === group.workspaceId) {
-                              return;
-                            }
-                            event.preventDefault();
-                            event.dataTransfer.dropEffect = "move";
-                            setDragOverWorkspaceId(group.workspaceId);
-                            setDragOverWorkspacePlacement(workspaceDropPlacementFromEvent(event));
-                          }}
-                          onDragLeave={(event) => {
-                            if (!group.workspaceId) return;
-                            if (
-                              event.relatedTarget instanceof Node &&
-                              event.currentTarget.contains(event.relatedTarget)
-                            ) {
-                              return;
-                            }
-                            setDragOverWorkspaceId((current) =>
-                              current === group.workspaceId ? null : current,
-                            );
-                          }}
-                          onDrop={(event) => {
-                            if (!group.workspaceId || group.archived) return;
-                            const sourceWorkspaceId = workspaceDragIdFromEvent(event);
-                            if (!sourceWorkspaceId || sourceWorkspaceId === group.workspaceId) {
-                              return;
-                            }
-                            event.preventDefault();
-                            reorderWorkspaceById(
-                              sourceWorkspaceId,
-                              group.workspaceId,
-                              workspaceDropPlacementFromEvent(event),
-                            );
-                            setDraggingWorkspaceId(null);
-                            setDragOverWorkspaceId(null);
-                            setDragOverWorkspacePlacement("before");
-                          }}
-                          onDragEnd={() => {
-                            setDraggingWorkspaceId(null);
-                            setDragOverWorkspaceId(null);
-                            setDragOverWorkspacePlacement("before");
-                          }}
-                          className={cx(
-                            "flex items-start gap-1 rounded-lg transition",
-                            workspaceGroupDraggable && "cursor-grab active:cursor-grabbing",
-                            workspaceGroupDragging && "opacity-60",
-                            workspaceGroupDropTarget &&
-                              "ring-1 ring-amber-300/80 ring-offset-1 ring-offset-white dark:ring-amber-500/60 dark:ring-offset-slate-950",
-                            workspaceGroupDropPlacement === "after" && "translate-y-0.5",
-                            workspaceGroupDropPlacement === "before" && "-translate-y-0.5",
-                            workspaceGroupActive
-                              ? "bg-slate-100/90 shadow-sm dark:bg-slate-900"
-                              : "hover:bg-slate-50 dark:hover:bg-slate-900/70",
-                          )}
-                        >
-                          <button
-                            type="button"
-                            onClick={() => {
-                              toggleThreadGroup(group.id);
-                              if (group.workspaceId) {
-                                setActiveWorkspace(group.workspaceId);
-                                setActivePane("work");
-                              }
-                            }}
-                            className="flex min-w-0 flex-1 items-start gap-1.5 px-1.5 py-2 text-left"
-                          >
-                            <span className="flex w-5 shrink-0 flex-col items-center gap-1 pt-0.5">
-                              {collapsed ? (
-                                <ChevronRight size={14} className="shrink-0 text-slate-400" />
-                              ) : (
-                                <ChevronDown size={14} className="shrink-0 text-slate-400" />
-                              )}
-                              {workspaceGroupDraggable && (
-                                <span
-                                  className="dan-workspace-drag-handle grid h-5 w-4 place-items-center text-slate-400 transition group-hover/workspace:text-slate-600 dark:text-slate-500 dark:group-hover/workspace:text-slate-300"
-                                  title="Drag workspace"
-                                  aria-hidden="true"
-                                >
-                                  <GripVertical size={15} strokeWidth={2.3} />
-                                </span>
-                              )}
-                            </span>
-                            <span className="min-w-0 flex-1">
-                              <span className="flex min-w-0 items-center gap-1.5">
-                                {renderSessionCountPill(
-                                  group.threads.length,
-                                  workspaceGroupActive,
-                                )}
-                                <span className="dan-rail-card-title block truncate text-slate-700 dark:text-slate-200">
-                                  {group.name}
-                                </span>
-                              </span>
-                              {group.root && (
-                                <span className="dan-rail-card-meta">{fileName(group.root)}</span>
-                              )}
-                            </span>
-                          </button>
-                          {group.workspaceId && !group.archived && (
-                            <div className="mr-1 mt-1 flex shrink-0 items-center gap-0.5">
-                              <button
-                                type="button"
-                                data-workspace-action
-                                draggable={false}
-                                onClick={() => void startNewSession(group.workspaceId)}
-                                title={`New session in ${group.name}`}
-                                aria-label={`New session in ${group.name}`}
-                                className="grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 transition hover:bg-white hover:text-slate-700 dark:hover:bg-slate-950 dark:hover:text-slate-200"
-                              >
-                                <Plus size={12} />
-                              </button>
-                              <button
-                                type="button"
-                                data-workspace-action
-                                draggable={false}
-                                onClick={() => removeWorkspace(group.workspaceId!)}
-                                title={`Close ${group.name}`}
-                                aria-label={`Close ${group.name}`}
-                                className="grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 opacity-0 transition hover:bg-white hover:text-slate-700 hover:opacity-100 group-hover/workspace:opacity-100 dark:hover:bg-slate-950 dark:hover:text-slate-200"
-                              >
-                                <X size={12} />
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                        {!collapsed && (
-                          <div className="ml-4 mt-2 space-y-2 border-l border-slate-200 pl-2 dark:border-slate-800">
-                            {group.subgroups?.length ? (
-                              <div className="space-y-2">
-                                {group.subgroups.map((subgroup) => {
-                                  const subgroupCollapsed = threadQuery.trim()
-                                    ? false
-                                    : (collapsedThreadGroups[subgroup.id] ??
-                                      subgroup.defaultCollapsed ??
-                                      false);
-                                  return (
-                                    <div key={subgroup.id} className="space-y-2">
-                                      <button
-                                        type="button"
-                                        onClick={() => toggleThreadGroup(subgroup.id)}
-                                        className="flex w-full min-w-0 items-start gap-1.5 rounded-lg px-1.5 py-2 text-left transition hover:bg-slate-50 dark:hover:bg-slate-900/70"
-                                      >
-                                        {subgroupCollapsed ? (
-                                          <ChevronRight size={13} className="mt-0.5 shrink-0 text-slate-400" />
-                                        ) : (
-                                          <ChevronDown size={13} className="mt-0.5 shrink-0 text-slate-400" />
-                                        )}
-                                        <span className="min-w-0 flex-1">
-                                          <span className="flex min-w-0 items-center gap-1.5">
-                                            {renderSessionCountPill(subgroup.threads.length)}
-                                            <span className="dan-rail-card-title block truncate text-slate-700 dark:text-slate-200">
-                                              {subgroup.name}
-                                            </span>
-                                          </span>
-                                          {subgroup.root && (
-                                            <span className="dan-rail-card-meta">
-                                              {fileName(subgroup.root)}
-                                            </span>
-                                          )}
-                                        </span>
-                                      </button>
-                                      {!subgroupCollapsed && (
-                                        <div className="ml-4 space-y-2 border-l border-slate-200 pl-2 dark:border-slate-800">
-                                          {renderSessionThreadRows(subgroup)}
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            ) : (
-                              <>
-                                {renderSessionThreadRows(group)}
-                                {group.threads.length === 0 && (
-                                  <div className="px-2 py-1 text-xs text-slate-400">No sessions</div>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                  {sessionGroups.length === 0 && (
-                    <div className="px-2 py-2 text-sm text-slate-400">No sessions found.</div>
-                  )}
-                </div>
-              </div>
-              <div className="flex h-10 shrink-0 items-center justify-end gap-2 border-t border-slate-200/80 px-3 text-[11px] text-slate-400 dark:border-slate-800">
-                <span className="shrink-0">
-                  {threads.length} {threads.length === 1 ? "session" : "sessions"}
-                </span>
-              </div>
-              {!isPhoneViewport && (
-                <div
-                  role="separator"
-                  aria-label="Resize sessions rail"
-                  onPointerDown={startLeftRailResize}
-                  className="absolute -right-1 top-0 z-20 h-full w-2 cursor-col-resize bg-transparent transition hover:bg-slate-300/40 dark:hover:bg-slate-700/45"
-                />
-              )}
-            </aside>
-          )}
+          {renderSessionRail && <aside id="wb-project-sidebar" className="dan-phone-page dan-session-page wb-session-shelf wb-project-sidebar">
+            <div className="wb-panel-heading"><span>DAN</span></div>
+            <button className="wb-sidebar-new" onClick={() => { void startNewSession(); setShowConversationChunks(true); setPhonePage("chat"); }}><Plus size={16} />New chat</button>
+            <label className="wb-shelf-search"><Search size={15} /><input aria-label="Search sessions" placeholder="Search chats" value={threadQuery} onChange={(event) => setThreadQuery(event.target.value)} /></label>
+            <div className="wb-projects-heading"><span>{sessionShelfScope === "archived" ? "Archived chats" : "Projects"}</span><button title="New project" aria-label="New project" onClick={() => { setCreatingProject(true); setWorkbenchSettings(true); }}><Plus size={15} /></button></div>
+            <div className="wb-shelf-list">
+              {sessionGroups.flatMap((group) => group.subgroups ?? [group]).filter((group) => sessionShelfScope === "archived" ? group.archived : !group.archived).map((group) => {
+                if (group.unassigned) return <section key={group.id} aria-label="Other chats">
+                  <div className="wb-projects-heading"><span>Other chats</span></div>
+                  {renderSessionThreadRows({ ...group, threads: [...group.threads].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || a.id.localeCompare(b.id)) })}
+                </section>;
+                const collapsed = !threadQuery.trim() && (collapsedThreadGroups[group.id] ?? (group.workspaceId !== activeWorkspaceId));
+                return <div key={group.id} className="wb-sidebar-project">
+                  <div className="wb-project-row" data-active={group.workspaceId === activeWorkspaceId || undefined}>
+                    <button aria-expanded={!collapsed} onClick={() => setCollapsedThreadGroups((previous) => ({ ...previous, [group.id]: !collapsed }))}><ChevronRight size={13} className={collapsed ? "" : "rotate-90"} /><Folder size={15} /><span>{workspaces.find((item) => item.id === group.workspaceId)?.name || group.name}</span></button>
+                    {!group.archived && <button className="wb-project-new-chat" aria-label={`New chat in ${group.name}`} title="New chat in project" onClick={() => { setCollapsedThreadGroups((previous) => ({ ...previous, [group.id]: false })); void startNewSession(registerSessionGroup(group)); setShowConversationChunks(true); setPhonePage("chat"); }}><Plus size={14} /></button>}
+                    {!group.archived && <ProjectMenu name={workspaces.find((item) => item.id === group.workspaceId)?.name || group.name}
+                      onNewChat={() => { void startNewSession(registerSessionGroup(group)); setShowConversationChunks(true); setPhonePage("chat"); }}
+                      onEdit={() => {
+                        const id = registerSessionGroup(group);
+                        setActiveWorkspace(id);
+                        if (group.threads[0]) void openSession(group.threads[0], id, group.root);
+                        setCreatingProject(false); setWorkbenchSettings(true);
+                      }}
+                      onImport={() => {
+                        const id = registerSessionGroup(group);
+                        const project = useWorkspaceStore.getState().workspaces.find((item) => item.id === id);
+                        const root = project?.pinnedPaths[0] || group.root || "";
+                        setImportNativeSessions({ id, root });
+                      }}
+                      onRemove={() => {
+                        const id = registerSessionGroup(group);
+                        for (const thread of group.threads) clearStoredThreadSelection(thread);
+                        if (id === activeWorkspaceId || group.threads.some((thread) => thread.id === activeThread?.id)) {
+                          sessionSelectionSeqRef.current += 1;
+                          clearActiveSessionView("Project removed from DAN");
+                        }
+                        hideWorkspace(id);
+                      }} />}
+                  </div>
+                  {!collapsed && <div className="wb-project-chats">{renderSessionThreadRows({ ...group, threads: [...group.threads].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || a.id.localeCompare(b.id)) })}
+                    {!group.threads.length && <p className="wb-shelf-empty">{threadQuery.trim() ? "No matching chats" : "No chats yet"}</p>}
+                  </div>}
+                </div>;
+              })}
+              {sessionGroups.every((group) => sessionShelfScope === "archived" ? !group.archived : group.archived) && <p className="wb-shelf-empty">{threadQuery.trim() ? "No matching chats" : sessionShelfScope === "archived" ? "No archived chats" : "Create a project to get started"}</p>}
+            </div>
+            <div className="wb-sidebar-footer">{sessionShelfScope === "archived" && <><button className="wb-delete-archived" disabled={deletingArchived || !threads.some((thread) => thread.archived)} onClick={() => void deleteAllArchivedSessions()}><Trash2 size={15} />{deletingArchived ? "Deleting archived chats…" : "Delete all archived chats"}</button>{archiveDeleteProgress && <p role="status" className="wb-archive-delete-progress">{archiveDeleteProgress}</p>}</>}<button onClick={() => { setSessionShelfScope(sessionShelfScope === "archived" ? "all" : "archived"); }}><Archive size={15} />{sessionShelfScope === "archived" ? "Back to projects" : "Archived chats"}</button><button onClick={() => setDanSettings(true)}><MoreHorizontal size={15} />DAN settings</button></div>
+          </aside>}
           {!isPhoneViewport && !renderFileExplorer && (
             <CollapsedPaneRail
               label="Files"
@@ -18647,26 +18465,12 @@ export default function ChunkWorkspaceApp() {
             )}
           >
             <div className="flex min-h-0 min-w-0 flex-col bg-white/90 dark:bg-slate-950">
-              <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/80 px-4 backdrop-blur dark:border-slate-800 dark:bg-slate-950/80">
-                <div className="min-w-0">
-                  <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
-                    Work
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setShowConversationChunks(false)}
-                    className="grid h-8 w-8 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
-                    title="Collapse work panel"
-                    aria-label="Collapse work panel"
-                  >
-                    <ChevronRight size={14} className="rotate-180" />
-                  </button>
-                </div>
-              </div>
+              <div className="wb-conversation-heading"><span>{activeThread?.title || "New session"}</span><div className="wb-conversation-actions">
+                {activeRunningTask && activeThread && <button className="wb-stop" onClick={() => void stopSessionRun({ id: activeThread.id, workflow_id: activeThread.workflowId, title: activeThread.title || "Active session", message_count: messages.length, created_at: "", updated_at: "" }, activeRunningTask)}><Square size={11} />Stop run</button>}
+                <button aria-pressed={workbenchOutline} onClick={() => setWorkbenchOutline(!workbenchOutline)}>{workbenchOutline ? "Conversation" : "Task detail"}</button></div></div>
 
-              <div className="min-h-0 flex-1 overflow-auto p-4">
+              <TeamStrip workers={team.workers} lead={selectedAgentOption.shortLabel} leadRunning={Boolean(activeRunningTask)} open={teamPanel} onToggle={() => { setTeamPanel(!teamPanel); setWorkbenchActivity(false); setSidecarChat(false); setShowSidecarPreview(false); }} />
+              {workbenchOutline ? (              <div className="wb-outline min-h-0 flex-1 overflow-auto p-4">
                 {isPhoneViewport || showConversationChunks ? (
                   <BlueprintView
                     nodes={blueprintNodes}
@@ -18702,21 +18506,18 @@ export default function ChunkWorkspaceApp() {
                   onSelect={selectPreviewFile}
                 />
               </div>
-
-              {showAgentQueuePanel && (
-                <div className="max-h-44 shrink-0 overflow-auto border-t border-slate-200/80 bg-slate-50/90 p-3 dark:border-slate-800 dark:bg-slate-900/40">
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
-                      <Activity size={13} />
-                      Message Queue
-                    </div>
-                    <span className="text-[11px] text-slate-400">
-                      {queueRows.length} {queueRows.length === 1 ? "item" : "items"}
-                    </span>
-                  </div>
-                  <QueueList rows={queueRows} />
-                </div>
+) : (
+                <WorkbenchConversation key={activeThread?.id ?? "new"} messages={messages} pending={pendingAssistantIds} loading={loadingThreadId !== null} status={status} onSidecar={activeThread ? (text) => { setSidecarSelection({text, token:Date.now()}); setSidecarChat(true); setWorkbenchActivity(false); setTeamPanel(false); setShowSidecarPreview(false); } : undefined} onQuote={(text, messageIds) => {
+                  if (!activeThread) return;
+                  setComposerReferences((current) => ({ ...current, [referenceKey]: { text, messageIds, title: activeThread.title || "Conversation", threadId: activeThread.id, workflowId: activeThread.workflowId } }));
+                  composerRef.current?.focus();
+                }} />
               )}
+
+              {showAgentQueuePanel && <details className="wb-followup-queue">
+                <summary><Clock3 size={13} /><span>{visibleQueueRows.length} queued {visibleQueueRows.length === 1 ? "message" : "messages"}</span><ChevronDown size={13} /></summary>
+                <ol>{visibleQueueRows.map((row) => <li key={row.id}><span>{row.rawDetail || row.detail}</span><small>{row.status.replaceAll("_", " ")}</small></li>)}</ol>
+              </details>}
 
               {renderWorkspaceComposer()}
             </div>
@@ -18901,12 +18702,19 @@ export default function ChunkWorkspaceApp() {
               <PanelRight size={14} />
             </CollapsedPaneRail>
           )}
+          {sidecarChat && activeThread && <SidecarChat key={`${activeThread.workflowId}:${activeThread.id}`} parentId={activeThread.id} workflowId={activeThread.workflowId}
+            workspaceId={workspace?.id || ""} workspaceRoot={workspaceRootForTasks(tasks) || workspaceRoot || developmentRoot} context={messages} selection={sidecarSelection}
+            leadLabel={selectedAgentOption.shortLabel} execution={{ ...buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode), profile_policy: { ...buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode).profile_policy, native_workers:nativeWorkerProfiles, ...(selectedAgentId !== "native" ? {lead_profile:leadProfiles[selectedAgentId] || {}} : {}) } }}
+            onClose={() => setSidecarChat(false)} onCreated={() => { void refreshThreads(); }} />}
+          {workbenchActivity && <aside className="wb-activity-panel"><div className="wb-panel-heading"><span>Activity</span><button onClick={() => setWorkbenchActivity(false)} aria-label="Close activity"><X size={17} /></button></div><WorkbenchActivity events={agentEvents} /></aside>}
+          {teamPanel && <TeamPanel workers={team.workers} error={team.error} onStop={(worker) => void team.stop(worker)} onClose={() => setTeamPanel(false)} />}
+
         </section>
       )}
       <nav
         className={cx(
           "dan-phone-nav hidden shrink-0 border-t border-slate-200/80 bg-white/95 px-2 py-1.5 shadow-[0_-8px_24px_rgba(15,23,42,0.06)] backdrop-blur dark:border-slate-800 dark:bg-slate-950/95",
-          workspaceSurfaceTheme === "factory-worn" && "dan-phone-nav-factory-worn",
+          activePane === "notes" && workspaceSurfaceTheme === "factory-worn" && "dan-phone-nav-factory-worn",
         )}
       >
         {activePane === "work"
@@ -18923,9 +18731,6 @@ export default function ChunkWorkspaceApp() {
                 className={cx(
                   "dan-phone-nav-button",
                   phonePage === page && "dan-phone-nav-button-active",
-                  phonePage === page &&
-                    workspaceSurfaceTheme === "factory-worn" &&
-                    "dan-phone-nav-button-active-factory-worn",
                 )}
               >
                 <Icon size={17} />

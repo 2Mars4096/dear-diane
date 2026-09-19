@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("electronAPI", {
   isElectron: true,
@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     openDirectory: () => ipcRenderer.invoke("dialog:openDirectory"),
   },
   fs: {
+    droppedDirectory: (file) => ipcRenderer.invoke("fs:droppedDirectory", webUtils.getPathForFile(file)),
     readFile: (filePath) => ipcRenderer.invoke("fs:readFile", filePath),
     writeFile: (filePath, content) => ipcRenderer.invoke("fs:writeFile", filePath, content),
     writeTempAttachment: (payload) => ipcRenderer.invoke("fs:writeTempAttachment", payload),

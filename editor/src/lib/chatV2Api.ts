@@ -315,9 +315,10 @@ export async function saveChatV2Thread(
 export async function deleteChatV2Thread(
   workflowId: string,
   threadId: string,
+  archivedOnly = false,
 ): Promise<void> {
   await readJson<{ status: string }>(
-    await fetch(CHAT_V2_ENDPOINTS.deleteThread(workflowId, threadId), {
+    await fetch(CHAT_V2_ENDPOINTS.deleteThread(workflowId, threadId) + (archivedOnly ? "?archived_only=true" : ""), {
       method: "DELETE",
     }),
   );

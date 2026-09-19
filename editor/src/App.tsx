@@ -3,7 +3,6 @@ import {
   applyAppearanceTheme,
   subscribeToSystemAppearance,
 } from "./lib/appearanceTheme";
-import { workspaceSurfaceThemeClassName } from "./lib/workspaceSurfaceTheme";
 import { useSettingsStore } from "./store/useSettingsStore";
 
 const ChunkWorkspaceApp = lazy(() => import("./components/workspace/ChunkWorkspaceApp"));
@@ -53,15 +52,9 @@ function useWorkspaceOnlyRoute() {
 export default function App() {
   useAppearanceTheme();
   useWorkspaceOnlyRoute();
-  const workspaceSurfaceTheme = useSettingsStore((s) => s.workspaceSurfaceTheme);
-  const workspaceSurfaceTone = useSettingsStore((s) => s.workspaceSurfaceTone);
-  const desktopSurfaceClassName = workspaceSurfaceThemeClassName(
-    workspaceSurfaceTheme,
-    workspaceSurfaceTone,
-  );
 
   return (
-    <div className={`h-screen w-screen overflow-hidden ${desktopSurfaceClassName}`}>
+    <div className="h-screen w-screen overflow-hidden">
       <Suspense
         fallback={
           <div className="grid h-screen w-screen place-items-center bg-white text-sm text-gray-500 dark:bg-gray-950 dark:text-gray-400">

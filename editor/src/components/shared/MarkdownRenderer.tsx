@@ -443,10 +443,11 @@ export default function MarkdownRenderer({
     () => renderMarkdownToHtml(content, { autoHighlightCode, renderMathCodeSpans }),
     [autoHighlightCode, content, renderMathCodeSpans],
   );
+  const markup = useMemo(() => ({ __html: html }), [html]);
   return (
     <div
       className={`dan-markdown text-sm ${className}`}
-      dangerouslySetInnerHTML={{ __html: html }}
+      dangerouslySetInnerHTML={markup}
       onClick={onClick}
     />
   );

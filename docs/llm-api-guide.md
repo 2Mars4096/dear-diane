@@ -151,3 +151,17 @@ Then read `/api/v2/tasks`, `/api/v2/agent-runs/{run_id}`, and `/api/v2/agent-run
 - Treat model-authored scheduling or mutation suggestions as proposals until deterministic policy admits them.
 - Never infer mutation, destructive, publication, purchasing, or investment authority from the task family.
 - Require evidence and validation before claiming completion.
+
+## Workbench native workers
+
+Enabled mutation-capable GUI manager stages receive `native_worker(action, backend?, prompt?, worker_id?)`. Backends: `codex`, `claude`, `antigravity`. `start` returns immediately; start multiple independent tasks before polling `status`. Status waits up to ten seconds and returns saved output/status. `stop` affects only its named child. `resume` sends a follow-up to a settled child within the same active parent; it cannot modify another parent's worker. Inspect child results before ending the manager run, which stops remaining children.
+
+Runtime choices are in the execute request's `profile_policy.native_workers`, keyed by backend, with `enabled`, `account`, `model`, `effort`, and `fast`. Account names resolve server-side; never send credentials in this payload. Imported native context always forks before continuation.
+
+Read-only discovery: `GET /api/native-workers/catalog`, `GET /api/native-sessions?workspace=...`. Import only after user selection: `POST /api/native-sessions/import` with `{source_id, workspace, workspace_id, fork:true}`. Native worker history: `GET /api/native-workers/{parent_id}` and `/{worker_id}/events`; scoped stop: `POST /api/native-workers/{parent_id}/{worker_id}/stop`.
+
+### Native leads and team delegation
+- Agent-run execute backends: `native_codex`, `claude`, `antigravity`; `super_dan` remains the DAN lead. Existing `codex` backend is retained for compatibility.
+- `profile_policy.lead_profile`: account, model, effort, fast; continuation IDs are server-owned and scoped to thread/folder/runtime/account.
+- `profile_policy.native_workers`: enabled profiles keyed by `dan`, `codex`, `claude`, `antigravity`; DAN profiles optionally set `base_url` and model.
+- `native_worker` accepts start/status/stop/resume. Native leads receive an equivalent run-scoped shell bridge. Team members cannot recursively delegate.

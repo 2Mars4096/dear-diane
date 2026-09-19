@@ -5,6 +5,7 @@ import type { AppMode } from "./useAppStore";
 export interface Workspace {
   id: string;
   name: string;
+  removedFromDan?: boolean;
   icon?: string;
   color?: string;
   pinnedPaths: string[];
@@ -35,9 +36,10 @@ interface WorkspaceState {
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
 
-  createWorkspace: (name?: string, mode?: AppMode) => string;
+  createWorkspace: (name?: string, mode?: AppMode, activate?: boolean) => string;
   deriveWorkspaceName: (wsId: string) => void;
   removeWorkspace: (id: string) => void;
+  hideWorkspace: (id: string) => void;
   setActiveWorkspace: (id: string) => void;
   updateWorkspace: (id: string, updates: Partial<Workspace>) => void;
   reorderWorkspace: (fromIndex: number, toIndex: number) => void;
@@ -55,7 +57,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       workspaces: [],
       activeWorkspaceId: null,
 
-      createWorkspace: (name, mode) => {
+      createWorkspace: (name, mode, activate = true) => {
         const id = `ws-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         let defaultName: string;
         if (name) {
@@ -79,7 +81,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         };
         set((s) => ({
           workspaces: [...s.workspaces, workspace],
-          activeWorkspaceId: id,
+          activeWorkspaceId: activate ? id : s.activeWorkspaceId,
         }));
         return id;
       },
@@ -102,6 +104,13 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             get().updateWorkspace(wsId, { name: formatted });
           }
         }
+      },
+
+      hideWorkspace: (id) => {
+        set((s) => ({
+          workspaces: s.workspaces.map((workspace) => workspace.id === id ? { ...workspace, removedFromDan: true } : workspace),
+          activeWorkspaceId: s.activeWorkspaceId === id ? s.workspaces.find((workspace) => workspace.id !== id && !workspace.removedFromDan)?.id ?? null : s.activeWorkspaceId,
+        }));
       },
 
       removeWorkspace: (id) => {

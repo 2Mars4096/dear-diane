@@ -6,7 +6,7 @@ product
 
 ## Users
 
-Researchers, developers, and operators doing long-running, high-trust work that needs planning, tool use, checkpoint steering, provenance, and recovery. They use DAN as a dense working environment where Notes, source material, execution state, evidence, and previews remain visible and inspectable.
+Researchers, developers, and operators doing long-running, high-trust work that needs planning, tool use, checkpoint steering, provenance, and recovery. They use DAN as a lightweight workbench: conversation stays central, while Notes, execution state, evidence, and previews are available on demand. Projects contain sessions; child agents belong to their parent session.
 
 ## Product Purpose
 
@@ -14,11 +14,11 @@ DAN makes rare, difficult agentic tasks tractable, steerable, and repeatable. Th
 
 ## Brand Personality
 
-Durable, sober, and capable. The interface should feel like a trusted workshop instrument: information-dense, calm under pressure, and explicit about state without becoming bureaucratic.
+Durable, sober, and capable. The interface should feel like a trusted workshop instrument: quiet, calm under pressure, and explicit about state without demanding constant attention.
 
 ## Anti-references
 
-- Generic chat wrappers that hide execution state behind one conversation column.
+- Chat wrappers that make execution state impossible to inspect. Keep the primary conversation simple and expose activity through deliberate disclosures.
 - Decorative multi-agent dashboards that imply that more agents automatically mean better work.
 - Bright SaaS surfaces with ornamental gradients, excessive glass, or padded cards that reduce working density.
 - Interfaces that sacrifice provenance, keyboard access, or readable evidence for visual novelty.
@@ -28,8 +28,8 @@ Durable, sober, and capable. The interface should feel like a trusted workshop i
 - Keep the operator oriented: preserve the current workspace, selection, and execution state across views.
 - Make evidence inspectable: prefer concrete artifacts, timestamps, paths, checks, and status over vague progress.
 - Spend space on work: remove empty framing and let source material, previews, tables, and documents use the available surface.
-- Keep controls familiar: use standard navigation, predictable panels, and consistent interaction states.
-- Use visual character in service of trust: the restrained machine-tool theme should reinforce durability without competing with content.
+- Keep navigation spatial: a project carousel provides context; a stable eight-slot session wheel supports muscle memory. Both have visible controls and keyboard equivalents.
+- Use flat neutral surfaces, restrained type, and purposeful motion. Avoid permanently visible rails and decorative texture in Work. See DESIGN.md for the workbench direction.
 
 ## Accessibility & Inclusion
 

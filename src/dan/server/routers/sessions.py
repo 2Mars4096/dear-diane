@@ -52,6 +52,11 @@ async def create_chat_thread(
     thread = store.create_thread(workflow_id, title=str(payload.get("title") or ""))
     mode = store._normalize_mode(payload.get("mode"))
     store.set_mode(workflow_id, thread.id, mode)
+    parent = str(payload.get("parent_thread_id") or "")
+    if parent and store.get_thread(workflow_id, parent) is not None:
+        store.set_branch_lineage(workflow_id, thread.id, parent_thread_id=parent,
+            branch_point_message_id=str(payload.get("branch_point_message_id") or ""),
+            branch_type=str(payload.get("branch_type") or "explore"))
     result = thread.model_dump(mode="json")
     result["mode"] = mode
     return result
@@ -101,7 +106,11 @@ async def delete_chat_thread(
     workflow_id: str,
     thread_id: str,
     request: Request,
+    archived_only: bool = False,
 ) -> dict[str, str]:
-    if not _store(request).delete_thread(workflow_id, thread_id):
+    store = _store(request)
+    if archived_only and not store.get_thread_meta(workflow_id, thread_id).get("archived", False):
+        raise HTTPException(409, "Session is no longer archived; it was not deleted")
+    if not store.delete_thread(workflow_id, thread_id):
         raise HTTPException(status_code=404, detail="Thread not found")
     return {"status": "deleted"}

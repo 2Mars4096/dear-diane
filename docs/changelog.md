@@ -1,5 +1,72 @@
 # Changelog
 
+## 2026-09-19
+- [feat] Team progress display: a compact strip above the transcript names the lead and up to two live team members with their current action (needs-attention first, "+N" overflow), settling to "N tasks done". Clicking it opens a Team side panel with one lane per task: title, agent, current action, elapsed time, inline Stop, expandable recent actions/output; finished tasks collapse under Done with a one-line result. Replaces the old Subagents list.
+- [feat] Native worker records now carry `activity` and a bounded `actions` history, derived server-side from Codex JSONL, Claude stream-json, Antigravity step, and DAN events, so polling reads small records instead of raw logs. Polling runs every 1.5s while work is live and every 5s otherwise.
+- [docs] Regenerated `CLAUDE.md` from `AGENTS.md` (two-level plan numbering).
+- [test] 45 workbench tests, 99 backend worker/server tests, and the production build pass; the two known happy-dom sanitizer failures are unchanged. Browser check covered live, attention, settled, details, and dark states with mocked worker records.
+
+## 2026-09-18
+- [fix] Keep full streamed answers when native completion emits a 500-character status preview. Reopen affected native messages from their saved full run result.
+- [feat] Hide the queue for a lone active run; show waiting messages in a compact neutral expandable list.
+- [test] All 40 workbench tests and production build/budgets pass, including completion-preview truncation regression.
+- [feat] Stage selected passages above the composer with removable reference previews; attach source conversation/message IDs and quoted context to the next request. References stay scoped to their conversation and survive send failure.
+- [fix] Composer grows from one to six lines with wrapping/newlines, then scrolls vertically. Chromium sizing/reference checks, selection regression, and build/budgets pass.
+- [infra] Installed and reopened the signed sidecar/selection update; retained app rollback at `/private/tmp/DAN-backup-20260918-142108.app`, restarted the idle backend, and verified the pre-existing queued task checksum stayed unchanged.
+- [fix] Preserve Markdown DOM nodes across toolbar rerenders so transcript selection remains highlighted; suspend follow-scroll while selecting.
+- [feat] Add saved sidecar conversations from the header or selected text, using the current lead with separate messages, linked parent context, stop, and pending-run recovery on reopening.
+- [test] Chromium selection and quoted-sidecar checks, 38 workbench tests, 3 session API tests, and production build/budgets pass.
+- [feat] Archived chats footer now offers Delete all archived chats, with count/scope confirmation and progress. Only successful deletions leave the list; failures remain retryable. The archived-only API guard refuses to delete a chat that is no longer archived.
+- [fix] Restored the original project registry into the packaged app’s local-storage origin, recovering product_market_agility/ra-neo names and hidden Scratch markers. Dev and packaged origins had separate registries; backend sessions were intact.
+- [infra] Removed the explicitly requested Okitsu2 account/config/cache entries and 18 imported DAN sessions. Its native session/database paths were symlinks shared by other Codex accounts, so shared originals were preserved.
+- [fix] Lead and Team now dismiss on outside pointer interaction and keyboard focus leaving. Shared dismissal preserves clicks inside panel content and keeps Escape behavior.
+- [fix] Switching native leads reuses the loaded runtime catalog instead of remounting an empty settings panel and refetching. Removed repetitive fast-mode reminder text; unsupported controls remain disabled.
+- [fix] Lead and Team share button height, typography, padding, chevron, and focus/open styles. A native details group closes the other dropdown automatically.
+- [feat] Consolidate agent configuration into two composer controls, Lead and Team; keep agent/account/model/reasoning/fast settings inside each dropdown and show one team agent at a time. Unsupported reasoning/fast controls stay disabled. 177 focused frontend tests pass, including changing a lead’s account/model/reasoning/fast without leaving its dropdown.
+- [feat] Connected Codex, Claude Code, and Antigravity leads with independent account/model/effort/fast profiles, persistent native session continuation, imported-source forks, streamed output, stop cleanup, and queued follow-ups. Added run-scoped shell bridge for native leads to delegate to enabled team members, including DAN; child DAN inherits parent policies and cannot recursively delegate.
+- [test] 176 focused frontend and 87 backend tests pass; build/budgets and signed macOS package verified. Live Codex lead returned the expected marker; Claude timed out after 45 seconds and Antigravity still needs sign-in, so full authenticated mixed-team acceptance remains pending.
+- [infra] Replaced `/Applications/DAN.app` with the rebuilt signed arm64 app, preserved the old icon, retained previous app at `/private/tmp/DAN-backup-20260918-125131.app`, restarted the idle backend, and reopened the app. User data was not deleted.
+- [feat] Composer now separates Lead, lead model, and Team. Replaced Subagents terminology with Team, explained delegation roles, and explicitly marked native lead selection as not yet connected.
+- [fix] Reduced Work composer inner padding to 6px, input padding to 6px/8px, and control gap to 4px for a more compact message box.
+- [fix] Session-delete confirmation uses a single-line title capped at 80 characters, preventing imported first-message titles from filling the dialog.
+- [fix] Raised native transcript import limit to 128 MB so larger histories can be imported without truncation.
+- [feat] Group native-session imports into populated source tabs with counts, keyboard navigation, and tab-scoped Select all; retain selections across tabs and hide the tab bar for a single source.
+- [fix] Native-session Select all now uses a checkbox with partial-selection feedback; unsupported sessions stay excluded.
+- [feat] Move native-session import to project menus, add multi-select/Select all with compact titles and retry-safe batch handling, replace the footer with global DAN settings, and remove the empty-history status.
+- [test] All 33 focused workbench tests pass, including partial batch failure/retry without duplicate imports. Production build and bundle budgets pass.
+- [feat] Generated three app icon concepts with built-in imagegen: futuristic titanium, retro space-age enamel, and geometric folded paths; previews saved in `output/icon-concepts`, not applied to the app.
+
+## 2026-09-17
+- [fix] Recovered project rows now expose New chat and project action menus. Actions register their complete chat group without stealing the active project; folder-based reconciliation joins recovered chats to registered/hidden projects and prevents removed groups from returning.
+- [feat] Project dots now open a keyboard-accessible menu with New chat, Edit project, and a highlighted Remove from DAN action. A confirmation explains that folders, files, native sessions, and DAN history are retained. Removal stores a local hidden-project marker and excludes retained chats from fallback groups.
+- [fix] Fixed carousel control width so project names cannot move the arrows. Added WASD navigation (A/W previous, D/S next), vertical arrows, and updated keyboard hints.
+- [infra] Installed official Google Antigravity CLI 1.2.5 at `/Users/lizhi/.local/bin/agy` using its checksum-verifying installer. Verified version, headless flags, and DAN discovery. `agy models` requires first sign-in; no authenticated agent task was run.
+- [test] Native-worker/import changes pass 82 focused backend tests, 172 frontend tests, and production build/budget checks. Real-browser checks cover model/account controls and opt-in import cancellation; CLI execution/forks use subprocess fixtures, not authenticated live acceptance. Reloaded the backend after confirming its only pending task was queued.
+- [feat] Added explicit OpenRouter DeepSeek V4.1 Flash and Kimi K2.6 manager choices; reuse existing OpenRouter configuration without sending another provider's key to the gateway.
+- [feat] Added native subagent controls for Codex, Claude Code, and Antigravity with account/model/reasoning/fast settings, runtime discovery, per-parent parallel execution, durable event logs, live output, and scoped stop. Missing runtimes and unsupported fast modes are disabled.
+- [feat] Added opt-in folder-matched native session discovery and forked imports. Codex/Claude source history stays unchanged; native continuation forks first. Antigravity import is unavailable until its headless fork contract is verified.
+- [fix] Resolve codexx configuration against the real OS user home when DAN runs from an isolated Codex account home; never send account credentials to the browser.
+- [fix] New projects automatically take the selected/dropped/pasted folder name until the user edits it. Existing project names remain unchanged. Component tests verify enabled creation, saved values, and preservation of custom names across folder changes.
+- [fix] Aligned the folder-drop icon and instructions in one row, with consistent 16px insets and spacing above the full-width path field.
+- [fix] New chats use their project ID as the storage namespace instead of `_scratch`; session grouping can recover that ownership without local thread bindings. Legacy unassigned chats remain readable in a plain Other chats section, without a fake Scratch project/folder. Focused workspace/workbench tests: 169 pass.
+- [fix] Restored native desktop header dragging and OS-controlled double-click zoom by marking Work/Notes headers as Electron drag regions, excluding controls/dialogs, and reserving space for macOS window buttons.
+- [fix] Made the folder drop target visible at rest with a dashed box, folder icon, drag instruction, browse action, and a path field inside the box; drag-over strengthens the outline. Production build/budget checks pass.
+- [fix] Moved the project sidebar toggle to the left of the project name in the persistent top bar, removed duplicate toggles, and added Cmd+B/Ctrl+B with modal/IME guards. Verified click and keyboard close/reopen behavior in the browser.
+- [feat] Added a highlighted folder drop target to project settings. Electron resolves dropped paths with webUtils and verifies directory type; files/multiple folders are rejected and browser-hidden paths produce a paste-path fallback without changing the field.
+- [feat] Session wheel now supports three keyboard sets: 1–8 direct open, held arrow combinations, and WASD combinations plus Q/E/Z/C. Releasing a chord retains its selection; close/window blur clears held-key state.
+- [test] Thirty workbench tests, Electron compilation, production build/budgets, and browser chord checks pass. Native OS folder-drop delivery was not exercised in a packaged desktop app.
+- [feat] Simplified project/chat management into a conventional sidebar with New chat, search, collapsible projects, indented chat titles, per-project actions, and archived chats. The carousel/wheel remain optional shortcuts.
+- [fix] Replaced the duplicate Work settings toolbar with a focused project name/folder dialog; cancelling project creation creates nothing, Files stays closed, and empty search results show one message. Layout v3 defaults to the sidebar while preserving Notes preferences.
+- [test] Production build/bundle checks and 152 focused tests pass. Browser fixtures cover cross-project chat selection, project rename, creation cancellation, empty search, archive navigation, and absence of the old settings/file panels.
+
+## 2026-09-16
+- [feat] Rebuilt Work as a neutral conversation workbench with a centered transcript/composer, optional project-local session shelf, All/Archived recovery views, select-to-reply, emitted thinking/tool disclosures, live activity, and a separate stop control. Notes retains its surface themes and layout preferences.
+- [feat] Added a depth-based project carousel (`⌘/Ctrl+Shift+P`) and stable eight-slot session wheel (`⌘/Ctrl+Shift+S`), with creation-time eligibility, persistent slot positions, keyboard/directional selection, pointer/touch navigation, modal focus wrapping/restoration, and reduced motion.
+- [fix] Project switching now restores the destination session through the existing guarded load/draft path. The transcript handles native message chunks, token deltas, and accumulated snapshots distinctly, while keeping recorded reasoning in disclosures.
+- [refactor] Extracted workbench navigation, event presentation, conversation/activity rendering, and styles; removed the old project/session accordion and scoped textured surface themes to Notes.
+- [docs] Updated product/design direction, architecture, README shortcuts, and tracking. Specified persistent Codex/Claude child-worker identity, transcripts, scoped controls, and remaining adapter work without claiming live Claude integration.
+- [test] Production build and bundle budgets pass; 152 focused workbench/workspace tests pass. Full suite: 194 pass, two unchanged sanitizer tests fail under happy-dom; corresponding Chromium sanitizer checks pass. Isolated browser fixtures verify shortcuts, focus, project isolation, drafts, quote reply, tool expansion, mobile sizing, and reduced motion; evidence is in `output/playwright/`.
+
 ## 2026-08-02
 - [infra] Completed the post-cutover workspace hygiene pass. Removed generated dependency/build/cache trees, obsolete Code/Research/checkpoint/memory histories, legacy examples and standalone website/animation/research/report artifacts, unused editor preview/Vite leftovers, and empty historical directories. Preserved current Work/Notes sessions in `graphs/chats`, Agent V2 task/run/event state in `graphs/chat_v2`, Super DAN TUI state in `.dan-super`, local configuration, retained phone source, and WireGuard setup.
 - [refactor] Cut the repository over to Universal Cell → Universal Organism → Super DAN → Work/Notes. Removed the tracked graph builder/engine/model stack, product-specific organisms, concierge/adapters/publishing/RAG/search layers, legacy CLI commands, editor modes, Electron integrations, tests, examples, sample graphs, and scripts after pushing a complete pre-archive snapshot.

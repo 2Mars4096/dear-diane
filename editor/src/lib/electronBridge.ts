@@ -9,6 +9,7 @@ interface ElectronAPI {
     openDirectory: () => Promise<string | null>;
   };
   fs: {
+    droppedDirectory?: (file: File) => Promise<string | null>;
     readFile: (filePath: string) => Promise<string | null>;
     writeFile: (filePath: string, content: string) => Promise<void>;
     writeTempAttachment: (payload: {
@@ -43,6 +44,9 @@ export const nativeDialog = {
 };
 
 export const nativeFs = {
+  async droppedDirectory(file: File): Promise<string | null> {
+    return window.electronAPI?.fs.droppedDirectory?.(file) ?? null;
+  },
   async readFile(filePath: string): Promise<string | null> {
     return window.electronAPI?.fs.readFile(filePath) ?? null;
   },

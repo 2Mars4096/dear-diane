@@ -131,15 +131,24 @@ function workspaceFile(relativePath: string, overrides: Partial<WorkspaceFileEnt
 }
 
 describe("workspace blueprint nodes", () => {
-  it("exposes Super DAN as the only workspace agent with a separate model choice", () => {
+  it("routes DeepSeek to OpenRouter without changing the DAN manager", () => {
+    const payload = workspaceAgentExecutePayloadForTest("native", "openrouter_deepseek_v41_flash");
+    expect(payload.backend).toBe("super_dan");
+    expect(payload.profile_policy).toMatchObject({ model: "deepseek/deepseek-v4.1-flash", base_url: "https://openrouter.ai/api/v1" });
+  });
+
+  it("exposes four lead agents with a separate model choice", () => {
     const agentOptions = workspaceAgentOptionsForTest();
     const modelOptions = workspaceModelOptionsForTest("native");
     const payload = workspaceAgentExecutePayloadForTest("native", "native_default");
 
     expect(agentOptions).toEqual([
+      expect.objectContaining({ id: "codex", backend: "native_codex" }),
+      expect.objectContaining({ id: "claude", backend: "claude" }),
+      expect.objectContaining({ id: "antigravity", backend: "antigravity" }),
       expect.objectContaining({ id: "native", label: "Super DAN", backend: "super_dan" }),
     ]);
-    expect(modelOptions.map((option) => option.id)).toEqual(["native_default", "native_kimi_k26"]);
+    expect(modelOptions.map((option) => option.id)).toEqual(["openrouter_deepseek_v41_flash", "openrouter_kimi_k26", "native_default", "native_kimi_k26"]);
     expect(payload.backend).toBe("super_dan");
     expect(payload.profile_policy).toMatchObject({
       backend: "super_dan",
@@ -169,24 +178,15 @@ describe("workspace blueprint nodes", () => {
     });
   });
 
-  it("migrates archived Codex selections onto the supported Super DAN backend", () => {
-    const modelOptions = workspaceModelOptionsForTest("codex");
-    const payload = workspaceAgentExecutePayloadForTest("codex", "codex_gpt_5_5_high");
-
-    expect(modelOptions).toEqual([]);
-    expect(payload.backend).toBe("super_dan");
-    expect(payload.profile_policy).toMatchObject({
-      backend: "super_dan",
-      surface_profile: "super_tui",
-    });
-    expect(payload.profile_policy).not.toHaveProperty("codex_model");
-    expect(payload.profile_policy).not.toHaveProperty("codex_reasoning_effort");
-    expect(payload.metadata).toMatchObject({
-      selected_agent: "native",
-      selected_backend: "super_dan",
-      selected_model_option: "native_default",
-      gui_for: "dan super-tui",
-    });
+  it("routes Codex through the persistent native lead adapter", () => {
+    const payload = workspaceAgentExecutePayloadForTest("codex", "codex_default");
+    expect(workspaceModelOptionsForTest("codex").map((option) => option.id)).toEqual(["codex_default"]);
+    expect(payload.backend).toBe("native_codex");
+    expect(payload.profile_policy.backend).toBe("native_codex");
+    expect(payload.metadata).toMatchObject({ selected_agent: "codex", selected_model_option: "codex_default", gui_for: "codex CLI" });
+    for (const name of ["claude", "antigravity"]) {
+      expect(workspaceAgentExecutePayloadForTest(name, `${name}_default`).backend).toBe(name);
+    }
   });
 
   it("carries workspace autonomy mode into Agent execute payloads", () => {
@@ -219,7 +219,7 @@ describe("workspace blueprint nodes", () => {
     });
   });
 
-  it("drops archived Agent selections while preserving the supported native model", () => {
+  it("preserves a native lead selection and keeps DAN model preferences separately", () => {
     const selection = workspaceSelectionFromStorageForTest({
       storedAgent: "codex",
       storedModel: "native_default",
@@ -229,11 +229,11 @@ describe("workspace blueprint nodes", () => {
       }),
     });
 
-    expect(selection.agentId).toBe("native");
-    expect(selection.modelId).toBe("native_kimi_k26");
-    expect(selection.modelSelectionsByAgent).toEqual({
+    expect(selection.agentId).toBe("codex");
+    expect(selection.modelId).toBe("codex_default");
+    expect(selection.modelSelectionsByAgent).toMatchObject({
       native: "native_kimi_k26",
-      codex: "native_default",
+      codex: "codex_default",
     });
   });
 
@@ -247,7 +247,7 @@ describe("workspace blueprint nodes", () => {
       modelId: "native_kimi_k26",
       modelSelectionsByAgent: {
         native: "native_kimi_k26",
-        codex: "native_default",
+        codex: "codex_default",
       },
     });
 
@@ -257,11 +257,11 @@ describe("workspace blueprint nodes", () => {
         storedModel: "codex_gpt_5_5_xhigh",
       }),
     ).toMatchObject({
-      agentId: "native",
-      modelId: "native_default",
+      agentId: "codex",
+      modelId: "codex_default",
       modelSelectionsByAgent: {
         native: "native_default",
-        codex: "native_default",
+        codex: "codex_default",
       },
     });
   });
@@ -2722,6 +2722,44 @@ describe("workspace blueprint nodes", () => {
     ).toBeNull();
   });
 
+  it("reconciles recovered folder chats with registered or hidden projects", () => {
+    const args = {
+      threads: [thread({ id: "recovered", workflow_id: "_scratch" })],
+      workspaces: [{ id: "registered", name: "Project", pinnedPaths: ["/project"], openThreadIds: [] as string[], removedFromDan: false }],
+      threadQuery: "", threadWorkspaces: {},
+      taskWorkspaceByThreadId: new Map([["recovered", "old-profile-id"]]),
+      taskWorkspaceRootByThreadId: new Map([["recovered", "/project"]]),
+    };
+    expect(buildSessionGroupsForTest(args)).toEqual([expect.objectContaining({ workspaceId: "registered", threads: [expect.objectContaining({ id: "recovered" })] })]);
+    expect(buildSessionGroupsForTest({ ...args, workspaces: [{ ...args.workspaces[0], removedFromDan: true }] })).toEqual([]);
+  });
+
+  it("keeps removed projects and their retained chats out of recovery groups", () => {
+    const groups = buildSessionGroupsForTest({
+      threads: [thread({ id: "new-chat", workflow_id: "removed" }), thread({ id: "old-chat", workflow_id: "_scratch" }), thread({ id: "archived-chat", workflow_id: "removed", archived: true })],
+      workspaces: [{ id: "removed", name: "Scratch", pinnedPaths: [], openThreadIds: ["old-chat"], removedFromDan: true }],
+      threadQuery: "", threadWorkspaces: {}, taskWorkspaceByThreadId: new Map(), taskWorkspaceRootByThreadId: new Map(),
+    });
+    expect(groups).toEqual([]);
+  });
+
+  it("recovers project ownership from new chat storage IDs and keeps legacy unassigned history", () => {
+    const groups = buildSessionGroupsForTest({
+      threads: [thread({ id: "project-chat", workflow_id: "ws-real" }), thread({ id: "legacy-chat", workflow_id: "_scratch" })],
+      workspaces: [{ id: "ws-real", name: "Real project", pinnedPaths: [], openThreadIds: [] }],
+      threadQuery: "",
+      threadWorkspaces: {},
+      taskWorkspaceByThreadId: new Map(),
+      taskWorkspaceRootByThreadId: new Map(),
+    });
+    expect(groups.find((group) => group.workspaceId === "ws-real")?.threads.map((item) => item.id)).toEqual(["project-chat"]);
+    expect(groups.find((group) => group.unassigned)).toMatchObject({
+      name: "Other chats", workspaceId: null, root: "",
+      threads: [expect.objectContaining({ id: "legacy-chat", workflow_id: "_scratch" })],
+    });
+    expect(groups.some((group) => group.name.includes("Scratch"))).toBe(false);
+  });
+
   it("keeps archived sessions in one group with workspace subgroups", () => {
     const groups = buildSessionGroupsForTest({
       threads: [
@@ -2760,7 +2798,7 @@ describe("workspace blueprint nodes", () => {
         expect.objectContaining({ id: "archived-scratch" }),
       ]),
     });
-    expect(archived?.subgroups?.map((group) => group.name)).toEqual(["ra-neo", "Scratch"]);
+    expect(archived?.subgroups?.map((group) => group.name)).toEqual(["ra-neo", "Other chats"]);
     expect(archived?.subgroups?.[0].threads.map((item) => item.id)).toEqual(["archived-ra"]);
     expect(archived?.subgroups?.[1].threads.map((item) => item.id)).toEqual([
       "archived-scratch",

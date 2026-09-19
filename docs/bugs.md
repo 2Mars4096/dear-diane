@@ -1,5 +1,24 @@
 # Known Issues & Failed Approaches
 
+- **Native worker limitations (2026-09-17):** local Claude 2.1.66 lacks documented headless fast support; agy 1.2.5 is now installed but requires sign-in. Antigravity documents interactive /fork, not a verified headless fork endpoint, so import is disabled rather than continuing the source. Live authenticated worker/fork acceptance remains pending.
+- **Fixed 2026-09-17: isolated HOME hid codexx accounts.** Resolve its config from the OS user's home and expand configured ~/ paths against that home; keep each subprocess's CODEX_HOME/CLAUDE_CONFIG_DIR separate.
+- **Validation notes (2026-09-17):** the model-menu assertion initially expected only Default/Kimi; updated it for the requested OpenRouter choices and added payload routing coverage. Initial NativeWorkerActivity import was unused until the actual conversation render branch was wired; corrected before build verification.
+
+- **Fixed 2026-09-17: Create project remained disabled after folder selection.** The name field was independently required; it now defaults to the folder basename until manually edited.
+
+- **Fixed 2026-09-17: unassigned legacy chats appeared as a fake Scratch project and every new chat used its bucket.** New chats use the project ID; old unassigned chats render as plain Other chats and retain their original storage paths. Browser/desktop registry synchronization remains a separate open persistence gap.
+
+- **Fixed 2026-09-17: custom Work header lacked a native drag region.** Electron uses hiddenInset, so custom header content must opt into app-region:drag for conventional dragging/double-click zoom. Buttons/inputs/dialogs opt out to preserve interactions.
+
+- **Folder-drop platform limit (2026-09-17):** browser File/directory entries do not expose absolute local paths; never fill the field with an invented path based on entry.name/fullPath. Electron resolves the dropped File through webUtils and verifies the path is a directory. Browser failure preserves the existing path.
+- **Keyboard implementation note (2026-09-17):** React KeyboardEvent exposes IME state on nativeEvent.isComposing, not directly; corrected the type-check failure during wheel chord implementation.
+
+- **Fixed 2026-09-17: project management opened both legacy settings and Files, while the shelf duplicated empty messages.** Work now uses a focused project dialog and conventional sidebar with one search-empty state. When restricting the old header to Notes, TypeScript narrowed legacy Work comparisons to unreachable branches; the render gate uses a boolean condition while the Notes toolbar remains intact.
+
+- **P2 validation environment: existing HTML sanitizer tests fail under the installed happy-dom/DOMPurify combination (2026-09-16).** The full editor suite reports two failures in unchanged `sanitizeHtml.test.ts` (event-handler stripping and safe data-attribute retention). Workbench/workspace tests pass, and equivalent sanitizer assertions pass in Chromium. Investigate the DOM emulation/dependency mismatch; do not weaken the sanitizer assertions to obtain a green suite.
+- **Fixed 2026-09-16: switcher Tab focus could leave the native dialog at the last control.** Native modal behavior alone was insufficient for the intended in-app keyboard loop; explicit forward/backward wrapping and focus restoration now pass browser checks. Also give session swipe rows an opaque background so the underlying Archive action does not bleed through at rest.
+- **Workbench validation notes (2026-09-16):** run npm scripts from `editor/`; the repository root has no package.json. Restricted loopback bind required approved execution. The Playwright CLI sandbox does not expose the Node `URL` global in route callbacks; use the request URL string or browser evaluation. Captures must wait for the 200ms entrance animation to settle.
+
 - ~~**P1: The old test allowlist hid legacy files from the pre-archive Git snapshot.**~~ **FIXED 2026-08-02.** The repository ignored `/tests/*` and selectively re-included named tests, leaving 357 obsolete Python tests and nine snapshot/scenario assets physically present but absent from commit `7972238a`. The cutover force-added and pushed those files in `8594143c` and `0d630dca` before removing them, then replaced the allowlist with ordinary cache/result ignores. A plain repository-level `pytest` now collects only the retained suite and passes.
 - **Failed approach recorded:** `git status` without ignored files is not sufficient proof that a destructive archive snapshot is complete. Before deletion, audit ignored source-like files and test assets, back up any missed material, and avoid source allowlists in `.gitignore`.
 
@@ -2011,3 +2030,20 @@ When renaming workflows or moving error data between environments:
 ## Failed Approaches (do not retry)
 
 (none yet)
+
+- **Antigravity installation note (2026-09-17):** the native installer printed an isolated-HOME default path despite `--dir`; filesystem verification confirmed the executable at `/Users/lizhi/.local/bin/agy`. Restricted `agy models` could not create cache/log files; the authorized normal launch succeeded and reported sign-in required.
+
+- **Fixed 2026-09-17: removing only a project registry entry would resurrect retained chats as fallback projects.** Project removal now keeps a hidden workspace record and bindings, and grouping suppresses its chats, including archived ones.
+
+- **Fixed 2026-09-17: recovered deep-agent-network group lacked dots.** Actions were gated on workspaceId, which recovered groups do not initially have. All non-archived project rows now get controls and register their complete group on action; stale profile IDs fall back to matching recorded folder roots.
+
+## 2026-09-18 — Native lead live acceptance
+- Codex fixed-reply live smoke passed. Claude lead timed out after 45 seconds with the current CLI/account; cancellation cleaned up the subprocess. Cause is not established; do not claim Claude authenticated acceptance. Antigravity awaits first CLI sign-in. Protocol and delegation tests use fixtures.
+
+## 2026-09-18 — Packaged project names
+- Dev (`localhost:5173`) and packaged (`127.0.0.1:45173`) origins hold separate workspace registries. Switching to the packaged app exposed internal workflow IDs and resurrected hidden-project groups despite intact backend histories. Recovered the original registry from the existing Electron profile and restored it to the packaged origin. Shared server-side registry remains backlog; do not mistake missing UI metadata for deleted sessions.
+
+## 2026-09-18 — Transcript selection disappearing
+- Quote toolbar updates recreated the Markdown inner-HTML prop object, replacing text nodes and clearing selection. Memoize the object and avoid follow-scroll while selecting. Regression tests and Chromium checks pass.
+
+- **Fixed 2026-09-18: native response truncated at 500 characters.** Completion summaries replaced full streamed text. Preserve full text when the summary is its prefix and restore affected native messages using the matching completed run result on reopen.

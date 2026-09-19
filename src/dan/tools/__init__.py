@@ -56,6 +56,7 @@ _TOOL_MODULES = [
     "json_extract",
     "list_directory",
     "notify",
+    "native_worker",
     "pdf_read",
     "python_eval",
     "regex_match",

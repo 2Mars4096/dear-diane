@@ -52,6 +52,7 @@ DEFAULT_LIVE_ORGANISM_TOOL_IDS = [
 # extraction tools remain available.
 _READ_ONLY_TOOL_EXCLUSIONS = frozenset(
     {
+        "native_worker",
         "file_edit",
         "file_write",
         "shell_command",
@@ -5261,6 +5262,10 @@ class LocalOrganismToolRuntime:
             tool_ids or DEFAULT_LIVE_ORGANISM_TOOL_IDS,
             workspace_root=self._workspace_root,
         )
+        from dan.native_workers.service import current_team
+        team = current_team.get()
+        if team and "shell_command" in selected and any(profile.get("enabled") for profile in team.profiles.values()):
+            selected = list(dict.fromkeys([*selected, "native_worker"]))
         missing = [tool_id for tool_id in selected if tool_id not in available]
         if missing:
             raise ValueError(
@@ -8181,6 +8186,13 @@ class ToolLoopCompletionProvider:
     def _resolve_tool_schemas(
         self, request_tools: Sequence[dict[str, Any]]
     ) -> list[dict[str, Any]]:
+        if "native_worker" in self._tool_runtime.tool_ids and any(
+            tool.get("function", {}).get("name") == "shell_command" for tool in request_tools
+        ):
+            from dan.tools.native_worker import TOOL_METADATA
+            request_tools = [*request_tools, {"type": "function", "function": {
+                "name": "native_worker", "description": TOOL_METADATA["description"], "parameters": TOOL_METADATA["parameters"],
+            }}]
         allowed = set(self._tool_runtime.tool_ids)
         filtered: list[dict[str, Any]] = []
         seen: set[str] = set()

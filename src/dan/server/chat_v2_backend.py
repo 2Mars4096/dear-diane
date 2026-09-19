@@ -801,7 +801,39 @@ class SuperDanBackendAdapter:
 
     backend_name = "super_dan"
 
-    async def run(
+    async def run(self, request, emit_event, runtime=None):
+        from dan.native_workers.service import NativeTeam, current_team, active_teams
+        from dan.server.paths import resolve_graphs_dir
+        def emit_child(record, row):
+            emit_event(AgentRunEvent(
+                type="status_reported",
+                run_id=request.run_id, task_id=request.task_id,
+                summary=f"{record['backend']} worker: {record['status']}",
+                source_event_type="native_worker.event",
+                payload={"backend": record["backend"], "worker_id": record["worker_id"],
+                         "parent_run_id": request.run_id, "native_session_id": record["native_session_id"], "raw": row},
+            ))
+        profiles = dict(request.profile_policy.get("native_workers") or {})
+        import_path = Path(resolve_graphs_dir()) / "native_imports" / f"{request.thread_id}.json"
+        if request.thread_id and Path(request.thread_id).name == request.thread_id and import_path.is_file():
+            source = json.loads(import_path.read_text())
+            from dan.native_workers.sessions import same_folder
+            if same_folder(source["workspace"], request.workspace_root):
+                backend = source["backend"]
+                profiles[backend] = {**profiles.get(backend, {}), "enabled": True, "account": source["account"], "source_session": source["session_id"]}
+
+        team = NativeTeam(request.run_id, request.workspace_root or str(Path.cwd()), profiles,
+                          Path(resolve_graphs_dir()) / "native_workers", emit_child, parent_request=request)
+        active_teams[request.run_id] = team
+        token = current_team.set(team)
+        try:
+            return await self._run(request, emit_event, runtime)
+        finally:
+            await team.close()
+            active_teams.pop(request.run_id, None)
+            current_team.reset(token)
+
+    async def _run(
         self,
         request: AgentBackendRunRequest,
         emit_event: AgentEventSink,
@@ -1504,6 +1536,9 @@ def select_agent_backend_adapter(
     normalized = str(requested or "").strip().lower().replace("-", "_")
     if normalized in {"deterministic", "fake", "test"}:
         return DeterministicAgentBackendAdapter()
+    if normalized in {"native_codex", "claude", "antigravity"}:
+        from dan.native_workers.lead import NativeLeadAdapter
+        return NativeLeadAdapter("codex" if normalized == "native_codex" else normalized)
     if normalized in {"codex", "codex_cli", "openai_codex"}:
         return CodexAgentBackendAdapter()
     if normalized in {"super_dan", "superdan", "super_organism"}:
