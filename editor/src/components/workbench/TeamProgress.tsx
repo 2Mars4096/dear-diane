@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Check, ChevronDown, CircleAlert, Square, X } from "lucide-react";
 import { agentLabel, elapsed, leadActivity, resultLine, startedAt, stripWorkers, taskTitle, workerPhase, workerState, type TeamWorker } from "./teamPresentation";
 
@@ -57,11 +57,11 @@ export function TeamStrip({ workers, lead, leadRunning, open, onToggle }: { work
 }
 
 /** Side panel: one lane per task, live work first, finished work settled below. */
-export function TeamPanel({ workers, error, onStop, onClose }: { workers: TeamWorker[]; error: string; onStop: (worker: TeamWorker) => void; onClose: () => void }) {
+export function TeamPanel({ workers, error, onStop, onClose, header }: { workers: TeamWorker[]; error: string; onStop: (worker: TeamWorker) => void; onClose: () => void; header?: ReactNode }) {
   const live = workers.filter((worker) => workerPhase(worker) !== "settled");
   const settled = workers.filter((worker) => workerPhase(worker) === "settled");
   return <aside className="wb-activity-panel wb-team-panel" aria-label="Team">
-    <div className="wb-panel-heading"><span>Team</span><button onClick={onClose} aria-label="Close team"><X size={17} /></button></div>
+    {header ?? <div className="wb-panel-heading"><span>Team</span><button onClick={onClose} aria-label="Close team"><X size={17} /></button></div>}
     {error && <p className="wb-team-error" role="alert">{error}</p>}
     <div className="wb-team-lanes">
       {live.map((worker) => <TeamLane key={worker.worker_id} worker={worker} onStop={onStop} />)}

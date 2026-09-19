@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-19
+- [feat] Reader: project PDFs open in a distraction-free reader in the main column. Ported learning-assistant's material-guide PDF viewer (pdf.js 6.2.108 text layer, lazy page rendering, fit/zoom, reference tray with page peek, reading-position memory, selection Comment/Ask, highlight drawing) with DAN storage keys and workbench theming. Ask stages the passage plus page text in a per-PDF side chat framed as a reading companion; Comment saves highlights with optional notes and a jump list. The import/OCR/tutor pipeline was not ported.
+- [feat] One side panel replaces the Sidecar chat / Files / Activity / Preview header buttons: tabs Chat · Files · Preview · Activity · Team share one frame, one open at a time, last tab remembered. Files moved to the right.
+- [fix] Removed stale `@xyflow/react` and `allotment` stylesheet imports left after the cutover; they only resolved from leftover node_modules. Lazy-loaded the reader to keep the workspace chunk within budget; the budget script no longer treats any `pdf` chunk as a Research-mode leak.
 - [feat] Workbench modes are now Plan / Auto / Full access, mapped (not one-to-one) to each runtime: Codex `sandbox_mode` read-only / workspace-write / bypass; Claude Code `plan` / `acceptEdits` + sandboxed Bash / skip-permissions; DAN `review` / `auto` / `auto`. Lead and team members share the mode. Stored "Review" migrates to Plan.
 - [fix] Resumed Codex lead turns kept Codex's read-only default because `exec resume` has no `--sandbox`; the sandbox is now set with `-c sandbox_mode` on every turn. Claude headless leads no longer run in `default`, which silently denied edits.
 - [fix] Removed the duplicate chat title above the transcript; the header already shows it.

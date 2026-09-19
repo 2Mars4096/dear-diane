@@ -1,6 +1,4 @@
 @import "tailwindcss";
-@import "@xyflow/react/dist/style.css";
-@import "allotment/dist/style.css";
 
 @custom-variant dark (&:where(.dark, .dark *));
 

@@ -1102,6 +1102,10 @@
 
 - **Fixed: native leads ran effectively read-only (2026-09-19).** `codex exec resume` ignores first-turn `--sandbox` and has no such flag, so follow-ups fell back to read-only; Claude `-p --permission-mode default` denies anything needing approval. Pass `-c sandbox_mode=...` every turn and use acceptEdits + sandboxed Bash for Auto. Claude sandbox settings are unverified against a live 2.1.66 run.
 
+- **Tooling: `npx tsc --noEmit -p .` in `editor/` checks nothing (2026-09-19).** The root tsconfig only has project references. Use `npx tsc -p tsconfig.app.json --noEmit` or `npm run build`.
+- **Fixed: stale stylesheet imports (2026-09-19).** `src/index.css` imported `@xyflow/react` and `allotment` CSS after both packages left package.json; any clean `npm install` broke dev/build. Removed.
+- **Vite dev: a `const x = lazy(...)` placed among imports throws TDZ (2026-09-19).** Vite rewrites CJS React imports into consts at the import's position; declare lazy components after the whole import block.
+
 ## Recently Fixed
 
 - ~~**P2: DAN Research continuation retries could reopen weaker versions of already-settled facts because the product had no durable claim memory and no typed series/metric identity above free-form prose.**~~ **FIXED 2026-04-18.** Live oil/coal/ETF runs showed the planner could rediscover the same fact family repeatedly even after one pass had already reached an authoritative answer, because later retries only saw raw prose plus unresolved gaps and had no session-level memory that one version of the claim was already frozen. Fix: persist closed verification facts in a session-level claim ledger, carry canonical claim metadata (`claim_key`, authority rank, typed scope/series/metric hints) through the research product seam, and feed that ledger back into continuation planning so later retries do not casually reopen weaker versions of the same claim.

@@ -11,12 +11,13 @@ The pre-Universal graph builder, visual graph editor, Code/Research/Content mode
 
 ## Workbench
 
-Work opens with a familiar project/chat sidebar: New chat, search, collapsible project folders, and archived chats. Use the + beside Projects to create a project, or its menu to edit the name and folder. In the desktop app, drop a folder onto the folder field to fill its path. Browsers that hide local paths require pasting the full path. Files, activity, and previews open on demand. Open **Sidecar chat** from the header or selected text for a separate saved conversation with the current lead. Select message text to stage a source-linked reference above the input. The input grows from one to six lines, then scrolls; expand tool and emitted thinking details when needed. Waiting messages appear in a compact expandable queue; a lone active run does not show a queue panel. Stop and steering use the existing Agent V2 controls.
+Work opens with a familiar project/chat sidebar: New chat, search, collapsible project folders, and archived chats. Use the + beside Projects to create a project, or its menu to edit the name and folder. In the desktop app, drop a folder onto the folder field to fill its path. Browsers that hide local paths require pasting the full path. One **side panel** (header toggle) holds Chat, Files, Preview, Activity, and Team as tabs. Chat is a separate saved conversation with the current lead, also opened from selected text. Select message text to stage a source-linked reference above the input. The input grows from one to six lines, then scrolls; expand tool and emitted thinking details when needed. Waiting messages appear in a compact expandable queue; a lone active run does not show a queue panel. Stop and steering use the existing Agent V2 controls.
 
 - **Sidebar:** click the toggle left of the project name, or press `⌘/Ctrl + B`.
 - **Projects:** `⌘/Ctrl + Shift + P` opens the carousel. Scroll or use left/right arrows, then Enter. Escape cancels.
 - **Sessions:** `⌘/Ctrl + Shift + S` opens the current project's wheel. Press `1–8` to open; arrows or `WASD` aim (hold two directions for diagonals); `Q/E/Z/C` also select diagonals directly. Press Enter to open. The newest eight sessions keep stable slots based on creation, never last edit.
 - **All sessions:** use the project sidebar or the wheel's “All sessions” button. Drafts survive switching.
+- **Reader:** click a PDF in Files (or **Read** in Preview). Select text → **Ask** stages it in the side chat with the page's text; **Comment** saves a highlight with an optional note. Zoom, page references (**Refs**), comments, and your position are remembered per PDF.
 
 Codex events use the shared activity display. The [native worker design](docs/UI-plans/2-native-agent-workers.md) describes persistent Codex/Claude children; a Claude worker adapter is still pending.
 
@@ -98,6 +99,7 @@ Work provides:
 - durable Agent V2 task/run/event state;
 - live progress, steering, validation, repair, evidence, and artifacts;
 - file browsing and preview;
+- a PDF reader with ask-in-sidecar, highlights, and page references;
 - structured image attachments.
 
 Notes provides:

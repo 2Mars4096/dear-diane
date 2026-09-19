@@ -50,7 +50,8 @@ const archivedSurfacePatterns = [
   },
   {
     label: "Research mode",
-    pattern: /^(ResearchMode|ResearchFurnacePanel|pdf)-.*\.js$/,
+    // pdf.js is now owned by the lazily loaded Reader; only Research's own chunks mark a leak.
+    pattern: /^(ResearchMode|ResearchFurnacePanel)-.*\.js$/,
   },
 ];
 

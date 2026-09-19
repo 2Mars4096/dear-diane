@@ -5,12 +5,16 @@ import { DanSettings } from "../workbench/DanSettings";
 import { ImportNativeSessions } from "../workbench/ImportNativeSessions";
 import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from "../workbench/NativeWorkers";
 import { TeamPanel, TeamStrip, useTeamWorkers } from "../workbench/TeamProgress";
+import { SideTabs, readLastSideTab, rememberSideTab, type SideTab } from "../workbench/SideTabs";
+import type { ReaderAsk, ReaderFile } from "../reader/ReaderView";
 import { ProjectSettings } from "../workbench/ProjectSettings";
 import { streamedMessageContent, completedMessageContent } from "../workbench/eventPresentation";
 import { WorkbenchNavigation } from "../workbench/WorkbenchNavigation";
 import { WorkbenchConversation, WorkbenchActivity } from "../workbench/WorkbenchConversation";
 import "../workbench/workbench.css";
 import {
+  Suspense,
+  lazy,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -143,6 +147,9 @@ import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import type { ChatMessage, RunEventPayload } from "../../types/chat";
 import MarkdownRenderer from "../shared/MarkdownRenderer";
+
+// Reader (pdf.js) loads on first use so it stays out of the workspace shell chunk.
+const ReaderView = lazy(() => import("../reader/ReaderView").then((module) => ({ default: module.ReaderView })));
 
 const DEFAULT_WORKFLOW_ID = "_scratch";
 const SUPER_DAN_BACKEND = "super_dan";
@@ -13207,10 +13214,34 @@ export default function ChunkWorkspaceApp() {
   const [creatingProject, setCreatingProject] = useState(false);
   const [importNativeSessions, setImportNativeSessions] = useState<{ id: string; root: string } | null>(null);
   const [danSettings, setDanSettings] = useState(false);
-  const [sidecarChat, setSidecarChat] = useState(false);
+  // One side panel with tabs; the legacy per-panel flags are views of this single value.
+  const [sideTab, setSideTab] = useState<SideTab | null>(() =>
+    initialLayout.showSidecarPreview ? "preview" : initialLayout.showFileExplorer ? "files" : null);
+  const [lastSideTab, setLastSideTab] = useState<SideTab>(readLastSideTab);
+  const sideSetter = useCallback((tab: SideTab) => (value: boolean | ((current: boolean) => boolean)) => {
+    setSideTab((previous) => {
+      const current = previous === tab;
+      const next = typeof value === "function" ? value(current) : value;
+      return next ? tab : current ? null : previous;
+    });
+  }, []);
+  const openSideTab = useCallback((tab: SideTab | null) => {
+    setSideTab(tab);
+    if (tab) { setLastSideTab(tab); rememberSideTab(tab); }
+  }, []);
+  const sidecarChat = sideTab === "chat";
+  const setSidecarChat = useMemo(() => sideSetter("chat"), [sideSetter]);
+  const workbenchActivity = sideTab === "activity";
+  const setWorkbenchActivity = useMemo(() => sideSetter("activity"), [sideSetter]);
+  const teamPanel = sideTab === "team";
+  const setTeamPanel = useMemo(() => sideSetter("team"), [sideSetter]);
+  const showFileExplorer = sideTab === "files";
+  const setShowFileExplorer = useMemo(() => sideSetter("files"), [sideSetter]);
+  const showSidecarPreview = sideTab === "preview";
+  const setShowSidecarPreview = useMemo(() => sideSetter("preview"), [sideSetter]);
   const [sidecarSelection, setSidecarSelection] = useState({ text: "", token: 0 });
-  const [workbenchActivity, setWorkbenchActivity] = useState(false);
-  const [teamPanel, setTeamPanel] = useState(false);
+  const [readerFile, setReaderFile] = useState<ReaderFile | null>(null);
+  const [readerSelection, setReaderSelection] = useState<{ text: string; token: number; context?: string }>({ text: "", token: 0 });
   const [workbenchOutline, setWorkbenchOutline] = useState(false);
   const [deletingArchived, setDeletingArchived] = useState(false);
   const [archiveDeleteProgress, setArchiveDeleteProgress] = useState("");
@@ -13286,12 +13317,8 @@ export default function ChunkWorkspaceApp() {
   const [noteCreateMenuOpen, setNoteCreateMenuOpen] = useState(false);
   const [fileCreateMenuOpen, setFileCreateMenuOpen] = useState(false);
   const [showSessionRail, setShowSessionRail] = useState(initialLayout.showSessionRail);
-  const [showFileExplorer, setShowFileExplorer] = useState(initialLayout.showFileExplorer);
   const [showConversationChunks, setShowConversationChunks] = useState(
     initialLayout.showConversationChunks,
-  );
-  const [showSidecarPreview, setShowSidecarPreview] = useState(
-    initialLayout.showSidecarPreview,
   );
   const [showNotesRail, setShowNotesRail] = useState(initialLayout.showNotesRail);
   const [showNoteEditor, setShowNoteEditor] = useState(initialLayout.showNoteEditor);
@@ -14535,6 +14562,21 @@ export default function ChunkWorkspaceApp() {
   const activeRunId = activeRunningTask ? taskRunId(activeRunningTask) : "";
   const teamParentIds = useMemo(() => [...new Set(tasks.map(taskRunId).filter(Boolean))], [tasks]);
   const team = useTeamWorkers(teamParentIds, Boolean(activeRunningTask));
+  const sidecarExecution = () => {
+    const payload = buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode);
+    return { ...payload, profile_policy: { ...payload.profile_policy, native_workers: nativeWorkerProfiles, ...(selectedAgentId !== "native" ? { lead_profile: leadProfiles[selectedAgentId] || {} } : {}) } };
+  };
+  const openReader = (entry: WorkspaceFileEntry) => {
+    setReaderFile({ name: entry.name, path: entry.path, url: workspaceFilePreviewUrl(entry.path, developmentRoot || undefined, entry.relative_path) });
+    // Reading gets the full width; the side chat opens when a question is asked.
+    if (sideTab !== "chat") openSideTab(null);
+  };
+  const askFromReader = (ask: ReaderAsk) => {
+    setReaderSelection({ text: ask.quote, context: `Page ${ask.pageNumber}: ${ask.pageText}`, token: Date.now() });
+    openSideTab("chat");
+  };
+  const renderSideTabs = () => sideTab ? <SideTabs active={sideTab} onSelect={openSideTab} onClose={() => openSideTab(null)}
+    counts={{ team: team.workers.filter((worker) => worker.status === "running").length }} /> : null;
   const sessionStatusTasks = useMemo(
     () => mergeTaskSnapshots(backgroundTasks, workPanelTasks),
     [backgroundTasks, workPanelTasks],
@@ -17167,7 +17209,7 @@ export default function ChunkWorkspaceApp() {
       {activePane === "work" && <header className="wb-header">
         <WorkbenchNavigation
           sidebarOpen={renderSessionRail}
-          onToggleSidebar={() => { setShowSessionRail(!renderSessionRail); setShowFileExplorer(false); setPhonePage(renderSessionRail ? "chat" : "sessions"); }}
+          onToggleSidebar={() => { setShowSessionRail(!renderSessionRail); setPhonePage(renderSessionRail ? "chat" : "sessions"); }}
           projects={workbenchProjects}
           activeProjectId={activeWorkspaceId}
           activeSessionId={activeThread ? threadWorkspaceKey(activeThread.workflowId, activeThread.id) : null}
@@ -17178,13 +17220,10 @@ export default function ChunkWorkspaceApp() {
           }}
           onNewSession={() => { void startNewSession(); setPhonePage("chat"); }}
           onNewProject={() => { setCreatingProject(true); setWorkbenchSettings(true); }}
-          onAllSessions={() => { setThreadQuery(""); setShowSessionRail(true); setShowFileExplorer(false); setPhonePage("sessions"); }}
+          onAllSessions={() => { setThreadQuery(""); setShowSessionRail(true); setPhonePage("sessions"); }}
         />
         <div className="wb-header-actions">
-          <button aria-label="Sidecar chat" title="Sidecar chat" disabled={!activeThread} aria-pressed={sidecarChat} onClick={() => { setSidecarChat(!sidecarChat); setTeamPanel(false); setWorkbenchActivity(false); setShowSidecarPreview(false); setSidecarSelection({text:"",token:Date.now()}); }}><MessageSquareText size={17} /></button>
-          <button aria-label="Files" title="Files" aria-pressed={showFileExplorer} onClick={() => { setShowFileExplorer(!showFileExplorer); setShowSessionRail(false); setPhonePage("files"); }}><Folder size={17} /></button>
-          <button aria-label="Agent activity" title="Agents & tools" aria-pressed={workbenchActivity} onClick={() => { setWorkbenchActivity(!workbenchActivity); setTeamPanel(false); setShowSidecarPreview(false); setSidecarChat(false); }}><Activity size={17} /></button>
-          <button aria-label="Preview" title="Preview" aria-pressed={showSidecarPreview} onClick={() => { setShowSidecarPreview(!showSidecarPreview); setTeamPanel(false); setWorkbenchActivity(false); setSidecarChat(false); setPhonePage("preview"); }}><PanelRight size={17} /></button>
+          <button aria-label="Side panel" title="Side panel · chat, files, preview, activity, team" aria-pressed={Boolean(sideTab)} onClick={() => openSideTab(sideTab ? null : lastSideTab)}><PanelRight size={17} /></button>
           <button aria-label="Notes" title="Notes" onClick={() => { setActivePane("notes"); setPhonePage("note-preview"); }}><NotebookPen size={17} /></button>
           <button aria-label="Workspace settings" title="Workspace settings" aria-pressed={workbenchSettings} onClick={() => { setCreatingProject(false); setWorkbenchSettings(true); }}><MoreHorizontal size={18} /></button>
         </div>
@@ -18348,10 +18387,9 @@ export default function ChunkWorkspaceApp() {
           )}
           {renderFileExplorer && (
             <aside className="dan-phone-page dan-files-page flex min-h-0 w-[270px] shrink-0 flex-col border-r border-slate-200/80 bg-white/85 dark:border-slate-800 dark:bg-slate-950 md:order-2">
-              <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 px-3 dark:border-slate-800">
-                <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
-                  Files
-                </div>
+              {!isPhoneViewport && renderSideTabs()}
+              <div className="flex h-10 shrink-0 items-center justify-between border-b border-slate-200/80 px-3 dark:border-slate-800">
+                <div className="min-w-0 truncate text-xs text-slate-400">{fileName(developmentRoot) || "Project files"}</div>
                 <div className="flex items-center gap-1">
                   <div className="relative">
                     <button
@@ -18389,14 +18427,6 @@ export default function ChunkWorkspaceApp() {
                   >
                     <FolderOpen size={14} />
                   </button>
-                  {!isPhoneViewport && (
-                    <PaneHeaderButton
-                      title="Collapse files pane"
-                      onClick={() => setShowFileExplorer(false)}
-                    >
-                      <ChevronRight size={13} className="rotate-180" />
-                    </PaneHeaderButton>
-                  )}
                 </div>
               </div>
               <div className="border-b border-slate-200/80 p-3 dark:border-slate-800">
@@ -18514,7 +18544,8 @@ export default function ChunkWorkspaceApp() {
                     expanded={expandedFileDirs}
                     onToggle={toggleFileDir}
                     onSelect={(entry) => {
-                      selectPreviewFile(entry);
+                      if (!isPhoneViewport && workspaceFilePreviewKind(entry) === "pdf") openReader(entry);
+                      else selectPreviewFile(entry);
                     }}
                     onMove={moveDevelopmentEntry}
                   />
@@ -18545,6 +18576,7 @@ export default function ChunkWorkspaceApp() {
             )}
           >
             <div className="flex min-h-0 min-w-0 flex-col bg-white/90 dark:bg-slate-950">
+              {readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView file={readerFile} onAsk={askFromReader} onClose={() => setReaderFile(null)} /></Suspense> : <>
               <div className="wb-conversation-heading"><div className="wb-conversation-actions">
                 {activeRunningTask && activeThread && <button className="wb-stop" onClick={() => void stopSessionRun({ id: activeThread.id, workflow_id: activeThread.workflowId, title: activeThread.title || "Active session", message_count: messages.length, created_at: "", updated_at: "" }, activeRunningTask)}><Square size={11} />Stop run</button>}
                 <button aria-pressed={workbenchOutline} onClick={() => setWorkbenchOutline(!workbenchOutline)}>{workbenchOutline ? "Conversation" : "Task detail"}</button></div></div>
@@ -18600,17 +18632,16 @@ export default function ChunkWorkspaceApp() {
               </details>}
 
               {renderWorkspaceComposer()}
+              </>}
             </div>
 
             {renderSidecarPreview && (
-              <aside className="flex min-h-0 min-w-0 flex-col border-l border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-950">
-                <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 px-4 dark:border-slate-800">
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
-                      Preview
-                    </div>
-                  </div>
+              <aside className="wb-preview-panel flex min-h-0 min-w-0 flex-col border-l border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-950">
+                {!isPhoneViewport && renderSideTabs()}
+                <div className="flex h-10 shrink-0 items-center justify-between border-b border-slate-200/80 px-4 dark:border-slate-800">
+                  <div className="min-w-0 truncate text-xs text-slate-400">{activePreviewFileEntry?.name ?? ""}</div>
                   <div className="flex shrink-0 items-center gap-1">
+                    {activePreviewFileEntry && workspaceFilePreviewKind(activePreviewFileEntry) === "pdf" && <button type="button" className="wb-read-button" onClick={() => openReader(activePreviewFileEntry)}>Read</button>}
                     <button
                       type="button"
                       onClick={openActiveFile}
@@ -18620,14 +18651,6 @@ export default function ChunkWorkspaceApp() {
                     >
                       Open
                     </button>
-                    {!isPhoneViewport && (
-                      <PaneHeaderButton
-                        title="Collapse preview pane"
-                        onClick={() => setShowSidecarPreview(false)}
-                      >
-                        <ChevronRight size={13} />
-                      </PaneHeaderButton>
-                    )}
                   </div>
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto p-4">
@@ -18782,12 +18805,24 @@ export default function ChunkWorkspaceApp() {
               <PanelRight size={14} />
             </CollapsedPaneRail>
           )}
-          {sidecarChat && activeThread && <SidecarChat key={`${activeThread.workflowId}:${activeThread.id}`} parentId={activeThread.id} workflowId={activeThread.workflowId}
-            workspaceId={workspace?.id || ""} workspaceRoot={workspaceRootForTasks(tasks) || workspaceRoot || developmentRoot} context={messages} selection={sidecarSelection}
-            leadLabel={selectedAgentOption.shortLabel} execution={{ ...buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode), profile_policy: { ...buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode).profile_policy, native_workers:nativeWorkerProfiles, ...(selectedAgentId !== "native" ? {lead_profile:leadProfiles[selectedAgentId] || {}} : {}) } }}
+          {sidecarChat && readerFile && <SidecarChat key={`reader:${readerFile.path}`} parentId={`reader:${readerFile.path}`}
+            workflowId={activeThread?.workflowId || workspace?.id || activeWorkspaceId || "_unassigned"}
+            workspaceId={workspace?.id || ""} workspaceRoot={developmentRoot || workspaceRoot} context={[]} selection={readerSelection}
+            leadLabel={selectedAgentOption.shortLabel} execution={sidecarExecution()} header={renderSideTabs()}
+            purpose={{
+              title: `Reading ${readerFile.name}`,
+              framing: `You are a reading companion for the PDF "${readerFile.name}" (${readerFile.path}). The user is reading it and asks about a passage they selected. Answer directly and concisely, grounded in the passage and its page text; say plainly when that text is not enough. Do not modify files.`,
+              placeholder: "Ask about this passage…",
+              empty: "Select text in the PDF and choose Ask. Answers stay here while you keep reading.",
+            }}
             onClose={() => setSidecarChat(false)} onCreated={() => { void refreshThreads(); }} />}
-          {workbenchActivity && <aside className="wb-activity-panel"><div className="wb-panel-heading"><span>Activity</span><button onClick={() => setWorkbenchActivity(false)} aria-label="Close activity"><X size={17} /></button></div><WorkbenchActivity events={agentEvents} /></aside>}
-          {teamPanel && <TeamPanel workers={team.workers} error={team.error} onStop={(worker) => void team.stop(worker)} onClose={() => setTeamPanel(false)} />}
+          {sidecarChat && !readerFile && activeThread && <SidecarChat key={`${activeThread.workflowId}:${activeThread.id}`} parentId={activeThread.id} workflowId={activeThread.workflowId}
+            workspaceId={workspace?.id || ""} workspaceRoot={workspaceRootForTasks(tasks) || workspaceRoot || developmentRoot} context={messages} selection={sidecarSelection}
+            leadLabel={selectedAgentOption.shortLabel} execution={sidecarExecution()}
+            header={renderSideTabs()} onClose={() => setSidecarChat(false)} onCreated={() => { void refreshThreads(); }} />}
+          {sidecarChat && !readerFile && !activeThread && <aside className="wb-activity-panel">{renderSideTabs()}<p className="wb-activity-empty wb-side-empty">Start a conversation to open a side chat about it.</p></aside>}
+          {workbenchActivity && <aside className="wb-activity-panel">{renderSideTabs()}<WorkbenchActivity events={agentEvents} /></aside>}
+          {teamPanel && <TeamPanel header={renderSideTabs()} workers={team.workers} error={team.error} onStop={(worker) => void team.stop(worker)} onClose={() => setTeamPanel(false)} />}
 
         </section>
       )}

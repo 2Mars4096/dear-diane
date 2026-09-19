@@ -1,0 +1,666 @@
+/* DAN: follow workbench theme tokens when present; original values are the fallbacks. */
+.viewer {
+  --pdf-ink: var(--wb-ink, oklch(0.25 0.02 190));
+  --pdf-muted: var(--wb-muted, oklch(0.55 0.014 170));
+  --pdf-rule: var(--wb-line, oklch(0.78 0.012 165));
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --pdf-highlight: oklch(0.92 0.18 100 / 0.58);
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-rows: 44px minmax(0, 1fr);
+  overflow: hidden;
+  background: var(--wb-soft, oklch(0.89 0.006 160));
+  color: var(--pdf-ink);
+  font-family: var(--font-ui);
+}
+
+.toolbar {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  /* DAN: workbench chrome; original dark values are the fallbacks. */
+  border-bottom: 1px solid var(--wb-line, oklch(0.32 0.012 180));
+  background: var(--wb-paper, oklch(0.28 0.01 185));
+  color: var(--wb-ink, oklch(0.92 0.006 160));
+  font-size: 0.75rem;
+  font-weight: 560;
+}
+
+.toolbar .referenceTrayToggle {
+  position: absolute;
+  right: 8px;
+  width: auto;
+  min-width: 62px;
+  padding: 0 9px;
+  height: 28px;
+  border: 1px solid var(--wb-line, oklch(0.64 0.018 178));
+  background: var(--wb-paper, oklch(0.33 0.014 183));
+  font-size: 0.7rem;
+}
+
+.toolbar .referenceTrayToggle[aria-expanded="true"] {
+  border-color: var(--wb-muted, oklch(0.77 0.07 180));
+  background: var(--wb-soft, oklch(0.42 0.036 184));
+}
+
+.toolbar button {
+  width: 32px;
+  height: 32px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: 750 1rem/1 var(--font-ui);
+}
+
+.toolbar button:hover:not(:disabled) {
+  background: var(--wb-soft, oklch(0.38 0.012 180));
+}
+
+.toolbar button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.toolbar button:focus-visible,
+.selectionActions button:focus-visible {
+  outline: 2px solid var(--wb-accent, oklch(0.72 0.1 185));
+  outline-offset: 2px;
+}
+
+.toolbarDivider {
+  width: 1px;
+  height: 20px;
+  margin: 0 4px;
+  background: oklch(0.54 0.01 180);
+}
+
+.referenceOverlay {
+  position: absolute;
+  z-index: 10;
+  top: 52px;
+  right: 10px;
+  width: min(760px, calc(100% - 20px));
+  height: calc(100% - 62px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.referenceOverlay > * {
+  pointer-events: auto;
+}
+
+.referenceTray {
+  width: 100%;
+  max-height: min(360px, 45%);
+  padding: 10px 12px 9px;
+  overflow: auto;
+  border: 1px solid oklch(0.72 0.014 168);
+  border-radius: 8px;
+  background: oklch(0.975 0.007 154);
+  box-shadow: 0 14px 28px oklch(0.22 0.012 180 / 0.18);
+  color: var(--pdf-ink);
+}
+
+.referenceTray > header {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--pdf-rule);
+}
+
+.referenceTray > header > strong {
+  font-size: 0.74rem;
+}
+
+.referenceTray > header button {
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: oklch(0.38 0.065 187);
+  cursor: pointer;
+  font: 720 0.7rem/1 var(--font-ui);
+}
+
+.referenceTrayActions {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+}
+
+.referenceTrayActions button:first-child {
+  border-color: oklch(0.7 0.018 170);
+  color: var(--pdf-muted);
+}
+
+.referenceTrayActions button:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.referenceTrayActions .keepReferenceButton {
+  min-height: 36px;
+  padding: 0 12px;
+  border-color: oklch(0.35 0.06 187);
+  background: oklch(0.35 0.06 187);
+  color: oklch(0.98 0.005 150);
+  box-shadow: 0 3px 9px oklch(0.23 0.025 187 / 0.16);
+  font-weight: 780;
+}
+
+.referenceTrayActions .keepReferenceButton:hover {
+  border-color: oklch(0.29 0.065 187);
+  background: oklch(0.29 0.065 187);
+}
+
+.referenceTray > p {
+  margin: 12px 0 5px;
+  color: var(--pdf-muted);
+  font-size: 0.75rem;
+}
+
+.referenceTray > small {
+  display: block;
+  margin-top: 7px;
+  color: var(--pdf-muted);
+  font-size: 0.66rem;
+}
+
+.referenceLines {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.referenceLine {
+  padding: 5px 7px 7px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: oklch(0.955 0.008 158);
+}
+
+.referenceLineDrop {
+  border-color: oklch(0.5 0.075 186);
+  background: oklch(0.91 0.032 171);
+}
+
+.referenceLine > header {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.referenceLine > header input {
+  min-width: 0;
+  max-width: 240px;
+  height: 28px;
+  padding: 0 4px;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: var(--pdf-muted);
+  font: 740 0.67rem/1 var(--font-ui);
+}
+
+.referenceLine > header input:hover,
+.referenceLine > header input:focus {
+  border-bottom-color: oklch(0.55 0.055 185);
+  color: var(--pdf-ink);
+  outline: 0;
+}
+
+.referenceLine > header button {
+  min-height: 28px;
+  padding: 0 3px;
+  border: 0;
+  background: transparent;
+  color: var(--pdf-muted);
+  cursor: pointer;
+  font: 690 0.62rem/1 var(--font-ui);
+}
+
+.referenceTags {
+  display: flex;
+  gap: 6px;
+  padding-bottom: 2px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.referenceTags > button {
+  min-width: 108px;
+  max-width: 180px;
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+  padding: 7px 9px;
+  border: 1px solid oklch(0.76 0.016 168);
+  border-radius: 999px;
+  background: oklch(0.94 0.018 165);
+  color: var(--pdf-ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.referenceTags > button:hover,
+.referenceTags > button:focus-visible {
+  border-color: oklch(0.51 0.065 186);
+  background: oklch(0.91 0.033 171);
+}
+
+.referenceTags > .referenceTagDragging {
+  opacity: 0.45;
+}
+
+.referenceTags > .referenceTagDrop {
+  border-color: oklch(0.42 0.085 187);
+  box-shadow: -4px 0 0 oklch(0.42 0.085 187);
+}
+
+.referenceLineEmpty {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  color: var(--pdf-muted);
+  font-size: 0.66rem;
+}
+
+.referenceTags > button:focus-visible,
+.referenceTray > header button:focus-visible,
+.referencePeek button:focus-visible {
+  outline: 3px solid oklch(0.62 0.09 185);
+  outline-offset: 2px;
+}
+
+.referenceTags span {
+  color: oklch(0.43 0.075 187);
+  font-size: 0.66rem;
+  font-weight: 760;
+  white-space: nowrap;
+}
+
+.referenceTags strong {
+  overflow: hidden;
+  font-size: 0.7rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.referencePeek {
+  min-height: 280px;
+  flex: 1 1 0;
+  width: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid oklch(0.65 0.018 170);
+  border-radius: 8px;
+  background: oklch(0.975 0.006 150);
+  box-shadow: 0 18px 38px oklch(0.22 0.012 180 / 0.22);
+  color: var(--pdf-ink);
+}
+
+.referencePeek > header {
+  min-height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px 7px 12px;
+  border-bottom: 1px solid var(--pdf-rule);
+}
+
+.referencePeek > header > div:first-child {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+
+.referencePeek > header span {
+  color: oklch(0.43 0.075 187);
+  font-size: 0.68rem;
+  font-weight: 760;
+  white-space: nowrap;
+}
+
+.referencePeek > header strong {
+  overflow: hidden;
+  font-size: 0.74rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.referencePeek > header > div:last-child {
+  display: flex;
+  gap: 12px;
+}
+
+.referencePeek button {
+  min-height: 34px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: var(--pdf-muted);
+  cursor: pointer;
+  font: 710 0.68rem/1 var(--font-ui);
+  white-space: nowrap;
+}
+
+.referencePeek button:first-child {
+  border-bottom-color: oklch(0.47 0.075 187);
+  color: oklch(0.38 0.065 187);
+}
+
+.referencePage {
+  min-height: 240px;
+  display: grid;
+  place-items: start center;
+  overflow: auto;
+  padding: 12px;
+  background: oklch(0.88 0.006 160);
+}
+
+.referencePage canvas {
+  display: block;
+  max-width: none;
+  max-height: none;
+  background: oklch(0.995 0.003 100);
+  box-shadow: 0 2px 10px oklch(0.22 0.012 180 / 0.2);
+}
+
+.referencePage > span {
+  max-width: 28ch;
+  color: var(--pdf-muted);
+  font-size: 0.74rem;
+  text-align: center;
+}
+
+.referencePage[data-ready="false"] canvas {
+  display: none;
+}
+
+.stage {
+  min-width: 0;
+  min-height: 0;
+  display: block;
+  padding: 24px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-color: oklch(0.58 0.018 175) oklch(0.86 0.008 160);
+}
+
+.stage:focus-visible {
+  outline: 3px solid oklch(0.58 0.08 185);
+  outline-offset: -3px;
+}
+
+.document {
+  width: max-content;
+  min-width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+}
+
+.page {
+  position: relative;
+  flex: none;
+  margin: 0;
+  overflow: hidden;
+  background: oklch(0.995 0.003 100);
+  box-shadow: 0 2px 12px oklch(0.22 0.012 180 / 0.2);
+}
+
+.page[data-rendered="false"]::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background: oklch(0.96 0.004 155);
+}
+
+.page canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.commentHighlight {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.commentHighlight path {
+  fill: var(--pdf-highlight);
+  mix-blend-mode: multiply;
+}
+
+.textLayer {
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow: clip;
+  color-scheme: only light;
+  line-height: 1;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-align: initial;
+  text-size-adjust: none;
+  transform-origin: 0 0;
+  forced-color-adjust: none;
+}
+
+.textLayer :is(span, br) {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+
+.textLayer > :not(.markedContent),
+.textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  --scale-x: 1;
+  --rotate: 0deg;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.textLayer .markedContent {
+  display: contents;
+}
+
+.textLayer ::selection {
+  background: oklch(0.68 0.11 183 / 0.36);
+  color: transparent;
+}
+
+.textLayer > .ocrLine {
+  display: inline-block;
+  width: max-content;
+  height: auto;
+  font-family: Arial, Helvetica, sans-serif;
+  letter-spacing: 0;
+  transform-origin: 0 0;
+}
+
+.ocrStatus {
+  position: absolute;
+  z-index: 3;
+  top: 8px;
+  right: 8px;
+  padding: 5px 7px;
+  border: 1px solid oklch(0.79 0.018 170 / 0.9);
+  border-radius: 5px;
+  background: oklch(0.97 0.008 158 / 0.92);
+  color: oklch(0.38 0.04 184);
+  font: 720 0.62rem/1 var(--font-ui);
+  pointer-events: none;
+}
+
+.selectionActions {
+  position: absolute;
+  z-index: 8;
+  display: flex;
+  min-height: 44px;
+  border: 1px solid oklch(0.25 0.02 190);
+  border-radius: 6px;
+  overflow: hidden;
+  background: oklch(0.97 0.005 155);
+  box-shadow: 0 8px 20px oklch(0.22 0.012 180 / 0.22);
+  transform: translateX(-50%);
+}
+
+.selectionActions button {
+  min-width: 72px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--pdf-ink);
+  cursor: pointer;
+  font: 750 0.78rem/1 var(--font-ui);
+}
+
+.selectionActions button + button {
+  border-left: 1px solid var(--pdf-rule);
+  background: var(--pdf-ink);
+  color: oklch(0.98 0.004 150);
+}
+
+.status,
+.selectionError {
+  position: absolute;
+  z-index: 6;
+  left: 50%;
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--pdf-rule);
+  border-radius: 7px;
+  background: oklch(0.97 0.006 150);
+  color: var(--pdf-muted);
+  font-size: 0.76rem;
+  transform: translateX(-50%);
+}
+
+.status {
+  top: 62px;
+}
+
+.selectionError {
+  right: 18px;
+  bottom: 18px;
+  left: auto;
+  max-width: min(360px, calc(100% - 36px));
+  border-color: oklch(0.7 0.08 52);
+  color: oklch(0.5 0.1 45);
+  transform: none;
+}
+
+@media (max-width: 700px) {
+  .viewer {
+    grid-template-rows: 44px minmax(0, 1fr);
+  }
+
+  .stage {
+    padding: 12px;
+  }
+
+  .toolbar {
+    gap: 4px;
+    justify-content: flex-start;
+    padding-right: 66px;
+  }
+
+  .toolbar button:not(.referenceTrayToggle) {
+    width: 38px;
+  }
+
+  .toolbar .referenceTrayToggle {
+    right: 4px;
+    min-width: 56px;
+  }
+
+  .toolbarDivider {
+    display: none;
+  }
+
+  .referenceOverlay {
+    top: 48px;
+    right: 6px;
+    width: calc(100% - 12px);
+    height: calc(100% - 54px);
+  }
+
+  .referenceTray {
+    max-height: min(330px, 48%);
+  }
+
+  .referencePeek {
+    min-height: 0;
+  }
+
+  .referencePage {
+    place-items: start;
+  }
+
+  .referencePeek > header {
+    align-items: flex-start;
+  }
+
+  .referencePeek > header > div:first-child {
+    display: block;
+  }
+
+  .referencePeek > header strong {
+    display: block;
+    max-width: 22ch;
+    margin-top: 2px;
+  }
+}
+
+/* DAN: overlays keep learning-assistant's light panels, so they keep its original ink too
+   (the workbench tokens above would turn their text light in dark mode). */
+.referenceOverlay,
+.selectionActions,
+.selectionError {
+  --pdf-ink: oklch(0.25 0.02 190);
+  --pdf-muted: oklch(0.55 0.014 170);
+  --pdf-rule: oklch(0.78 0.012 165);
+}
