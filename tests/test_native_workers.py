@@ -206,3 +206,39 @@ def test_describe_cursor_tool_calls():
     assert describe({"type": "tool_call", "subtype": "started", "tool_call": {"readToolCall": {"args": {"path": "src/app.py"}}}}) == "Reading app.py"
     assert describe({"type": "tool_call", "subtype": "started", "tool_call": {"shellToolCall": {"args": {"command": "npm test"}}}}) == "Running npm test"
     assert describe({"type": "tool_call", "subtype": "completed", "tool_call": {"readToolCall": {}}}) == ""
+
+
+def test_cursor_chat_import_reads_store_without_writing(monkeypatch, tmp_path):
+    import json, sqlite3
+    from dan.native_workers import sessions
+    project = tmp_path / "project"; project.mkdir()
+    user = tmp_path / "Cursor/User"
+    for workspace_id, folder in [("w1", project.as_uri()), ("w2", "vscode-remote://ssh/elsewhere")]:
+        (user / "workspaceStorage" / workspace_id).mkdir(parents=True)
+        (user / "workspaceStorage" / workspace_id / "workspace.json").write_text(json.dumps({"folder": folder}))
+    legacy = sqlite3.connect(user / "workspaceStorage/w1/state.vscdb")
+    legacy.execute("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)")
+    legacy.execute("INSERT INTO ItemTable VALUES ('composer.composerData', ?)", (json.dumps({"allComposers": [{"composerId": "old", "name": "Older chat"}, {"composerId": "gone", "name": "Pruned"}]}),))
+    legacy.commit(); legacy.close()
+    (user / "globalStorage").mkdir(parents=True)
+    db = user / "globalStorage/state.vscdb"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE composerHeaders (composerId TEXT PRIMARY KEY, workspaceId TEXT, createdAt INTEGER, lastUpdatedAt INTEGER, isArchived INTEGER, isSubagent INTEGER, recency INTEGER, checkpointAt INTEGER, value TEXT, subagentTypeName TEXT)")
+    con.execute("CREATE TABLE cursorDiskKV (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)")
+    for cid, wid, archived, sub, name in [("c1", "w1", 0, 0, "Plan the reader"), ("c2", "w1", 1, 0, "Archived"), ("c3", "w1", 0, 1, "Subagent"), ("c4", "w2", 0, 0, "Remote")]:
+        con.execute("INSERT INTO composerHeaders VALUES (?,?,0,1,?,?,0,0,?,'')", (cid, wid, archived, sub, json.dumps({"name": name})))
+    con.execute("INSERT INTO cursorDiskKV VALUES ('composerData:c1', ?)", (json.dumps({"fullConversationHeadersOnly": [{"bubbleId": b} for b in ["b1", "b2", "b3", "b4"]]}),))
+    for bubble, kind, text in [("b1", 1, "How should the reader work?"), ("b2", 2, ""), ("b3", 2, "Select, then ask."), ("b4", 2, "Answers stay in the side chat.")]:
+        con.execute("INSERT INTO cursorDiskKV VALUES (?, ?)", (f"bubbleId:c1:{bubble}", json.dumps({"type": kind, "text": text})))
+    con.execute("INSERT INTO cursorDiskKV VALUES ('composerData:old', ?)", (json.dumps({"conversation": [{"type": 1, "text": "hi"}, {"type": 2, "text": "hello"}]}),))
+    con.commit(); con.close()
+    before = db.stat().st_mtime_ns
+    monkeypatch.setenv("DAN_CURSOR_USER_DIR", str(user))
+    chats = dict(sessions.cursor_chats(str(project)))
+    assert chats == {"c1": "Plan the reader", "old": "Older chat"}  # archived, subagent, remote, and pruned chats are skipped
+    rows = {row["session_id"]: row for row in sessions.discover(str(project)) if row["backend"] == "cursor"}
+    assert rows["c1"]["can_import"] and rows["c1"]["continuation"] == "history"
+    assert sessions.messages(rows["c1"]) == [{"role": "user", "content": "How should the reader work?"},
+                                             {"role": "assistant", "content": "Select, then ask.\n\nAnswers stay in the side chat."}]
+    assert sessions.messages(rows["old"])[1] == {"role": "assistant", "content": "hello"}
+    assert db.stat().st_mtime_ns == before

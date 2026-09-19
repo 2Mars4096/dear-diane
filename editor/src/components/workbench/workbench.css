@@ -380,3 +380,4 @@
 .wb-reader-note footer button { padding:6px 10px; border-radius:6px; color:var(--wb-muted); }
 .wb-reader-note footer button[type=submit] { background:var(--wb-ink); color:var(--wb-paper); }
 .wb-read-button { margin-right:6px; padding:5px 10px; border-radius:7px; font-size:12px; background:var(--wb-ink); color:var(--wb-paper); }
+.wb-import-note { margin:4px 0 8px; font-size:11px; color:var(--wb-muted); line-height:1.5; }

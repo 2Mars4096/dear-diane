@@ -4,7 +4,10 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
+import os
 import sqlite3
+import sys
+from urllib.parse import unquote, urlparse
 from .catalog import accounts, binary, user_home
 
 
@@ -12,10 +15,109 @@ def same_folder(left: str, right: str) -> bool:
     return bool(left and right) and Path(left).expanduser().resolve() == Path(right).expanduser().resolve()
 
 
+def cursor_user_dir() -> Path:
+    configured = os.environ.get("DAN_CURSOR_USER_DIR")
+    if configured:
+        return Path(configured)
+    if sys.platform == "darwin":
+        return user_home() / "Library/Application Support/Cursor/User"
+    return user_home() / ".config/Cursor/User"
+
+
+def _read_only(db: Path) -> sqlite3.Connection:
+    return sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)
+
+
+def cursor_chats(workspace: str) -> list[tuple[str, str]]:
+    """Cursor editor chats for one local folder: (composer id, title). Never writes Cursor's store."""
+    base = cursor_user_dir()
+    workspace_ids = []
+    for meta in (base / "workspaceStorage").glob("*/workspace.json"):
+        try:
+            uri = urlparse(json.loads(meta.read_text()).get("folder", ""))
+        except (OSError, ValueError, AttributeError):
+            continue
+        if uri.scheme == "file" and same_folder(unquote(uri.path), workspace):
+            workspace_ids.append(meta.parent.name)
+    db = base / "globalStorage/state.vscdb"
+    if not workspace_ids or not db.is_file():
+        return []
+    chats: dict[str, str] = {}
+    try:
+        with _read_only(db) as con:
+            has_headers = con.execute("SELECT 1 FROM sqlite_master WHERE name = 'composerHeaders'").fetchone()
+            if has_headers:
+                marks = ",".join("?" * len(workspace_ids))
+                for composer_id, value in con.execute(
+                        f"SELECT composerId, value FROM composerHeaders WHERE workspaceId IN ({marks}) "
+                        "AND COALESCE(isSubagent, 0) = 0 AND COALESCE(isArchived, 0) = 0 ORDER BY lastUpdatedAt DESC", workspace_ids):
+                    try:
+                        header = json.loads(value or "{}")
+                    except ValueError:
+                        header = {}
+                    chats[composer_id] = str(header.get("name") or header.get("subtitle") or "Cursor chat")
+            # Older Cursor versions list chats only in each workspace's own store.
+            for workspace_id in workspace_ids:
+                local = base / "workspaceStorage" / workspace_id / "state.vscdb"
+                if not local.is_file():
+                    continue
+                try:
+                    with _read_only(local) as workspace_con:
+                        row = workspace_con.execute("SELECT value FROM ItemTable WHERE key = 'composer.composerData'").fetchone()
+                    listed = json.loads(row[0]).get("allComposers", []) if row and row[0] else []
+                except (sqlite3.Error, ValueError, AttributeError):
+                    continue
+                for item in listed:
+                    composer_id = item.get("composerId") if isinstance(item, dict) else None
+                    if composer_id and composer_id not in chats and not item.get("isArchived") and \
+                            con.execute("SELECT 1 FROM cursorDiskKV WHERE key = ?", (f"composerData:{composer_id}",)).fetchone():
+                        chats[composer_id] = str(item.get("name") or "Cursor chat")
+    except sqlite3.Error:
+        return []
+    return list(chats.items())
+
+
+def cursor_messages(db: Path, composer_id: str) -> list[dict]:
+    with _read_only(db) as con:
+        row = con.execute("SELECT value FROM cursorDiskKV WHERE key = ?", (f"composerData:{composer_id}",)).fetchone()
+        if not row or not row[0]:
+            raise ValueError("This Cursor chat is no longer stored; source was left unchanged")
+        data = json.loads(row[0])
+        bubbles = data.get("conversation") if isinstance(data.get("conversation"), list) and data["conversation"] else None
+        if bubbles is None:
+            order = [item.get("bubbleId") for item in data.get("fullConversationHeadersOnly") or [] if isinstance(item, dict)][:20000]
+            stored: dict[str, dict] = {}
+            for start in range(0, len(order), 500):
+                chunk = [f"bubbleId:{composer_id}:{bubble}" for bubble in order[start:start + 500]]
+                for key, value in con.execute(f"SELECT key, value FROM cursorDiskKV WHERE key IN ({','.join('?' * len(chunk))})", chunk):
+                    try:
+                        stored[key.rsplit(":", 1)[-1]] = json.loads(value)
+                    except (TypeError, ValueError):
+                        pass
+            bubbles = [stored[bubble] for bubble in order if bubble in stored]
+    result: list[dict] = []
+    for bubble in bubbles:
+        role = {1: "user", 2: "assistant"}.get(bubble.get("type"))
+        text = bubble.get("text")
+        if not role or not isinstance(text, str) or not text.strip():
+            continue  # tool calls and thinking have no transcript text
+        if result and result[-1]["role"] == role:
+            result[-1]["content"] += "\n\n" + text
+        else:
+            result.append({"role": role, "content": text})
+    return result
+
+
 def discover(workspace: str) -> list[dict]:
     found: dict[str, dict] = {}
     for backend, profiles in accounts().items():
         for account_id, profile in profiles.items():
+            if backend == "cursor":
+                if account_id == "default":
+                    db = cursor_user_dir() / "globalStorage/state.vscdb"
+                    for composer_id, title in cursor_chats(workspace):
+                        add(found, backend, account_id, composer_id, title, str(db), workspace)
+                continue
             if backend == "codex":
                 home = Path(profile.get("env", {}).get("CODEX_HOME", str(user_home() / ".codex")))
                 db = home / "state_5.sqlite"
@@ -72,6 +174,8 @@ def add(found, backend, account, session_id, title, path, workspace):
     found[key] = {"id": key, "backend": backend, "account": account, "session_id": session_id,
                   "title": title or session_id, "path": path, "workspace": workspace,
                   "can_import": backend != "antigravity", "fork": True,
+                  # Cursor editor chats cannot be resumed headlessly; the import is a transcript copy.
+                  "continuation": "history" if backend == "cursor" else "native",
                   "reason": "Antigravity's documented fork is interactive; headless import is unavailable." if backend == "antigravity" else ""}
 
 
@@ -80,6 +184,14 @@ def messages(source: dict) -> list[dict]:
     path = Path(source["path"])
     if not path.is_file():
         raise ValueError("Native session transcript is no longer available")
+    if source["backend"] == "cursor":
+        try:
+            result = cursor_messages(path, source["session_id"])
+        except (sqlite3.Error, ValueError) as exc:
+            raise ValueError(str(exc) if isinstance(exc, ValueError) else "Cursor's chat store could not be read") from exc
+        if not result:
+            raise ValueError("No readable conversation messages found; source was left unchanged")
+        return result
     # Bound imports and fail explicitly rather than silently truncate history.
     if path.stat().st_size > 128 * 1024 * 1024:
         raise ValueError("This transcript exceeds the 128 MB import limit")

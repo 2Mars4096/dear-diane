@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ChatV2ThreadSummary } from "../../lib/chatV2Api";
-type Session = { id: string; backend: string; account: string; title: string; can_import: boolean; reason: string };
+type Session = { id: string; backend: string; account: string; title: string; can_import: boolean; reason: string; continuation?: "native" | "history" };
 export function ImportNativeSessions({ workspace, workspaceId, onClose, onImport }: {
   workspace: string; workspaceId: string; onClose: () => void; onImport: (thread: ChatV2ThreadSummary) => Promise<void>;
 }) {
@@ -50,6 +50,7 @@ export function ImportNativeSessions({ workspace, workspaceId, onClose, onImport
         setActiveSource(sources[next]);
         document.getElementById(`${tabId}-tab-${sources[next]}`)?.focus();
       }}><span>{sourceNames[source] || source}</span><small>{sessions.filter((session) => session.backend === source).length}</small></button>)}</div>}
+    {visibleSessions.some((session) => session.continuation === "history") && <p className="wb-import-note">{sourceNames[currentSource] || currentSource} chats are copied as history. Continuing starts a new {sourceNames[currentSource] || currentSource} session with that history as context.</p>}
     {!!importableIds.length && <div className="wb-import-selection"><label><input type="checkbox" aria-label="Select all" aria-checked={partiallySelected ? "mixed" : allSelected} ref={(input) => { if (input) input.indeterminate = partiallySelected; }} checked={allSelected} disabled={busy} onChange={(event) => { const checked = event.target.checked; setSelected((previous) => checked ? [...new Set([...previous, ...importableIds])] : previous.filter((id) => !importableIds.includes(id))); }} /><span>Select all</span></label><span>{selected.length} selected{sources.length > 1 ? " across sources" : ""}</span></div>}
     <div id={`${tabId}-sessions`} className="wb-native-import-list" role={sources.length > 1 ? "tabpanel" : undefined} aria-labelledby={sources.length > 1 ? `${tabId}-tab-${currentSource}` : undefined}>{visibleSessions.map((session) => <label key={session.id}>
       <input type="checkbox" name="native-session" value={session.id} checked={selected.includes(session.id)} disabled={!session.can_import || busy} onChange={() => setSelected((previous) => previous.includes(session.id) ? previous.filter((id) => id !== session.id) : [...previous, session.id])} />

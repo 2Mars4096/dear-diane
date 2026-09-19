@@ -75,7 +75,7 @@ class NativeLeadAdapter:
             import_path = base / "native_imports" / f"{request.thread_id}.json"
             if not profile.get("resume_session") and request.thread_id and Path(request.thread_id).name == request.thread_id and import_path.is_file():
                 source = json.loads(import_path.read_text())
-                if source["backend"] == backend and source["account"] == profile.get("account", "default") and same_folder(source["workspace"], workspace):
+                if source.get("continuation") != "history" and source["backend"] == backend and source["account"] == profile.get("account", "default") and same_folder(source["workspace"], workspace):
                     profile["source_session"] = source["session_id"]
 
             def on_child(record, row):
