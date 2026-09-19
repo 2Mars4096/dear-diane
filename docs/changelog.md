@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-19
+- [feat] Side panel tabs are now contextual: Chat and Files always; Preview once something is selected; Activity once a run has events (live dot while running); Team once a team exists (running count). The open tab never disappears. Restyled as an icon + label segmented track; every tab uses one width (`--wb-side-width`, 380px), including Preview.
+- [feat] The Plan/Auto/Full access menu opens on hover, matching Lead and Team.
+- [fix] Preview showed "_empty file_" for .tex and code files because only csv/json/log/txt were loaded as text; added LaTeX, config, and common source extensions, and unsupported types now say there is no preview.
 - [feat] Reader: project PDFs open in a distraction-free reader in the main column. Ported learning-assistant's material-guide PDF viewer (pdf.js 6.2.108 text layer, lazy page rendering, fit/zoom, reference tray with page peek, reading-position memory, selection Comment/Ask, highlight drawing) with DAN storage keys and workbench theming. Ask stages the passage plus page text in a per-PDF side chat framed as a reading companion; Comment saves highlights with optional notes and a jump list. The import/OCR/tutor pipeline was not ported.
 - [feat] One side panel replaces the Sidecar chat / Files / Activity / Preview header buttons: tabs Chat · Files · Preview · Activity · Team share one frame, one open at a time, last tab remembered. Files moved to the right.
 - [fix] Removed stale `@xyflow/react` and `allotment` stylesheet imports left after the cutover; they only resolved from leftover node_modules. Lazy-loaded the reader to keep the workspace chunk within budget; the budget script no longer treats any `pdf` chunk as a Research-mode leak.

@@ -5,7 +5,7 @@ import { DanSettings } from "../workbench/DanSettings";
 import { ImportNativeSessions } from "../workbench/ImportNativeSessions";
 import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from "../workbench/NativeWorkers";
 import { TeamPanel, TeamStrip, useTeamWorkers } from "../workbench/TeamProgress";
-import { SideTabs, readLastSideTab, rememberSideTab, type SideTab } from "../workbench/SideTabs";
+import { SideTabs, readLastSideTab, rememberSideTab, type SideTab, type SideTabItem } from "../workbench/SideTabs";
 import type { ReaderAsk, ReaderFile } from "../reader/ReaderView";
 import { ProjectSettings } from "../workbench/ProjectSettings";
 import { streamedMessageContent, completedMessageContent } from "../workbench/eventPresentation";
@@ -7828,7 +7828,11 @@ const WORKSPACE_PREVIEW_IMAGE_EXTENSIONS = new Set([
   "webp",
 ]);
 const WORKSPACE_PREVIEW_MARKDOWN_EXTENSIONS = new Set(["markdown", "md", "mdx"]);
-const WORKSPACE_PREVIEW_TEXT_EXTENSIONS = new Set(["csv", "json", "jsonl", "log", "txt"]);
+const WORKSPACE_PREVIEW_TEXT_EXTENSIONS = new Set([
+  "csv", "json", "jsonl", "log", "txt",
+  "tex", "bib", "sty", "cls", "yaml", "yml", "toml", "ini", "xml", "sql", "sh",
+  "py", "ts", "tsx", "js", "jsx", "mjs", "css", "r", "rs", "go", "java", "c", "h", "cpp",
+]);
 const WORKSPACE_PREVIEW_OUTPUT_SEGMENTS = new Set([
   "artifact",
   "artifacts",
@@ -13189,6 +13193,9 @@ function WorkspaceFilePreviewPanel({
   if (kind === "markdown") {
     return <MarkdownRenderer content={content || "_empty file_"} />;
   }
+  if (kind === null) {
+    return <div className="text-sm text-slate-400">No preview for this file type. Use Open to view it.</div>;
+  }
   return (
     <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-slate-700 dark:text-slate-300">
       {content || "_empty file_"}
@@ -14575,8 +14582,19 @@ export default function ChunkWorkspaceApp() {
     setReaderSelection({ text: ask.quote, context: `Page ${ask.pageNumber}: ${ask.pageText}`, token: Date.now() });
     openSideTab("chat");
   };
-  const renderSideTabs = () => sideTab ? <SideTabs active={sideTab} onSelect={openSideTab} onClose={() => openSideTab(null)}
-    counts={{ team: team.workers.filter((worker) => worker.status === "running").length }} /> : null;
+  // Tabs follow context: Preview once something is selected, Activity once a run has events, Team once a team exists.
+  const renderSideTabs = () => {
+    if (!sideTab) return null;
+    const runningWorkers = team.workers.filter((worker) => worker.status === "running").length;
+    const tabs: SideTabItem[] = [
+      { id: "chat", label: readerFile ? "Reading" : "Chat" },
+      { id: "files", label: "Files" },
+      ...(activePreviewFileEntry || selectedBlueprintNode || selectedChunk || promptLogPreview ? [{ id: "preview" as const, label: "Preview" }] : []),
+      ...(agentEvents.length || activeRunningTask ? [{ id: "activity" as const, label: "Activity", live: Boolean(activeRunningTask) }] : []),
+      ...(team.workers.length ? [{ id: "team" as const, label: "Team", count: runningWorkers }] : []),
+    ];
+    return <SideTabs tabs={tabs} active={sideTab} reading={Boolean(readerFile)} onSelect={openSideTab} onClose={() => openSideTab(null)} />;
+  };
   const sessionStatusTasks = useMemo(
     () => mergeTaskSnapshots(backgroundTasks, workPanelTasks),
     [backgroundTasks, workPanelTasks],
@@ -14775,6 +14793,7 @@ export default function ChunkWorkspaceApp() {
     return readStoredWorkspaceSelection().modelSelectionsByAgent;
   });
   const [autonomyMenuOpen, setAutonomyMenuOpen] = useState(false);
+  const autonomyHoverRef = useRef({ timer: 0, openedAt: 0 });
   const selectedAgentOption = useMemo(
     () => workspaceAgentOptionForId(selectedAgentId),
     [selectedAgentId],
@@ -16811,10 +16830,30 @@ export default function ChunkWorkspaceApp() {
               }
               setAutonomyMenuOpen(false);
             }}
+            // Opens on mouse hover like Lead/Team; click and keyboard still toggle.
+            onPointerEnter={(event) => {
+              if (event.pointerType !== "mouse") return;
+              window.clearTimeout(autonomyHoverRef.current.timer);
+              if (!autonomyMenuOpen) {
+                autonomyHoverRef.current.openedAt = Date.now();
+                setAutonomyMenuOpen(true);
+              }
+            }}
+            onPointerLeave={(event) => {
+              if (event.pointerType !== "mouse") return;
+              window.clearTimeout(autonomyHoverRef.current.timer);
+              autonomyHoverRef.current.timer = window.setTimeout(() => setAutonomyMenuOpen(false), 180);
+            }}
           >
             <button
               type="button"
-              onClick={() => setAutonomyMenuOpen((open) => !open)}
+              onClick={() => {
+                if (autonomyMenuOpen && Date.now() - autonomyHoverRef.current.openedAt < 1500) {
+                  autonomyHoverRef.current.openedAt = 0;
+                  return;
+                }
+                setAutonomyMenuOpen((open) => !open);
+              }}
               className="inline-flex h-7 min-w-[4.5rem] max-w-[6.5rem] items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50/95 px-2 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-white dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-700 sm:min-w-20 sm:max-w-[7rem]"
               title={selectedAutonomyOption.description}
               aria-expanded={autonomyMenuOpen}
@@ -18571,7 +18610,9 @@ export default function ChunkWorkspaceApp() {
             className={cx(
               "dan-phone-page grid min-h-0 min-w-0 flex-1 md:order-3",
               renderSidecarPreview
-                ? "grid-cols-[minmax(280px,0.95fr)_minmax(300px,1.05fr)]"
+                ? isPhoneViewport
+                  ? "grid-cols-[minmax(280px,0.95fr)_minmax(300px,1.05fr)]"
+                  : "grid-cols-[minmax(0,1fr)_var(--wb-side-width)]"
                 : "grid-cols-[minmax(0,1fr)]",
             )}
           >

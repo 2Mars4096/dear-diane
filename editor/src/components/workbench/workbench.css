@@ -334,18 +334,26 @@
 .wb-lane-details ol li:last-child { color:var(--wb-ink); }
 .wb-lane-details pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:260px; overflow:auto; background:var(--wb-soft); border-radius:6px; padding:10px; font-size:11px; }
 @media (max-width:640px) { .wb-team-strip { gap:12px; } .wb-team-item + .wb-team-item + .wb-team-item { display:none; } }
-/* Unified side panel: every right-side tool shares one frame and tab bar. */
-.wb-side-tabs { display:flex; align-items:center; gap:2px; height:44px; flex-shrink:0; padding:0 8px 0 12px; border-bottom:1px solid var(--wb-line); background:var(--wb-paper); overflow-x:auto; scrollbar-width:none; }
-.wb-side-tabs button[role=tab] { display:flex; align-items:center; gap:5px; padding:6px 9px; border-radius:6px; font-size:12px; color:var(--wb-muted); white-space:nowrap; transition:background 120ms,color 120ms; }
-.wb-side-tabs button[role=tab]:hover { color:var(--wb-ink); }
-.wb-side-tabs button[aria-selected=true] { background:var(--wb-soft); color:var(--wb-ink); font-weight:500; }
-.wb-side-tabs button span { font-size:10px; color:var(--wb-accent); font-variant-numeric:tabular-nums; }
-.wb-side-close { margin-left:auto; width:28px; height:28px; display:grid; place-items:center; border-radius:6px; color:var(--wb-muted); flex-shrink:0; }
+/* Unified side panel: every right-side tool shares one frame, width, and tab bar. */
+.wb-shell { --wb-side-width:min(380px,45vw); }
+.wb-side-tabs { display:flex; align-items:center; gap:8px; height:48px; flex-shrink:0; padding:0 10px 0 12px; border-bottom:1px solid var(--wb-line); background:var(--wb-paper); }
+.wb-side-track { display:flex; align-items:center; gap:2px; min-width:0; padding:3px; border-radius:9px; background:var(--wb-soft); overflow-x:auto; scrollbar-width:none; }
+.wb-side-track::-webkit-scrollbar { display:none; }
+.wb-side-track button { position:relative; display:flex; align-items:center; gap:6px; height:26px; padding:0 9px; border-radius:6px; font-size:12px; color:var(--wb-muted); white-space:nowrap; transition:background 140ms,color 140ms,box-shadow 140ms; animation:wb-arrive 180ms ease-out; }
+.wb-side-track button:hover { color:var(--wb-ink); }
+.wb-side-track button[aria-selected=true] { background:var(--wb-paper); color:var(--wb-ink); font-weight:500; box-shadow:0 1px 2px #0000000f,0 0 0 1px var(--wb-line); }
+.wb-side-track button svg { flex-shrink:0; opacity:.85; }
+.wb-side-count { min-width:16px; height:16px; padding:0 4px; display:grid; place-items:center; border-radius:8px; background:var(--wb-accent); color:var(--wb-paper); font-size:10px; font-weight:600; font-variant-numeric:tabular-nums; }
+.wb-side-live { width:6px; height:6px; border-radius:50%; background:var(--wb-accent); animation:wb-pulse 1.5s ease-in-out infinite; }
+@container (max-width:340px) { .wb-side-label { display:none; } }
+.wb-side-close { margin-left:auto; width:28px; height:28px; display:grid; place-items:center; flex-shrink:0; border-radius:7px; color:var(--wb-muted); }
 .wb-side-close:hover { background:var(--wb-soft); color:var(--wb-ink); }
 .wb-side-empty { padding:0 20px; font-size:12px; }
-.wb-shell .dan-files-page { order:5; width:380px; border-right:0; border-left:1px solid var(--wb-line); background:var(--wb-paper); animation:wb-arrive 180ms ease-out; }
-.wb-shell .wb-activity-panel, .wb-shell .wb-sidecar-chat { width:380px; }
-.wb-shell .wb-preview-panel { background:var(--wb-paper); border-color:var(--wb-line); }
+.wb-shell .dan-files-page { order:5; width:var(--wb-side-width); border-right:0; border-left:1px solid var(--wb-line); background:var(--wb-paper); animation:wb-arrive 180ms ease-out; container-type:inline-size; }
+@media (min-width:761px) { .wb-shell .wb-activity-panel, .wb-shell .wb-sidecar-chat { width:var(--wb-side-width); max-width:none; min-width:0; } }
+.wb-shell .wb-activity-panel, .wb-shell .wb-sidecar-chat { container-type:inline-size; }
+.wb-shell .wb-preview-panel { background:var(--wb-paper); border-color:var(--wb-line); container-type:inline-size; }
+
 /* Reader: the PDF owns the main column; questions go to the side chat. */
 .wb-reader { position:relative; display:flex; flex-direction:column; flex:1; min-height:0; background:var(--wb-paper); }
 .wb-reader-bar { position:relative; display:flex; align-items:center; gap:10px; height:44px; flex-shrink:0; padding:0 12px 0 20px; border-bottom:1px solid var(--wb-line); font-size:12px; color:var(--wb-muted); }
