@@ -65,3 +65,5 @@
 - [x] Add Delete all archived chats to the archive footer, with count/scope confirmation, progress, retryable failures, and a backend guard preserving unarchived chats.
 
 - [x] Hide idle/raw Work status text; open Lead/Team menus on hover.
+
+- [x] Unify idle/running sidebar chat rows; always show progress and Stop for running chats.

@@ -16998,6 +16998,7 @@ export default function ChunkWorkspaceApp() {
                 setPhonePage("chat");
               }}
               className="flex min-w-0 flex-1 items-start gap-2 px-2.5 py-2 text-left"
+              title={sessionDisplay.detail}
             >
               {hasNewReadyResponse && (
                 <span
@@ -17007,7 +17008,6 @@ export default function ChunkWorkspaceApp() {
               )}
               <span className="min-w-0 flex-1">
                 <span className="dan-rail-card-title block truncate">{sessionDisplay.title}</span>
-                {threadIsRunning && <span className="dan-rail-card-meta">{sessionDisplay.detail}</span>}
               </span>
             </button>
             <div className="flex shrink-0 items-center gap-0.5 py-1 pr-1">
@@ -17022,30 +17022,6 @@ export default function ChunkWorkspaceApp() {
                 >
                   <ScrollText size={12} />
                 </button>
-              )}
-              {threadIsRunning && (
-                <>
-                  <button
-                    type="button"
-                    data-session-action
-                    onClick={() => void viewSessionProgress(thread, group.workspaceId, group.root)}
-                    title="View progress"
-                    aria-label="View progress"
-                    className="dan-session-live-button grid h-6 w-6 place-items-center rounded-md text-blue-500 transition hover:bg-blue-50 hover:text-blue-700 dark:text-blue-300 dark:hover:bg-blue-950/40 dark:hover:text-blue-100"
-                  >
-                    <Activity size={12} className="dan-session-live-icon" />
-                  </button>
-                  <button
-                    type="button"
-                    data-session-action
-                    onClick={() => void stopSessionRun(thread, threadRunningTask)}
-                    title="Stop running session"
-                    aria-label="Stop running session"
-                    className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-300"
-                  >
-                    <Square size={11} />
-                  </button>
-                </>
               )}
               {archived && (
                 <button
@@ -17069,6 +17045,32 @@ export default function ChunkWorkspaceApp() {
               >
                 {archived ? <ChevronRight size={12} /> : <Archive size={12} />}
               </button>
+              {threadIsRunning && (
+                <>
+                  <button
+                    type="button"
+                    data-session-action
+                    data-session-live
+                    onClick={() => void viewSessionProgress(thread, group.workspaceId, group.root)}
+                    title="View progress"
+                    aria-label="View progress"
+                    className="dan-session-live-button grid h-6 w-6 place-items-center rounded-md text-blue-500 transition hover:bg-blue-50 hover:text-blue-700 dark:text-blue-300 dark:hover:bg-blue-950/40 dark:hover:text-blue-100"
+                  >
+                    <Activity size={12} className="dan-session-live-icon" />
+                  </button>
+                  <button
+                    type="button"
+                    data-session-action
+                    data-session-live
+                    onClick={() => void stopSessionRun(thread, threadRunningTask)}
+                    title="Stop running session"
+                    aria-label="Stop running session"
+                    className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+                  >
+                    <Square size={11} />
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>

@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-19
+- [fix] Sidebar chat rows share one layout: single-line title at rest, prompt log/archive revealed on hover (taking no space otherwise). A running chat only adds an always-visible progress icon and Stop, placed last so they never shift; the extra status line and blue live styling were removed (details stay in the row tooltip).
 - [fix] The Work status line no longer shows idle "Ready" or raw event names; it appears only for meaningful states (loading, errors, stopped/failed runs) and aligns with the composer text.
 - [feat] Lead and Team composer menus open on mouse hover and close shortly after the mouse leaves; click, keyboard, and touch still work, and clicking a hover-opened menu keeps it open.
 - [feat] Team progress display: a compact strip above the transcript names the lead and up to two live team members with their current action (needs-attention first, "+N" overflow), settling to "N tasks done". Clicking it opens a Team side panel with one lane per task: title, agent, current action, elapsed time, inline Stop, expandable recent actions/output; finished tasks collapse under Done with a one-line result. Replaces the old Subagents list.
