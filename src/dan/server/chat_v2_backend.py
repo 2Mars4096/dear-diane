@@ -1586,6 +1586,10 @@ def _codex_sandbox(request: AgentBackendRunRequest) -> str:
     )
     if requested in {"read-only", "workspace-write", "danger-full-access"}:
         return requested
+    # DAN workbench modes: Plan / Auto / Full access.
+    permission = str(request.profile_policy.get("permission_mode") or "").strip().lower()
+    if permission in {"plan", "full"}:
+        return "read-only" if permission == "plan" else "danger-full-access"
     mutation_mode = str(request.mutation_policy.get("mode") or "").strip().lower()
     mutation_permission = str(request.mutation_policy.get("permission") or "").strip().lower()
     if "read" in mutation_mode and "mutation" not in mutation_mode:

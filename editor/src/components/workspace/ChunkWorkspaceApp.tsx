@@ -64,6 +64,7 @@ import {
   Search,
   Send,
   Shield,
+  ShieldOff,
   Square,
   TerminalSquare,
   Trash2,
@@ -182,7 +183,7 @@ const NOTES_WORKSPACE_WRITE_POLICY =
   "Use the notes workspace as context by default; create or edit notes only when the operator asks for notes, memory, documentation, or a saved artifact.";
 type WorkspaceAgentSelectionId = "native" | "codex" | "claude" | "antigravity";
 type WorkspaceCodexReasoningEffort = "low" | "medium" | "high" | "xhigh";
-type WorkspaceAutonomyMode = "auto" | "review";
+type WorkspaceAutonomyMode = "plan" | "auto" | "full";
 type WorkspaceAgentOption = {
   id: WorkspaceAgentSelectionId;
   label: string;
@@ -212,20 +213,16 @@ type StoredWorkspaceSelection = {
 };
 const DEFAULT_AGENT_SELECTION_ID: WorkspaceAgentSelectionId = "native";
 const DEFAULT_AUTONOMY_MODE: WorkspaceAutonomyMode = "auto";
+// One DAN mode per intent; each maps to the closest Codex sandbox / Claude permission mode.
 const WORKSPACE_AUTONOMY_OPTIONS: WorkspaceAutonomyOption[] = [
-  {
-    id: "auto",
-    label: "Auto",
-    shortLabel: "Auto",
-    description: "Let DAN choose the best next action inside the active run contract.",
-  },
-  {
-    id: "review",
-    label: "Review",
-    shortLabel: "Review",
-    description: "Pause on ambiguous needs-attention choices so you can decide.",
-  },
+  { id: "plan", label: "Plan", shortLabel: "Plan", description: "Read and propose. Nothing changes until you decide." },
+  { id: "auto", label: "Auto", shortLabel: "Auto", description: "Edit files and run commands inside this project." },
+  { id: "full", label: "Full access", shortLabel: "Full", description: "No sandbox or approvals. Use only in trusted projects." },
 ];
+/** DAN's own runtime only distinguishes pausing for decisions from acting on its own. */
+function danAutonomyMode(mode: WorkspaceAutonomyMode): "auto" | "review" {
+  return mode === "plan" ? "review" : "auto";
+}
 const WORKSPACE_AGENT_OPTIONS: WorkspaceAgentOption[] = [
   { id: "codex", label: "Codex", shortLabel: "Codex", backend: "native_codex" },
   { id: "claude", label: "Claude Code", shortLabel: "Claude", backend: "claude" },
@@ -290,7 +287,7 @@ function workspaceAgentOptionForId(id: string | null | undefined): WorkspaceAgen
 }
 
 function isWorkspaceAutonomyMode(value: string | null | undefined): value is WorkspaceAutonomyMode {
-  return value === "auto" || value === "review";
+  return value === "plan" || value === "auto" || value === "full";
 }
 
 function workspaceAutonomyOptionForId(id: string | null | undefined): WorkspaceAutonomyOption {
@@ -304,6 +301,7 @@ function workspaceAutonomyOptionForId(id: string | null | undefined): WorkspaceA
 function readStoredWorkspaceAutonomyMode(): WorkspaceAutonomyMode {
   if (typeof window === "undefined") return DEFAULT_AUTONOMY_MODE;
   const stored = window.localStorage.getItem(AUTONOMY_MODE_STORAGE_KEY);
+  if (stored === "review") return "plan";
   return isWorkspaceAutonomyMode(stored) ? stored : DEFAULT_AUTONOMY_MODE;
 }
 
@@ -414,11 +412,13 @@ function buildWorkspaceAgentExecutePayload(
   autonomyMode: WorkspaceAutonomyMode = DEFAULT_AUTONOMY_MODE,
 ) {
   const autonomyOption = workspaceAutonomyOptionForId(autonomyMode);
+  const danMode = danAutonomyMode(autonomyOption.id);
   const profilePolicy: Record<string, unknown> = {
     backend: agentOption.backend,
     surface_profile: SUPER_TUI_PROFILE,
-    autonomy_mode: autonomyOption.id,
-    attention_resolution_mode: autonomyOption.id,
+    autonomy_mode: danMode,
+    attention_resolution_mode: danMode,
+    permission_mode: autonomyOption.id,
   };
   if (modelOption.baseUrl) profilePolicy.base_url = modelOption.baseUrl;
   if (modelOption.model) {
@@ -440,8 +440,8 @@ function buildWorkspaceAgentExecutePayload(
     background: true,
     profile_policy: profilePolicy,
     approval_policy: {
-      mode: autonomyOption.id === "review" ? "ask_on_attention" : "auto_within_workspace",
-      attention_resolution: autonomyOption.id,
+      mode: danMode === "review" ? "ask_on_attention" : "auto_within_workspace",
+      attention_resolution: danMode,
     },
     metadata: {
       backend: agentOption.backend,
@@ -449,8 +449,9 @@ function buildWorkspaceAgentExecutePayload(
       compatibility_profile: SUPER_TUI_PROFILE,
       surface: "gui:chunk-workspace",
       requested_from: "chunk_workspace",
-      autonomy_mode: autonomyOption.id,
-      attention_resolution_mode: autonomyOption.id,
+      autonomy_mode: danMode,
+      permission_mode: autonomyOption.id,
+      attention_resolution_mode: danMode,
       attention_resolution_label: autonomyOption.label,
       gui_for: agentOption.id === "native" ? "dan super-tui" : `${agentOption.id} CLI`,
       selected_backend: agentOption.backend,
@@ -1150,6 +1151,12 @@ function liveActionText(summary: string | undefined): string {
   const text = (summary ?? "").trim().replace(/[.…]+$/, "");
   if (!text || text.length > 90 || /^[\w-]+:\s*[\w.]+$/.test(text) || /^[a-z]+([._][a-z]+)+$/.test(text)) return "";
   return text;
+}
+
+function AutonomyIcon({ mode, size, className }: { mode: WorkspaceAutonomyMode; size: number; className?: string }) {
+  if (mode === "plan") return <Shield size={size} className={className} />;
+  if (mode === "full") return <ShieldOff size={size} className={className} />;
+  return <WandSparkles size={size} className={className} />;
 }
 
 function makeMessage(role: ChatMessage["role"], content: string): ChatMessage {
@@ -9278,10 +9285,11 @@ function buildSurfaceContext(args: {
     surface_profile: SUPER_TUI_PROFILE,
     agent_profile: SUPER_TUI_PROFILE,
     agent_backend: selectedAgent.backend,
-    autonomy_mode: autonomyOption.id,
-    attention_resolution_mode: autonomyOption.id,
+    autonomy_mode: danAutonomyMode(autonomyOption.id),
+    permission_mode: autonomyOption.id,
+    attention_resolution_mode: danAutonomyMode(autonomyOption.id),
     attention_resolution: {
-      mode: autonomyOption.id,
+      mode: danAutonomyMode(autonomyOption.id),
       label: autonomyOption.label,
       description: autonomyOption.description,
     },
@@ -16769,11 +16777,7 @@ export default function ChunkWorkspaceApp() {
               title={selectedAutonomyOption.description}
               aria-expanded={autonomyMenuOpen}
             >
-              {selectedAutonomyOption.id === "review" ? (
-                <Shield size={12} />
-              ) : (
-                <WandSparkles size={12} />
-              )}
+              <AutonomyIcon mode={selectedAutonomyOption.id} size={12} />
               <span className="truncate">{selectedAutonomyOption.shortLabel}</span>
               <ChevronDown size={12} className={cx("transition", autonomyMenuOpen && "rotate-180")} />
             </button>
@@ -16797,11 +16801,7 @@ export default function ChunkWorkspaceApp() {
                           : "text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-white",
                       )}
                     >
-                      {option.id === "review" ? (
-                        <Shield size={13} className="mt-0.5 shrink-0" />
-                      ) : (
-                        <WandSparkles size={13} className="mt-0.5 shrink-0" />
-                      )}
+                      <AutonomyIcon mode={option.id} size={13} className="mt-0.5 shrink-0" />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-xs font-semibold">{option.label}</span>
                         <span className="block text-[11px] font-medium leading-4 text-slate-500 dark:text-slate-400">
@@ -18545,7 +18545,7 @@ export default function ChunkWorkspaceApp() {
             )}
           >
             <div className="flex min-h-0 min-w-0 flex-col bg-white/90 dark:bg-slate-950">
-              <div className="wb-conversation-heading"><span>{activeThread?.title || "New session"}</span><div className="wb-conversation-actions">
+              <div className="wb-conversation-heading"><div className="wb-conversation-actions">
                 {activeRunningTask && activeThread && <button className="wb-stop" onClick={() => void stopSessionRun({ id: activeThread.id, workflow_id: activeThread.workflowId, title: activeThread.title || "Active session", message_count: messages.length, created_at: "", updated_at: "" }, activeRunningTask)}><Square size={11} />Stop run</button>}
                 <button aria-pressed={workbenchOutline} onClick={() => setWorkbenchOutline(!workbenchOutline)}>{workbenchOutline ? "Conversation" : "Task detail"}</button></div></div>
 

@@ -198,8 +198,10 @@ describe("workspace blueprint nodes", () => {
     const reviewPayload = workspaceAgentExecutePayloadWithAutonomyForTest(
       "native",
       "native_default",
-      "review",
+      "plan",
     );
+    const fullPayload = workspaceAgentExecutePayloadWithAutonomyForTest("codex", "codex_default", "full");
+    expect(fullPayload.profile_policy).toMatchObject({ autonomy_mode: "auto", permission_mode: "full" });
 
     expect(autoPayload.profile_policy).toMatchObject({
       autonomy_mode: "auto",
@@ -210,6 +212,7 @@ describe("workspace blueprint nodes", () => {
       attention_resolution: "auto",
     });
     expect(reviewPayload.profile_policy).toMatchObject({
+      permission_mode: "plan",
       autonomy_mode: "review",
       attention_resolution_mode: "review",
     });

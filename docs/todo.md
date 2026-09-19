@@ -70,3 +70,6 @@
 
 - [x] Regenerate/Fork for the latest request; reattach live runs after refresh; replace dev-style run status with readable live actions.
 - [ ] Live-verify Regenerate/Fork and refresh reattach against a real Codex/Claude lead run.
+
+- [x] Plan/Auto/Full access modes mapped to Codex/Claude/DAN settings; drop duplicate conversation title.
+- [ ] Live-verify Claude Auto mode sandboxed Bash and Antigravity permission flags.

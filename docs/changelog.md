@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-19
+- [feat] Workbench modes are now Plan / Auto / Full access, mapped (not one-to-one) to each runtime: Codex `sandbox_mode` read-only / workspace-write / bypass; Claude Code `plan` / `acceptEdits` + sandboxed Bash / skip-permissions; DAN `review` / `auto` / `auto`. Lead and team members share the mode. Stored "Review" migrates to Plan.
+- [fix] Resumed Codex lead turns kept Codex's read-only default because `exec resume` has no `--sandbox`; the sandbox is now set with `-c sandbox_mode` on every turn. Claude headless leads no longer run in `default`, which silently denied edits.
+- [fix] Removed the duplicate chat title above the transcript; the header already shows it.
 - [feat] Regenerate and Fork under the latest request. Regenerate drops the answer after it and re-runs the request in place (native leads start a fresh session so the discarded answer is not remembered); Fork copies the conversation into a new chat in the same project with branch lineage. Hidden while a run is active.
 - [fix] Refreshing or reopening a chat with a running task reattaches its event stream and rebuilds the live answer from replayed events; previously live updates stopped until the run finished.
 - [fix] Run progress no longer writes raw event names (e.g. "codex: turn.started") to the status line. The pending answer shows a live dot with the current readable action; native lead status events use the same action phrases as team workers.

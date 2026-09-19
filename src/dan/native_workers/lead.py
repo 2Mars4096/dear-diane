@@ -27,7 +27,8 @@ class NativeLeadAdapter:
 
         backend = self.backend_name
         workspace = str(Path(request.workspace_root or Path.cwd()).expanduser().resolve())
-        profile = {**(request.profile_policy.get("lead_profile") or {}), "enabled": True}
+        permission = str(request.profile_policy.get("permission_mode") or "auto")
+        profile = {**(request.profile_policy.get("lead_profile") or {}), "enabled": True, "permission": permission}
         # Continuations can only come from our durable state, never caller-supplied IDs.
         profile.pop("source_session", None)
         profile.pop("resume_session", None)
@@ -81,7 +82,7 @@ class NativeLeadAdapter:
                 event("status_reported", f"{record['backend']} team member: {record['status']}",
                       {"backend": record["backend"], "worker_id": record["worker_id"], "parent_run_id": request.run_id,
                        "native_session_id": record["native_session_id"], "raw": row}, "native_worker.event")
-            profiles = dict(request.profile_policy.get("native_workers") or {})
+            profiles = {name: {**settings, "permission": permission} for name, settings in (request.profile_policy.get("native_workers") or {}).items()}
             team = NativeTeam(request.run_id, workspace, profiles, base / "native_workers", on_child, parent_request=request)
             active_teams[request.run_id] = team
             prompt = _objective_with_surface_context(request)

@@ -15,7 +15,7 @@
 .wb-header button:hover, .wb-header button[aria-pressed=true] { background:var(--wb-soft); color:var(--wb-ink); }
 .wb-shell .dan-collapsed-pane-rail { display:none; }
 .wb-shell .dan-work-pages, .wb-shell .dan-work-pages > div > div { background:var(--wb-paper); }
-.wb-conversation-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 24px; font-size:12px; color:var(--wb-muted); }
+.wb-conversation-heading { display:flex; align-items:center; justify-content:flex-end; gap:16px; padding:12px 24px; font-size:12px; color:var(--wb-muted); }
 .wb-conversation-heading > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .wb-conversation-heading button { flex-shrink:0; padding:5px 9px; border-radius:6px; }
 .wb-conversation-heading button:hover { background:var(--wb-soft); }

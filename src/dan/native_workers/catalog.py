@@ -118,6 +118,11 @@ def catalog() -> dict:
     return {"runtimes": result, "openrouter_configured": bool(openrouter_key)}
 
 
+# DAN mode -> native setting. Plan reads and proposes; Auto edits/runs inside the
+# project sandbox; Full removes sandbox and approvals. Antigravity keeps its CLI default.
+PERMISSIONS = {"plan", "auto", "full"}
+
+
 def launch(runtime: str, profile: dict, objective: str, workspace: str, session: str = "") -> tuple[list[str], dict[str, str]]:
     if runtime not in RUNTIMES:
         raise ValueError("Unknown native runtime")
@@ -133,6 +138,9 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
     env["PATH"] = os.pathsep.join([str(user_home() / ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin", env.get("PATH", "/usr/bin:/bin")])
     model, effort = str(profile.get("model") or ""), str(profile.get("effort") or "")
     fast = bool(profile.get("fast"))
+    permission = str(profile.get("permission") or "auto")
+    if permission not in PERMISSIONS:
+        raise ValueError("Unsupported permission mode")
     allowed = {"low", "medium", "high"} | ({"xhigh", "max", "ultra"} if runtime == "codex" else set())
     if effort and effort not in allowed:
         raise ValueError("Unsupported reasoning effort")
@@ -140,7 +148,12 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
         cmd = [executable, "exec"] + (["resume", session] if session else [])
         cmd += ["--json", "--skip-git-repo-check"]
         if not session:
-            cmd += ["--sandbox", "workspace-write", "--cd", workspace]
+            cmd += ["--cd", workspace]
+        # `exec resume` has no --sandbox flag, so set it through config on every turn.
+        if permission == "full":
+            cmd += ["--dangerously-bypass-approvals-and-sandbox"]
+        else:
+            cmd += ["-c", f'sandbox_mode="{"read-only" if permission == "plan" else "workspace-write"}"']
         if effort:
             cmd += ["-c", f'model_reasoning_effort="{effort}"']
         cmd += ["-c", 'service_tier="fast"' if fast else 'service_tier="default"']
@@ -149,12 +162,17 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
     else:
         cmd = [executable, "-p", objective, "--output-format", "stream-json"]
         if runtime == "claude":
-            cmd += ["--verbose", "--include-partial-messages", "--permission-mode", "default"]
+            cmd += ["--verbose", "--include-partial-messages"]
+            cmd += ["--dangerously-skip-permissions"] if permission == "full" else ["--permission-mode", "plan" if permission == "plan" else "acceptEdits"]
             if fast and not any(row["fast"] for row in catalog()["runtimes"] if row["id"] == runtime):
                 raise ValueError("Update Claude Code to use fast mode in headless workers")
             if fast and model not in {"opus", "claude-opus-5", "claude-opus-4-8"}:
                 raise ValueError("Claude fast mode requires a supported Opus model")
-            cmd += ["--settings", json.dumps({"fastMode": fast})]
+            settings: dict = {"fastMode": fast}
+            if permission == "auto":
+                # Headless runs cannot prompt; let Bash run inside Claude's workspace sandbox instead.
+                settings["sandbox"] = {"enabled": True, "autoAllowBashIfSandboxed": True}
+            cmd += ["--settings", json.dumps(settings)]
         elif fast:
             raise ValueError("Antigravity has no supported fast-mode switch")
         if effort:

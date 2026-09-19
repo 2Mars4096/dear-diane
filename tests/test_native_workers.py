@@ -158,3 +158,18 @@ def test_describe_summarizes_native_actions():
     assert describe({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "WebFetch", "input": {"url": "https://example.com/x"}}]}}) == "Reading example.com"
     assert describe({"type": "tool_used", "summary": "Searched the web"}) == "Searched the web"
     assert describe({"type": "stdout", "text": "noise"}) == ""
+
+
+def test_dan_modes_map_to_native_permissions(monkeypatch):
+    from dan.native_workers import catalog
+    monkeypatch.setattr(catalog, "binary", lambda runtime: f"/bin/{runtime}")
+    monkeypatch.setattr(catalog, "accounts", lambda: {"codex": {"default": {"env": {}}}, "claude": {"default": {"env": {}}}})
+    def command(runtime, permission, session=""):
+        return " ".join(catalog.launch(runtime, {"permission": permission}, "task", "/tmp", session)[0])
+    assert 'sandbox_mode="read-only"' in command("codex", "plan")
+    assert 'sandbox_mode="workspace-write"' in command("codex", "auto", session="abc")
+    assert "--dangerously-bypass-approvals-and-sandbox" in command("codex", "full")
+    assert "--permission-mode plan" in command("claude", "plan")
+    auto = command("claude", "auto")
+    assert "--permission-mode acceptEdits" in auto and "autoAllowBashIfSandboxed" in auto
+    assert "--dangerously-skip-permissions" in command("claude", "full")
