@@ -21,3 +21,5 @@
 ## Workbench refresh
 - [x] [4-1-agent-workbench](4-1-agent-workbench.md): conversation-first shell and spatial project/session navigation.
 - [ ] [Native worker integration](../UI-plans/2-native-agent-workers.md): persistent mixed Codex/Claude children and scoped controls.
+
+- [x] [4-2-desktop-updates](4-2-desktop-updates.md): local install/restart and configured release updater in Settings; release activation requires signing/feed setup.

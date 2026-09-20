@@ -8,6 +8,15 @@
 - [ ] [4-work-notes-gui](plans/4-work-notes-gui.md) — active Work/Notes UX refinement.
   - [ ] [UI plan](UI-plans/1-work-notes-gui.md)
   - [x] [4-1-agent-workbench](plans/4-1-agent-workbench.md) — lightweight conversation, native window header, conventional project/chat sidebar with persistent Cmd+B toggle, optional carousel/wheel with directional chords, visible folder drop box, activity disclosures, quote reply, stable selection, source-linked reference staging, one-to-six-line input, compact follow-up queue, full-response recovery, and saved sidecar chat.
+  - [x] Stop → follow-up lifecycle: fresh control state, run-scoped terminal events, and honest no-run feedback — [4-1](plans/4-1-agent-workbench.md).
+  - [x] Open saved message attachments by filename with sizes and unavailable-file feedback — [4-1](plans/4-1-agent-workbench.md).
+  - [x] Copyable session IDs, ID/title lookup, and native-agent session discovery context — [4-1](plans/4-1-agent-workbench.md).
+  - [x] Waiting follow-ups appear only in Up next until delivery; preserve durable history and bind promoted replies — [4-1](plans/4-1-agent-workbench.md).
+  - [x] Quieter activity tracking with current-action summaries and on-demand work details — [4-1](plans/4-1-agent-workbench.md).
+  - [x] Stable session titles: name from first request once, never display the latest task as the title — [4-1](plans/4-1-agent-workbench.md).
+  - [x] Codex live steering and per-message Steer now in Up next; acceptance-gated delivery — [native worker plan](UI-plans/2-native-agent-workers.md).
+  - [x] FIFO continuation delivery across partial draining/new arrivals/reload; remove reused-rank sorting — [4-1](plans/4-1-agent-workbench.md).
+  - [x] Latest-message Edit with attachment-preserving resend, cancellation, active-run guard, and failed-send recovery — [4-1](plans/4-1-agent-workbench.md).
   - [ ] [Reader and side panel](UI-plans/3-reader-and-side-panel.md) — tabbed side panel and ported PDF reader delivered; live Ask answer run and phone layout remain.
   - [ ] [Native agent workers](UI-plans/2-native-agent-workers.md) — Codex/Claude/Antigravity worker baseline and opt-in forked imports delivered; team progress strip/panel delivered; live acceptance, restart-resume, approval transport, and browser thumbnails remain.
 - [x] [5-universal-product-cutover](plans/5-universal-product-cutover.md) — deleted the backed-up legacy tree, renumbered docs, validated, committed, and pushed.
@@ -19,6 +28,15 @@
 - [ ] [3-human-assist](live-test-plans/3-human-assist.md)
 
 ## Backlog
+- [x] Raise native import limit to 256 MB, resolve native/legacy placeholder titles, leave new projects empty, and expand Up next with checkpoint-receipt filtering — [workbench](plans/4-1-agent-workbench.md), [native workers](UI-plans/2-native-agent-workers.md).
+- [ ] Complete Mac release signing/notarization and live private-release validation after Apple Developer account setup — [desktop updates](plans/4-2-desktop-updates.md).
+- [x] Add all eight supplied light/dark palettes to Settings, apply changes immediately, and retain the selection across launches.
+- [x] Resume waiting follow-ups automatically after restart; preserve account/policy and acknowledge completed delivery without replaying it on later restarts.
+- [x] Hide injected messages from the composer queue, remove waiting-list truncation, and restyle as Up next with expandable previews.
+
+- [x] Refresh Work dark mode with a warm charcoal/sand palette across conversation, sidebar, composer, menus, and switchers.
+
+- [x] Remove the misleading CLI-default running/queued label above the Work composer and collapse its empty row; retain exceptional feedback.
 
 - [x] Remove the legacy Scratch pseudo-project; retain unassigned chat history and store new chats under project IDs.
 - [ ] Share project registry and legacy chat bindings between browser and desktop; currently each profile persists them locally.
@@ -74,3 +92,17 @@
 
 - [x] Plan/Auto/Full access modes mapped to Codex/Claude/DAN settings; drop duplicate conversation title.
 - [ ] Live-verify Claude Auto mode sandboxed Bash and Antigravity permission flags.
+
+- [ ] Verify the live Team display with Codex enabled before turn start; built-in Codex collaboration currently does not populate it.
+- [ ] Fix Cursor fallback exclusion handling and explicit large-transcript limit reporting (see native workers plan).
+
+- [x] Show direct built-in Codex subagents in Team without requiring enabled DAN delegates; validate real-record replay and lifecycle/control tests.
+- [ ] Verify a fresh built-in Codex spawn in the installed app after deploying the Team observer/client update.
+
+- [x] [In-app desktop updates](plans/4-2-desktop-updates.md): staged local app replacement/relaunch, update settings, and standard configured release downloads.
+- [ ] Configure signed published desktop releases and validate a real remote upgrade; package/version the Python backend for standalone distribution.
+
+- [x] Connect private GitHub release updates and in-app browser sign-in; verify account/repository access. First signed release and live download/install acceptance remain pending.
+
+- [x] Keep queued messages out of the transcript; show them in Up next with Remove; no fake queued replies.
+- [ ] Live-verify Up next delivery (append and continue lanes) against a real run in the installed app.

@@ -4,6 +4,10 @@
 **Goal:** Refine one calm workspace for Super DAN sessions, task state, artifacts, previews, and notes.
 
 ## Tasks
+- [x] Add eight operator-specified paired light/dark color schemes to DAN Settings with live preview, independent Light/Dark/System mode, and persisted selection.
+- [x] Show only waiting queue entries, with accurate counts, numbered previews, keyboard-expandable full text, and matching Work surface styling.
+
+- [x] Replace olive-tinted Work dark mode with charcoal/graphite surfaces, soft white text, sand focus/activity accents, and matching native/utility controls.
 
 - [x] Use Work and Notes as the only top-level destinations.
 - [x] Show durable sessions, active work, task graph state, evidence, and previews.

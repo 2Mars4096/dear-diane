@@ -1,5 +1,23 @@
 # Architecture
 
+## Latest-request editing
+- `WorkbenchConversation` lazy-loads `RequestActions` for the latest user message. It owns the temporary edit/error state; `ChunkWorkspaceApp` validates the request, preserves attachments, persists replacement history, and uses the existing run admission path. Admission failure restores the prior transcript. Editing is disabled while a reply is pending.
+- Work settings are lazy-loaded on opening to preserve the workspace shell bundle budget.
+
+## Saved attachment links
+- `WorkbenchConversation` lazy-loads `MessageAttachment` to open persisted `ChatAttachment.path` through Electron `shell.openPath`, retaining the original filename as the link label. Browser use relies on `workspaceFilePreviewUrl`; the file is not loaded until opened.
+
+## Session identity and discovery
+- ChatStore derives placeholder names from the first nonempty user request for snapshots, native append journals, and legacy reads. Read-time recovery does not mutate saved history; existing meaningful titles remain stable. Empty projects have no implicit session, and restoration is scoped to their active thread selection.
+- Durable chat `id` is the user-facing session ID; `workflow_id` remains part of the transcript address. Run IDs and provider-native session IDs are separate execution identities. No alias registry is introduced.
+- `GET /api/chats?q=` optionally filters summaries by ID/title/workflow. `GET /api/chats/{workflow_id}/{thread_id}` retrieves history. Native lead prompts include their own ID and the saved-session directory/API lookup contract, with on-demand history inspection.
+
+## Queue transcript projection
+- `queuedTranscript.ts` filters waiting user messages and queue acknowledgements from Work's visible transcript using queue command payload client IDs; legacy records fall back to text plus a known queue acknowledgement. Durable chat history remains intact. Delivered user messages become visible, and promoted runs target their own queued assistant ID.
+
+## Activity disclosure
+- Lazy `ActivitySummary` translates observed action summaries into concise progress labels without predicting results. Completed replies expose Work details rather than event counts; original records stay inside the disclosure.
+
 ## Product stack
 
 ```text
@@ -49,6 +67,8 @@ New GUI chats use their workspace ID in the existing session `workflow_id` names
 
 Durable session records use `ChatStore`. Task/run/queue/event records use `ChatV2Store`. Both are initialized under `DAN_GRAPHS_DIR`; interrupted Agent runs are recovered on startup.
 
+- FastAPI lifespan performs restart recovery and owns a cancellable queue-resumption task. `resume_recovered_queues` promotes pending follow-ups from restart-stopped runs through the normal background executor, defers behind active same-chat work, and retains persisted execution settings. Run policies are saved before backend execution; older native account/model settings can be recovered from `native_leads` records. Delivery is acknowledged only through the existing completion path. Explicitly stopped/paused work is not selected for automatic restart.
+
 The public product API includes:
 
 - `/health`, `/api/health`;
@@ -69,7 +89,7 @@ Electron is intentionally narrow:
 - open trusted local paths/URLs;
 - watch files.
 
-Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marketplace adapters, content bootstrapping, MCP, or update UI.
+Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marketplace adapters, content bootstrapping, or MCP. Desktop update lifecycle is now supported.
 
 ## Invariants
 
@@ -98,6 +118,8 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - Eval tests cover Super DAN capability, flagship browser-artifact, and human-assist gates.
 
 ## Workbench presentation
+
+- `lib/workbenchPalette.ts` defines the eight paired light/dark palettes and six semantic root tokens. `appearanceTheme.ts` applies the chosen palette at initial boot and on settings/OS appearance changes; workbench CSS aliases these tokens for surfaces and controls. Settings v7 persists `workbenchColorScheme` independently of Light/Dark/System and Notes tone.
 
 - `editor/src/components/workbench/` owns the neutral Work presentation, native dialog project carousel/session wheel, transcript/activity disclosures, and scoped responsive styles. `ChunkWorkspaceApp` retains Agent V2 execution, persistence, Notes, attachments, and file previews.
 - `navigation.ts` reconciles eight per-project slots against the newest sessions by creation instant, retaining surviving positions; local key `dan.workbench.sessionSlots.v1` stores slot IDs. Edits do not reorder them.
@@ -134,3 +156,19 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - `workbench/SidecarChat.tsx` executes a separate ChatV2 thread with the selected lead and bounded parent context. `dan.sidecar.v1:<workflow>:<parent>` stores the side-thread/pending-run reference; reopening resumes polling. Creation validates and saves same-workflow parent lineage. Markdown memoizes its HTML prop object to preserve native text selection across unrelated renders.
 
 - Composer references are scoped by workflow/thread, retain selected message IDs, and serialize as quoted context in the request. A removable preview keeps quotes outside draft text. The textarea measures content and responds to width changes, capping at six lines.
+
+- `native_workers/codex_children.py` observes direct Codex children omitted by `exec --json` (verified CLI 0.155.1). It uses the selected account’s read-only state index for exact rollout paths, reads typed `SubAgentActivity` parent events and child activity/results incrementally, filters by current run time/child turn, and writes only DAN-owned worker records. Observed children have `origin=codex_subagent` and `can_stop=false`; their lifecycle remains controlled by Codex. Lead shutdown marks unresolved observations interrupted.
+
+## Desktop updates
+- `electron/desktopUpdates.ts` owns main-frame-only update IPC, electron-updater release state, explicit download/install, active/queued-work checks, and backend ownership checks. Both preload variants expose the same narrow status/action bridge.
+- `electron/localUpdate.ts` verifies local macOS identity/architecture/signature and stages a same-filesystem bundle; `updateInstaller.cjs` runs independently, waits for app/backend exit, renames with rollback on replacement/open failure, and relaunches. Local installs preserve the existing icon and re-sign ad hoc. Published signatures are handled by electron-updater, not rewritten.
+- `workbench/DesktopUpdates.tsx` is lazy-loaded in DAN settings. Release channels come from packaged app-update.yml; unconfigured builds say so. Downloads never auto-install on quit.
+- User data stays outside the app. The current Python backend is separately installed and restarts from its existing environment; this updater does not run Git/pip/npm upgrades. `editor/scripts/install-local-update.cjs` bootstraps older clients with a native confirmation after work is idle.
+
+- `electron/githubAuth.ts` manages cancellable GitHub CLI browser authorization, device-code-only presentation, cached connection status, and private-update credentials. `desktopUpdates.ts` supplies an in-memory token to the fixed private GitHub release provider; renderer IPC never receives credentials. Auto-updater logging is disabled and errors redact the active token.
+
+### Codex lead steering transport
+- `native_workers/codex_live.py` maintains a stdio app-server connection for runtime-backed Codex leads. Thread start/resume retains account environment and permission policy; turn/steer targets the existing active turn. Ordinary child workers keep their existing execution path.
+- Lead readiness projects `live_steering` onto the run/task. The runtime claims append entries, acknowledges successful steering, and releases unacknowledged entries on failure. New runs clear stale capability metadata.
+- `POST /api/v2/agent-runs/{run_id}/queue/{item_id}/steer` moves an existing waiting entry to append delivery after active-run/capability checks. Persisted list order is unchanged; explicit steering can bypass continue-after-current entries.
+- Lazy `FollowupQueue.tsx` renders queue actions and errors; composer capability follows the active run, independent of the next selected lead. Older exec-based native runs cannot gain a live connection retrospectively.

@@ -1,5 +1,7 @@
 # Workbench design
 
+- Work palettes are selectable in DAN Settings: Neutral, Slate, Midnight/Daylight blue, Purple, Teal, Warm charcoal/ivory (default), Graphite, and OLED/minimal. Preserve the operator-supplied hex values for background, surface, border, primary text, muted text, and accent in both modes. Share palette tokens across the workbench, controls, popovers, and dialogs. Light/Dark/System is independent of the palette and Notes texture/tone.
+
 - Conversation first: centered readable transcript, anchored composer, one thin navigation bar.
 - Neutral paper/ink surfaces, system typography, restrained borders, no dashboard tiles in the main conversation.
 - Project carousel: focused project in front; adjacent projects recede. Arrow keys or scroll preview; Enter commits; Escape cancels.

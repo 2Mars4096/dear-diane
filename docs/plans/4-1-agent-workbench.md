@@ -5,6 +5,11 @@
 **Goal:** Make conversation the primary surface, with spatial project/session navigation and inspectable agent activity.
 
 ## Tasks
+- [x] Keep new/empty projects without auto-created chats; prevent last-session restore across an empty project selection.
+- [x] Resolve native and legacy placeholder session names from the first nonempty request in the shared store; preserve established titles.
+- [x] Expand Up next by default and recognize legacy checkpoint-append queue receipts without showing waiting pairs in the transcript.
+- [x] Live Codex lead steering via persistent app-server, active-run capability, acknowledgement-gated queue delivery, and per-entry Steer now controls.
+- [x] Remove routine running/queued status above the composer and its empty row; trace CLI-default mismatch to the legacy model placeholder while preserving lead-account routing and exceptional feedback.
 - [x] Replace persistent work framing with a quiet conversation shell; retain Notes, attachments, steering, stop, and file previews.
 - [x] Add project carousel and session wheel with keyboard, pointer, touch, focus restoration, and reduced motion support.
 - [x] Keep wheel slots stable across edits and new sessions; use creation order and replace the oldest eligible session.
@@ -18,6 +23,7 @@
 - No fabricated worker sessions or controls for unimplemented backends.
 
 ## Validation
+- September 20 session/queue fixes: 21 backend and 148 frontend tests plus production build/budgets pass. Prepared local arm64 app: `editor/release/session-fixes/mac-arm64/DAN.app`; signature verified. Browser loopback was denied by the sandbox; installed-app acceptance remains pending.
 - `npm run build:verify`: TypeScript, Vite production build, bundle budgets, and archived-surface exclusions pass.
 - Focused workbench/workspace suite: 152 tests pass. Full editor suite: 194 pass, two existing happy-dom sanitizer tests fail (see `docs/bugs.md`). Equivalent sanitizer assertions pass in Chromium.
 - Isolated Playwright browser fixtures: project/session shortcuts, modal focus wrapping/restoration, numeric session selection, cross-project isolation, draft persistence, quote insertion, tool disclosure, current-project shelf, 390px wheel layout, and reduced motion pass.
@@ -86,3 +92,44 @@
 - [x] Stage selected references separately, attach source IDs to requests, and grow input from one to six lines before scrolling; verify in Chromium and production build.
 
 - [x] Hide lone active-run queue, use compact expandable waiting-message list, preserve full responses against truncated status previews, and recover affected saved messages on reopen.
+
+## September 20 — edit latest request
+- [x] Add inline Edit, Cancel, and Save & resend on the latest user message; preserve attachments and disable during active/pending replies.
+- [x] Replace the last request and following answer through existing persistence/run paths; restore the transcript and retain the draft when admission fails.
+- [x] Verify component failure/cancel handling, isolated browser resend/completion and 390px layout, and production build/budgets. Installed-app validation awaits a new client build.
+
+## Stop and subsequent requests
+- [x] Clear task interruption metadata on new/continued runs while retaining the stopped run's audit record.
+- [x] Prevent old-run terminal events from settling a newer run on the same task.
+- [x] Resolve no-run admission replies with their explanation and clear the pending indicator.
+- [x] Validate 74 backend tests, 144 workspace tests, and production build/budgets.
+
+## Open saved message attachments
+- [x] Replace filename-only attachment rows with keyboard-accessible links, file sizes, captions, and missing-file feedback.
+- [x] Open all saved file types in their desktop default application; use the existing preview/download endpoint in browser mode. Large files are not embedded or eagerly loaded into the transcript.
+- [x] Test PNG/MP4/DOCX/PDF/TXT opening dispatch, escaped filenames, unavailable originals, and failed native opening; production build/budgets pass. Native application launch acceptance awaits updated client.
+
+## Session identity and lookup
+- [x] Expose the existing durable session ID beside conversation actions and copy it to clipboard; clarify that sidebar search accepts IDs. No new IDs or migrations.
+- [x] Add optional ID/title/workflow filtering to the existing session-list API; preserve workflow-qualified transcript retrieval and disambiguate duplicate titles.
+- [x] Give native leads their session/run identity and read-only discovery locations, without automatically importing unrelated histories or messaging peers.
+
+## Queue-only waiting messages
+- [x] Keep waiting follow-ups and queue acknowledgements out of the main Work transcript; maintain durable message records for restart/history.
+- [x] Link new queue commands to client user/reply IDs; show the user request once delivered and bind a promoted run to its own reply placeholder. Support legacy queued-message pairs by matching text plus queue acknowledgement.
+- [x] Test waiting/delivered transitions and legacy history filtering; 146 focused tests and production build/budgets pass.
+
+## Quieter activity tracking
+- [x] Replace mechanical activity counts with an observed current-action summary during a written reply, and Work details after completion. Keep commands/event records behind the existing disclosures.
+- [x] Hide routine transcript state footers; retain failed, stopped, blocked, and input-needed feedback.
+- [x] Verify action classification, production build/budgets, and browser disclosure access.
+
+## Stable session titles
+- [x] Stop substituting the newest task request for placeholder titles in session cards.
+- [x] Save the first user message as the title for unnamed/default sessions; preserve established names and explicit rename requests.
+- [x] Test initial naming, follow-up persistence, manual rename, and task-history display.
+
+## Queue FIFO audit
+- [x] Verify composer follow-up rows and checkpoint claims preserve persisted enqueue order.
+- [x] Fix terminal continuation promotion: lane-local, reused position values must not reorder messages; iterate the durable enqueue list.
+- [x] Test partial drain, new arrivals, mixed lanes at terminal promotion, and store reload. Explicit live steering retains its separate checkpoint behavior.

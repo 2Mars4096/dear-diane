@@ -1,6 +1,80 @@
 # Changelog
 
+## 2026-09-20
+- [fix] Queued messages never enter the transcript: sending during an active run saves the request but shows it only in Up next (position, Steer now, Remove) until it is delivered, then the request appears in the transcript with no acknowledgement reply. The old "Queued for checkpoint append at position N." / "Queued after the current Super DAN run." replies are no longer written, and any saved from earlier builds are hidden.
+- [feat] Remove a waiting message: `POST /api/v2/agent-runs/{run_id}/queue/{item_id}/cancel` withdraws a queued entry (delivered entries are refused), renumbers the lane, and the client drops the saved request.
+- [test] 267 frontend and 92 server tests pass; mocked Chromium check covers hidden-while-queued, Up next with Remove, and reveal on delivery. Creating a project no longer creates a chat (verified in code path; sidebar New chat remains explicit).
+
+## 2026-09-20
+- [fix] Raise native JSONL import limit to 256 MB. Move initial naming to ChatStore for native append/snapshot writes; derive legacy placeholder names on read without rewriting history and retain established names.
+- [fix] Creating or selecting an empty project no longer creates a chat or restores another project’s last session. Expand Up next by default and recognize older checkpoint-append receipts when hiding queued transcript pairs.
+- [test] 21 backend tests, 148 frontend tests, production typecheck/build and bundle budgets pass. Browser verification blocked by sandbox loopback EPERM; installed-client validation and deployment remain pending. Packaged and ad-hoc signature-verified the updated arm64 app at `editor/release/session-fixes/mac-arm64/DAN.app`; the running app was not replaced.
+
+## 2026-09-20
+- [feat] Enable live Codex lead steering through persistent app-server turn/steer. Advertise readiness on the active run, acknowledge queue delivery only after acceptance, and keep rejected requests queued. Preserve account, permission, model, effort, and native session continuation.
+- [feat] Add Steer now to existing Up next entries without duplicating messages or reordering other waiting entries; enable composer Steer from the actual run capability. Unsupported/legacy native runs remain queue-only.
+- [test] 104 backend and 146 frontend tests, production build/budgets, and mocked Chromium composer/queue interaction pass. Installed Codex initialize/thread-start/no-active-turn rejection smoke passes without a model call. Authenticated live-turn acceptance and installed-app deployment remain pending.
+
+## 2026-09-20
+- [fix] Promote waiting follow-ups in persisted enqueue order. Sorting by lane-local queue position could let new arrivals overtake older messages after partial draining. Composer display and checkpoint claims already preserve list order. Explicit active-run steering is still a separate delivery lane.
+- [test] FIFO regression covers five follow-ups, two deliveries before new arrivals, mixed lanes at terminal promotion, and store reload; 75 restart/control-plane tests pass.
+
+## 2026-09-20
+- [fix] Keep session titles stable instead of substituting the latest task request for default session names. Save the first user message as an initial title for default/unnamed sessions, preserving established names and explicit rename updates.
+- [test] Two session API tests and 145 workspace tests pass; updated the old test that expected dynamic task-based titles.
+
+## 2026-09-20
+- [feat] Replace transcript activity-event counts with a concise observed action while active and a quiet Work details disclosure afterward. Preserve the detailed event trail; hide routine completed/queued footers while retaining interruption and attention states.
+- [test] Activity classification regression, production build/budgets, and Chromium disclosure access pass. Preview: output/playwright/quiet-work-details.png. Installed app is unchanged.
+
+## 2026-09-20
+- [fix] Keep waiting follow-ups and their queued acknowledgements out of the Work transcript, preserving the current reply's position. Persist queue-linked message IDs after admission, retain durable history, show requests on delivery, and select the matching reply when a queued run starts. Legacy queued pairs are hidden using text plus acknowledgement matching.
+- [test] 146 focused transcript/workspace tests and production build/budgets pass. Installed-app queue/delivery acceptance remains pending deployment.
+
+## 2026-09-20
+- [feat] Expose stable DAN session IDs with a copy action above the conversation and advertise ID search in the sidebar. Reuse existing durable IDs rather than introducing aliases or renumbering saved chats.
+- [feat] Support optional ID/title/workflow filtering on GET /api/chats. Native leads receive their own session identity, separate run identity, and saved-session/API discovery instructions for on-demand reference lookup; unrelated transcripts are not injected automatically.
+- [test] Ten session lookup/native lead tests pass, including duplicate-title disambiguation and identity context across Codex/Claude/Antigravity. Production build/budgets pass. Installed-client clipboard and live cross-session lookup acceptance remain pending deployment.
+
+## 2026-09-20
+- [feat] Make saved message attachment filenames actionable for images, video, documents, and other files. Desktop links use the default application; browser links use the existing file preview/download route. Show known size/caption, keyboard focus, and native opening failures; missing original paths are explicit. No eager file loading or new backend endpoint.
+- [test] Attachment opening regression covers PNG/MP4/DOCX/PDF/TXT paths, filename encoding, missing paths, and failed launches. Production build/budgets pass; desktop OS opening is mocked, not an installed-app acceptance check.
+
+## 2026-09-20
+- [fix] Prevent old Stop flags and replayed terminal events from hiding a new continuation on the same task. Reset task interruption state when assigning a fresh run and match terminal events by run ID when available.
+- [fix] Show admission explanations and clear pending state when a request creates no run, instead of persisting a false queued/Working reply.
+- [test] 74 backend and 144 workspace tests plus production build/budget checks pass, including Stop → continuation and old-run event replay regressions. Isolated Chromium verification confirms a no-run admission shows its explanation and unlocks Edit. Current live data/backend and installed client remain unchanged.
+
+## 2026-09-20
+- [feat] Add inline Edit / Save & resend for the latest user request. Keep attachments, replace its answer, support Cancel/Escape and Cmd/Ctrl+Enter, block editing during pending work, and retain the draft/restore the prior transcript if run admission fails.
+- [test] RequestActions regression and isolated Chromium resend/failure/completion checks pass, including desktop and 390px layouts. Production build and bundle budgets pass; lazy-load settings and message actions to keep the shell within budget. No live provider run or installed-app update performed for this feature.
+
+## 2026-09-20
+- [test] Reverified GitHub ADMIN access to the private DAN repository and no published releases; eight focused auth/update/UI tests pass. Confirmed installed app predates Updates, prepared bundle includes it, and existing bootstrap helper owns the correct app/backend handoff. No valid Mac signing identities are available outside the sandbox; production release remains pending Apple Developer setup.
+
+## 2026-09-20
+- [fix] Include private GitHub update configuration explicitly in local app bundles; directory-only packaging omitted it, leaving the release-check control disabled.
+- [feat] Add GitHub browser sign-in, device code, cancellation, and connection status to Updates; configure the private repository as the release source. Use local GitHub login credentials only in Electron memory, with no token IPC/artifacts or updater logs.
+- [test] Browser login completed as 2Mars4096 and private repository access reverified; no releases exist yet. Nine focused auth/update/UI tests and production compilation/bundle checks pass. Production macOS signing remains pending.
+- [feat] Settings → Appearance now offers Light/Dark/System and eight paired color schemes using the operator's exact hex values. Added six-role swatch preview, immediate application, persisted choice, warm default, and settings-v7 migration preserving existing appearance preferences. Notes texture/tone remains independent.
+- [test] Five settings/palette tests pass, plus browser verification of all 16 scheme/mode combinations, reload persistence, mobile width, and Escape dismissal. Production build and bundle budgets pass.
+- [infra] Built and signature-verified the update-enabled arm64 client; staged the one-time handoff from the active DAN session. It waits for work to finish and explicit native-dialog confirmation before replacing/reopening the app; no installation claimed yet.
+- [feat] Add Settings → Updates: prepare verified local Mac builds, explicitly install/restart after active work is finished, preserve user data/icon, and retain/restore the prior app on replacement failure. A detached handoff and one-time native prompt remove the need to switch to another agent app.
+- [feat] Integrate electron-updater for configured published release checks/downloads; automatic installation is disabled. Release signing/feed and standalone Python backend distribution remain unconfigured.
+- [test] 15 update/backend lifecycle tests pass; production build/budgets and Electron compilation pass. Lazy-loaded update settings after the initial build exceeded the shell budget.
+
+## 2026-09-20
+- [fix] Resume saved follow-up queues automatically from the server lifespan after restart. Recover interrupted delivery leases and promoted-but-not-started runs, reuse the normal continuation/acknowledgement path, and preserve execution policies/account/model across restarts. Older native runs recover their configuration from saved lead records. Explicit stops and disabled auto-continuation stay stopped; recovered work waits behind active work in the same chat.
+- [test] 76 restart/control-plane/product API tests pass, including app startup, delivery order, repeat restart, promotion-gap recovery, saved app account, explicit stop, and opt-out. An offline copy of the operator’s actual two queued entries drains with the app account and no waiting entries remaining; live records and backend were not changed. Repository venv lacks pytest; used the installed system pytest.
+
 ## 2026-09-19
+- [test] Queue regression covers injected entries beyond the old eight-row cap; 143 workspace tests and production build/budgets pass. Chromium fixtures verify pending-only counts, expanded message text, and desktop/390px layouts. Browser fixture initially lacked required task artifact fields; corrected the fixture before visual acceptance.
+- [test] Native-child observer: 31 backend and 6 focused UI tests pass, real two-child replay passes, and production build/budgets pass. Prepared a signed arm64 app with the existing icon; installation/backend restart deferred while DAN hosts the active conversation.
+- [fix] Composer queue shows pending deliveries only; injected/finished entries no longer inflate the count or hide later waiting messages behind the eight-row history limit. Restyled as a compact Up next disclosure with numbered, expandable previews. Revised the dark palette from cool charcoal/blue to warm charcoal/sand following operator feedback.
+- [fix] Observe direct built-in Codex subagents in Team from read-only, parent-linked session records even when no DAN delegate is enabled. Persist activity/results, separate forked history from child results, support shared storage symlinks, and hide/reject unsupported child Stop controls. Real two-agent replay and isolated lifecycle/UI checks validate the integration; installed-app acceptance awaits deployment.
+- [feat] Replace Work dark mode's olive cast with a low-chroma charcoal palette, graphite raised surfaces, soft white text, blue focus/activity accents, and legible destructive actions. Scope utility colors and native form controls to the same palette; retain light mode. Production build and bundle budgets pass.
+- [docs] Record live multi-agent review: built-in Codex subagents do not populate DAN Team records, and this turn had no delegation bridge. Track enabled-Team acceptance plus Cursor fallback exclusion and transcript-limit findings.
+- [fix] Remove the redundant running/queued label above the Work composer and its empty row. The misleading "Codex · CLI default" text came from the legacy model placeholder, not the selected lead account; account routing still uses `lead_profile`. Loading, errors, and stopped/failed feedback remain. Existing status tests and production build/budget checks pass.
 - [feat] Import Cursor chats into DAN projects. Discovery reads Cursor's editor store read-only: `composerHeaders` (current) plus each workspace's `composer.composerData` list (older), matched to the project by `workspaceStorage/*/workspace.json` (local `file://` folders only; archived, subagent, remote, and pruned chats skipped). Messages come from `composerData:<id>` bubble order (or the older inline `conversation`); tool/thinking bubbles without text are dropped and consecutive same-role text merged. Imports are transcript copies (`continuation: "history"`): continuing never resumes Cursor's own session, so the lead receives the copied history as context. Checked against real data: 29 chats for an old checkout, 13 for `alias`, ~1 s discovery, store unchanged.
 - [feat] Added Cursor as a lead and team runtime alongside Codex, Claude Code, and Antigravity. Headless CLI `agent` (or legacy `cursor-agent`; a generic `agent` binary is only accepted when it resolves into Cursor's install) with `-p --output-format stream-json --workspace`, `--model`, `--resume`; modes map Plan → `--mode plan`, Auto → `--sandbox enabled --force`, Full access → `--sandbox disabled --force`. Tool-call events feed team progress. Not installed locally, so it shows disabled with the install hint; session import is not wired (Cursor's local chat format is unverified).
 - [feat] Side panel tabs are now contextual: Chat and Files always; Preview once something is selected; Activity once a run has events (live dot while running); Team once a team exists (running count). The open tab never disappears. Restyled as an icon + label segmented track; every tab uses one width (`--wb-side-width`, 380px), including Preview.

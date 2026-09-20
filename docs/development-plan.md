@@ -14,6 +14,8 @@ Make difficult agent work durable, steerable, verifiable, and understandable wit
 
 ## Near-term priorities
 
+- Desktop local update/restart flow is implemented. Activate signed release delivery and package/version the separate Python backend before treating desktop releases as standalone full-product upgrades.
+
 - Workbench presentation refresh delivered: conversation-first Work, spatial project/session navigation, progressive activity/tool disclosure, and responsive keyboard access.
 - Native Codex/Claude/Antigravity worker baseline and forked session imports delivered; next verify authenticated runs and add restart/approval controls; see `docs/UI-plans/2-native-agent-workers.md`.
 - Tighten Super DAN efficiency without weakening evidence or validation.

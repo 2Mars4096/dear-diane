@@ -11,7 +11,21 @@ The pre-Universal graph builder, visual graph editor, Code/Research/Content mode
 
 ## Workbench
 
-Work opens with a familiar project/chat sidebar: New chat, search, collapsible project folders, and archived chats. Use the + beside Projects to create a project, or its menu to edit the name and folder. In the desktop app, drop a folder onto the folder field to fill its path. Browsers that hide local paths require pasting the full path. One **side panel** (header toggle) holds Chat, Files, Preview, Activity, and Team as tabs. Chat is a separate saved conversation with the current lead, also opened from selected text. Select message text to stage a source-linked reference above the input. The input grows from one to six lines, then scrolls; expand tool and emitted thinking details when needed. Waiting messages appear in a compact expandable queue; a lone active run does not show a queue panel. Stop and steering use the existing Agent V2 controls.
+Activity shows a short current-action label while working; expand **Work details** for the recorded steps afterward.
+
+Waiting follow-ups appear only in **Up next**, keeping the active reply in view. They enter the conversation when delivered.
+
+Session titles are set from the first request and stay stable across follow-ups.
+
+Click **Session · ID** above the conversation to copy its permanent ID. Paste it into **Search chats or session ID** to find that chat, or give it to a native agent to look up the other session when needed. Agents receive their own DAN session identity and lookup instructions; this does not send messages between sessions.
+
+Click a filename in a past message to open its saved attachment in the default desktop app (images, videos, PDFs, Word documents, text, and other supported files). Browser users get a preview or download.
+
+Use **Edit** below your latest message, then **Save & resend** to replace its answer while keeping attachments. Finish or stop an active reply before editing; **Cancel** leaves the conversation unchanged.
+
+Choose **DAN settings → Appearance → Color scheme** for eight paired light/dark palettes. **Mode** selects Light, Dark, or System; changes apply immediately and save automatically.
+
+Work opens with a familiar project/chat sidebar: New chat, search, collapsible project folders, and archived chats. Use the + beside Projects to create an empty project, then choose **New chat** when ready; its menu edits the name and folder. In the desktop app, drop a folder onto the folder field to fill its path. Browsers that hide local paths require pasting the full path. One **side panel** (header toggle) holds Chat, Files, Preview, Activity, and Team as tabs. Chat is a separate saved conversation with the current lead, also opened from selected text. Select message text to stage a source-linked reference above the input. The input grows from one to six lines, then scrolls; expand tool and emitted thinking details when needed. Waiting messages stay out of the transcript and appear in an initially expanded **Up next** queue; a lone active run does not show a queue panel. Stop and steering use the existing Agent V2 controls. On new Codex lead runs, **Steer** sends into the active turn, and **Steer now** sends an existing Up next entry without duplicating it. Other waiting messages retain FIFO order; rejected steering remains queued. Live steering becomes available when the run connection is ready; older CLI runs require a new run after updating.
 
 - **Sidebar:** click the toggle left of the project name, or press `⌘/Ctrl + B`.
 - **Projects:** `⌘/Ctrl + Shift + P` opens the carousel. Scroll or use left/right arrows, then Enter. Escape cancels.
@@ -161,12 +175,20 @@ The composer model menu includes OpenRouter DeepSeek V4.1 Flash and Kimi K2.6. S
 
 Open **Subagents** beside the model picker to enable Codex, Claude Code, or Antigravity workers and choose their account, model, reasoning, and supported fast mode. Codex accounts come from local codexx configuration (`DAN_CODEXX_CONFIG` can override its path). Claude uses its current configuration or profiles under `DAN_CLAUDE_ACCOUNTS_DIR` (default `~/.claude-accounts`). Install and authenticate each CLI separately; Antigravity uses `agy`. Unsupported controls stay disabled.
 
-**Import native session** in the project sidebar finds conversations matching the project's folder. Select one and choose **Import as fork**, or Cancel. Imports preserve original history; Codex/Claude native continuation forks before use. Antigravity import is currently unavailable because its headless fork path is unverified. Workers run concurrently under a DAN manager; remaining workers stop when the manager finishes. Authenticated live acceptance and restart-resume/approval UI remain pending.
+**Import native session** in the project sidebar finds conversations matching the project's folder. Select one and choose **Import as fork**, or Cancel. JSONL transcript imports support up to 256 MB. Imports preserve original history; Codex/Claude native continuation forks before use. Antigravity import is currently unavailable because its headless fork path is unverified. Workers run concurrently under a DAN manager; remaining workers stop when the manager finishes. Authenticated live acceptance and restart-resume/approval UI remain pending.
 
 Project **⋯** menus offer New chat, Edit project, and **Remove from DAN**. Removal requires confirmation and hides the project in the current DAN profile; folders, files, native sessions, and saved DAN chat history remain intact.
 
 Project menus (•••) include **Import native sessions**, with multi-select and **Select all**. Imports create forks and preserve native originals. The sidebar footer opens **DAN settings** for profile-wide preferences.
 
-Choose **Lead** (DAN, Codex, Claude Code, or Antigravity), configure account/model/reasoning/fast inside the same dropdown, and choose delegates in **Team**. Native leads retain their sessions and can delegate through a run-scoped bridge. Native follow-ups queue after the current turn; Stop closes the lead and its team. Installed native CLIs require their own login.
+Choose **Lead** (DAN, Codex, Claude Code, or Antigravity), configure account/model/reasoning/fast inside the same dropdown, and choose delegates in **Team**. Native leads retain their sessions and can delegate through a run-scoped bridge. Native follow-ups queue after the current turn; saved follow-ups resume automatically after a backend restart using their recorded account and settings. Stop closes the lead and its team. Installed native CLIs require their own login.
 
 In **Archived chats**, **Delete all archived chats** removes archived DAN copies after confirmation. Active chats, native originals, and project files are preserved.
+
+Codex’s built-in subagents also appear automatically in **Team**, with recorded command activity and final replies. This does not require enabling a DAN delegate. These children are controlled by their Codex lead, so their cards do not offer individual Stop buttons.
+
+### Desktop updates
+
+Open **DAN settings → Updates** to choose a prepared local `DAN.app`, then **Install and restart**. Finish active runs and queued messages first. DAN stages and verifies the new build, closes its owned backend, replaces the app, and reopens it; chats/settings stay in Application Support. A previous app copy is retained for rollback. Local Mac installs preserve your icon.
+
+Published releases use `electron-updater`; **Check for updates** and **Download** become available when the packaged release channel is configured. The channel points to private GitHub Releases for this repository. Use **Sign in to GitHub** in Updates to authorize in your browser; the personal build uses the installed GitHub CLI behind the scenes. A production signing identity and published releases are still needed. See [release setup](docs/desktop-updates.md). The Python backend is currently separately installed; a desktop update does not upgrade that environment.
