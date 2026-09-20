@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -146,6 +147,9 @@ async def admit_agent_turn(
         and admitted.decision.action == "start_parallel"
         and admitted.decision.run_id
     ):
+        store.update_run_metadata(admitted.decision.run_id, {
+            "restart_execution": execute.model_dump(mode="json"),
+        })
         asyncio.create_task(
             _execute_agent_run_background(
                 store,
@@ -236,6 +240,28 @@ async def get_thread_prompt_log(
     return store.thread_prompt_log(thread_id)
 
 
+@router.post("/api/v2/agent-runs/{run_id}/queue/{item_id}/steer")
+async def steer_queued_message(run_id: str, item_id: str, request: Request) -> dict[str, Any]:
+    store = _require_chat_v2_store(request)
+    try:
+        event = store.steer_queued_item(run_id, item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"event": event.model_dump(mode="json"),
+            "task": store.get_task_snapshot(event.task_id).model_dump(mode="json")}
+
+
+@router.post("/api/v2/agent-runs/{run_id}/queue/{item_id}/cancel")
+async def cancel_queued_message(run_id: str, item_id: str, request: Request) -> dict[str, Any]:
+    store = _require_chat_v2_store(request)
+    try:
+        event = store.cancel_queued_item(run_id, item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"event": event.model_dump(mode="json"),
+            "task": store.get_task_snapshot(event.task_id).model_dump(mode="json")}
+
+
 @router.get("/api/v2/agent-runs/{run_id}")
 async def get_agent_run(
     run_id: str,
@@ -263,6 +289,7 @@ async def execute_agent_run(
     execute = execute or AgentRunExecuteRequest()
     overrides = _execute_overrides(execute)
     backend_name = _execute_backend_name(execute)
+    store.update_run_metadata(run_id, {"restart_execution": execute.model_dump(mode="json")})
     if execute.background:
         asyncio.create_task(
             _execute_agent_run_background(
@@ -441,6 +468,80 @@ def _require_chat_v2_store(request: Request | WebSocket | None) -> ChatV2Store:
     return store
 
 
+def _restart_execution(store: ChatV2Store, run, seen: set[str] | None = None) -> AgentRunExecuteRequest | None:
+    seen = set() if seen is None else seen
+    if run.run_id in seen:
+        return None
+    seen.add(run.run_id)
+    saved = run.metadata.get("restart_execution")
+    if isinstance(saved, dict):
+        return AgentRunExecuteRequest.model_validate(saved)
+    payload = run.command.payload or {}
+    policies = {key: dict(run.metadata.get(key) or payload.get(key) or {})
+                for key in ("profile_policy", "mutation_policy", "approval_policy", "tool_policy")}
+    backend = run.metadata.get("requested_backend") or run.metadata.get("selected_backend")
+    # Older native runs saved account/model only in the lead's durable record.
+    # Read configuration, never credential contents, and discard continuation IDs.
+    for path in (store.base_dir.parent / "native_leads").glob("*.json"):
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if record.get("parent_run_id") != run.run_id:
+            continue
+        profile = dict(record.get("profile") or {})
+        for key in ("resume_session", "source_session"):
+            profile.pop(key, None)
+        policies["profile_policy"].setdefault("lead_profile", profile)
+        policies["profile_policy"].setdefault("permission_mode", profile.get("permission", "auto"))
+        native = record.get("backend")
+        backend = "native_codex" if native == "codex" else native
+        break
+    if not backend or (backend in {"native_codex", "claude", "antigravity", "cursor"}
+                       and not policies["profile_policy"].get("lead_profile")):
+        # Covers a crash immediately after promotion but before configuration copy.
+        parent = store.get_run(str(run.metadata.get("continued_from_run_id") or ""))
+        return _restart_execution(store, parent, seen) if parent else None
+    return AgentRunExecuteRequest(backend=backend, background=True, **policies,
+        auto_execute_continuations=run.metadata.get("auto_execute_continuations", True),
+        max_promoted_continuations=run.metadata.get("max_promoted_continuations", DEFAULT_MAX_PROMOTED_CONTINUATIONS))
+
+
+async def resume_recovered_queues(store: ChatV2Store) -> None:
+    """Drain restart queues through the normal delivery/acknowledgement path."""
+    while True:
+        deferred = False
+        for task in reversed(store.list_task_records(limit=100_000)):
+            run = store.get_run(task.active_run_id or "")
+            if (run is None or run.status != "stopped"
+                    or run.metadata.get("restart_recovery_reason") != "process_restart"
+                    or not any(item.status == "queued" for item in task.queue_items)):
+                continue
+            execute = _restart_execution(store, run)
+            if execute is None or not execute.auto_execute_continuations:
+                continue
+            # A newly started conversation turn takes precedence over recovered work.
+            if any(other.status in {"running", "queued"} and other.run_id != run.run_id
+                   for other in store.list_run_records(thread_id=task.thread_id, limit=100_000)):
+                deferred = True
+                continue
+            next_run = store.promote_restarted_queue(run.run_id)
+            if next_run is None:
+                continue
+            store.update_run_metadata(next_run.run_id, {
+                "restart_execution": execute.model_dump(mode="json"),
+                "resumed_after_restart_from": run.run_id,
+            })
+            mark_background_run_started(store, next_run.run_id,
+                backend=execute.backend or "", reason="Resume saved queue after restart")
+            await _execute_agent_run_background(store, next_run.run_id,
+                backend_name=execute.backend, overrides=_execute_overrides(execute),
+                remaining_continuations=execute.max_promoted_continuations)
+        if not deferred:
+            return
+        await asyncio.sleep(1)
+
+
 async def _execute_agent_run_background(
     store: ChatV2Store,
     run_id: str,
@@ -452,6 +553,11 @@ async def _execute_agent_run_background(
     auto_execute_ready_dependencies: bool = True,
 ) -> None:
     try:
+        store.update_run_metadata(run_id, {"restart_execution": {
+            "backend": backend_name, "background": True,
+            "auto_execute_continuations": auto_execute_continuations,
+            "max_promoted_continuations": remaining_continuations, **overrides,
+        }})
         await run_agent_backend(
             store,
             run_id,

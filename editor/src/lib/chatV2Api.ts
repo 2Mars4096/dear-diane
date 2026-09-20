@@ -354,6 +354,7 @@ export async function createChatV2AgentRun(body: {
 }): Promise<{
   status: string;
   v2_control_plane: NonNullable<ChatV2MessageResponse["v2_control_plane"]>;
+  admission?: { action: string; question?: string; status_text?: string; reason?: string };
   task_run_ref?: ChatV2TaskRunRef | null;
   task?: ChatV2TaskSnapshot | null;
   event?: ChatV2AgentRunEvent | null;

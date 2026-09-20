@@ -1204,6 +1204,11 @@ async def run_agent_backend(
         raise KeyError(run_id)
     task = store.get_task(run.task_id)
     request = build_agent_backend_request(run, task, overrides=overrides)
+    # Execution overrides (including native account/model) must survive restart.
+    store.update_run_metadata(run_id, {
+        key: getattr(request, key)
+        for key in ("profile_policy", "mutation_policy", "approval_policy", "tool_policy")
+    })
     request_context_metadata = _request_context_metadata(request)
     if request_context_metadata:
         store.update_run_metadata(run_id, request_context_metadata)

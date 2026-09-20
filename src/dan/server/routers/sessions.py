@@ -20,8 +20,13 @@ def _store(request: Request) -> ChatStore:
 
 
 @router.get("/api/chats")
-async def list_all_chat_threads(request: Request) -> dict[str, Any]:
-    return {"threads": _store(request).list_all_threads()}
+async def list_all_chat_threads(request: Request, q: str = "") -> dict[str, Any]:
+    query = q.strip().casefold()
+    threads = _store(request).list_all_threads()
+    if query:
+        threads = [row for row in threads if query in
+                   f"{row['id']} {row['title']} {row['workflow_id']}".casefold()]
+    return {"threads": threads}
 
 
 @router.get("/api/chats/{workflow_id}")
@@ -79,10 +84,7 @@ async def update_chat_thread(
     if "messages" in body:
         thread.messages = [ChatMessage.model_validate(item) for item in body["messages"]]
         thread.updated_at = datetime.now(timezone.utc)
-        if not thread.title.strip():
-            first_user = next((item.content for item in thread.messages if item.role == "user"), "")
-            thread.title = first_user.strip()[:80] or "New Super DAN Session"
-        store.save_thread(thread)
+        store.save_thread(thread, auto_title="title" not in body)
     if "mode" in body:
         store.set_mode(workflow_id, thread_id, body.get("mode"))
     return {"status": "updated"}

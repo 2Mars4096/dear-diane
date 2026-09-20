@@ -36,6 +36,7 @@ TaskStatus = Literal[
     "stopped",
 ]
 _INTERRUPTION_METADATA_KEYS = (
+    "live_steering",
     "pause_requested",
     "pause_requested_at",
     "pause_payload",
@@ -465,7 +466,9 @@ class ChatV2Store:
             running_task_ids: set[str] = set()
             running_run_ids: set[str] = set()
             for run in self._iter_runs():
-                if run.status != "running":
+                # A promoted continuation can be persisted before its worker starts.
+                promoted_pending = run.status == "queued" and bool(run.metadata.get("continued_from_run_id"))
+                if run.status != "running" and not promoted_pending:
                     continue
                 previous_status = run.status
                 run.status = "stopped"
@@ -751,6 +754,7 @@ class ChatV2Store:
                     }
                 )
                 for key in (
+                    "live_steering",
                     "normalized_request",
                     "context_composer",
                     "shared_evidence_context",
@@ -1778,6 +1782,55 @@ class ChatV2Store:
                 self._append_run_event(run_id, event)
             return event
 
+    def steer_queued_item(self, run_id: str, item_id: str) -> AgentRunEvent:
+        """Promote a waiting entry to checkpoint delivery without duplicating it."""
+        with self._lock:
+            run = self.get_run(run_id)
+            task = self.get_task(run.task_id) if run else None
+            if not run or not task or task.active_run_id != run_id or run.status != "running" or run.metadata.get("stop_requested"):
+                raise ValueError("The target run is no longer active")
+            backend = str(run.metadata.get("selected_backend") or "")
+            if backend in {"native_codex", "codex", "claude", "antigravity", "cursor"} and not run.metadata.get("live_steering"):
+                raise ValueError("This run has no live steering connection; start a new supported run")
+            item = next((item for item in task.queue_items if item.id == item_id), None)
+            if not item or item.status != "queued":
+                raise ValueError("This message has already left the waiting queue")
+            item.lane = "append"
+            item.updated_at = _now()
+            item.metadata["steer_requested_at"] = item.updated_at
+            self._save_task(task)
+            event = AgentRunEvent(type="status_reported", run_id=run_id, task_id=task.task_id,
+                summary="Message will steer the current run at its next opportunity.",
+                source_event_type="chat_v2.command.steer_queued", payload={"queue_item_id": item.id})
+            self._append_run_event(run_id, event)
+            return event
+
+    def cancel_queued_item(self, run_id: str, item_id: str) -> AgentRunEvent:
+        """Withdraw a waiting entry before delivery; delivered entries stay in history."""
+        with self._lock:
+            run = self.get_run(run_id)
+            task = self.get_task(run.task_id) if run else None
+            if not run or not task:
+                raise ValueError("The target run was not found")
+            item = next((item for item in task.queue_items if item.id == item_id), None)
+            if not item or item.status != "queued":
+                raise ValueError("This message has already left the waiting queue")
+            item.status = "cancelled"
+            item.updated_at = _now()
+            item.metadata["cancelled_at"] = item.updated_at
+            remaining = [entry for entry in task.queue_items if entry.status == "queued"]
+            for position, entry in enumerate(entry for entry in remaining if entry.lane == item.lane):
+                entry.position = position + 1
+            if not remaining and task.status == "queued" and task.active_run_id != run_id:
+                task.status = "completed"
+            task.latest_progress = "Queued message removed." if not remaining else task.latest_progress
+            self._save_task(task)
+            event = AgentRunEvent(type="status_reported", run_id=run_id, task_id=task.task_id,
+                summary="Queued message removed.", source_event_type="chat_v2.command.queue_cancelled",
+                payload={"queue_item_id": item.id, "lane": item.lane})
+            self._append_run_event(run_id, event)
+            return event
+
     def claim_queued_run_items(
         self,
         run_id: str,
@@ -1958,6 +2011,17 @@ class ChatV2Store:
                 self.record_agent_event(event)
             return released
 
+    def promote_restarted_queue(self, run_id: str) -> AgentRunRecord | None:
+        """Claim a restart queue once, without reviving explicit stops or pauses."""
+        with self._lock:
+            run = self.get_run(run_id)
+            task = self.get_task(run.task_id) if run else None
+            if (run is None or task is None or task.active_run_id != run_id
+                    or run.status != "stopped"
+                    or run.metadata.get("restart_recovery_reason") != "process_restart"):
+                return None
+            return self.promote_next_continue_after_current(run_id)
+
     def promote_next_continue_after_current(
         self,
         run_id: str,
@@ -1974,10 +2038,9 @@ class ChatV2Store:
             item = next(
                 (
                     candidate
-                    for candidate in sorted(
-                        task.queue_items,
-                        key=lambda queued_item: queued_item.position,
-                    )
+                    # Persisted list order is enqueue order. Position is a
+                    # lane-local display rank and can be reused after delivery.
+                    for candidate in task.queue_items
                     if candidate.status == "queued"
                     and candidate.lane in {"append", "continue_after_current"}
                     and (
@@ -2066,6 +2129,8 @@ class ChatV2Store:
                     "goal_context": dict(start_payload.get("goal_context") or {}),
                 },
             )
+            for key in _INTERRUPTION_METADATA_KEYS:
+                task.metadata.pop(key, None)
             task.active_run_id = next_run_id
             task.status = "queued"
             task.phase = f"queued_{item.lane}"
@@ -2206,6 +2271,8 @@ class ChatV2Store:
                 "original_request": turn.text,
             },
         )
+        for key in _INTERRUPTION_METADATA_KEYS:
+            task.metadata.pop(key, None)
         task.status = run.status
         task.phase = "delegated" if stream_channel_id else "queued"
         task.active_run_id = run_id

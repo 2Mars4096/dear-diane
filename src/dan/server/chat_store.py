@@ -195,6 +195,20 @@ class ChatStore:
             return
         self._store_cached_thread_state(state.thread, journal_count)
 
+    @staticmethod
+    def initial_title(thread: ChatThread) -> str:
+        """Name placeholder sessions from the first nonempty request, never the latest."""
+        if thread.title.strip().casefold() not in {
+            "", "new super dan session", "new session", "new chat", "untitled",
+            "untitled chat", "untitled session", "untitled dan super session", "workspace thread",
+        }:
+            return thread.title
+        for message in thread.messages:
+            compact = " ".join(message.content.split())
+            if message.role == "user" and compact:
+                return compact[:80]
+        return thread.title
+
     def _write_snapshot(self, thread: ChatThread) -> None:
         path = self._thread_path(thread.workflow_id, thread.id)
         path.write_text(
@@ -305,6 +319,7 @@ class ChatStore:
                     self._journal_counts[journal_path] = line_count
             except (ValueError, OSError):
                 logger.debug("Failed to replay chat journal %s", journal_path, exc_info=True)
+        thread.title = self.initial_title(thread)
         return thread, line_count
 
     def _load_thread_from_path(self, path: Path) -> ChatThread | None:
@@ -342,7 +357,9 @@ class ChatStore:
         self.save_thread(thread)
         return thread
 
-    def save_thread(self, thread: ChatThread) -> None:
+    def save_thread(self, thread: ChatThread, *, auto_title: bool = True) -> None:
+        if auto_title:
+            thread.title = self.initial_title(thread)
         self._write_snapshot(thread)
 
     def append_message(
@@ -363,6 +380,12 @@ class ChatStore:
         )
         state.thread.messages.append(message.model_copy(deep=True))
         state.thread.updated_at = updated_at
+        title = self.initial_title(state.thread)
+        if title != state.thread.title:
+            state.thread.title = title
+            journal_count = self._append_journal_entry(workflow_id, thread_id, {
+                "op": "update_thread", "fields": {"title": title},
+            })
         self._finalize_cached_thread_mutation(state, journal_count)
         return self._clone_thread(state.thread)
 
