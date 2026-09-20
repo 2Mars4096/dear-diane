@@ -1,7 +1,7 @@
+import { visibleQueuedTranscript } from "../workbench/queuedTranscript";
 import { ProjectMenu } from "../workbench/ProjectMenu";
 import { SidecarChat } from "../workbench/SidecarChat";
 import { LeadAgentMenu } from "../workbench/LeadAgentMenu";
-import { DanSettings } from "../workbench/DanSettings";
 import { ImportNativeSessions } from "../workbench/ImportNativeSessions";
 import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from "../workbench/NativeWorkers";
 import { TeamPanel, TeamStrip, useTeamWorkers } from "../workbench/TeamProgress";
@@ -149,6 +149,8 @@ import type { ChatMessage, RunEventPayload } from "../../types/chat";
 import MarkdownRenderer from "../shared/MarkdownRenderer";
 
 // Reader (pdf.js) loads on first use so it stays out of the workspace shell chunk.
+const FollowupQueue = lazy(() => import("../workbench/FollowupQueue").then(module => ({ default: module.FollowupQueue })));
+const DanSettings = lazy(() => import("../workbench/DanSettings").then(module => ({ default: module.DanSettings })));
 const ReaderView = lazy(() => import("../reader/ReaderView").then((module) => ({ default: module.ReaderView })));
 
 const DEFAULT_WORKFLOW_ID = "_scratch";
@@ -818,6 +820,7 @@ interface QueueRow {
   taskId?: string | null;
   runId?: string | null;
   sourceChunkId?: string;
+  clientMessageId?: string;
 }
 
 function userChunkBody(chunk: WorkspaceChunk) {
@@ -3155,9 +3158,10 @@ function agentRunEventSettlesTask(event: ChatV2AgentRunEvent) {
 }
 
 function agentRunEventMatchesTask(event: ChatV2AgentRunEvent, task: ChatV2TaskSnapshot) {
+  const eventRunId = event.run_id || "";
+  if (eventRunId && taskRunId(task)) return eventRunId === taskRunId(task);
   const eventTaskId = event.task_id || "";
   if (eventTaskId && eventTaskId === task.task_id) return true;
-  const eventRunId = event.run_id || "";
   return Boolean(eventRunId && eventRunId === taskRunId(task));
 }
 
@@ -3270,7 +3274,7 @@ function applyRunEventToTaskSnapshots(
   if (!event.task_id) return tasks;
   let changed = false;
   const next = tasks.map((task) => {
-    if (task.task_id !== event.task_id) return task;
+    if (!agentRunEventMatchesTask(event, task)) return task;
     changed = true;
     return applyRunEventToTaskSnapshot(task, event);
   });
@@ -3339,9 +3343,7 @@ function taskGroupElapsedCounter(tasks: ChatV2TaskSnapshot[], now = Date.now()):
 function sessionCardDisplay(thread: ChatV2ThreadSummary, tasks: ChatV2TaskSnapshot[]) {
   const latestTask = newestSessionTask(tasks);
   const title = thread.title?.trim() || "Untitled";
-  const requestTitle = taskRequestText(latestTask);
-  const displayTitle =
-    title === "New Super DAN Session" && requestTitle ? titleFromText(requestTitle) : title;
+  const displayTitle = title;
   const kind = thread.mode === "agent" ? "Super DAN" : "Chat";
   const updated = compactThreadTime(thread.updated_at);
   const timeSuffix = updated ? ` · ${updated}` : "";
@@ -8470,8 +8472,8 @@ export function conversationUserChunksForTest(chunks: WorkspaceChunk[], limit?: 
   return conversationUserChunks(chunks, limit);
 }
 
-export function queueRowsFromTasksForTest(tasks: ChatV2TaskSnapshot[]) {
-  return queueRowsFromTasks(tasks);
+export function queueRowsFromTasksForTest(tasks: ChatV2TaskSnapshot[], waitingOnly = false) {
+  return queueRowsFromTasks(tasks, waitingOnly);
 }
 
 export function queueDisplayDetailForTest(text: string, fallback?: string) {
@@ -9085,7 +9087,7 @@ function followUpBlueprintNodes(row: QueueRow, _index: number): BlueprintNode[] 
   ];
 }
 
-function queueRowsFromTasks(tasks: ChatV2TaskSnapshot[]) {
+function queueRowsFromTasks(tasks: ChatV2TaskSnapshot[], waitingOnly = false) {
   const rows: QueueRow[] = [];
   for (const task of tasks) {
     if (!isTaskTerminal(task) && !taskIsStopControlState(task)) {
@@ -9126,9 +9128,13 @@ function queueRowsFromTasks(tasks: ChatV2TaskSnapshot[]) {
         lane: item.lane,
         taskId: item.task_id || task.task_id,
         runId: taskRunId(task),
+        clientMessageId: typeof (item.metadata?.command_payload as Record<string, unknown> | undefined)?.client_message_id === "string"
+          ? String((item.metadata!.command_payload as Record<string, unknown>).client_message_id) : undefined,
       });
     }
   }
+  // The composer shows pending delivery only; injected items remain in run history.
+  if (waitingOnly) return rows.filter((row) => ["queued", "waiting_dependency"].includes(row.status.toLowerCase()));
   return rows.slice(0, 8);
 }
 
@@ -14090,7 +14096,7 @@ export default function ChunkWorkspaceApp() {
         return null;
       }
     })();
-    const targetThreadId = workspace?.activeThreadId || saved?.threadId;
+    const targetThreadId = workspace ? workspace.activeThreadId : saved?.threadId;
     const targetWorkflowId = workspace?.activeThreadId ? undefined : saved?.workflowId;
     const archivedTarget = findThreadTarget(threads, targetThreadId, targetWorkflowId);
     if (archivedTarget?.archived) {
@@ -14789,6 +14795,7 @@ export default function ChunkWorkspaceApp() {
   const [selectedAgentId, setSelectedAgentId] = useState<WorkspaceAgentSelectionId>(() => {
     return readStoredWorkspaceSelection().agentId;
   });
+  const canSteer = Boolean(activeRunningTask && (activeRunningTask.metadata?.selected_backend === "super_dan" || activeRunningTask.metadata?.live_steering));
   const [autonomyMode, setAutonomyMode] = useState<WorkspaceAutonomyMode>(() =>
     readStoredWorkspaceAutonomyMode(),
   );
@@ -14850,7 +14857,7 @@ export default function ChunkWorkspaceApp() {
   const composerHasPayload = Boolean(composerText || composerAttachments.length > 0);
   const composerActionIsStop = Boolean(activeThread && activeRunningTask && !composerHasPayload);
   const queueRows = useMemo(() => queueRowsFromTasks(workPanelTasks), [workPanelTasks]);
-  const visibleQueueRows = queueRows.filter((row) => !row.active);
+  const visibleQueueRows = useMemo(() => queueRowsFromTasks(workPanelTasks, true), [workPanelTasks]);
   const showAgentQueuePanel = visibleQueueRows.length > 0;
   const elapsedCounter = useMemo(
     () => taskGroupElapsedCounter(workPanelTasks, elapsedCounterNow),
@@ -15009,8 +15016,8 @@ export default function ChunkWorkspaceApp() {
 
   useEffect(() => {
     if (!hasActiveRun) setActiveRunPlacement("steer");
-    else if (selectedAgentId !== "native") setActiveRunPlacement("queue");
-  }, [hasActiveRun, selectedAgentId]);
+    else if (!canSteer) setActiveRunPlacement("queue");
+  }, [hasActiveRun, selectedAgentId, canSteer]);
 
   useEffect(() => {
     void refreshWireGuardStatus();
@@ -15779,8 +15786,11 @@ export default function ChunkWorkspaceApp() {
     setActiveWorkspace(id);
     setPhonePage("chat");
     if (thread) void openSession(thread, id, target.pinnedPaths[0]);
-    else void startNewSession(id);
-  }, [activeWorkspaceId, workspaces, threads, setActiveWorkspace, openSession, startNewSession]);
+    else {
+      ++sessionSelectionSeqRef.current;
+      clearActiveSessionView("Ready");
+    }
+  }, [activeWorkspaceId, workspaces, threads, setActiveWorkspace, openSession, clearActiveSessionView]);
 
   const openSessionPromptLog = useCallback(async (thread: ChatV2ThreadSummary) => {
     if (thread.archived) {
@@ -16193,9 +16203,10 @@ export default function ChunkWorkspaceApp() {
         attachments?: ComposerAttachmentDraft[];
         displayText?: string;
         regenerate?: boolean;
+        replaceRequestId?: string;
       } = {},
     ) => {
-      if (selectedAgentId !== "native") queueCommand = "continue_after_current";
+      if (activeRunId && !canSteer) queueCommand = "continue_after_current";
       const attachments = options.attachments ?? [];
       const attachmentPayloads = workspaceAttachmentPayloads(attachments);
       const firstAttachmentPath =
@@ -16203,6 +16214,10 @@ export default function ChunkWorkspaceApp() {
           ?.path ?? null;
       const displayText = options.displayText || prompt;
       const thread = await ensureThread(prompt);
+      if (options.replaceRequestId && (activeThreadRef.current?.id !== thread.id || activeRunId
+          || [...messagesRef.current].reverse().find((message) => message.role === "user")?.id !== options.replaceRequestId)) {
+        throw new Error("This message can no longer be edited. Reopen the latest request.");
+      }
       const taskRoot = activeThreadRef.current?.id === thread.id
         ? workspaceRootForTasks(tasks)
         : taskWorkspaceRootByThreadId.get(thread.id) ?? "";
@@ -16236,22 +16251,20 @@ export default function ChunkWorkspaceApp() {
       setSelectedBlueprintNodeId(null);
       const user = {
         ...makeMessage("user", displayText),
+        ...(options.replaceRequestId ? { id: options.replaceRequestId } : {}),
         attachments:
           attachments.length > 0 ? attachments.map(composerDraftToChatAttachment) : undefined,
       };
-      const assistant = makeMessage(
-        "assistant",
-        activeRunId
-          ? queueCommand === "continue_after_current"
-            ? "Queued after the current Super DAN run."
-            : "Steering note queued for the active Super DAN run."
-          : "",
-      );
-      const nextMessages = applyMessages((previous) => [...previous, user, assistant]);
+      const assistant = makeMessage("assistant", "");
+      const nextMessages = activeRunId ? messagesRef.current : applyMessages((previous) => [
+        ...(options.replaceRequestId ? previous.slice(0, previous.findIndex((message) => message.id === options.replaceRequestId)) : previous),
+        user, assistant,
+      ]);
       if (!activeRunId) {
         setPendingAssistantIds((previous) => ({ ...previous, [assistant.id]: true }));
       }
       const initialPersist = persistMessages(thread, nextMessages, "agent");
+      if (options.replaceRequestId) await initialPersist;
       setStatus("");
 
       if (activeRunId && activeRunningTask) {
@@ -16261,6 +16274,7 @@ export default function ChunkWorkspaceApp() {
           idempotency_key: nowId(queueCommand),
           payload: {
             text: prompt,
+            client_message_id: user.id,
             attachments: attachmentPayloads,
             surface_context: buildSurfaceContext({
               note: activeNote,
@@ -16291,24 +16305,15 @@ export default function ChunkWorkspaceApp() {
         if (response.event && isStillSelectedThread()) {
           setAgentEvents((previous) => [...previous, response.event].slice(-80));
         }
-        const updateAssistant = (previous: ChatMessage[]) =>
-          previous.map((message) =>
-            message.id === assistant.id
-              ? { ...message, content: response.event.summary || assistant.content }
-              : message,
-          );
+        if (response.event.type === "blocked" || response.event.type === "failed") throw new Error(response.event.summary || "Could not queue this message.");
+        // Save the request so it survives reloads; the transcript hides it until delivery.
+        const appendRequest = (previous: ChatMessage[]) => [...previous, user];
         const finalMessages = isStillSelectedThread()
-          ? applyMessages(updateAssistant)
-          : updateAssistant(nextMessages);
+          ? applyMessages(appendRequest)
+          : appendRequest(nextMessages);
         await initialPersist;
         await persistMessages(thread, finalMessages, "agent");
-        if (isStillSelectedThread()) {
-          setStatus(
-            queueCommand === "continue_after_current"
-              ? "Queued after current Super DAN run"
-              : "Steering Super DAN",
-          );
-        }
+        if (isStillSelectedThread()) setStatus("Added to Up next");
         return;
       }
 
@@ -16396,10 +16401,15 @@ export default function ChunkWorkspaceApp() {
         : linkAssistant(nextMessages);
       await initialPersist;
       if (!runId) {
-        await persistMessages(thread, linkedMessages, "agent");
+        const explanation = created.admission?.question || created.admission?.status_text || created.admission?.reason || "The request did not start. Please try sending it again.";
+        const resolveUnstarted = (items: ChatMessage[]) => items.map((message) => message.id === assistant.id
+          ? { ...message, content: explanation, taskRunRef: { ...message.taskRunRef, status: "needs_input" } } : message);
+        const resolved = isStillSelectedThread() ? applyMessages(resolveUnstarted) : resolveUnstarted(linkedMessages);
         if (isStillSelectedThread()) {
-          setStatus(`${selectedAgentOption.shortLabel} · ${selectedModelOption.shortLabel} queued`);
+          setPendingAssistantIds((previous) => { const next = { ...previous }; delete next[assistant.id]; return next; });
+          setStatus("Request needs attention");
         }
+        await persistMessages(thread, resolved, "agent");
         return;
       }
       if (isStillSelectedThread()) {
@@ -16427,7 +16437,7 @@ export default function ChunkWorkspaceApp() {
         }
       }
       if (isStillSelectedThread()) {
-        setStatus(`${selectedAgentOption.shortLabel} · ${selectedModelOption.shortLabel} running`);
+        setStatus("running");
       }
       await persistMessages(thread, linkedMessages, "agent");
     },
@@ -16438,6 +16448,7 @@ export default function ChunkWorkspaceApp() {
       activePane,
       activeWorkspaceId,
       activeRunId,
+      canSteer,
       activeRunningTask,
       applyMessages,
       bindThreadToWorkspace,
@@ -16559,14 +16570,15 @@ export default function ChunkWorkspaceApp() {
     if (attachedRunKeyRef.current === key) return;
     const current = messagesRef.current;
     const linked = current.find((message) => message.role === "assistant" && message.taskRunRef?.runId === activeRunId);
-    const trailing = current.at(-1)?.role === "assistant" ? current.at(-1) : undefined;
+    const visible = visibleQueuedTranscript(current, workPanelTasks, pendingAssistantIds);
+    const trailing = visible.at(-1)?.role === "assistant" && !visible.at(-1)?.taskRunRef?.runId ? visible.at(-1) : undefined;
     const target = linked ?? trailing ?? makeMessage("assistant", "");
     applyMessages((previous) => previous.some((message) => message.id === target.id)
-      ? previous.map((message) => message.id === target.id ? { ...message, content: "", runEvents: [] } : message)
+      ? previous.map((message) => message.id === target.id ? { ...message, content: "", runEvents: [], taskRunRef: { runId: activeRunId, taskId: activeRunningTask?.task_id, status: "running" } } : message)
       : [...previous, target]);
     setPendingAssistantIds((previous) => ({ ...previous, [target.id]: true }));
     connectAgentStream(activeRunId, activeThread, target.id);
-  }, [activeRunId, activeThread, applyMessages, connectAgentStream, loadingThreadId]);
+  }, [activeRunId, activeRunningTask, activeThread, applyMessages, connectAgentStream, loadingThreadId, workPanelTasks, pendingAssistantIds]);
 
   /** Re-run the latest request in place, discarding the answer that followed it. */
   const regenerateLastRequest = useCallback(async () => {
@@ -16582,6 +16594,33 @@ export default function ChunkWorkspaceApp() {
       setStatus(error instanceof Error ? error.message : "Regenerate failed");
     }
   }, [activeRunId, activeThread, applyMessages, sendAgent]);
+
+  const editLastRequest = useCallback(async (messageId: string, text: string) => {
+    if (!activeThread || activeRunId || sending || Object.values(pendingAssistantIds).some(Boolean) || !text.trim()) throw new Error("Finish or stop the current run before resending.");
+    const thread = activeThread;
+    const before = messagesRef.current;
+    const request = [...before].reverse().find((message) => message.role === "user");
+    if (request?.id !== messageId) throw new Error("Only the latest message can be edited.");
+    setSending(true);
+    try {
+      await sendAgent(text.trim(), "append_followup", {
+        displayText: text.trim(), regenerate: true, replaceRequestId: messageId,
+        attachments: request.attachments?.map((attachment, index) => ({ ...attachment,
+          id: `${messageId}-attachment-${index}`, name: attachment.filename, kind: attachment.kind || "file",
+        })),
+      });
+    } catch (error) {
+      if (activeThreadRef.current?.id === thread.id) {
+        const admitted = messagesRef.current.some((message) => !before.some((old) => old.id === message.id) && message.taskRunRef?.runId);
+        if (!admitted) {
+          applyMessages(() => before);
+          setPendingAssistantIds({});
+          await persistMessages(thread, before, "agent");
+        }
+      }
+      throw error;
+    } finally { setSending(false); }
+  }, [activeThread, activeRunId, sending, pendingAssistantIds, sendAgent, applyMessages, persistMessages]);
 
   /** Copy this conversation into a new chat in the same project; the original is untouched. */
   const forkConversation = useCallback(async () => {
@@ -16800,9 +16839,9 @@ export default function ChunkWorkspaceApp() {
                   key={mode}
                   type="button"
                   onClick={() => setActiveRunPlacement(mode)}
-                  disabled={queueUnavailable || (mode === "steer" && hasActiveRun && selectedAgentId !== "native")}
+                  disabled={queueUnavailable || (mode === "steer" && hasActiveRun && !canSteer)}
                   title={
-                    mode === "steer" && hasActiveRun && selectedAgentId !== "native" ? "Native lead follow-ups run after the current turn" : mode === "queue"
+                    mode === "steer" && hasActiveRun && !canSteer ? "Live steering is not available for this run" : mode === "queue"
                       ? hasActiveRun
                         ? "Queue this message after the current run (Option+Enter)"
                         : "Next is available while a run is active"
@@ -17270,7 +17309,7 @@ export default function ChunkWorkspaceApp() {
           <button aria-label="Workspace settings" title="Workspace settings" aria-pressed={workbenchSettings} onClick={() => { setCreatingProject(false); setWorkbenchSettings(true); }}><MoreHorizontal size={18} /></button>
         </div>
       </header>}
-      {danSettings && <DanSettings onClose={() => setDanSettings(false)} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} />}
+      {danSettings && <Suspense fallback={null}><DanSettings onClose={() => setDanSettings(false)} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} /></Suspense>}
       {importNativeSessions && <ImportNativeSessions workspace={importNativeSessions.root} workspaceId={importNativeSessions.id} onClose={() => setImportNativeSessions(null)} onImport={async (thread) => { bindThreadToWorkspace(thread.workflow_id, thread.id, importNativeSessions.id); await refreshThreads(); }} />}
       {activePane === "work" && workbenchSettings && <ProjectSettings
         name={creatingProject ? "" : workspace?.name || "Project"}
@@ -17282,7 +17321,7 @@ export default function ChunkWorkspaceApp() {
           const id = creatingProject ? createWorkspace(name, "chat") : activeWorkspaceId;
           if (id) {
             updateWorkspace(id, { name, pinnedPaths: root ? [root, ...(creatingProject ? [] : workspace?.pinnedPaths.slice(1) ?? [])] : [] });
-            if (creatingProject) { void startNewSession(id); setActiveFilePath(null); }
+            if (creatingProject) { ++sessionSelectionSeqRef.current; clearActiveSessionView("Ready"); setActiveFilePath(null); }
           }
           setWorkbenchSettings(false); setShowSessionRail(true); setShowFileExplorer(false); setShowConversationChunks(true); setPhonePage("chat");
         }}
@@ -18371,7 +18410,7 @@ export default function ChunkWorkspaceApp() {
           {renderSessionRail && <aside id="wb-project-sidebar" className="dan-phone-page dan-session-page wb-session-shelf wb-project-sidebar">
             <div className="wb-panel-heading"><span>DAN</span></div>
             <button className="wb-sidebar-new" onClick={() => { void startNewSession(); setShowConversationChunks(true); setPhonePage("chat"); }}><Plus size={16} />New chat</button>
-            <label className="wb-shelf-search"><Search size={15} /><input aria-label="Search sessions" placeholder="Search chats" value={threadQuery} onChange={(event) => setThreadQuery(event.target.value)} /></label>
+            <label className="wb-shelf-search"><Search size={15} /><input aria-label="Search sessions" placeholder="Search chats or session ID" value={threadQuery} onChange={(event) => setThreadQuery(event.target.value)} /></label>
             <div className="wb-projects-heading"><span>{sessionShelfScope === "archived" ? "Archived chats" : "Projects"}</span><button title="New project" aria-label="New project" onClick={() => { setCreatingProject(true); setWorkbenchSettings(true); }}><Plus size={15} /></button></div>
             <div className="wb-shelf-list">
               {sessionGroups.flatMap((group) => group.subgroups ?? [group]).filter((group) => sessionShelfScope === "archived" ? group.archived : !group.archived).map((group) => {
@@ -18622,6 +18661,7 @@ export default function ChunkWorkspaceApp() {
             <div className="flex min-h-0 min-w-0 flex-col bg-white/90 dark:bg-slate-950">
               {readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView file={readerFile} onAsk={askFromReader} onClose={() => setReaderFile(null)} /></Suspense> : <>
               <div className="wb-conversation-heading"><div className="wb-conversation-actions">
+                {activeThread && <button title={`Copy session ID: ${activeThread.id}`} onClick={() => { void navigator.clipboard.writeText(activeThread.id).then(() => setStatus("Session ID copied"), () => setStatus(`Session ID: ${activeThread.id}`)); }}>Session <code>{activeThread.id}</code></button>}
                 {activeRunningTask && activeThread && <button className="wb-stop" onClick={() => void stopSessionRun({ id: activeThread.id, workflow_id: activeThread.workflowId, title: activeThread.title || "Active session", message_count: messages.length, created_at: "", updated_at: "" }, activeRunningTask)}><Square size={11} />Stop run</button>}
                 <button aria-pressed={workbenchOutline} onClick={() => setWorkbenchOutline(!workbenchOutline)}>{workbenchOutline ? "Conversation" : "Task detail"}</button></div></div>
 
@@ -18663,17 +18703,18 @@ export default function ChunkWorkspaceApp() {
                 />
               </div>
 ) : (
-                <WorkbenchConversation key={activeThread?.id ?? "new"} messages={messages} pending={pendingAssistantIds} loading={loadingThreadId !== null} status={status} liveActions={liveActions} onRegenerate={activeThread && !activeRunningTask && !sending ? () => void regenerateLastRequest() : undefined} onFork={activeThread && !activeRunningTask && !sending ? () => void forkConversation() : undefined} onSidecar={activeThread ? (text) => { setSidecarSelection({text, token:Date.now()}); setSidecarChat(true); setWorkbenchActivity(false); setTeamPanel(false); setShowSidecarPreview(false); } : undefined} onQuote={(text, messageIds) => {
+                <WorkbenchConversation key={activeThread?.id ?? "new"} messages={visibleQueuedTranscript(messages, workPanelTasks, pendingAssistantIds)} pending={pendingAssistantIds} loading={loadingThreadId !== null} status={status} liveActions={liveActions} onEdit={activeThread ? editLastRequest : undefined} actionsDisabled={Boolean(activeRunningTask) || sending || Object.values(pendingAssistantIds).some(Boolean)} onRegenerate={activeThread && !activeRunningTask && !sending ? () => void regenerateLastRequest() : undefined} onFork={activeThread && !activeRunningTask && !sending ? () => void forkConversation() : undefined} onSidecar={activeThread ? (text) => { setSidecarSelection({text, token:Date.now()}); setSidecarChat(true); setWorkbenchActivity(false); setTeamPanel(false); setShowSidecarPreview(false); } : undefined} onQuote={(text, messageIds) => {
                   if (!activeThread) return;
                   setComposerReferences((current) => ({ ...current, [referenceKey]: { text, messageIds, title: activeThread.title || "Conversation", threadId: activeThread.id, workflowId: activeThread.workflowId } }));
                   composerRef.current?.focus();
                 }} />
               )}
 
-              {showAgentQueuePanel && <details className="wb-followup-queue">
-                <summary><Clock3 size={13} /><span>{visibleQueueRows.length} queued {visibleQueueRows.length === 1 ? "message" : "messages"}</span><ChevronDown size={13} /></summary>
-                <ol>{visibleQueueRows.map((row) => <li key={row.id}><span>{row.rawDetail || row.detail}</span><small>{row.status.replaceAll("_", " ")}</small></li>)}</ol>
-              </details>}
+              {showAgentQueuePanel && <Suspense fallback={null}><FollowupQueue rows={visibleQueueRows} runId={activeRunId} canSteer={canSteer} onTask={task => { mergeBackgroundTasks([task]); setTasks(previous => [task, ...previous.filter(item => item.task_id !== task.task_id)]); }} onRemoved={row => {
+                if (!row.clientMessageId || !activeThread) return;
+                const next = applyMessages(previous => previous.filter(message => message.id !== row.clientMessageId));
+                void persistMessages(activeThread, next, "agent");
+              }} /></Suspense>}
 
               {renderWorkspaceComposer()}
               </>}

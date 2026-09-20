@@ -1552,7 +1552,7 @@ describe("workspace blueprint nodes", () => {
     });
   });
 
-  it("uses recovered Super DAN task history for session card labels", () => {
+  it("uses recovered task history for progress without renaming the session", () => {
     const recoveredTask = task({
       thread_id: "thread-1",
       status: "completed",
@@ -1573,7 +1573,7 @@ describe("workspace blueprint nodes", () => {
         [recoveredTask],
       ),
     ).toMatchObject({
-      title: "help me summarize this project",
+      title: "New Super DAN Session",
       detail: expect.stringContaining("1 run · done"),
     });
   });
@@ -4076,6 +4076,23 @@ describe("workspace blueprint nodes", () => {
     expect(selectActiveRunningTaskForTest([queued, running])?.task_id).toBe("older-running");
   });
 
+  it("keeps a new continuation running when an old run's stopped event is replayed", () => {
+    const running = task({ task_id: "shared-task", thread_id: "thread-1", status: "running",
+      metadata: { active_run_id: "new-run" } });
+    const settled = settleTaskSnapshotsFromEventsForTest([running], [{
+      type: "stopped", task_id: "shared-task", run_id: "old-run", summary: "Stopped by user",
+    }]);
+    expect(settled[0].status).toBe("running");
+    expect(selectActiveRunningTaskForTest(settled)?.metadata.active_run_id).toBe("new-run");
+    expect(sessionProgressTaskForTest(settled, "thread-1")).not.toBeNull();
+  });
+
+  it("never substitutes the latest request for a saved session title", () => {
+    const latest = task({ metadata: { request_text: "A changing follow-up" } });
+    expect(sessionCardDisplayForTest(thread({ title: "New Super DAN Session" }), [latest]).title).toBe("New Super DAN Session");
+    expect(sessionCardDisplayForTest(thread({ title: "My project" }), [latest]).title).toBe("My project");
+  });
+
   it("settles stale running task state from a terminal final event before queue rendering", () => {
     const running = task({
       task_id: "finalized-task",
@@ -4127,6 +4144,16 @@ describe("workspace blueprint nodes", () => {
       latest_progress: "Working on the current stage.",
     });
     expect(selectActiveRunningTaskForTest(settled)?.task_id).toBe("stage-task");
+  });
+
+  it("shows only waiting deliveries in the composer, even after many injected messages", () => {
+    const tasks = [task({ status: "running", metadata: { queue_items: [
+      ...Array.from({ length: 10 }, (_, index) => ({ id: `sent-${index}`, task_id: "task-1", position: index, lane: "append" as const, text: "Already delivered", status: "injected" })),
+      { id: "waiting", task_id: "task-1", position: 10, lane: "continue_after_current" as const, text: "Next request", status: "queued" },
+      { id: "finished", task_id: "task-1", position: 11, lane: "append" as const, text: "Done", status: "completed" },
+    ] } })];
+    expect(queueRowsFromTasksForTest(tasks, true).map((row) => row.id)).toEqual(["queue:waiting"]);
+    expect(queueRowsFromTasksForTest([task({ status: "running" })], true)).toEqual([]);
   });
 
   it("keeps waiting and input-needed tasks visible without marking them active", () => {
