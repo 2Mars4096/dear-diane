@@ -7,7 +7,7 @@ import { applyAppearanceTheme } from "./lib/appearanceTheme";
 import { useSettingsStore } from "./store/useSettingsStore";
 
 const initialSettings = useSettingsStore.getState();
-applyAppearanceTheme(initialSettings.theme, initialSettings.workspaceSurfaceTone);
+applyAppearanceTheme(initialSettings.theme, initialSettings.workspaceSurfaceTone, initialSettings.workbenchColorScheme);
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

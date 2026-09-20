@@ -1,4 +1,5 @@
 import type { EditorSettings } from "../store/useSettingsStore";
+import { applyWorkbenchPalette, type WorkbenchPaletteId } from "./workbenchPalette";
 
 export type AppearanceTheme = EditorSettings["theme"];
 export type MonacoTheme = Exclude<AppearanceTheme, "system">;
@@ -30,6 +31,7 @@ export function resolveSurfaceAppearance(
 export function applyAppearanceTheme(
   theme: AppearanceTheme,
   surfaceTone: WorkspaceSurfaceTone = "system",
+  colorScheme: WorkbenchPaletteId = "warm",
 ) {
   if (typeof document === "undefined") return;
 
@@ -43,6 +45,7 @@ export function applyAppearanceTheme(
   root.dataset.surfaceAppearance = surfaceTone;
   root.dataset.resolvedSurfaceAppearance = resolveSurfaceAppearance(theme, surfaceTone);
   root.style.colorScheme = dark ? "dark" : "light";
+  applyWorkbenchPalette(colorScheme, dark);
 }
 
 export function subscribeToSystemAppearance(

@@ -1,8 +1,10 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { workbenchPalette, type WorkbenchPaletteId } from "../lib/workbenchPalette";
 
 export interface EditorSettings {
   theme: "system" | "vs-dark" | "vs" | "hc-black";
+  workbenchColorScheme: WorkbenchPaletteId;
   workspaceSurfaceTheme: "original" | "industrial" | "factory-worn";
   workspaceSurfaceTone: "system" | "day" | "night";
 }
@@ -30,6 +32,7 @@ interface SettingsState extends EditorSettings {
 
 const DEFAULT_SETTINGS: EditorSettings = {
   theme: "system",
+  workbenchColorScheme: "warm",
   workspaceSurfaceTheme: "factory-worn",
   workspaceSurfaceTone: "system",
 };
@@ -80,7 +83,7 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: "dan-editor-settings",
-      version: 6,
+      version: 7,
       migrate: (persistedState, version) => {
         const state = persistedState as Partial<SettingsState> | undefined;
         if (!state) return persistedState as SettingsState;
@@ -107,6 +110,7 @@ export const useSettingsStore = create<SettingsState>()(
           };
         }
 
+        migrated = { ...migrated, workbenchColorScheme: workbenchPalette(migrated.workbenchColorScheme).id };
         return migrated as SettingsState;
       },
     },

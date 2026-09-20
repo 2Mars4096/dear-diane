@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 let useSettingsStore: typeof import("../store/useSettingsStore").useSettingsStore;
@@ -34,5 +35,22 @@ describe("useSettingsStore", () => {
 
     expect(useSettingsStore.getState().workspaceSurfaceTheme).toBe("original");
     expect(useSettingsStore.getState().workspaceSurfaceTone).toBe("day");
+  });
+
+  it("saves the color scheme independently of light/dark mode", () => {
+    useSettingsStore.getState().updateSetting("workbenchColorScheme", "midnight");
+    useSettingsStore.getState().updateSetting("theme", "vs");
+    const saved = JSON.parse(vi.mocked(localStorage.setItem).mock.calls.at(-1)![1]);
+    expect(saved.state).toMatchObject({ workbenchColorScheme: "midnight", theme: "vs" });
+    useSettingsStore.getState().updateSetting("theme", "vs-dark");
+    expect(useSettingsStore.getState().workbenchColorScheme).toBe("midnight");
+  });
+
+  it("migrates existing settings without replacing the chosen appearance", async () => {
+    vi.mocked(localStorage.getItem).mockReturnValueOnce(JSON.stringify({ version: 6, state: {
+      theme: "vs", workspaceSurfaceTheme: "original", workspaceSurfaceTone: "night",
+    } }));
+    await useSettingsStore.persist.rehydrate();
+    expect(useSettingsStore.getState()).toMatchObject({ theme: "vs", workbenchColorScheme: "warm", workspaceSurfaceTone: "night" });
   });
 });
