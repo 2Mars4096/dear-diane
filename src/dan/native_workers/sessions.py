@@ -192,9 +192,7 @@ def messages(source: dict) -> list[dict]:
         if not result:
             raise ValueError("No readable conversation messages found; source was left unchanged")
         return result
-    # Bound imports and fail explicitly rather than silently truncate history.
-    if path.stat().st_size > 256 * 1024 * 1024:
-        raise ValueError("This transcript exceeds the 256 MB import limit")
+    # No size limit: the transcript is streamed line by line and never truncated.
     with path.open() as stream:
         for line in stream:
             try:

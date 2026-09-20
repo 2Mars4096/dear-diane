@@ -244,14 +244,11 @@ def test_cursor_chat_import_reads_store_without_writing(monkeypatch, tmp_path):
     assert db.stat().st_mtime_ns == before
 
 
-def test_native_import_accepts_above_old_limit_and_rejects_above_new(monkeypatch, tmp_path):
+def test_native_import_has_no_size_limit(monkeypatch, tmp_path):
     from types import SimpleNamespace
     source = tmp_path / "session.jsonl"
     source.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": "History"}}) + "\n")
     real_stat = Path.stat
-    size = 129 * 1024 * 1024
+    size = 2 * 1024 * 1024 * 1024
     monkeypatch.setattr(Path, "stat", lambda path, **kw: SimpleNamespace(st_size=size, st_mode=real_stat(path).st_mode) if path == source else real_stat(path, **kw))
     assert messages({"backend": "claude", "path": str(source)}) == [{"role": "user", "content": "History"}]
-    size = 256 * 1024 * 1024 + 1
-    with pytest.raises(ValueError, match="256 MB import limit"):
-        messages({"backend": "claude", "path": str(source)})
