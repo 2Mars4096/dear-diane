@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-20
+- [fix] Native session import no longer lists Codex's internal threads (`thread_source` subagent / guardian_review / agent_created_thread), which appeared as many duplicate "The following is the Codex agent history…" entries. Old Codex databases without that column are unaffected.
 - [fix] Removed the native transcript import size limit; imports stream line by line, so large Codex/Claude histories import without a cap.
 - [fix] Sidebar chat rows are transparent at rest; only hover and the selected chat get a background.
 - [fix] Queued messages never enter the transcript: sending during an active run saves the request but shows it only in Up next (position, Steer now, Remove) until it is delivered, then the request appears in the transcript with no acknowledgement reply. The old "Queued for checkpoint append at position N." / "Queued after the current Super DAN run." replies are no longer written, and any saved from earlier builds are hidden.

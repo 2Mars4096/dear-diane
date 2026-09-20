@@ -126,7 +126,11 @@ def discover(workspace: str) -> list[dict]:
                 try:
                     with sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True) as con:
                         con.row_factory = sqlite3.Row
-                        rows = con.execute("SELECT id, cwd, title, rollout_path FROM threads WHERE archived = 0").fetchall()
+                        columns = {row[1] for row in con.execute("PRAGMA table_info(threads)")}
+                        # Codex also stores its own internal threads (subagents, guardian
+                        # auto-reviews); only threads a person started are importable.
+                        internal = "AND COALESCE(thread_source, 'user') NOT IN ('subagent', 'guardian_review', 'agent_created_thread')" if "thread_source" in columns else ""
+                        rows = con.execute(f"SELECT id, cwd, title, rollout_path FROM threads WHERE archived = 0 {internal}").fetchall()
                     for row in rows:
                         if same_folder(row["cwd"], workspace):
                             add(found, backend, account_id, row["id"], row["title"], row["rollout_path"], workspace)

@@ -252,3 +252,17 @@ def test_native_import_has_no_size_limit(monkeypatch, tmp_path):
     size = 2 * 1024 * 1024 * 1024
     monkeypatch.setattr(Path, "stat", lambda path, **kw: SimpleNamespace(st_size=size, st_mode=real_stat(path).st_mode) if path == source else real_stat(path, **kw))
     assert messages({"backend": "claude", "path": str(source)}) == [{"role": "user", "content": "History"}]
+
+
+def test_codex_discovery_skips_internal_threads(monkeypatch, tmp_path):
+    import sqlite3
+    from dan.native_workers import sessions
+    home = tmp_path / ".codex"; home.mkdir()
+    con = sqlite3.connect(home / "state_5.sqlite")
+    con.execute("CREATE TABLE threads (id TEXT, cwd TEXT, title TEXT, rollout_path TEXT, archived INTEGER, thread_source TEXT)")
+    for tid, source in [("u1", "user"), ("legacy", None), ("s1", "subagent"), ("g1", "guardian_review"), ("a1", "agent_created_thread")]:
+        con.execute("INSERT INTO threads VALUES (?, ?, ?, ?, 0, ?)", (tid, str(tmp_path), f"title {tid}", str(tmp_path / f"{tid}.jsonl"), source))
+    con.commit(); con.close()
+    monkeypatch.setattr(sessions, "accounts", lambda: {"codex": {"default": {"env": {"CODEX_HOME": str(home)}}}})
+    found = sorted(row["session_id"] for row in sessions.discover(str(tmp_path)))
+    assert found == ["legacy", "u1"]
