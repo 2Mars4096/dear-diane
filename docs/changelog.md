@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-20
+- [fix] Sidebar chat rows are transparent at rest; only hover and the selected chat get a background.
 - [fix] Queued messages never enter the transcript: sending during an active run saves the request but shows it only in Up next (position, Steer now, Remove) until it is delivered, then the request appears in the transcript with no acknowledgement reply. The old "Queued for checkpoint append at position N." / "Queued after the current Super DAN run." replies are no longer written, and any saved from earlier builds are hidden.
 - [feat] Remove a waiting message: `POST /api/v2/agent-runs/{run_id}/queue/{item_id}/cancel` withdraws a queued entry (delivered entries are refused), renumbers the lane, and the client drops the saved request.
 - [test] 267 frontend and 92 server tests pass; mocked Chromium check covers hidden-while-queued, Up next with Remove, and reveal on delivery. Creating a project no longer creates a chat (verified in code path; sidebar New chat remains explicit).

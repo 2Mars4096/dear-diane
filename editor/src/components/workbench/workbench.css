@@ -190,8 +190,9 @@
 .wb-project-row:hover { background:var(--wb-line); }
 .wb-project-chats { padding-left:22px; }
 .wb-project-sidebar .wb-shelf-empty { padding:8px 10px; font-size:11px; margin:0; }
-.wb-project-sidebar .wb-shelf-list .group\/session { background:var(--wb-soft); }
-.wb-project-sidebar .wb-shelf-list .group\/session:hover, .wb-project-sidebar .wb-shelf-list [data-active=true] { background:var(--wb-line); }
+.wb-project-sidebar .wb-shelf-list .group\/session { background:transparent; }
+.wb-project-sidebar .wb-shelf-list .group\/session:hover { background:var(--wb-soft); }
+.wb-project-sidebar .wb-shelf-list [data-active=true] { background:var(--wb-line); }
 .wb-project-sidebar .wb-shelf-list .group\/session > button { padding:9px 8px; }
 /* Rows look identical at rest; hover reveals row actions. A running row only adds progress + Stop. */
 .wb-project-sidebar [data-session-action]:not([data-session-live]) { display:none; }
