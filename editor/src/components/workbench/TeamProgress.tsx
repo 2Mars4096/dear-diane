@@ -89,7 +89,7 @@ function TeamLane({ worker, onStop }: { worker: TeamWorker; onStop: (worker: Tea
     <div className="wb-lane-meta">
       <span>{agent} · {running ? <span key={worker.activity} className="wb-team-now">{workerState(worker)}</span> : workerState(worker)}</span>
       {running && since > 0 && <span className="wb-lane-time">{elapsed(Date.now() / 1000 - since)}</span>}
-      {running && <button type="button" onClick={() => onStop(worker)} aria-label={`Stop ${agent}: ${taskTitle(worker.prompt)}`}><Square size={9} />Stop</button>}
+      {running && worker.can_stop !== false && <button type="button" onClick={() => onStop(worker)} aria-label={`Stop ${agent}: ${taskTitle(worker.prompt)}`}><Square size={9} />Stop</button>}
     </div>
     {outcome && <p className="wb-lane-result">{outcome}</p>}
     {open && <div className="wb-lane-details">

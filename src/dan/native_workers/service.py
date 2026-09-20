@@ -23,6 +23,7 @@ class NativeTeam:
         self.parent_request = parent_request
         self.tasks: dict[str, asyncio.Task] = {}
         self.records: dict[str, dict] = {}
+        self.steering: dict[str, object] = {}
         self.processes: dict[str, asyncio.subprocess.Process] = {}
         base.mkdir(parents=True, exist_ok=True)
 
@@ -84,6 +85,8 @@ class NativeTeam:
                 raise ValueError("Headless forking is not available for this runtime")
         record = previous or {"worker_id": uuid4().hex, "parent_run_id": self.parent_id, "backend": backend,
                               "profile": dict(profile), "workspace_root": self.workspace, "created_at": time.time(), "native_session_id": ""}
+        if session:
+            record["native_session_id"] = session
         record.update(status="running", prompt=prompt, response="", error="", activity="Starting", actions=[{"text": "Starting", "at": time.time()}])
         self.records[record["worker_id"]] = record
         self.save(record)
@@ -114,6 +117,9 @@ class NativeTeam:
             self.event(record, {"type": "worker.finished", "status": record["status"], "text": record["response"], "error": record["error"]})
 
     async def run(self, record: dict, command: list[str], env: dict):
+        if record["backend"] == "codex" and record["profile"].get("_live_steering"):
+            from .codex_live import run_live
+            return await run_live(self, record, command, env)
         process = None
         stderr_task = None
         terminal = ""

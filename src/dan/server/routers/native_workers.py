@@ -59,6 +59,8 @@ async def stop_worker(parent_id: str, worker_id: str):
     team = active_teams.get(parent_id)
     if not team or worker_id not in team.records:
         raise HTTPException(404, "No active worker with that parent")
+    if team.records[worker_id].get("can_stop") is False:
+        raise HTTPException(409, "This subagent is controlled by its Codex lead")
     return await team.stop(worker_id)
 
 @router.get("/api/native-workers/{parent_id}/{worker_id}/events")

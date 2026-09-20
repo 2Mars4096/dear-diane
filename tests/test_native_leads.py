@@ -28,6 +28,9 @@ async def test_lead_streams_and_resumes_same_account_only(monkeypatch, tmp_path,
     req = request(tmp_path, history=[{"role":"user", "content":"Prior context"}], profile_policy={"lead_profile": {"account":"work", "model":"model", "effort":"high", "fast":True}})
     result = await adapter.run(req, events.append)
     assert result.status == "completed" and result.summary == "Answer"
+    assert "Session ID: chat" in calls[0][2]
+    assert "GET /api/chats?q=" in calls[0][2]
+    assert str(tmp_path / "graphs" / "chats") in calls[0][2]
     assert "Prior context" in calls[0][2]
     assert calls[0][1]["fast"] is True
     assert any(event.type == "model_text_delta" and event.payload["accumulated"] == "Answer" for event in events)

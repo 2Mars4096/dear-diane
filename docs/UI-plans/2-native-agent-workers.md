@@ -15,6 +15,9 @@
 - Keep interrupted, disconnected, failed, and completed distinct. Reconnect by cursor and deduplicate event IDs before appending text.
 
 ## Tasks
+- [x] Raise JSONL transcript import limit from 128 MB to 256 MB; retain explicit rejection above the limit and source preservation.
+- [x] Live Codex lead steering via persistent app-server, active-run capability, acknowledgement-gated queue delivery, and per-entry Steer now controls.
+- [x] Automatically resume durable follow-up queues after backend restart with saved account/policy, legacy native-profile recovery, normal delivery acknowledgement, and no new queue buttons.
 - [ ] Add a shared start/status/send/stop/resume child-worker service; integrate it as tools available to DAN/OpenRouter managers.
 - [ ] Implement persistent Codex and Claude Code adapters and capability negotiation.
 - [ ] Persist parent/child relationships and normalized worker event cursors.
@@ -59,3 +62,16 @@
 - [x] Add Cursor (`agent` CLI) as a lead/team runtime with Plan/Auto/Full mapping; docs: https://cursor.com/docs/cli/headless and https://cursor.com/docs/cli/reference/parameters.
 - [x] Import Cursor editor chats as history copies (read-only store access).
 - [ ] Install Cursor CLI, sign in, and run a live Cursor lead/team smoke; confirm stream-json session/result fields; add CLI chat (`~/.cursor/chats`) import once a CLI chat exists to inspect.
+
+## September 19 live review
+- [x] Run two built-in Codex review subagents and inspect the current DAN run through the local API. It returned no native workers; built-in collaboration is not connected to the Team display.
+- [ ] Repeat the visible demo after enabling Codex in Team before starting a turn; no delegation bridge was attached to the reviewed turn.
+- [x] Mirror direct native Codex subagents into Team automatically using selected-account, parent-linked rollout events; no enabled Team delegate required.
+- [ ] Fix Cursor legacy discovery fallback reintroducing excluded subagent/archived headers; surface the 20,000-bubble transcript limit instead of silently truncating.
+
+### Native Codex display integration
+- [x] Read indexed session rollouts incrementally, tolerate partial/oversized lines, and preserve account/parent/run isolation and shared session-directory symlinks.
+- [x] Persist observed child identities, command activity, terminal state, and final replies; omit unsupported per-child Stop controls and reject that API action.
+- [x] Verify with isolated adapter/UI tests and replay the two actual September 19 review agents without modifying native records.
+- [ ] Install the rebuilt client and restart the backend when the active conversation can end; verify a fresh live spawn in the installed app.
+- Validation: 31 backend tests and 6 focused UI tests pass; production typecheck/build/budgets pass. The arm64 app is rebuilt, ad-hoc signed and signature-verified with the installed icon preserved; not installed over the active app.

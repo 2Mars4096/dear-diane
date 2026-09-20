@@ -2,6 +2,7 @@ export type TeamAction = { text: string; at: number };
 export type TeamWorker = {
   worker_id: string; parent_run_id: string; backend: string; status: string;
   prompt: string; response: string; error: string; native_session_id: string;
+  can_stop?: boolean; origin?: string;
   created_at?: number; activity?: string; actions?: TeamAction[];
 };
 export type WorkerPhase = "attention" | "active" | "settled";
