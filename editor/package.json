@@ -14,7 +14,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "electron:compile": "tsc -p electron/tsconfig.json && cp electron/preload.cjs dist-electron/preload.cjs && echo '{\"type\":\"commonjs\"}' > dist-electron/package.json",
+    "electron:compile": "tsc -p electron/tsconfig.json && cp electron/preload.cjs electron/updateInstaller.cjs dist-electron/ && echo '{\"type\":\"commonjs\"}' > dist-electron/package.json",
     "electron:dev": "npm run electron:compile && concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:build": "npm run build && npm run electron:compile",
     "dist": "npm run build && npm run electron:compile && electron-builder",
@@ -93,10 +93,22 @@
       "category": "Development",
       "icon": "build/icon.png"
     },
-    "publish": null
+    "publish": {
+      "provider": "github",
+      "owner": "2Mars4096",
+      "repo": "deep-agent-network",
+      "private": true
+    },
+    "extraResources": [
+      {
+        "from": "build/github-update.yml",
+        "to": "app-update.yml"
+      }
+    ]
   },
   "dependencies": {
     "dompurify": "^3.3.3",
+    "electron-updater": "^6.8.9",
     "highlight.js": "^11.11.1",
     "katex": "^0.16.38",
     "lucide-react": "^0.575.0",

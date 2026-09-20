@@ -2,6 +2,10 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("electronAPI", {
   isElectron: true,
+  updates: {
+    status: () => ipcRenderer.invoke("updates:status"),
+    action: (action) => ipcRenderer.invoke("updates:action", action),
+  },
   dialog: {
     openDirectory: () => ipcRenderer.invoke("dialog:openDirectory"),
   },

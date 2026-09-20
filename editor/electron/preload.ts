@@ -2,6 +2,10 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 contextBridge.exposeInMainWorld("electronAPI", {
   isElectron: true,
+  updates: {
+    status: () => ipcRenderer.invoke("updates:status"),
+    action: (action: string) => ipcRenderer.invoke("updates:action", action),
+  },
   dialog: {
     openDirectory: () => ipcRenderer.invoke("dialog:openDirectory"),
   },

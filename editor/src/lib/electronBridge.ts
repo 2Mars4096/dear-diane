@@ -3,7 +3,17 @@
  * Browser builds keep safe no-op fallbacks for every operation.
  */
 
+export interface DesktopUpdateState {
+  github?: { status: string; login: string; code: string; message: string };
+  phase: string; currentVersion: string; version: string; source: string;
+  message: string; percent: number; releaseConfigured: boolean; localSupported: boolean;
+}
+
 interface ElectronAPI {
+  updates?: {
+    status: () => Promise<DesktopUpdateState>;
+    action: (action: "check" | "choose" | "download" | "install" | "github-sign-in" | "github-cancel" | "github-status") => Promise<DesktopUpdateState>;
+  };
   isElectron: boolean;
   dialog: {
     openDirectory: () => Promise<string | null>;

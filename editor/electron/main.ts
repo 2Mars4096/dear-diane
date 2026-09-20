@@ -11,6 +11,7 @@ import {
   waitForBackendHealthOrRelease,
 } from "./backendHealth";
 import { buildBackendLaunchEnv } from "./backendLaunch";
+import { registerDesktopUpdates } from "./desktopUpdates";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -613,6 +614,11 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(async () => {
+    registerDesktopUpdates({
+      window: () => mainWindow,
+      graphs: () => process.env.DAN_GRAPHS_DIR || getPersistentGraphsDir(),
+      backend: () => ({ owned: backendOwnedByUs, pid: backendProcess?.pid }),
+    });
     if (!isDev) {
       const distDir = path.join(__dirname, "../dist");
       console.log("Starting DAN backend server...");

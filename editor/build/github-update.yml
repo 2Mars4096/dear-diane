@@ -1,0 +1,5 @@
+provider: github
+owner: 2Mars4096
+repo: deep-agent-network
+private: true
+updaterCacheDirName: dan-updater
