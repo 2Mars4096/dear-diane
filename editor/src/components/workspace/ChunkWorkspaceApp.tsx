@@ -16897,7 +16897,7 @@ export default function ChunkWorkspaceApp() {
                 setAutonomyMenuOpen((open) => !open);
               }}
               className="inline-flex h-7 min-w-[4.5rem] max-w-[6.5rem] items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50/95 px-2 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-white dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-700 sm:min-w-20 sm:max-w-[7rem]"
-              title={selectedAutonomyOption.description}
+              aria-label={`Mode: ${selectedAutonomyOption.label}`}
               aria-expanded={autonomyMenuOpen}
             >
               <AutonomyIcon mode={selectedAutonomyOption.id} size={12} />
@@ -16905,7 +16905,7 @@ export default function ChunkWorkspaceApp() {
               <ChevronDown size={12} className={cx("transition", autonomyMenuOpen && "rotate-180")} />
             </button>
             {autonomyMenuOpen && (
-              <div className="absolute bottom-full right-0 z-50 mb-2 w-64 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
+              <div className="absolute bottom-full right-0 z-50 pb-2"><div className="w-64 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
                 {WORKSPACE_AUTONOMY_OPTIONS.map((option) => {
                   const selected = option.id === selectedAutonomyOption.id;
                   return (
@@ -16935,7 +16935,7 @@ export default function ChunkWorkspaceApp() {
                     </button>
                   );
                 })}
-              </div>
+              </div></div>
             )}
           </div>
           <LeadAgentMenu selected={selectedAgentId} onChange={setSelectedAgentId} disabled={hasActiveRun || sending}
