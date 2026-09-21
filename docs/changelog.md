@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-21
+- [fix] The desktop app's static server serves `.wasm` as application/wasm (pdf.js image decoders and colour management, tesseract) and resolves asset paths without their query string; paths cannot leave the dist folder.
 - [style] Settings: Skills is a scrollable table (shared, skill, from, what it does) with a sticky header instead of stacked cards; the Updates block has consistent button styling and spacing.
 - [docs] Save two colorful DAN icon candidates: bold gouache v3 and impressionist oil-paint v4. Both retain the letter-free agent-coordination motif; prompts are recorded in `output/imagegen/dan-colorful-icon-prompts.md`.
 

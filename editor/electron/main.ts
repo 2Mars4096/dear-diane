@@ -255,6 +255,11 @@ function getMimeType(ext: string): string {
     ".woff2": "font/woff2",
     ".ttf": "font/ttf",
     ".map": "application/json",
+    // pdf.js and tesseract.js assets: streaming WebAssembly compilation requires the wasm type.
+    ".wasm": "application/wasm",
+    ".gz": "application/gzip",
+    ".pfb": "application/octet-stream",
+    ".bcmap": "application/octet-stream",
   };
   return mimes[ext] || "application/octet-stream";
 }
@@ -291,7 +296,10 @@ function startProductionServer(distDir: string): Promise<number> {
         return;
       }
 
-      let filePath = path.join(distDir, url === "/" ? "index.html" : url);
+      // Asset URLs may carry a query string or encoded characters; resolve the path only.
+      const pathname = decodeURIComponent(url.split(/[?#]/)[0]);
+      let filePath = path.join(distDir, pathname === "/" ? "index.html" : pathname);
+      if (!filePath.startsWith(distDir)) filePath = path.join(distDir, "index.html");
       if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
         filePath = path.join(distDir, "index.html");
       }
