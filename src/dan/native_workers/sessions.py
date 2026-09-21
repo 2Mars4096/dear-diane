@@ -110,8 +110,18 @@ def cursor_messages(db: Path, composer_id: str) -> list[dict]:
 
 def discover(workspace: str) -> list[dict]:
     found: dict[str, dict] = {}
+    stores: set[tuple[str, Path]] = set()
     for backend, profiles in accounts().items():
         for account_id, profile in profiles.items():
+            # Accounts that share one history store (codexx share_history symlinks,
+            # or CODEX_HOME == ~/.codex) would list every session once per account.
+            env = profile.get("env", {})
+            home = env.get("CODEX_HOME") if backend == "codex" else env.get("CLAUDE_CONFIG_DIR") if backend == "claude" else None
+            if home:
+                store = (backend, (Path(home) / ("state_5.sqlite" if backend == "codex" else "projects")).resolve())
+                if store in stores:
+                    continue
+                stores.add(store)
             if backend == "cursor":
                 if account_id == "default":
                     db = cursor_user_dir() / "globalStorage/state.vscdb"

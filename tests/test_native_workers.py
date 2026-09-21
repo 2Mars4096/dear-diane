@@ -297,3 +297,29 @@ def test_discovery_sorts_newest_first_across_runtimes(monkeypatch, tmp_path):
     rows = sessions.discover(str(tmp_path))
     assert [row["session_id"] for row in rows] == ["new", "mid", "old"]
     assert [row["updated_at"] for row in rows] == [300.0, 200.0, 100.0]
+
+
+def test_shared_codex_store_is_listed_once(monkeypatch, tmp_path):
+    import sqlite3
+    from dan.native_workers import sessions
+    main = tmp_path / ".codex"; main.mkdir()
+    con = sqlite3.connect(main / "state_5.sqlite")
+    con.execute("CREATE TABLE threads (id TEXT, cwd TEXT, title TEXT, rollout_path TEXT, archived INTEGER)")
+    con.execute("INSERT INTO threads VALUES ('t1', ?, 'Shared', 'p', 0)", (str(tmp_path),)); con.commit(); con.close()
+    shared = tmp_path / ".codex-accounts/ph/.codex"; shared.mkdir(parents=True)
+    (shared / "state_5.sqlite").symlink_to(main / "state_5.sqlite")
+    monkeypatch.setattr(sessions, "accounts", lambda: {"codex": {
+        "default": {"env": {"CODEX_HOME": str(main)}}, "personal": {"env": {"CODEX_HOME": str(main)}}, "ph": {"env": {"CODEX_HOME": str(shared)}}}})
+    rows = sessions.discover(str(tmp_path))
+    assert [(row["session_id"], row["account"]) for row in rows] == [("t1", "default")]
+
+
+def test_personal_account_only_when_codex_home_differs(monkeypatch, tmp_path):
+    from dan.native_workers import catalog
+    (tmp_path / ".codex").mkdir()
+    monkeypatch.setattr(catalog, "user_home", lambda: tmp_path)
+    monkeypatch.setattr(catalog.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.delenv("CODEX_HOME", raising=False); monkeypatch.setenv("DAN_CODEXX_CONFIG", str(tmp_path / "none.toml"))
+    assert "personal" not in catalog.accounts()["codex"]
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "other"))
+    assert "personal" in catalog.accounts()["codex"]

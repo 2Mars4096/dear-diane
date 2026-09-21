@@ -27,7 +27,8 @@ def accounts() -> dict[str, dict[str, dict]]:
     result = {runtime: {"default": {"label": "Current CLI account", "env": {}}} for runtime in RUNTIMES}
     result["codex"]["default"]["env"] = {"CODEX_HOME": os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))}
     result["claude"]["default"]["env"] = {"CLAUDE_CONFIG_DIR": os.environ.get("CLAUDE_CONFIG_DIR", str(user_home() / ".claude"))}
-    if (user_home() / ".codex").is_dir():
+    # "personal" is only distinct when CODEX_HOME points somewhere other than ~/.codex.
+    if (user_home() / ".codex").is_dir() and Path(result["codex"]["default"]["env"]["CODEX_HOME"]).expanduser().resolve() != (user_home() / ".codex").resolve():
         result["codex"]["personal"] = {"label": "Personal Codex", "env": {"CODEX_HOME": str(user_home() / ".codex")}, "home": user_home() / ".codex"}
     config_path = Path(os.environ.get("DAN_CODEXX_CONFIG", str(user_home() / ".config/codexx/config.toml")))
     if config_path.is_file():
