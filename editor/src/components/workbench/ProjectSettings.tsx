@@ -21,7 +21,7 @@ export function ProjectSettings({ name, root, creating, onSave, onClose, onBrows
     dialog.current?.showModal();
     return () => { previous?.focus(); };
   }, []);
-  return <dialog ref={dialog} className="wb-project-settings" onCancel={onClose} aria-labelledby="project-settings-title">
+  return <dialog onClick={(event) => { const box = event.currentTarget.getBoundingClientRect(); if (event.target === event.currentTarget && (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom)) onClose(); }} ref={dialog} className="wb-project-settings" onCancel={onClose} aria-labelledby="project-settings-title">
     <form onSubmit={(event) => { event.preventDefault(); if (projectName.trim()) onSave(projectName.trim(), path.trim()); }}>
       <header><h2 id="project-settings-title">{creating ? "New project" : "Project settings"}</h2><button type="button" onClick={onClose} aria-label="Close project settings"><X size={18} /></button></header>
       <label>Project name<input autoFocus value={projectName} onChange={(event) => { setNameEdited(true); setTitle(event.target.value); }} placeholder="My project" required /></label>

@@ -15,7 +15,7 @@ export function DanSettings({ onClose, profiles, onProfilesChange }: {
     dialog.current?.showModal();
     return () => previous?.focus();
   }, []);
-  return <dialog ref={dialog} className="wb-project-settings wb-dan-settings" onCancel={onClose} aria-labelledby="dan-settings-title">
+  return <dialog onClick={(event) => { const box = event.currentTarget.getBoundingClientRect(); if (event.target === event.currentTarget && (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom)) onClose(); }} ref={dialog} className="wb-project-settings wb-dan-settings" onCancel={onClose} aria-labelledby="dan-settings-title">
     <header><h2 id="dan-settings-title">DAN settings</h2><button aria-label="Close DAN settings" onClick={onClose}><X size={18} /></button></header>
     <p>Preferences for this DAN app profile. Changes save automatically.</p>
     <h3>Appearance</h3>
