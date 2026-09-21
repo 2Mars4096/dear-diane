@@ -623,3 +623,14 @@
 .wb-token-link { text-align:left; font-size:12px; }
 .wb-token-link:hover { text-decoration:underline; }
 @media (max-width:760px) { .wb-token-columns { grid-template-columns:1fr; overflow:auto; } .wb-token-sessions { max-height:220px; } .wb-token-detail { overflow:visible; } .wb-token-bars li { grid-template-columns:80px minmax(0,1fr) 34px; } .wb-token-bars li small { display:none; } }
+/* Sidebar typography: 13px like native macOS sidebars; hierarchy from weight and ink, not size. */
+.wb-project-sidebar { -webkit-font-smoothing:antialiased; letter-spacing:-0.006em; }
+.wb-project-sidebar .wb-project-row { min-height:30px; }
+.wb-project-sidebar .wb-project-row > button:first-child { padding:6px; font-size:13px; font-weight:500; color:var(--wb-ink); }
+.wb-project-sidebar .wb-shelf-list .group\/session > button { padding:6px 8px; }
+.wb-project-sidebar .wb-shelf-list .dan-rail-card-title { font-size:13px; line-height:18px; font-weight:400; color:color-mix(in srgb, var(--wb-ink) 78%, var(--wb-muted)); }
+.wb-project-sidebar .wb-shelf-list .group\/session:hover .dan-rail-card-title,
+.wb-project-sidebar .wb-shelf-list .group\/session[data-active=true] .dan-rail-card-title { color:var(--wb-ink); }
+.wb-project-sidebar .wb-shelf-list .group\/session[data-active=true] .dan-rail-card-title { font-weight:500; }
+.wb-project-sidebar .wb-shelf-search input, .wb-project-sidebar .wb-sidebar-footer button, .wb-project-sidebar .wb-sidebar-footer .wb-usage > summary, .wb-project-sidebar .wb-shelf-empty { font-size:13px; }
+.wb-project-sidebar .wb-projects-heading { letter-spacing:0; }
