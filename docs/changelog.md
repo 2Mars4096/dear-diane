@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-21
+- [fix] Only the selected chat is highlighted in the sidebar; the active project row is marked by text weight instead of a background.
 - [feat] Process manager: long-running commands (dev servers, watchers, tunnels) are owned by DAN rather than a chat turn. They start in their own session with output to a log file, so they survive the end of an agent run, Stop, and a backend restart (re-attached by PID + start time). `GET/POST /api/processes`, `/stop`, `/logs`, `DELETE`; records under `graphs/processes/`.
 - [feat] Agents use it without leaving their sandbox: every native lead gets a workspace-local file bridge (`proc.py start --name … -- <command>`, `list`, `logs`, `stop`) and is told that anything started from its own shell dies with the run; DAN leads get a `managed_process` tool.
 - [feat] Processes side tab: start a command, see what is running (origin, uptime, live log tail), Stop, and Remove finished ones; the tab shows a running count.
