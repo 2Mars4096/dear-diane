@@ -2,11 +2,9 @@ import { visibleQueuedTranscript } from "../workbench/queuedTranscript";
 import { ProjectMenu } from "../workbench/ProjectMenu";
 import { SidecarChat } from "../workbench/SidecarChat";
 import { LeadAgentMenu } from "../workbench/LeadAgentMenu";
-import { ImportNativeSessions } from "../workbench/ImportNativeSessions";
 import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from "../workbench/NativeWorkers";
 import { TeamPanel, TeamStrip, useTeamWorkers } from "../workbench/TeamProgress";
 import { SideTabs, readLastSideTab, rememberSideTab, type SideTab, type SideTabItem } from "../workbench/SideTabs";
-import { UsagePanel } from "../workbench/UsagePanel";
 import type { ReaderAsk, ReaderFile } from "../reader/ReaderView";
 import { ProjectSettings } from "../workbench/ProjectSettings";
 import { streamedMessageContent, completedMessageContent } from "../workbench/eventPresentation";
@@ -153,6 +151,8 @@ import MarkdownRenderer from "../shared/MarkdownRenderer";
 const FollowupQueue = lazy(() => import("../workbench/FollowupQueue").then(module => ({ default: module.FollowupQueue })));
 const DanSettings = lazy(() => import("../workbench/DanSettings").then(module => ({ default: module.DanSettings })));
 const ReaderView = lazy(() => import("../reader/ReaderView").then((module) => ({ default: module.ReaderView })));
+const UsagePanel = lazy(() => import("../workbench/UsagePanel").then((module) => ({ default: module.UsagePanel })));
+const ImportNativeSessions = lazy(() => import("../workbench/ImportNativeSessions").then((module) => ({ default: module.ImportNativeSessions })));
 
 const DEFAULT_WORKFLOW_ID = "_scratch";
 const SUPER_DAN_BACKEND = "super_dan";
@@ -14590,7 +14590,8 @@ export default function ChunkWorkspaceApp() {
     if (sideTab !== "chat") openSideTab(null);
   };
   const askFromReader = (ask: ReaderAsk) => {
-    setReaderSelection({ text: ask.quote, context: `Page ${ask.pageNumber}: ${ask.pageText}`, token: Date.now() });
+    const where = ask.anchor ? ` (the passage appears after "…${ask.anchor.prefix.slice(-40)}" and before "${ask.anchor.suffix.slice(0, 40)}…")` : "";
+    setReaderSelection({ text: ask.quote, context: `Page ${ask.pageNumber}${where}: ${ask.pageText}`, token: Date.now() });
     openSideTab("chat");
   };
   // Tabs follow context: Preview once something is selected, Activity once a run has events, Team once a team exists.
@@ -17314,7 +17315,7 @@ export default function ChunkWorkspaceApp() {
         </div>
       </header>}
       {danSettings && <Suspense fallback={null}><DanSettings onClose={() => setDanSettings(false)} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} /></Suspense>}
-      {importNativeSessions && <ImportNativeSessions workspace={importNativeSessions.root} workspaceId={importNativeSessions.id} onClose={() => setImportNativeSessions(null)} onImport={async (thread) => { bindThreadToWorkspace(thread.workflow_id, thread.id, importNativeSessions.id); await refreshThreads(); }} />}
+      {importNativeSessions && <Suspense fallback={null}><ImportNativeSessions workspace={importNativeSessions.root} workspaceId={importNativeSessions.id} onClose={() => setImportNativeSessions(null)} onImport={async (thread) => { bindThreadToWorkspace(thread.workflow_id, thread.id, importNativeSessions.id); await refreshThreads(); }} /></Suspense>}
       {activePane === "work" && workbenchSettings && <ProjectSettings
         name={creatingProject ? "" : workspace?.name || "Project"}
         root={creatingProject ? "" : workspace?.pinnedPaths[0] || ""}
@@ -18458,7 +18459,7 @@ export default function ChunkWorkspaceApp() {
               })}
               {sessionGroups.every((group) => sessionShelfScope === "archived" ? !group.archived : group.archived) && <p className="wb-shelf-empty">{threadQuery.trim() ? "No matching chats" : sessionShelfScope === "archived" ? "No archived chats" : "Create a project to get started"}</p>}
             </div>
-            <div className="wb-sidebar-footer">{sessionShelfScope === "archived" && <><button className="wb-delete-archived" disabled={deletingArchived || !threads.some((thread) => thread.archived)} onClick={() => void deleteAllArchivedSessions()}><Trash2 size={15} />{deletingArchived ? "Deleting archived chats…" : "Delete all archived chats"}</button>{archiveDeleteProgress && <p role="status" className="wb-archive-delete-progress">{archiveDeleteProgress}</p>}</>}<button onClick={() => { setSessionShelfScope(sessionShelfScope === "archived" ? "all" : "archived"); }}><Archive size={15} />{sessionShelfScope === "archived" ? "Back to projects" : "Archived chats"}</button><button onClick={() => setDanSettings(true)}><MoreHorizontal size={15} />DAN settings</button><UsagePanel /></div>
+            <div className="wb-sidebar-footer">{sessionShelfScope === "archived" && <><button className="wb-delete-archived" disabled={deletingArchived || !threads.some((thread) => thread.archived)} onClick={() => void deleteAllArchivedSessions()}><Trash2 size={15} />{deletingArchived ? "Deleting archived chats…" : "Delete all archived chats"}</button>{archiveDeleteProgress && <p role="status" className="wb-archive-delete-progress">{archiveDeleteProgress}</p>}</>}<button onClick={() => { setSessionShelfScope(sessionShelfScope === "archived" ? "all" : "archived"); }}><Archive size={15} />{sessionShelfScope === "archived" ? "Back to projects" : "Archived chats"}</button><button onClick={() => setDanSettings(true)}><MoreHorizontal size={15} />DAN settings</button><Suspense fallback={null}><UsagePanel /></Suspense></div>
           </aside>}
           {!isPhoneViewport && !renderFileExplorer && (
             <CollapsedPaneRail

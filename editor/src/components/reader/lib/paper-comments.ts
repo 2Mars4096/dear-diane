@@ -19,13 +19,38 @@ export type PdfSelectionAnchor = {
   rotation: 0 | 90 | 180 | 270;
 };
 
+/** DAN: text anchor so a highlight can be re-found when the PDF or its layout changes. */
+export type PaperCommentAnchor = {
+  end: number;
+  fingerprint: string;
+  pageFingerprint: string;
+  prefix: string;
+  quote: string;
+  scope?: "block" | "passage";
+  start: number;
+  suffix: string;
+};
+
 export type PaperComment = PdfSelectionAnchor & {
+  anchor?: PaperCommentAnchor | null;
   commentId: string;
   createdAt: string;
   materialId: string;
   text: string;
   updatedAt: string;
 };
+
+function cleanAnchor(value: unknown): PaperCommentAnchor | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const text = (key: string, limit: number) => (typeof record[key] === "string" ? (record[key] as string).slice(0, limit) : null);
+  const quote = text("quote", 700); const prefix = text("prefix", 64); const suffix = text("suffix", 64);
+  const fingerprint = text("fingerprint", 80); const pageFingerprint = text("pageFingerprint", 80);
+  if (!quote || prefix === null || suffix === null || !fingerprint || !pageFingerprint) return null;
+  if (!Number.isInteger(record.start) || !Number.isInteger(record.end) || (record.start as number) < 0 || (record.end as number) <= (record.start as number)) return null;
+  return { end: record.end as number, fingerprint, pageFingerprint, prefix, quote, start: record.start as number, suffix,
+    ...(record.scope === "block" ? { scope: "block" as const } : {}) };
+}
 
 const MAX_COMMENTS = 200;
 const MAX_COMMENT_LENGTH = 4_000;
@@ -111,7 +136,9 @@ export function normalizePaperComments(
     if (!commentId || !quote || !pageNumber || !rects.length || !createdAt || !updatedAt) {
       return [];
     }
+    const anchor = cleanAnchor(record.anchor);
     return [{
+      ...(anchor ? { anchor } : {}),
       commentId,
       createdAt,
       materialId,
