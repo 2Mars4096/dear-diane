@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-21
+- [feat] Token usage analyzer shows one Takeaway at the top of a session report and of the all-sessions overview: the costliest stage (with the runner-up when it is ≥15%) and the single change that addresses it; every stage has exactly one remedy (`takeaway`, `STAGE_REMEDY`).
 - [feat] DAN settings opens as a closable tab in the main column (beside the conversation and PDFs) instead of a modal popup; the same component still renders as a dialog when not given `page`.
 - [docs] Save built-in imagegen's retro-futuristic DAN icon candidate and reproducible prompt under `output/imagegen/`; app configuration remains unchanged.
 

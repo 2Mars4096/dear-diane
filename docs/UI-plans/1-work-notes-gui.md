@@ -4,6 +4,7 @@
 **Goal:** Refine one calm workspace for Super DAN sessions, task state, artifacts, previews, and notes.
 
 ## Tasks
+- [x] Generate a retro-futuristic DAN app-icon candidate; save artwork and prompt in `output/imagegen/` for review.
 - [x] Add eight operator-specified paired light/dark color schemes to DAN Settings with live preview, independent Light/Dark/System mode, and persisted selection.
 - [x] Show only waiting queue entries, with accurate counts, numbered previews, keyboard-expandable full text, and matching Work surface styling.
 

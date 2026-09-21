@@ -1,5 +1,7 @@
 # Todo
 
+- [x] [DAN icon concept](UI-plans/1-work-notes-gui.md) — generated retro-futuristic artwork and saved its prompt in `output/imagegen/`.
+
 ## Universal product stack
 
 - [x] [1-universal-cell](plans/1-universal-cell.md) — one typed, brief-driven execution cell.
@@ -17,6 +19,7 @@
   - [x] Codex live steering and per-message Steer now in Up next; acceptance-gated delivery — [native worker plan](UI-plans/2-native-agent-workers.md).
   - [x] FIFO continuation delivery across partial draining/new arrivals/reload; remove reused-rank sorting — [4-1](plans/4-1-agent-workbench.md).
   - [x] Latest-message Edit with attachment-preserving resend, cancellation, active-run guard, and failed-send recovery — [4-1](plans/4-1-agent-workbench.md).
+  - [x] [4-3-token-usage-analyzer](plans/4-3-token-usage-analyzer.md) — per-session and combined token analyzer in Settings with Jev stage labelling.
   - [ ] [Reader and side panel](UI-plans/3-reader-and-side-panel.md) — tabbed side panel and ported PDF reader delivered; live Ask answer run and phone layout remain.
   - [ ] [Native agent workers](UI-plans/2-native-agent-workers.md) — Codex/Claude/Antigravity worker baseline and opt-in forked imports delivered; team progress strip/panel delivered; live acceptance, restart-resume, approval transport, and browser thumbnails remain.
 - [x] [5-universal-product-cutover](plans/5-universal-product-cutover.md) — deleted the backed-up legacy tree, renumbered docs, validated, committed, and pushed.

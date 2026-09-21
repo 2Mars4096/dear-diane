@@ -85,6 +85,62 @@ def account_usage(limit: int = 2):
     return usage_report(Path(resolve_graphs_dir()), max(1, min(limit, 6)))
 
 
+@router.get("/api/token-usage/sessions")
+def token_usage_sessions(limit: int = 40):
+    """Recent Claude Code and Codex sessions with token totals, read from their transcripts."""
+    from dan.native_workers.token_usage import list_sessions
+    return list_sessions(Path(resolve_graphs_dir()), max(1, min(limit, 200)))
+
+
+@router.get("/api/token-usage/overview")
+def token_usage_overview(limit: int = 120):
+    """All recent sessions combined: per day, project, agent, model, and activity."""
+    from dan.native_workers.token_usage import overview
+    return overview(Path(resolve_graphs_dir()), max(1, min(limit, 300)))
+
+
+@router.get("/api/token-usage/session")
+def token_usage_session(id: str):
+    """Rounds, activity breakdown, heaviest steps, flags, and advice for one session."""
+    from dan.native_workers.token_usage import analyze
+    try:
+        return analyze(Path(resolve_graphs_dir()), id)
+    except KeyError:
+        raise HTTPException(404, "Session not found; refresh the list")
+
+
+class TokenUsageClassify(BaseModel):
+    id: str
+
+
+@router.post("/api/token-usage/classify")
+def token_usage_classify(body: TokenUsageClassify):
+    """Label the session's steps with the decision model. Sends step summaries, never tool output."""
+    from dan.native_workers.token_usage import classify
+    try:
+        return classify(Path(resolve_graphs_dir()), body.id)
+    except KeyError:
+        raise HTTPException(404, "Session not found; refresh the list")
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+
+
+class TokenUsageSettings(BaseModel):
+    model: str = ""
+
+
+@router.get("/api/token-usage/settings")
+def token_usage_settings():
+    from dan.native_workers.token_usage import settings
+    return settings(Path(resolve_graphs_dir()))
+
+
+@router.put("/api/token-usage/settings")
+def update_token_usage_settings(body: TokenUsageSettings):
+    from dan.native_workers.token_usage import write_settings
+    return write_settings(Path(resolve_graphs_dir()), body.model)
+
+
 @router.get("/api/skills")
 def skill_pool():
     """Skills installed for any agent CLI and which runtimes DAN shares them with."""

@@ -3,11 +3,12 @@ export type SessionRow = { id: string; backend: string; account: string; session
 export type Share = { key: string; count: number; added: number; burden: number; weight: number; share: number };
 export type Step = { i: number; round: number; kind: string; tool?: string; action: string; stage: string; detail: string; added: number; result?: number; burden: number; weight: number; error?: boolean; flags?: string[]; child_total?: number };
 export type Round = { index: number; title: string; started_at: string | null; calls: number; steps: number; total: number; output: number; peak_context: number; cache_hit: number; top_stage: string };
+export type Takeaway = { stage: string; share: number; tokens: number; headline: string; meaning: string; action: string };
 export type Report = SessionRow & { rounds: Round[]; context_curve: number[]; by_action: Share[]; by_stage: Share[]; unattributed: number; context_total: number; top_steps: Step[];
-  flags: { flag: string; count: number; burden: number; examples: string[] }[]; subagents: { name: string; type: string; totals: Totals }[]; advice: { tokens: number; title: string; detail: string }[]; labelled_by: string };
+  flags: { flag: string; count: number; burden: number; examples: string[] }[]; subagents: { name: string; type: string; totals: Totals }[]; advice: { tokens: number; title: string; detail: string }[]; takeaway?: Takeaway | null; labelled_by: string };
 export type Day = { day: string; total: number; sessions: number; claude: number; codex: number };
 export type Overview = { sessions: number; total: number; subagent_total: number; totals: Totals; days: Day[]; by_project: Share[]; by_agent: Share[]; by_model: Share[]; by_stage: Share[]; by_action: Share[];
-  flags: Report["flags"]; top_sessions: Pick<SessionRow, "id" | "title" | "backend" | "cwd" | "total" | "updated_at">[]; concentration: number; advice: Report["advice"]; actions: Record<string, string>; stages: Record<string, string> };
+  flags: Report["flags"]; top_sessions: Pick<SessionRow, "id" | "title" | "backend" | "cwd" | "total" | "updated_at">[]; concentration: number; advice: Report["advice"]; takeaway?: Takeaway | null; actions: Record<string, string>; stages: Record<string, string> };
 export type SessionFilter = "all" | "claude" | "codex" | "dan";
 
 export const BACKENDS: Record<string, string> = { claude: "Claude Code", codex: "Codex" };

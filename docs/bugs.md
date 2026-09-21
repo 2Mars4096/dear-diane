@@ -1,4 +1,6 @@
 # Known Issues & Failed Approaches
+- **Failed approach 2026-09-21: finding/calling Jev like a chat model.** `typesafe/jev-*` is not listed by OpenRouter `/api/v1/models` (even authenticated), and `/chat/completions` rejects it (“is a decisions model”). Use `POST https://openrouter.ai/api/alpha/decisions` with model `jev-latest`; `typesafe/jev-latest` is rejected there, `~typesafe/jev-latest` and `typesafe/jev-1.13` work. See [4-3](plans/4-3-token-usage-analyzer.md).
+- **Known limit 2026-09-21: token analyzer estimates.** Tool-result and prompt tokens are chars/4; attachments and injected reminders are not attributed (shown as “not attributed”, 8–21% on real sessions). Model-call totals are exact.
 - **Fixed in source 2026-09-20: native/legacy sessions retained placeholder titles.** The earlier API-only naming fix missed direct store writes and existing records. Shared-store naming covers append/snapshot writes and read-only legacy recovery.
 - **Fixed in source 2026-09-20: project creation/switching made unwanted blank chats.** Removed implicit session creation and cross-project last-thread fallback for empty projects.
 - **Fixed in source 2026-09-20: older checkpoint queue receipts escaped transcript filtering.** Recognize “Queued for checkpoint append” in the legacy pair matcher; Up next starts expanded. Installed clients still require deployment.

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
-import { BACKENDS, FLAGS, curvePoints, fillDays, folderName, formatTokens, percent, visibleSessions, type Overview, type Report, type SessionFilter, type SessionRow, type Share } from "./tokenUsageFormat";
+import { BACKENDS, FLAGS, curvePoints, fillDays, folderName, formatTokens, percent, visibleSessions, type Overview, type Report, type Takeaway, type SessionFilter, type SessionRow, type Share } from "./tokenUsageFormat";
 
 type Listing = { sessions: SessionRow[]; actions: Record<string, string>; stages: Record<string, string> };
 type Classifier = { model: string; configured: boolean };
@@ -93,6 +93,7 @@ function Combined({ overview, onOpen }: { overview: Overview; onOpen: (id: strin
     <dl className="wb-token-tiles">{tiles.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
     {days.length > 1 && <figure className="wb-token-days"><div role="img" aria-label={`Tokens per day, highest ${formatTokens(busiest.total)} on ${busiest.day}`}>{days.map((day) => <span key={day.day} title={`${day.day}: ${formatTokens(day.total)} tokens in ${day.sessions} sessions (Claude Code ${formatTokens(day.claude)}, Codex ${formatTokens(day.codex)})`}><i style={{ height: `${(day.total / dayPeak) * 100}%` }} /></span>)}</div>
       <figcaption><span>{days[0].day}</span><span>Tokens per day, by last activity · peak {formatTokens(busiest.total)} on {busiest.day}</span><span>{days[days.length - 1].day}</span></figcaption></figure>}
+    <TakeawayCard takeaway={overview.takeaway} />
     {overview.advice.length > 0 && <><h4>What to change</h4><ol className="wb-token-advice">{overview.advice.map((tip) => <li key={tip.title}><strong>{tip.title}</strong> <b>{formatTokens(tip.tokens)}</b><p>{tip.detail}</p></li>)}</ol></>}
     <div className="wb-token-grid">
       <section><h4>Where the tokens went <span className="wb-token-toggle"><button aria-pressed={view === "stage"} onClick={() => setView("stage")}>By stage</button><button aria-pressed={view === "action"} onClick={() => setView("action")}>By action</button></span></h4>
@@ -106,6 +107,17 @@ function Combined({ overview, onOpen }: { overview: Overview; onOpen: (id: strin
     <ol className="wb-token-rounds">{overview.top_sessions.map((row) => <li key={row.id}><button className="wb-token-title wb-token-link" onClick={() => onOpen(row.id)}>{row.title}</button><span className="wb-token-meter"><i style={{ width: `${Math.max(1, (row.total / sessionPeak) * 100)}%` }} /></span>
       <small><b>{formatTokens(row.total)}</b> · {BACKENDS[row.backend] ?? row.backend}{folderName(row.cwd) ? ` · ${folderName(row.cwd)}` : ""} · {new Date(row.updated_at * 1000).toLocaleDateString()}</small></li>)}</ol>
   </>;
+}
+
+/** The one thing to know: the costliest stage and the single change that addresses it. */
+function TakeawayCard({ takeaway }: { takeaway?: Takeaway | null }) {
+  if (!takeaway) return null;
+  return <aside className="wb-token-takeaway" aria-label="Takeaway">
+    <span>Takeaway</span>
+    <strong>{takeaway.headline}</strong>
+    {takeaway.meaning && <small>{takeaway.stage}: {takeaway.meaning.charAt(0).toLowerCase() + takeaway.meaning.slice(1)}.</small>}
+    {takeaway.action && <p>{takeaway.action}</p>}
+  </aside>;
 }
 
 function Bars({ rows, names, total, other, unit }: { rows: Share[]; names: Record<string, string>; total: number; other?: number; unit?: string }) {
@@ -127,6 +139,7 @@ function Detail({ report, names, classifier, busy, onClassify, onModel }: { repo
     <dl className="wb-token-tiles">{tiles.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
     {report.context_curve.length > 1 && <figure className="wb-token-curve"><svg viewBox="0 0 600 60" preserveAspectRatio="none" role="img" aria-label={`Context size per model call, peaking at ${formatTokens(totals.peak_context)} tokens`}><polyline points={curvePoints(report.context_curve, 600, 58)} /></svg><figcaption>Context size per call{totals.compactions ? ` · ${totals.compactions} compactions` : ""}</figcaption></figure>}
 
+    <TakeawayCard takeaway={report.takeaway} />
     {report.advice.length > 0 && <><h4>What to change</h4><ol className="wb-token-advice">{report.advice.map((tip) => <li key={tip.title}><strong>{tip.title}</strong> <b>{formatTokens(tip.tokens)}</b><p>{tip.detail}</p></li>)}</ol></>}
 
     <h4>Where the tokens went <span className="wb-token-toggle"><button aria-pressed={view === "stage"} onClick={() => setView("stage")}>By stage</button><button aria-pressed={view === "action"} onClick={() => setView("action")}>By action</button></span></h4>

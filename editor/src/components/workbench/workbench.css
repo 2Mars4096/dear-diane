@@ -642,3 +642,8 @@
 .wb-settings-page label > select { display:block; margin-top:8px; width:100%; max-width:360px; }
 .wb-settings-page h3 { padding-top:20px; border-top:1px solid var(--wb-line); }
 .wb-settings-page h3:first-of-type { border-top:0; padding-top:0; }
+.wb-token-takeaway { display:grid; gap:4px; margin:14px 0 18px; padding:14px 16px; border:1px solid var(--wb-line); border-left:3px solid var(--wb-accent); border-radius:10px; background:var(--wb-soft); }
+.wb-token-takeaway > span { font-size:10px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--wb-accent); }
+.wb-token-takeaway strong { font-size:15px; font-weight:500; color:var(--wb-ink); letter-spacing:-.01em; }
+.wb-token-takeaway small { font-size:11px; color:var(--wb-muted); }
+.wb-token-takeaway p { margin:4px 0 0; font-size:13px; line-height:1.55; color:var(--wb-ink); }
