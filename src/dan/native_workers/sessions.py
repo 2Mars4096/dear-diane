@@ -141,14 +141,19 @@ def discover(workspace: str) -> list[dict]:
                 projects = home / "projects"
                 if not projects.is_dir():
                     continue
+                # Subagent transcripts live under <session>/subagents/; the top-level
+                # glob skips them, and sidechain/agent-tagged rows are skipped explicitly.
                 for path in projects.glob("*/*.jsonl"):
-                    cwd, title = "", ""
+                    cwd, title, internal = "", "", False
                     try:
                         with path.open() as stream:
                             for index, line in enumerate(stream):
                                 if index > 100:
                                     break
                                 row = json.loads(line)
+                                if row.get("isSidechain") or row.get("agentId"):
+                                    internal = True
+                                    break
                                 cwd = row.get("cwd") or cwd
                                 if row.get("type") == "user" and not title:
                                     content = row.get("message", {}).get("content", "")
@@ -158,7 +163,7 @@ def discover(workspace: str) -> list[dict]:
                                     break
                     except (OSError, ValueError, AttributeError):
                         continue
-                    if same_folder(cwd, workspace):
+                    if not internal and same_folder(cwd, workspace):
                         add(found, backend, account_id, path.stem, title, str(path), workspace)
             elif backend == "antigravity":
                 path = user_home() / ".gemini/antigravity-cli/cache/last_conversations.json"

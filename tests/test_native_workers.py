@@ -266,3 +266,15 @@ def test_codex_discovery_skips_internal_threads(monkeypatch, tmp_path):
     monkeypatch.setattr(sessions, "accounts", lambda: {"codex": {"default": {"env": {"CODEX_HOME": str(home)}}}})
     found = sorted(row["session_id"] for row in sessions.discover(str(tmp_path)))
     assert found == ["legacy", "u1"]
+
+
+def test_claude_discovery_skips_subagent_transcripts(monkeypatch, tmp_path):
+    from dan.native_workers import sessions
+    home = tmp_path / ".claude"; project = home / "projects" / "p"; (project / "s1" / "subagents").mkdir(parents=True)
+    row = lambda **extra: json.dumps({"type": "user", "cwd": str(tmp_path), "message": {"role": "user", "content": "Hi"}, **extra}) + "\n"
+    (project / "s1.jsonl").write_text(row())
+    (project / "side.jsonl").write_text(row(isSidechain=True))
+    (project / "agent.jsonl").write_text(row(agentId="a1"))
+    (project / "s1" / "subagents" / "agent-x.jsonl").write_text(row())
+    monkeypatch.setattr(sessions, "accounts", lambda: {"claude": {"default": {"env": {"CLAUDE_CONFIG_DIR": str(home)}}}})
+    assert [r["session_id"] for r in sessions.discover(str(tmp_path))] == ["s1"]

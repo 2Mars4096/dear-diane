@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-09-21
+- [fix] Claude Code import discovery also skips subagent transcripts (nested `subagents/` files and rows tagged `isSidechain`/`agentId`); Cursor already skipped `isSubagent` chats.
+
 ## 2026-09-20
 - [fix] Native session import no longer lists Codex's internal threads (`thread_source` subagent / guardian_review / agent_created_thread), which appeared as many duplicate "The following is the Codex agent history…" entries. Old Codex databases without that column are unaffected.
 - [fix] Removed the native transcript import size limit; imports stream line by line, so large Codex/Claude histories import without a cap.
