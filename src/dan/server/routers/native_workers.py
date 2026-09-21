@@ -83,3 +83,25 @@ def account_usage(limit: int = 2):
     """Latest quota for the most recently used agent accounts. Credentials stay server-side."""
     from dan.native_workers.usage import usage_report
     return usage_report(Path(resolve_graphs_dir()), max(1, min(limit, 6)))
+
+
+@router.get("/api/skills")
+def skill_pool():
+    """Skills installed for any agent CLI and which runtimes DAN shares them with."""
+    from dan.native_workers.skills import report
+    return report(Path(resolve_graphs_dir()))
+
+
+class SkillPoolSettings(BaseModel):
+    enabled: bool = True
+    excluded: list[str] = []
+
+
+@router.put("/api/skills")
+def update_skill_pool(body: SkillPoolSettings):
+    from dan.native_workers.skills import build_pool, report, write_settings, RECEIVERS
+    base = Path(resolve_graphs_dir())
+    write_settings(base, body.enabled, body.excluded)
+    for runtime in RECEIVERS:
+        build_pool(runtime, base)
+    return report(base)

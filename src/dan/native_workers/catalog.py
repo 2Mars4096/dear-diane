@@ -214,6 +214,15 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
                 # Headless runs cannot prompt; let Bash run inside Claude's workspace sandbox instead.
                 settings["sandbox"] = {"enabled": True, "autoAllowBashIfSandboxed": True}
             cmd += ["--settings", json.dumps(settings)]
+            # Skills installed for other CLIs, exposed through DAN's symlink pool (never ~/.claude or the project).
+            try:
+                from dan.server.paths import resolve_graphs_dir
+                from .skills import build_pool
+                pool = build_pool("claude", Path(resolve_graphs_dir()))
+            except Exception:  # skills are optional; never block a run
+                pool = None
+            if pool:
+                cmd += ["--add-dir", str(pool)]
         elif fast:
             raise ValueError("Antigravity has no supported fast-mode switch")
         if effort:

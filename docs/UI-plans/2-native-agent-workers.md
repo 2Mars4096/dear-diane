@@ -75,3 +75,5 @@
 - [x] Verify with isolated adapter/UI tests and replay the two actual September 19 review agents without modifying native records.
 - [ ] Install the rebuilt client and restart the backend when the active conversation can end; verify a fresh live spawn in the installed app.
 - Validation: 31 backend tests and 6 focused UI tests pass; production typecheck/build/budgets pass. The arm64 app is rebuilt, ad-hoc signed and signature-verified with the installed icon preserved; not installed over the active app.
+- [x] Skill pool: share Codex/Cursor skills with Claude Code through a DAN-owned symlink directory.
+- [ ] Extend the skill pool to Codex and Cursor receivers once each CLI has a non-invasive way to load an extra skills directory.

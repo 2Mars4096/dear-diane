@@ -506,3 +506,10 @@
 .wb-reader-ocr[data-error] { color:var(--wb-danger,#bc3030); }
 .wb-reader-comments li[data-stale=missing] q { opacity:.55; text-decoration:line-through; }
 .wb-reader-comments li[data-stale] span { color:var(--wb-accent); }
+.wb-skill-pool { margin-top:20px; }
+.wb-skill-list { list-style:none; margin:8px 0 0; padding:0; max-height:220px; overflow:auto; border:1px solid var(--wb-line); border-radius:8px; }
+.wb-skill-list li + li { border-top:1px solid var(--wb-line); }
+.wb-skill-list label { display:flex; align-items:flex-start; gap:10px; margin:0; padding:8px 10px; cursor:pointer; }
+.wb-skill-list label > span { display:grid; gap:2px; min-width:0; }
+.wb-skill-list strong { font-size:12px; font-weight:500; }
+.wb-skill-list small { font-size:10px; color:var(--wb-muted); }

@@ -31,6 +31,7 @@ Work opens with a familiar project/chat sidebar: New chat, search, collapsible p
 - **Projects:** `⌘/Ctrl + Shift + P` opens the carousel. Scroll or use left/right arrows, then Enter. Escape cancels.
 - **Sessions:** `⌘/Ctrl + Shift + S` opens the current project's wheel. Press `1–8` to open; arrows or `WASD` aim (hold two directions for diagonals); `Q/E/Z/C` also select diagonals directly. Press Enter to open. The newest eight sessions keep stable slots based on creation, never last edit.
 - **All sessions:** use the project sidebar or the wheel's “All sessions” button. Drafts survive switching.
+- **Skills:** DAN settings → Skills lets Claude Code use skills installed for Codex or Cursor, without changing any CLI's own folders.
 - **Usage:** hover the sidebar's Usage button for remaining quota (5h/week/model windows) on the accounts you used most recently.
 - **Reader:** click a PDF in Files (or **Read** in Preview). Select text → **Ask** stages it in the side chat with the page's text; **Comment** saves a highlight with an optional note. Scanned pages are OCR'd in-app so they become selectable; highlights are text-anchored so they survive PDF changes; **Export** saves a copy with comments as PDF highlights. Zoom, page references (**Refs**), comments, and your position are remembered per PDF.
 

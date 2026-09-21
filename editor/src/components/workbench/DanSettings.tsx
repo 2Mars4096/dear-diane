@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useRef } from "react";
 import { X } from "lucide-react";
 const DesktopUpdates = lazy(() => import("./DesktopUpdates").then(module => ({ default: module.DesktopUpdates })));
+const SkillPool = lazy(() => import("./SkillPool").then(module => ({ default: module.SkillPool })));
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { NativeWorkerSettings, type WorkerProfiles } from "./NativeWorkers";
 import { PALETTE_ROLES, WORKBENCH_PALETTES, workbenchPalette } from "../../lib/workbenchPalette";
@@ -33,6 +34,7 @@ export function DanSettings({ onClose, profiles, onProfilesChange }: {
     <label>Surface<select value={settings.workspaceSurfaceTheme} onChange={(event) => settings.updateSetting("workspaceSurfaceTheme", event.target.value as typeof settings.workspaceSurfaceTheme)}><option value="original">Original</option><option value="industrial">Industrial</option><option value="factory-worn">Factory worn</option></select></label>
     <label>Color mode<select value={settings.workspaceSurfaceTone} onChange={(event) => settings.updateSetting("workspaceSurfaceTone", event.target.value as typeof settings.workspaceSurfaceTone)}><option value="system">System</option><option value="day">Day</option><option value="night">Night</option></select></label>
     <NativeWorkerSettings profiles={profiles} onChange={onProfilesChange} />
+    <Suspense fallback={<p>Loading skills…</p>}><SkillPool /></Suspense>
     <footer><button onClick={onClose}>Done</button></footer>
   </dialog>;
 }
