@@ -75,7 +75,10 @@
 .wb-message { margin:0 0 36px; animation:wb-arrive 180ms ease-out; }
 .wb-message-author { display:flex; align-items:center; gap:9px; font-size:12px; font-weight:600; margin-bottom:10px; color:var(--wb-muted); }
 .wb-message-body { font-size:15px; line-height:1.85; overflow-wrap:anywhere; }
-.wb-message-user { margin-left:12%; margin-bottom:26px; border-radius:12px; background:var(--wb-soft); padding:6px 12px; }
+.wb-message-user { margin-left:12%; margin-bottom:22px; border-radius:12px; background:var(--wb-soft); padding:5px 12px; }
+.wb-message-user .wb-message-body { line-height:1.5; }
+.wb-message-user .wb-message-body p { margin:0; }
+.wb-message-user .wb-message-body p + p { margin-top:6px; }
 .wb-message-user .wb-message-author { display:none; }
 .wb-live-action { display:flex; align-items:center; gap:10px; color:var(--wb-muted); font-size:14px; }
 .wb-live-action > span:last-child { animation:wb-settle 320ms ease-out; }
