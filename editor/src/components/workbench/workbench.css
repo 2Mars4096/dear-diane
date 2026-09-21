@@ -647,3 +647,5 @@
 .wb-token-takeaway strong { font-size:15px; font-weight:500; color:var(--wb-ink); letter-spacing:-.01em; }
 .wb-token-takeaway small { font-size:11px; color:var(--wb-muted); }
 .wb-token-takeaway p { margin:4px 0 0; font-size:13px; line-height:1.55; color:var(--wb-ink); }
+.wb-usage-row[data-level=mid] .wb-usage-pct { color:#b7791f; font-weight:500; }
+.wb-usage-row[data-level=high] .wb-usage-pct { color:var(--wb-danger,#bc3030); font-weight:600; }

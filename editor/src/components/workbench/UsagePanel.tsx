@@ -7,6 +7,11 @@ export type UsageAccount = { backend: string; account: string; label: string; wi
 const NAMES: Record<string, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor", antigravity: "Antigravity", dan: "DAN" };
 const POLL_MS = 5 * 60_000; // refreshed on every hover-open, then every 5 minutes while it stays open
 
+/** Colour by what is left: under 25% warns, under 10% is critical. */
+export function usageLevel(usedPercent: number): "mid" | "high" | undefined {
+  const left = 100 - usedPercent;
+  return left < 10 ? "high" : left < 25 ? "mid" : undefined;
+}
 export function resetsIn(at: number | null, now = Date.now() / 1000): string {
   if (!at) return "";
   const seconds = Math.max(0, at - now);
@@ -50,7 +55,7 @@ export function UsagePanel() {
         <h4>{NAMES[account.backend] ?? account.backend}<span>{account.account}{account.plan ? ` · ${account.plan}` : ""}</span></h4>
         {account.error ? <p className="wb-muted">{account.error}</p> : account.windows.map((window) => {
           const used = Math.min(100, Math.max(0, window.used_percent));
-          return <div key={window.label} className="wb-usage-row" data-level={used >= 90 ? "high" : used >= 70 ? "mid" : undefined}>
+          return <div key={window.label} className="wb-usage-row" data-level={usageLevel(used)}>
             <span className="wb-usage-label">{window.label}</span>
             <span className="wb-usage-bar" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(used)} aria-label={`${window.label} used`}><i style={{ width: `${used}%` }} /></span>
             <span className="wb-usage-pct">{Math.round(100 - used)}% left</span>
