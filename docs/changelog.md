@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-21
+- [fix] Saved Claude alias models (opus/sonnet/haiku/fable) migrate to the full IDs on load, so the menu no longer shows both "opus" and "Opus 5".
 - [fix] Mode menu: the gap between the button and its panel is part of the hover zone, so moving into the panel no longer closes it; removed the native tooltip that appeared over the hover-opened menu.
 - [fix] Hover menus (Lead, Team, mode) close 90 ms after the pointer leaves instead of 180 ms.
 - [fix] Model menus show each CLI's own names: Codex uses its cache display names (GPT-5.5, GPT-6-Astra…), Claude shows Fable 5.1 / Opus 5 / Sonnet 5 / Haiku 4.5; values stay the real model IDs.

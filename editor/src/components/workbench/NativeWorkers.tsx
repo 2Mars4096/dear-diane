@@ -6,11 +6,13 @@ export type WorkerProfile = { enabled: boolean; account: string; model: string; 
 export type WorkerProfiles = Record<string, WorkerProfile>;
 export type Runtime = { id: string; label: string; available: boolean; accounts: { id: string; label: string }[]; models: string[]; model_efforts?: Record<string, string[]>; model_labels?: Record<string, string>; efforts: string[]; fast: boolean; setup: string; version: string };
 const empty: WorkerProfile = { enabled: false, account: "default", model: "", effort: "", fast: false };
+// Older profiles saved Claude aliases; the menu now lists full IDs only.
+const CLAUDE_ALIASES: Record<string, string> = { opus: "claude-opus-5", sonnet: "claude-sonnet-5", haiku: "claude-haiku-4-5-20251001", fable: "claude-fable-5-1" };
 export function loadWorkerProfiles(key = "dan.nativeWorkerProfiles.v1"): WorkerProfiles {
   try {
     const stored = JSON.parse(localStorage.getItem(key) || "{}");
     if (!stored || typeof stored !== "object" || Array.isArray(stored)) return {};
-    return Object.fromEntries(["dan", "codex", "claude", "antigravity", "cursor"].filter((id) => stored[id] && typeof stored[id] === "object").map((id) => [id, { ...empty, ...stored[id] }]));
+    return Object.fromEntries(["dan", "codex", "claude", "antigravity", "cursor"].filter((id) => stored[id] && typeof stored[id] === "object").map((id) => [id, { ...empty, ...stored[id], model: id === "claude" ? CLAUDE_ALIASES[stored[id].model] ?? stored[id].model : stored[id].model }]));
   } catch { return {}; }
 }
 export function NativeWorkerSettings({ profiles, onChange, lead, inline = false, catalog }: { profiles: WorkerProfiles; onChange: (profiles: WorkerProfiles) => void; lead?: string; inline?: boolean; catalog?: Runtime[] }) {
