@@ -76,3 +76,10 @@ def worker_events(parent_id: str, worker_id: str):
         return {"events": []}
     with path.open() as stream:
         return {"events": [json.loads(line) for line in deque(stream, maxlen=200)]}
+
+
+@router.get("/api/usage")
+def account_usage(limit: int = 2):
+    """Latest quota for the most recently used agent accounts. Credentials stay server-side."""
+    from dan.native_workers.usage import usage_report
+    return usage_report(Path(resolve_graphs_dir()), max(1, min(limit, 6)))

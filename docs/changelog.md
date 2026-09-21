@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-21
+- [feat] Usage in the sidebar footer: hover to see remaining quota for the two most recently used agent accounts. Codex reads the latest session rollout's rate limits (5h/week windows, plan); Claude Code queries Anthropic's OAuth usage endpoint with the CLI's keychain login (5h, week, per-model buckets); Cursor/Antigravity report that no local usage is exposed. `GET /api/usage?limit=N` returns percentages and reset times only, never tokens; Claude results are cached 15 s server-side and the panel refreshes every 20 s while open.
 - [fix] Reply to selection now focuses the composer with the caret at the end; focus was previously lost to the reply button's selection clearing.
 - [fix] User bubbles use 1.5 line-height and no paragraph margins, so a one-line message is a compact single line.
 - [fix] User bubbles tightened further: 6px 12px padding and less space before the Edit/Regenerate/Fork row.

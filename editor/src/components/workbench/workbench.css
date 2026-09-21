@@ -485,3 +485,20 @@
 .wb-queue-remove:hover { background:var(--wb-soft); color:var(--wb-ink); }
 .wb-queue-remove:disabled { opacity:.45; cursor:not-allowed; }
 .wb-followup-queue > [role=alert] { color:var(--wb-danger); padding:0 12px 10px; font-size:12px; }
+/* Usage: hover the sidebar footer button for the latest quota per account. */
+.wb-sidebar-footer .wb-usage > summary { display:flex; align-items:center; gap:10px; height:auto; padding:8px; border:0; border-radius:6px; background:transparent; font-size:12px; font-weight:400; color:var(--wb-muted); justify-content:flex-start; }
+.wb-sidebar-footer .wb-usage > summary:hover, .wb-sidebar-footer .wb-usage[open] > summary { background:var(--wb-line); color:var(--wb-ink); }
+.wb-usage-panel { left:0; right:auto; bottom:calc(100% + 6px); width:min(340px,calc(100vw - 40px)); }
+.wb-usage-account + .wb-usage-account { margin-top:12px; padding-top:12px; border-top:1px solid var(--wb-line); }
+.wb-usage-account h4 { display:flex; align-items:baseline; gap:8px; font-size:12px; font-weight:600; margin:0 0 8px; }
+.wb-usage-account h4 span { font-size:10px; font-weight:400; color:var(--wb-muted); }
+.wb-usage-row { display:grid; grid-template-columns:44px 1fr 56px auto; align-items:center; gap:8px; font-size:11px; color:var(--wb-muted); margin:5px 0; }
+.wb-usage-label { color:var(--wb-ink); }
+.wb-usage-bar { display:block; height:6px; border-radius:3px; background:var(--wb-line); overflow:hidden; }
+.wb-usage-bar i { display:block; height:100%; border-radius:3px; background:var(--wb-accent); transition:width 400ms ease; }
+.wb-usage-row[data-level=mid] .wb-usage-bar i { background:#c99a2e; }
+.wb-usage-row[data-level=high] .wb-usage-bar i { background:var(--wb-danger,#bc3030); }
+.wb-usage-pct { text-align:right; font-variant-numeric:tabular-nums; color:var(--wb-ink); }
+.wb-usage-reset { white-space:nowrap; }
+.wb-usage-stamp { margin:12px 0 0; font-size:10px; }
+.wb-usage-panel > p:first-child { margin:0; }
