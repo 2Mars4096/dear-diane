@@ -556,3 +556,58 @@
 .wb-process-start button { width:30px; display:grid; place-items:center; border-radius:8px; background:var(--wb-ink); color:var(--wb-paper); }
 .wb-process-start button:disabled { opacity:.4; cursor:not-allowed; }
 .wb-process-command { display:block; margin-bottom:8px; font-size:11px; color:var(--wb-muted); overflow-wrap:anywhere; }
+/* Token usage analyzer */
+.wb-token-usage { margin-top:20px; }
+.wb-token-mini { list-style:none; margin:8px 0; padding:0; font-size:12px; }
+.wb-token-mini li { display:flex; justify-content:space-between; gap:12px; padding:4px 0; }
+.wb-token-mini span, .wb-token-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+.wb-token-open, .wb-token-bar button, .wb-token-classify button { font-size:12px; padding:7px 12px; border:1px solid var(--wb-line); border-radius:7px; background:var(--wb-paper); color:var(--wb-ink); }
+.wb-token-open:hover, .wb-token-bar button:hover, .wb-token-classify button:hover { background:var(--wb-soft); }
+.wb-project-settings.wb-token-dialog { width:min(1080px,calc(100vw - 32px)); max-height:90vh; overflow:hidden; display:none; flex-direction:column; font-variant-numeric:tabular-nums; }
+.wb-project-settings.wb-token-dialog[open] { display:flex; }
+.wb-token-dialog header { margin-bottom:12px; }
+.wb-token-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:12px; font-size:12px; color:var(--wb-muted); }
+.wb-token-bar select { padding:6px 8px; border:1px solid var(--wb-line); border-radius:6px; background:var(--wb-paper); color:var(--wb-ink); font-size:12px; }
+.wb-token-columns { display:grid; grid-template-columns:minmax(240px,320px) minmax(0,1fr); gap:20px; min-height:0; flex:1; }
+.wb-token-sessions, .wb-token-detail { overflow:auto; min-height:0; }
+.wb-token-sessions { list-style:none; margin:0; padding:0; border:1px solid var(--wb-line); border-radius:8px; }
+.wb-token-sessions li + li { border-top:1px solid var(--wb-line); }
+.wb-token-sessions button { display:grid; gap:3px; width:100%; padding:9px 10px; text-align:left; font-size:12px; }
+.wb-token-sessions button:hover, .wb-token-sessions button[aria-pressed=true] { background:var(--wb-soft); }
+.wb-token-dialog small { font-size:10.5px; color:var(--wb-muted); }
+.wb-token-dialog small b, .wb-token-dialog li > b { color:var(--wb-ink); font-weight:600; }
+.wb-token-meter { display:block; height:5px; border-radius:3px; background:var(--wb-soft); overflow:hidden; }
+.wb-token-meter i { display:block; height:100%; border-radius:3px; background:var(--wb-accent); }
+.wb-token-detail h4 { display:flex; align-items:center; justify-content:space-between; margin:22px 0 8px; font-size:13px; font-weight:600; }
+.wb-token-name { margin:0 0 4px; font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.wb-token-detail code { font-size:10.5px; }
+.wb-token-tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:8px; margin:12px 0; }
+.wb-token-tiles div { padding:8px 10px; border:1px solid var(--wb-line); border-radius:8px; }
+.wb-token-tiles dt { font-size:10.5px; color:var(--wb-muted); }
+.wb-token-tiles dd { margin:2px 0 0; font-size:15px; font-weight:600; }
+.wb-token-curve { margin:0; }
+.wb-token-curve svg { display:block; width:100%; height:60px; border-bottom:1px solid var(--wb-line); }
+.wb-token-curve polyline { fill:none; stroke:var(--wb-accent); stroke-width:1.5; vector-effect:non-scaling-stroke; }
+.wb-token-curve figcaption { font-size:10.5px; color:var(--wb-muted); margin-top:4px; }
+.wb-token-toggle { display:inline-flex; border:1px solid var(--wb-line); border-radius:6px; overflow:hidden; }
+.wb-token-toggle button { padding:3px 9px; font-size:11px; font-weight:400; }
+.wb-token-toggle button[aria-pressed=true] { background:var(--wb-soft); font-weight:600; }
+.wb-token-bars, .wb-token-rounds, .wb-token-flags, .wb-token-advice { list-style:none; margin:0; padding:0; font-size:12px; }
+.wb-token-bars li { display:grid; grid-template-columns:96px minmax(0,1fr) 38px 96px; align-items:center; gap:10px; padding:3px 0; }
+.wb-token-bars li > b { text-align:right; }
+.wb-token-rounds li { display:grid; grid-template-columns:minmax(0,1fr) 120px; gap:2px 12px; align-items:center; padding:6px 0; border-top:1px solid var(--wb-line); }
+.wb-token-rounds li small { grid-column:1 / -1; }
+.wb-token-advice li, .wb-token-flags li { padding:8px 0; border-top:1px solid var(--wb-line); }
+.wb-token-advice p { margin:3px 0 0; }
+.wb-token-flags small { display:block; margin-top:2px; overflow-wrap:anywhere; }
+.wb-token-classify { display:flex; flex-wrap:wrap; align-items:flex-end; gap:8px; margin-top:12px; }
+.wb-token-classify label { margin:0; flex:1 1 180px; }
+.wb-token-classify input { margin-top:4px; padding:6px 8px; font-size:12px; }
+.wb-token-classify p { flex-basis:100%; margin:0; }
+.wb-token-steps { width:100%; border-collapse:collapse; font-size:11.5px; table-layout:fixed; }
+.wb-token-steps th { text-align:left; font-weight:500; color:var(--wb-muted); padding:4px 6px; }
+.wb-token-steps th:nth-child(n+2) { width:84px; }
+.wb-token-steps td { padding:5px 6px; border-top:1px solid var(--wb-line); vertical-align:top; overflow-wrap:anywhere; }
+.wb-token-steps td span { color:var(--wb-muted); }
+.wb-token-steps em { display:inline-block; margin-left:6px; padding:0 5px; border:1px solid var(--wb-line); border-radius:4px; font-style:normal; font-size:10px; }
+@media (max-width:760px) { .wb-token-columns { grid-template-columns:1fr; overflow:auto; } .wb-token-sessions { max-height:220px; } .wb-token-detail { overflow:visible; } .wb-token-bars li { grid-template-columns:80px minmax(0,1fr) 34px; } .wb-token-bars li small { display:none; } }

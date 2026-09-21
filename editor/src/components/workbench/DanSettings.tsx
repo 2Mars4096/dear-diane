@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useRef } from "react";
 import { X } from "lucide-react";
 const DesktopUpdates = lazy(() => import("./DesktopUpdates").then(module => ({ default: module.DesktopUpdates })));
+const TokenUsage = lazy(() => import("./TokenUsage").then(module => ({ default: module.TokenUsage })));
 const SkillPool = lazy(() => import("./SkillPool").then(module => ({ default: module.SkillPool })));
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { NativeWorkerSettings, type WorkerProfiles } from "./NativeWorkers";
@@ -35,6 +36,7 @@ export function DanSettings({ onClose, profiles, onProfilesChange }: {
     <label>Color mode<select value={settings.workspaceSurfaceTone} onChange={(event) => settings.updateSetting("workspaceSurfaceTone", event.target.value as typeof settings.workspaceSurfaceTone)}><option value="system">System</option><option value="day">Day</option><option value="night">Night</option></select></label>
     <NativeWorkerSettings profiles={profiles} onChange={onProfilesChange} />
     <Suspense fallback={<p>Loading skills…</p>}><SkillPool /></Suspense>
+    <Suspense fallback={<p>Loading token usage…</p>}><TokenUsage /></Suspense>
     <footer><button onClick={onClose}>Done</button></footer>
   </dialog>;
 }

@@ -156,16 +156,6 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
   const visibleComments = comments.filter((item) => stale[item.commentId] !== "missing");
 
   return <div className="wb-reader" ref={root}>
-    <header className="wb-reader-bar">
-      {ocr.status === "running" && <span className="wb-reader-ocr" title="Recognizing text on scanned pages"><ScanText size={12} />OCR {ocr.done}/{ocr.total}</span>}
-      {ocr.status === "error" && <span className="wb-reader-ocr" data-error title={ocr.message}><ScanText size={12} />OCR failed</span>}
-      <div className="wb-reader-actions">
-        <button type="button" onClick={onNotes}><MessageSquareQuote size={13} />Notes{comments.length ? ` ${comments.length}` : ""}</button>
-        <button type="button" onClick={() => void exportPdf()} disabled={!comments.length || exporting} title="Download a copy with notes as PDF highlights">
-          <Download size={13} />{exporting ? "Exporting…" : "Export"}
-        </button>
-      </div>
-    </header>
     <div className="wb-reader-stage">
       <InteractivePdfViewer
         commentFocus={commentFocus}
@@ -181,6 +171,12 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
         pageNumber={pageNumber}
         sourceUrl={file.url}
         title={file.name}
+        toolbarExtras={<>
+          {ocr.status === "running" && <span title="Recognizing text on scanned pages"><ScanText size={12} />OCR {ocr.done}/{ocr.total}</span>}
+          {ocr.status === "error" && <span data-error title={ocr.message}><ScanText size={12} />OCR failed</span>}
+          <button type="button" onClick={onNotes}><MessageSquareQuote size={13} />Notes{comments.length ? ` ${comments.length}` : ""}</button>
+          <button type="button" onClick={() => void exportPdf()} disabled={!comments.length || exporting} title="Download a copy with notes as PDF highlights"><Download size={13} />{exporting ? "Exporting…" : "Export"}</button>
+        </>}
       />
     </div>
   </div>;

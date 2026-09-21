@@ -1,6 +1,6 @@
 // Copies tesseract.js worker/core and the bundled English model into public/tesseract so the
 // Reader can OCR scanned pages offline. Runs before dev/build; the folder is gitignored.
-import { copyFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -19,5 +19,10 @@ for (const [from, to] of copies) {
   const source = from.startsWith("/") ? from : join(root, from);
   if (!existsSync(source)) { console.warn(`copy-ocr-assets: missing ${from}`); continue; }
   copyFileSync(source, join(out, to));
+}
+// pdf.js font data: without it, ligatures and standard-font glyphs render blank.
+for (const folder of ["cmaps", "standard_fonts", "wasm"]) {
+  const from = join(root, "node_modules/pdfjs-dist", folder);
+  if (existsSync(from)) cpSync(from, join(root, "public", "pdfjs", folder), { recursive: true });
 }
 console.log(`copy-ocr-assets: ${copies.length} files → public/tesseract`);

@@ -533,35 +533,47 @@
   pointer-events: none;
 }
 
+/* DAN: same pill as the transcript's "Reply to selection"; Ask carries the scheme's accent. */
 .selectionActions {
   position: absolute;
   z-index: 8;
   display: flex;
-  min-height: 44px;
-  border: 1px solid var(--wb-ink);
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--wb-paper);
-  box-shadow: 0 8px 20px rgba(0,0,0,0.22);
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 22px;
+  background: var(--wb-ink);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.13);
   transform: translateX(-50%);
+  animation: wb-arrive 140ms ease-out;
 }
 
 .selectionActions button {
-  min-width: 72px;
-  min-height: 44px;
-  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 13px;
   border: 0;
-  border-radius: 0;
+  border-radius: 18px;
   background: transparent;
-  color: var(--pdf-ink);
+  color: var(--wb-paper);
   cursor: pointer;
-  font: 750 0.78rem/1 var(--font-ui);
+  font: 500 12px/1 var(--font-ui);
+  white-space: nowrap;
+  transition: background 120ms;
+}
+
+.selectionActions button:hover {
+  background: color-mix(in srgb, var(--wb-paper) 16%, transparent);
 }
 
 .selectionActions button + button {
-  border-left: 1px solid var(--pdf-rule);
-  background: var(--pdf-ink);
+  background: var(--wb-accent);
   color: var(--wb-paper);
+}
+
+.selectionActions button + button:hover {
+  background: color-mix(in srgb, var(--wb-accent) 86%, var(--wb-paper));
 }
 
 .status,
@@ -653,4 +665,51 @@
     max-width: 22ch;
     margin-top: 2px;
   }
+}
+
+/* DAN: reader actions live on the toolbar row, left of Refs. */
+.toolbarExtras {
+  position: absolute;
+  right: 78px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--pdf-muted);
+}
+.toolbarExtras span { display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; white-space: nowrap; }
+.toolbarExtras span[data-error] { color: var(--wb-danger, #bc3030); }
+.toolbar .toolbarExtras button {
+  width: auto;
+  height: 28px;
+  display: inline-flex;
+  gap: 6px;
+  padding: 0 8px;
+  font: 500 0.7rem/1 var(--font-ui);
+  color: var(--pdf-muted);
+  white-space: nowrap;
+}
+.toolbar .toolbarExtras button:hover:not(:disabled) { color: var(--pdf-ink); }
+@media (max-width: 720px) { .toolbarExtras span { display: none; } }
+
+/* DAN: pdf.js line-break and end-of-content helpers must not paint the selection colour
+   (they showed as stray bars at the page edge). */
+.textLayer br::selection,
+.textLayer :global(.endOfContent)::selection { background: transparent; }
+.textLayer :global(.endOfContent) { display: block; position: absolute; inset: 100% 0 0; z-index: -1; cursor: default; user-select: none; }
+.textLayer :global(.markedContent) { top: 0; height: 0; }
+
+/* DAN: the reader is often narrow (side panel open). Keep one toolbar row without overlap. */
+.viewer { container-type: inline-size; }
+@container (max-width: 640px) {
+  .toolbar { justify-content: flex-start; padding-left: 6px; gap: 2px; }
+  .toolbar button { width: 28px; }
+  .toolbarDivider { margin: 0 2px; }
+  .toolbar .toolbarExtras button { font-size: 0; gap: 0; padding: 0 7px; }
+  .toolbarExtras span { font-size: 0; gap: 0; padding: 0 5px; }
+}
+@container (max-width: 420px) {
+  .toolbar > span:not(.toolbarDivider) { font-size: 0.68rem; }
+  .toolbarExtras { right: 64px; }
 }

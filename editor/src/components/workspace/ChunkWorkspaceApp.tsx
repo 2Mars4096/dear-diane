@@ -14608,6 +14608,17 @@ export default function ChunkWorkspaceApp() {
     setMainTabs((tabs) => tabs.some((tab) => tab.id === "chat") ? tabs : [{ id: "chat", kind: "chat", label: "Chat" }, ...tabs]);
     setActiveMainTab("chat");
   }, [activeThread?.id]);
+  // ⌘⌥B / Ctrl+Alt+B toggles the side panel, mirroring ⌘B for the project sidebar.
+  useEffect(() => {
+    const handler = (event: globalThis.KeyboardEvent) => {
+      if (event.code !== "KeyB" || !(event.metaKey || event.ctrlKey) || !event.altKey || event.shiftKey || event.repeat || event.isComposing) return;
+      if (document.querySelector("dialog[open]")) return;
+      event.preventDefault();
+      openSideTab(sideTab ? null : lastSideTab);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [sideTab, lastSideTab, openSideTab]);
   // Notes belongs to a PDF; fall back to Chat when the conversation tab is active.
   useEffect(() => { if (sideTab === "notes" && !readerFile) openSideTab("chat"); }, [sideTab, readerFile, openSideTab]);
   const askFromReader = (ask: ReaderAsk) => {
@@ -17333,7 +17344,7 @@ export default function ChunkWorkspaceApp() {
           onAllSessions={() => { setThreadQuery(""); setShowSessionRail(true); setPhonePage("sessions"); }}
         />
         <div className="wb-header-actions">
-          <button aria-label="Side panel" title="Side panel · chat, files, preview, activity, team" aria-pressed={Boolean(sideTab)} onClick={() => openSideTab(sideTab ? null : lastSideTab)}><PanelRight size={17} /></button>
+          <button aria-label={sideTab ? "Hide side panel" : "Show side panel"} title={`${sideTab ? "Hide side panel" : "Show side panel"} (${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘⌥B" : "Ctrl+Alt+B"})`} aria-keyshortcuts="Meta+Alt+B Control+Alt+B" aria-pressed={Boolean(sideTab)} onClick={() => openSideTab(sideTab ? null : lastSideTab)}><PanelRight size={17} /></button>
           <button aria-label="Notes" title="Notes" onClick={() => { setActivePane("notes"); setPhonePage("note-preview"); }}><NotebookPen size={17} /></button>
           <button aria-label="Workspace settings" title="Workspace settings" aria-pressed={workbenchSettings} onClick={() => { setCreatingProject(false); setWorkbenchSettings(true); }}><MoreHorizontal size={18} /></button>
         </div>

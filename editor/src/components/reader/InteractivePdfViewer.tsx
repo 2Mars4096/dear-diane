@@ -8,6 +8,7 @@ import {
   useState,
   type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
   type RefObject
 } from "react";
 import type {
@@ -60,6 +61,7 @@ type InteractivePdfViewerProps = {
   onAskSelection: (selection: SelectionAction) => string | null;
   onCommentSelection: (selection: SelectionAction) => void;
   onDocument?: (document: PDFDocumentProxy | null) => void; // DAN: lets the reader extract text / run OCR
+  toolbarExtras?: ReactNode; // DAN: reader actions share the toolbar row with Refs
   onPageChange: (pageNumber: number) => void;
   ocrPages: MaterialPdfOcrPage[];
   pageNumber: number;
@@ -431,7 +433,8 @@ export function InteractivePdfViewer({
   ocrPages,
   pageNumber,
   sourceUrl,
-  title
+  title,
+  toolbarExtras
 }: InteractivePdfViewerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -577,7 +580,9 @@ export function InteractivePdfViewer({
       try {
         const pdfjs = await import("pdfjs-dist");
         pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-        const loadingTask = pdfjs.getDocument({ url: sourceUrl });
+        const assets = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/pdfjs`;
+        const loadingTask = pdfjs.getDocument({ url: sourceUrl, cMapUrl: `${assets}/cmaps/`, cMapPacked: true,
+          standardFontDataUrl: `${assets}/standard_fonts/`, wasmUrl: `${assets}/wasm/` });
         loadingTaskRef.current = loadingTask;
         const pdfDocument = await loadingTask.promise;
         if (cancelled) {
@@ -1155,6 +1160,7 @@ export function InteractivePdfViewer({
         >
           +
         </button>
+        {toolbarExtras ? <div className={styles.toolbarExtras}>{toolbarExtras}</div> : null}
         <button
           aria-expanded={referenceTrayOpen}
           aria-label={`References, ${referenceTags.length} saved`}

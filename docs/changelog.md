@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-21
+- [fix] Reader toolbar consolidated: Notes, Export and OCR status sit on the viewer's toolbar row beside Refs (the separate reader bar is gone); the row adapts to narrow widths with icon-only actions instead of overlapping.
+- [fix] pdf.js now gets its CMaps, standard fonts and wasm (copied to `public/pdfjs` at build), fixing missing ligatures/glyphs such as "tra c" for "traffic"; line-break and end-of-content helpers no longer paint stray selection bars at the page edge.
+- [style] The Comment/Ask popover matches DAN's selection pill (like Reply to selection); Ask uses the color scheme's accent.
+- [feat] ⌘⌥B / Ctrl+Alt+B toggles the side panel; the header button's tooltip shows the shortcut.
 - [fix] Only the selected chat is highlighted in the sidebar; the active project row is marked by text weight instead of a background.
 - [feat] Process manager: long-running commands (dev servers, watchers, tunnels) are owned by DAN rather than a chat turn. They start in their own session with output to a log file, so they survive the end of an agent run, Stop, and a backend restart (re-attached by PID + start time). `GET/POST /api/processes`, `/stop`, `/logs`, `DELETE`; records under `graphs/processes/`.
 - [feat] Agents use it without leaving their sandbox: every native lead gets a workspace-local file bridge (`proc.py start --name … -- <command>`, `list`, `logs`, `stop`) and is told that anything started from its own shell dies with the run; DAN leads get a `managed_process` tool.
