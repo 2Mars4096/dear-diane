@@ -47,3 +47,18 @@ def test_claude_limits_include_model_scoped_window():
     windows = usage._claude_windows(data)
     assert [(w["label"], w["used_percent"]) for w in windows] == [("5h", 17.0), ("week", 15.0), ("fable", 24.0)]
     assert usage._claude_windows({"five_hour": {"utilization": 5}, "seven_day": {"utilization": 6}})[1]["label"] == "week"
+
+
+def test_codex_usage_is_labelled_with_codexx_project_account(monkeypatch, tmp_path):
+    home = tmp_path / ".codex"; day = home / "sessions/2026/09/21"; day.mkdir(parents=True)
+    (day / "rollout.jsonl").write_text("\n".join([
+        json.dumps({"type": "session_meta", "payload": {"cwd": "/work/project/sub"}}),
+        json.dumps({"payload": {"rate_limits": {"primary": {"used_percent": 2, "window_minutes": 10080, "resets_at": 9}}}})]) + "\n")
+    config = tmp_path / "codexx"; config.mkdir()
+    (config / "state.json").write_text(json.dumps({"projects": {"/work/project": {"last_account": "mine"}}}))
+    monkeypatch.setenv("DAN_CODEXX_CONFIG", str(config / "config.toml"))
+    shared = tmp_path / "accounts/ph/.codex"; shared.mkdir(parents=True); (shared / "sessions").symlink_to(home / "sessions")
+    monkeypatch.setattr(usage, "accounts", lambda: {"codex": {"app": {"label": "app", "env": {"CODEX_HOME": str(home)}}, "ph": {"label": "ph", "env": {"CODEX_HOME": str(shared)}}}})
+    monkeypatch.setattr(usage, "recent_accounts", lambda base, limit=2: [("codex", "app"), ("codex", "ph")])
+    rows = usage.usage_report(tmp_path)["accounts"]
+    assert [(row["backend"], row["account"]) for row in rows] == [("codex", "mine")]   # one shared store, labelled by codexx

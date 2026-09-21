@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-21
+- [fix] Usage labels Codex quota with the account codexx last used for the latest session's project folder (rollouts carry no account), and accounts sharing one session store appear once.
 - [feat] Main-column tabs: the conversation and any number of PDFs open as tabs (closable, middle-click closes; the last tab stays). Opening a PDF no longer replaces the workspace or closes the side panel, and picking a chat brings the conversation tab forward.
 - [feat] The side panel follows the active tab: on a PDF, Chat becomes that PDF's Reading chat and a Notes tab appears. Comment now opens the note composer in Notes (instead of a floating box), where highlights are listed with jump, edit, delete, and "not found in this version" state. Reader and Notes share a small store in the lazy reader chunk.
 - [fix] The Files tab returned 500 for a project containing symlinks that point outside it (DAN's own skill pool under `graphs/` triggered this). The file tree now skips links that leave the project root.

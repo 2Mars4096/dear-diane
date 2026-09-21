@@ -46,6 +46,13 @@ def codex_usage(home: Path) -> dict:
         return {"windows": [], "error": "No Codex sessions yet"}
     stamp, path = newest
     limits = None
+    cwd = ""
+    try:
+        with path.open() as head:  # session meta: which folder the session ran in
+            first = json.loads(head.readline() or "{}")
+            cwd = str((first.get("payload") if isinstance(first.get("payload"), dict) else first).get("cwd") or "")
+    except (OSError, ValueError):
+        pass
     try:
         with path.open("rb") as stream:
             stream.seek(0, os.SEEK_END)
@@ -72,7 +79,24 @@ def codex_usage(home: Path) -> dict:
         if isinstance(bucket, dict) and bucket.get("used_percent") is not None:
             windows.append({"label": _window_label(bucket.get("window_minutes")), "used_percent": float(bucket["used_percent"]),
                             "resets_at": float(bucket["resets_at"]) if bucket.get("resets_at") else None})
-    return {"windows": windows, "plan": limits.get("plan_type") or "", "observed_at": stamp}
+    return {"windows": windows, "plan": limits.get("plan_type") or "", "observed_at": stamp, "active_account": codexx_account_for(cwd)}
+
+
+def codexx_account_for(cwd: str) -> str:
+    """codexx remembers the last account per project folder; rollouts themselves carry no account."""
+    if not cwd:
+        return ""
+    config = Path(os.environ.get("DAN_CODEXX_CONFIG", str(user_home() / ".config/codexx/config.toml")))
+    try:
+        projects = json.loads((config.parent / "state.json").read_text()).get("projects", {})
+    except (OSError, ValueError, AttributeError):
+        return ""
+    folder = Path(cwd)
+    for candidate in [folder, *folder.parents]:
+        account = (projects.get(str(candidate)) or {}).get("last_account") if isinstance(projects.get(str(candidate)), dict) else None
+        if account:
+            return str(account)
+    return ""
 
 
 def _claude_token(env: dict) -> str:
@@ -169,13 +193,22 @@ def usage_report(base: Path, limit: int = 2) -> dict:
         if backend in configured and (backend, "default") not in chosen:
             chosen.append((backend, "default"))
     rows = []
+    seen_stores: set[str] = set()
     for backend, account in chosen[:limit]:
         env = configured[backend][account].get("env", {})
         if backend == "codex":
-            usage = codex_usage(Path(env.get("CODEX_HOME") or os.environ.get("CODEX_HOME") or user_home() / ".codex"))
+            home = Path(env.get("CODEX_HOME") or os.environ.get("CODEX_HOME") or user_home() / ".codex")
+            store = str((home / "sessions").resolve())
+            if store in seen_stores:  # accounts sharing one session store report the same numbers
+                continue
+            seen_stores.add(store)
+            usage = codex_usage(home)
+            # The latest session may belong to a different account than DAN last used.
+            account = usage.pop("active_account", "") or account
         elif backend == "claude":
             usage = claude_usage(account, env)
         else:
             usage = {"windows": [], "error": "This CLI does not expose usage locally"}
-        rows.append({"backend": backend, "account": account, "label": configured[backend][account].get("label", account), **usage})
+        usage.pop("active_account", None)
+        rows.append({"backend": backend, "account": account, "label": (configured[backend].get(account) or {}).get("label", account), **usage})
     return {"accounts": rows, "fetched_at": time.time()}
