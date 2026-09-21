@@ -1205,6 +1205,11 @@ async def list_workspace_file_tree(
     requested_limit = max(1, min(int(limit), 5000))
     requested_depth = max(1, min(int(max_depth), 12))
     entries: list[dict[str, Any]] = []
+    def _inside(candidate: Path) -> Path | None:
+        # Symlinks may point outside the project (e.g. DAN's skill pool); never list or follow those.
+        resolved = candidate.resolve()
+        return resolved if resolved == root or root in resolved.parents else None
+
     for current, dirs, files in os.walk(root):
         current_path = Path(current)
         try:
@@ -1217,6 +1222,7 @@ async def list_workspace_file_tree(
             if item not in _WORKSPACE_FILE_SKIP_DIRS
             and not item.startswith(".dan")
             and depth < requested_depth
+            and _inside(current_path / item) is not None
         ]
         for dirname in sorted(dirs, key=str.lower):
             summary = _workspace_file_summary((current_path / dirname).resolve(), root)
@@ -1229,7 +1235,10 @@ async def list_workspace_file_tree(
         for filename in sorted(files, key=str.lower):
             if filename == ".DS_Store":
                 continue
-            summary = _workspace_file_summary((current_path / filename).resolve(), root)
+            inside = _inside(current_path / filename)
+            if inside is None:
+                continue
+            summary = _workspace_file_summary(inside, root)
             if summary is not None:
                 entries.append(summary)
                 if len(entries) >= requested_limit:

@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-21
+- [fix] The Files tab returned 500 for a project containing symlinks that point outside it (DAN's own skill pool under `graphs/` triggered this). The file tree now skips links that leave the project root.
 - [fix] Usage reads Claude's structured `limits` list, so the per-model weekly limit (e.g. Fable) shows alongside 5h and week. The panel refreshes on each hover-open and then every 5 minutes while open (was every 20 s); server cache 30 s.
 - [feat] Skill pool: Claude Code leads and team members can use skills installed for Codex and Cursor (all use the Agent Skills `SKILL.md` format). DAN keeps a pool of symlinks under `graphs/skill_pool/claude/.claude/skills` and passes it with `--add-dir`; it never writes to `~/.claude`, `~/.codex`, `~/.cursor`, or the project. Same-named skills already installed for Claude stay native. DAN settings → Skills has a master toggle and per-skill checkboxes (`GET/PUT /api/skills`). Verified on Claude Code 2.1.66: pooled Codex skills appear in its skill list. Codex/Cursor are sources only for now.
 - [feat] Reader OCR: pages with fewer than 20 extractable words are recognized in the browser with tesseract.js (bundled English model, no system dependency) and get a selectable text layer with the "Image text ready" badge; results are saved per file via `GET/PUT /api/reader/ocr` (invalidated when the file's size/mtime changes) and the reader bar shows OCR progress. Assets copy from node_modules to `public/tesseract` at build time.
