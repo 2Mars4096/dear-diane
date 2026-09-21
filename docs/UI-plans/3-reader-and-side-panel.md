@@ -15,8 +15,9 @@
   - [x] 2-3. Ask sends the selection + page text to a per-PDF sidecar conversation; the reader never loses scroll or focus.
   - [x] 2-4. Comment saves a highlight with an optional note; comments list jumps back to the highlight.
 - [x] 3. Validation: unit tests for ported libs, browser check with a real PDF (render, Ask staging, Comment/highlight, position restore, dark mode).
+- [x] 5. OCR for scanned pages (tesseract.js in-browser, server cache), text-anchored highlights with re-location, annotated-PDF export, themed viewer overlays.
 - [ ] 4. Send a real Ask and confirm the answer streams in the side chat without moving the reader.
 
 ## Decisions
 - Reader is a surface (like Work / Notes), not an autonomy mode. Plan/Auto/Full access still govern what the sidecar agent may do.
-- Not ported: material import/OCR pipeline, passage anchoring, teaching layers, annotated-PDF export, tutor model picker. DAN reads PDFs directly from the project folder and answers through the configured lead.
+- Ported later: OCR (in-browser instead of server), passage anchoring (client-side against page text), annotated-PDF export. Still not ported: teaching layers/modes and the tutor model picker; DAN answers through the configured lead. DAN reads PDFs directly from the project folder and answers through the configured lead.

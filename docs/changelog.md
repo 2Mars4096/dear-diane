@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-21
+- [feat] Reader OCR: pages with fewer than 20 extractable words are recognized in the browser with tesseract.js (bundled English model, no system dependency) and get a selectable text layer with the "Image text ready" badge; results are saved per file via `GET/PUT /api/reader/ocr` (invalidated when the file's size/mtime changes) and the reader bar shows OCR progress. Assets copy from node_modules to `public/tesseract` at build time.
+- [feat] Reader anchors: comments and Ask carry a text anchor (quote + 64 chars of context + page fingerprint, ported from learning-assistant). When a page's text changes, highlights are re-found in the text layer and redrawn; comments that cannot be found are marked "not found in this version" instead of drawing in the wrong place.
+- [feat] Reader Export: downloads a copy of the PDF with comments as standard highlight annotations (pdf-lib), author "DAN".
+- [style] The PDF viewer's overlays (references tray, page peek, selection popover, OCR badge, scrollbars) now use the workbench tokens, so the reader follows the selected color scheme in light and dark. Usage and Import dialogs are lazy-loaded to keep the workspace chunk within budget.
 - [fix] Project settings and DAN settings dialogs close when you click outside them (the import dialog keeps explicit Cancel so a batch import is not dismissed by accident).
 - [feat] Usage in the sidebar footer: hover to see remaining quota for the two most recently used agent accounts. Codex reads the latest session rollout's rate limits (5h/week windows, plan); Claude Code queries Anthropic's OAuth usage endpoint with the CLI's keychain login (5h, week, per-model buckets); Cursor/Antigravity report that no local usage is exposed. `GET /api/usage?limit=N` returns percentages and reset times only, never tokens; Claude results are cached 15 s server-side and the panel refreshes every 20 s while open.
 - [fix] Reply to selection now focuses the composer with the caret at the end; focus was previously lost to the reply button's selection clearing.
