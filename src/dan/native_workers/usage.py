@@ -17,7 +17,7 @@ from .catalog import accounts, user_home
 
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 _claude_cache: dict[str, tuple[float, dict]] = {}
-CLAUDE_CACHE_SECONDS = 15
+CLAUDE_CACHE_SECONDS = 30
 
 
 def _window_label(minutes: int | None) -> str:
@@ -108,16 +108,32 @@ def claude_usage(account: str, env: dict) -> dict:
             data = json.loads(response.read())
     except Exception as exc:  # network or auth: report, never raise into the API
         return {"windows": [], "error": f"Usage unavailable ({type(exc).__name__})"}
-    windows = []
-    for key in ("five_hour", "seven_day", *[k for k in data if k.startswith("seven_day_") ]):
-        bucket = data.get(key)
-        if isinstance(bucket, dict) and bucket.get("utilization") is not None:
-            resets = bucket.get("resets_at")
-            windows.append({"label": _pretty_bucket(key), "used_percent": float(bucket["utilization"]),
-                            "resets_at": _iso_to_epoch(resets) if resets else None})
+    windows = _claude_windows(data)
     result = {"windows": windows, "observed_at": time.time()}
     _claude_cache[account] = (time.time(), result)
     return result
+
+
+def _claude_windows(data: dict) -> list[dict]:
+    """Prefer the structured `limits` list (session, weekly, per-model); fall back to the named buckets."""
+    windows = []
+    for limit in data.get("limits") or []:
+        if not isinstance(limit, dict) or limit.get("percent") is None:
+            continue
+        scope = limit.get("scope") if isinstance(limit.get("scope"), dict) else {}
+        model = (scope.get("model") or {}).get("display_name") if isinstance(scope.get("model"), dict) else None
+        kind = str(limit.get("kind") or "")
+        label = "5h" if kind == "session" else "week" if kind == "weekly_all" else str(model or kind.replace("_", " ")).lower()
+        resets = limit.get("resets_at")
+        windows.append({"label": label, "used_percent": float(limit["percent"]), "resets_at": _iso_to_epoch(resets) if resets else None})
+    if windows:
+        return windows
+    for key in ("five_hour", "seven_day", *[k for k in data if k.startswith("seven_day_")]):
+        bucket = data.get(key)
+        if isinstance(bucket, dict) and bucket.get("utilization") is not None:
+            resets = bucket.get("resets_at")
+            windows.append({"label": _pretty_bucket(key), "used_percent": float(bucket["utilization"]), "resets_at": _iso_to_epoch(resets) if resets else None})
+    return windows
 
 
 def _iso_to_epoch(value: str) -> float | None:

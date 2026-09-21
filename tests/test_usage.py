@@ -37,3 +37,13 @@ def test_usage_report_never_exposes_tokens(monkeypatch, tmp_path):
     assert "secret-token" not in json.dumps(report)
     assert [row["backend"] for row in report["accounts"]] == ["codex", "claude"]
     assert "offline" not in json.dumps(report) and report["accounts"][1]["error"].startswith("Usage unavailable")
+
+
+def test_claude_limits_include_model_scoped_window():
+    data = {"five_hour": {"utilization": 1.0}, "limits": [
+        {"kind": "session", "percent": 17, "resets_at": "2026-09-21T13:10:00+00:00"},
+        {"kind": "weekly_all", "percent": 15, "resets_at": "2026-09-28T01:00:00+00:00"},
+        {"kind": "weekly_scoped", "percent": 24, "resets_at": "2026-09-28T01:00:00+00:00", "scope": {"model": {"display_name": "Fable"}}}]}
+    windows = usage._claude_windows(data)
+    assert [(w["label"], w["used_percent"]) for w in windows] == [("5h", 17.0), ("week", 15.0), ("fable", 24.0)]
+    assert usage._claude_windows({"five_hour": {"utilization": 5}, "seven_day": {"utilization": 6}})[1]["label"] == "week"

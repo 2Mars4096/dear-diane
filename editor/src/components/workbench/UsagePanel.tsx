@@ -5,7 +5,7 @@ import { useDismissDetails } from "./useDismissDetails";
 export type UsageWindow = { label: string; used_percent: number; resets_at: number | null };
 export type UsageAccount = { backend: string; account: string; label: string; windows: UsageWindow[]; plan?: string; error?: string; observed_at?: number };
 const NAMES: Record<string, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor", antigravity: "Antigravity", dan: "DAN" };
-const POLL_MS = 20_000;
+const POLL_MS = 5 * 60_000; // refreshed on every hover-open, then every 5 minutes while it stays open
 
 export function resetsIn(at: number | null, now = Date.now() / 1000): string {
   if (!at) return "";
@@ -59,7 +59,7 @@ export function UsagePanel() {
         })}
         {!account.error && !account.windows.length && <p className="wb-muted">No limits reported yet.</p>}
       </section>)}
-      {data?.fetched_at && <p className="wb-usage-stamp">Updated {agoLabel(data.fetched_at)} · refreshes every 20s while open</p>}
+      {data?.fetched_at && <p className="wb-usage-stamp">Updated {agoLabel(data.fetched_at)} · refreshes when opened</p>}
     </div>
   </details>;
 }
