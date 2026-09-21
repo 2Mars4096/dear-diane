@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-21
+- [fix] User bubbles tightened further: 6px 12px padding and less space before the Edit/Regenerate/Fork row.
 - [fix] User messages drop the "You" label and use the composer's tighter padding (10px 14px) instead of 16px 20px.
 - [fix] Claude leads/workers reported "Not logged in · Please run /login" although the CLI was logged in: Claude Code keys keychain credentials by config dir, and DAN forced CLAUDE_CONFIG_DIR=~/.claude for the default account. The default account now inherits the user's environment; named profiles still set their own directory.
 - [fix] Up next no longer flashes for a first message: only waiting follow-up messages are listed, never the run's own task while it is briefly queued.
