@@ -55,6 +55,7 @@ _TOOL_MODULES = [
     "image_describe",
     "json_extract",
     "list_directory",
+    "managed_process",
     "notify",
     "native_worker",
     "pdf_read",

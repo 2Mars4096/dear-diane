@@ -548,3 +548,10 @@
 .wb-notes-actions button { display:flex; align-items:center; gap:5px; padding:3px 6px; border-radius:5px; font-size:11px; color:var(--wb-muted); }
 .wb-notes-actions button:hover { background:var(--wb-soft); color:var(--wb-ink); }
 .wb-notes-list li[data-stale=missing] q { opacity:.55; text-decoration:line-through; }
+/* Processes: long-running commands owned by DAN. */
+.wb-process-start { display:flex; gap:6px; margin:12px 12px 0; }
+.wb-process-start input { flex:1; min-width:0; padding:7px 10px; border:1px solid var(--wb-line); border-radius:8px; background:var(--wb-paper); color:var(--wb-ink); font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+.wb-process-start input:focus { outline:none; border-color:var(--wb-muted); }
+.wb-process-start button { width:30px; display:grid; place-items:center; border-radius:8px; background:var(--wb-ink); color:var(--wb-paper); }
+.wb-process-start button:disabled { opacity:.4; cursor:not-allowed; }
+.wb-process-command { display:block; margin-bottom:8px; font-size:11px; color:var(--wb-muted); overflow-wrap:anywhere; }

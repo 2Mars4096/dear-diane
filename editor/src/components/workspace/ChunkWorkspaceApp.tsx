@@ -7,6 +7,7 @@ import { TeamPanel, TeamStrip, useTeamWorkers } from "../workbench/TeamProgress"
 import { SideTabs, readLastSideTab, rememberSideTab, type SideTab, type SideTabItem } from "../workbench/SideTabs";
 import type { ReaderAsk, ReaderFile } from "../reader/ReaderView";
 import { MainTabs, closeMainTab, type MainTab } from "../workbench/MainTabs";
+import { useProcesses } from "../workbench/processes";
 import { ProjectSettings } from "../workbench/ProjectSettings";
 import { streamedMessageContent, completedMessageContent } from "../workbench/eventPresentation";
 import { WorkbenchNavigation } from "../workbench/WorkbenchNavigation";
@@ -152,6 +153,7 @@ import MarkdownRenderer from "../shared/MarkdownRenderer";
 const FollowupQueue = lazy(() => import("../workbench/FollowupQueue").then(module => ({ default: module.FollowupQueue })));
 const DanSettings = lazy(() => import("../workbench/DanSettings").then(module => ({ default: module.DanSettings })));
 const ReaderView = lazy(() => import("../reader/ReaderView").then((module) => ({ default: module.ReaderView })));
+const ProcessesPanel = lazy(() => import("../workbench/ProcessesPanel").then((module) => ({ default: module.ProcessesPanel })));
 const ReaderNotes = lazy(() => import("../reader/ReaderNotes").then((module) => ({ default: module.ReaderNotes })));
 const UsagePanel = lazy(() => import("../workbench/UsagePanel").then((module) => ({ default: module.UsagePanel })));
 const ImportNativeSessions = lazy(() => import("../workbench/ImportNativeSessions").then((module) => ({ default: module.ImportNativeSessions })));
@@ -14613,6 +14615,7 @@ export default function ChunkWorkspaceApp() {
     setReaderSelection({ text: ask.quote, context: `Page ${ask.pageNumber}${where}: ${ask.pageText}`, token: Date.now() });
     openSideTab("chat");
   };
+  const processState = useProcesses(developmentRoot, sideTab === "processes");
   // Tabs follow context: Preview once something is selected, Activity once a run has events, Team once a team exists.
   const renderSideTabs = () => {
     if (!sideTab) return null;
@@ -14624,6 +14627,7 @@ export default function ChunkWorkspaceApp() {
       ...(activePreviewFileEntry || selectedBlueprintNode || selectedChunk || promptLogPreview ? [{ id: "preview" as const, label: "Preview" }] : []),
       ...(agentEvents.length || activeRunningTask ? [{ id: "activity" as const, label: "Activity", live: Boolean(activeRunningTask) }] : []),
       ...(team.workers.length ? [{ id: "team" as const, label: "Team", count: runningWorkers }] : []),
+      { id: "processes", label: "Processes", count: processState.processes.filter((item) => item.status === "running").length },
     ];
     return <SideTabs tabs={tabs} active={sideTab} reading={Boolean(readerFile)} onSelect={openSideTab} onClose={() => openSideTab(null)} />;
   };
@@ -18922,6 +18926,7 @@ export default function ChunkWorkspaceApp() {
               <PanelRight size={14} />
             </CollapsedPaneRail>
           )}
+          {sideTab === "processes" && <Suspense fallback={null}><ProcessesPanel cwd={developmentRoot} workspaceId={workspace?.id || ""} processes={processState.processes} error={processState.error} onChanged={() => void processState.refresh()} header={renderSideTabs()} /></Suspense>}
           {sideTab === "notes" && readerFile && <Suspense fallback={null}><ReaderNotes file={readerFile} header={renderSideTabs()} /></Suspense>}
           {sidecarChat && readerFile && <SidecarChat key={`reader:${readerFile.path}`} parentId={`reader:${readerFile.path}`}
             workflowId={activeThread?.workflowId || workspace?.id || activeWorkspaceId || "_unassigned"}

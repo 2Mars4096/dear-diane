@@ -10,7 +10,7 @@ import sys
 import tempfile
 import time
 
-from . import bridge
+from . import bridge, proc_bridge
 from .service import NativeTeam, active_teams, describe
 
 _active_sessions: set[str] = set()
@@ -46,6 +46,7 @@ class NativeLeadAdapter:
         lead = None
         team = None
         server = None
+        proc_server = None
         temporary = None
         record = None
         children = None
@@ -121,8 +122,8 @@ class NativeLeadAdapter:
                 history = []  # fork already contains the imported conversation
             enabled = [name for name, settings in profiles.items() if settings.get("enabled")]
             context = json.dumps(history, ensure_ascii=False) if history else ""
-            if enabled or len(context) > 16000:
-                temporary = tempfile.TemporaryDirectory(prefix=".dan-team-", dir=workspace)
+            # Always present: the process bridge needs a workspace-local queue the sandbox can write to.
+            temporary = tempfile.TemporaryDirectory(prefix=".dan-team-", dir=workspace)
             if context:
                 if len(context) > 16000:
                     history_file = Path(temporary.name) / "conversation.json"
@@ -145,6 +146,19 @@ class NativeLeadAdapter:
                     + command + " stop --worker-id ID\n"
                     + "Start returns immediately; independent tasks can run in parallel. Inspect team results before finishing. "
                     + "The team is scoped to this run and stops when you finish. Team members cannot recursively delegate.")
+            # Long-lived processes must be started by DAN, or they die with this run.
+            proc_client = Path(temporary.name) / "proc.py"
+            proc_client.write_text(Path(proc_bridge.__file__).read_text())
+            proc_server = asyncio.create_task(proc_bridge.serve(Path(temporary.name), workspace,
+                workspace_id=str(request.surface_context.get("workspace_id") or ""), thread_id=str(request.thread_id or ""), backend=backend))
+            proc_command = f"{shlex.quote(sys.executable)} {shlex.quote(str(proc_client))} --queue {shlex.quote(temporary.name)}"
+            prompt += ("\n\nLong-running processes: anything you start from your own shell (dev servers, watchers, tunnels) is "
+                "killed when this run ends. To keep a process running afterwards, start it through DAN instead:\n"
+                + proc_command + " start --name 'dev server' -- npm run dev\n"
+                + proc_command + " list\n"
+                + proc_command + " logs --id ID\n"
+                + proc_command + " stop --id ID\n"
+                "Use this only for commands that must stay up; check logs to confirm startup. The user can see and stop these in DAN's Processes tab.")
             lead = NativeTeam(request.run_id, workspace, {backend: profile}, base / "native_leads", on_lead)
             record = await lead.start(backend, prompt)
             task = lead.tasks[record["worker_id"]]
@@ -188,6 +202,9 @@ class NativeLeadAdapter:
             if server:
                 server.cancel()
                 await asyncio.gather(server, return_exceptions=True)
+            if proc_server:
+                proc_server.cancel()
+                await asyncio.gather(proc_server, return_exceptions=True)
             if lead:
                 await lead.close()
                 if record:

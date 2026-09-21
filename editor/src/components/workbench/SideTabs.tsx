@@ -1,10 +1,10 @@
-import { Activity, BookOpen, Eye, FolderOpen, MessageSquareText, StickyNote, Users, X, type LucideIcon } from "lucide-react";
+import { Activity, BookOpen, Eye, FolderOpen, MessageSquareText, StickyNote, SquareTerminal, Users, X, type LucideIcon } from "lucide-react";
 
-export type SideTab = "chat" | "notes" | "files" | "preview" | "activity" | "team";
+export type SideTab = "chat" | "notes" | "files" | "preview" | "activity" | "team" | "processes";
 export type SideTabItem = { id: SideTab; label: string; count?: number; live?: boolean };
 
-const ICONS: Record<SideTab, LucideIcon> = { chat: MessageSquareText, notes: StickyNote, files: FolderOpen, preview: Eye, activity: Activity, team: Users };
-const IDS: SideTab[] = ["chat", "notes", "files", "preview", "activity", "team"];
+const ICONS: Record<SideTab, LucideIcon> = { chat: MessageSquareText, notes: StickyNote, files: FolderOpen, preview: Eye, activity: Activity, team: Users, processes: SquareTerminal };
+const IDS: SideTab[] = ["chat", "notes", "files", "preview", "activity", "team", "processes"];
 const STORAGE_KEY = "dan.workbench.sideTab.v1";
 
 export function readLastSideTab(): SideTab {

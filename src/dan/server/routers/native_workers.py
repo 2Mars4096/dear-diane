@@ -105,3 +105,50 @@ def update_skill_pool(body: SkillPoolSettings):
     for runtime in RECEIVERS:
         build_pool(runtime, base)
     return report(base)
+
+
+class ProcessStart(BaseModel):
+    command: str
+    cwd: str
+    name: str = ""
+    workspace_id: str = ""
+    thread_id: str = ""
+
+
+def _process_call(action):
+    try:
+        return action()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/api/processes")
+def list_processes(workspace_id: str = "", cwd: str = ""):
+    """Long-running processes DAN owns; they outlive agent runs and backend restarts."""
+    from dan.processes import manager
+    return {"processes": manager().list(workspace_id=workspace_id, cwd=cwd)}
+
+
+@router.post("/api/processes")
+def start_process(body: ProcessStart):
+    from dan.processes import manager
+    return _process_call(lambda: manager().start(body.command, body.cwd, name=body.name, workspace_id=body.workspace_id, thread_id=body.thread_id))
+
+
+@router.post("/api/processes/{process_id}/stop")
+def stop_process(process_id: str):
+    from dan.processes import manager
+    return _process_call(lambda: manager().stop(process_id))
+
+
+@router.get("/api/processes/{process_id}/logs")
+def process_logs(process_id: str, tail: int = 64000):
+    from dan.processes import manager
+    return _process_call(lambda: {"logs": manager().logs(process_id, tail)})
+
+
+@router.delete("/api/processes/{process_id}")
+def remove_process(process_id: str):
+    from dan.processes import manager
+    _process_call(lambda: manager().remove(process_id))
+    return {"removed": process_id}

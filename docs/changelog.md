@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-21
+- [feat] Process manager: long-running commands (dev servers, watchers, tunnels) are owned by DAN rather than a chat turn. They start in their own session with output to a log file, so they survive the end of an agent run, Stop, and a backend restart (re-attached by PID + start time). `GET/POST /api/processes`, `/stop`, `/logs`, `DELETE`; records under `graphs/processes/`.
+- [feat] Agents use it without leaving their sandbox: every native lead gets a workspace-local file bridge (`proc.py start --name … -- <command>`, `list`, `logs`, `stop`) and is told that anything started from its own shell dies with the run; DAN leads get a `managed_process` tool.
+- [feat] Processes side tab: start a command, see what is running (origin, uptime, live log tail), Stop, and Remove finished ones; the tab shows a running count.
+- [test] 129 backend tests incl. a process outliving a manager restart and one started through the sandbox bridge outliving its run; live check: process kept running across a backend kill/restart and stopped on request.
 - [fix] Usage labels Codex quota with the account codexx last used for the latest session's project folder (rollouts carry no account), and accounts sharing one session store appear once.
 - [feat] Main-column tabs: the conversation and any number of PDFs open as tabs (closable, middle-click closes; the last tab stays). Opening a PDF no longer replaces the workspace or closes the side panel, and picking a chat brings the conversation tab forward.
 - [feat] The side panel follows the active tab: on a PDF, Chat becomes that PDF's Reading chat and a Notes tab appears. Comment now opens the note composer in Notes (instead of a floating box), where highlights are listed with jump, edit, delete, and "not found in this version" state. Reader and Notes share a small store in the lazy reader chunk.

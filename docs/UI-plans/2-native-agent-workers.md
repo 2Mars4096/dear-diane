@@ -77,3 +77,5 @@
 - Validation: 31 backend tests and 6 focused UI tests pass; production typecheck/build/budgets pass. The arm64 app is rebuilt, ad-hoc signed and signature-verified with the installed icon preserved; not installed over the active app.
 - [x] Skill pool: share Codex/Cursor skills with Claude Code through a DAN-owned symlink directory.
 - [ ] Extend the skill pool to Codex and Cursor receivers once each CLI has a non-invasive way to load an extra skills directory.
+- [x] Process manager so long-running commands outlive agent runs; bridge for sandboxed leads; Processes side tab.
+- [ ] Live-verify a Codex/Claude lead choosing the process bridge for a dev server, and decide whether processes should auto-restart after a machine reboot.
