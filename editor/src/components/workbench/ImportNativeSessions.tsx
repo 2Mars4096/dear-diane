@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ChatV2ThreadSummary } from "../../lib/chatV2Api";
-type Session = { id: string; backend: string; account: string; title: string; can_import: boolean; reason: string; continuation?: "native" | "history" };
+type Session = { id: string; backend: string; account: string; title: string; can_import: boolean; reason: string; continuation?: "native" | "history"; updated_at?: number };
+const when = (seconds?: number) => seconds ? new Date(seconds * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: new Date(seconds * 1000).getFullYear() === new Date().getFullYear() ? undefined : "numeric" }) : "";
 export function ImportNativeSessions({ workspace, workspaceId, onClose, onImport }: {
   workspace: string; workspaceId: string; onClose: () => void; onImport: (thread: ChatV2ThreadSummary) => Promise<void>;
 }) {
@@ -54,7 +55,7 @@ export function ImportNativeSessions({ workspace, workspaceId, onClose, onImport
     {!!importableIds.length && <div className="wb-import-selection"><label><input type="checkbox" aria-label="Select all" aria-checked={partiallySelected ? "mixed" : allSelected} ref={(input) => { if (input) input.indeterminate = partiallySelected; }} checked={allSelected} disabled={busy} onChange={(event) => { const checked = event.target.checked; setSelected((previous) => checked ? [...new Set([...previous, ...importableIds])] : previous.filter((id) => !importableIds.includes(id))); }} /><span>Select all</span></label><span>{selected.length} selected{sources.length > 1 ? " across sources" : ""}</span></div>}
     <div id={`${tabId}-sessions`} className="wb-native-import-list" role={sources.length > 1 ? "tabpanel" : undefined} aria-labelledby={sources.length > 1 ? `${tabId}-tab-${currentSource}` : undefined}>{visibleSessions.map((session) => <label key={session.id}>
       <input type="checkbox" name="native-session" value={session.id} checked={selected.includes(session.id)} disabled={!session.can_import || busy} onChange={() => setSelected((previous) => previous.includes(session.id) ? previous.filter((id) => id !== session.id) : [...previous, session.id])} />
-      <span><strong>{session.title.replace(/\s+/g, " ").slice(0, 180)}{session.title.length > 180 ? "…" : ""}</strong><small>{session.backend} · {session.account}</small>{session.reason && <small>{session.reason}</small>}</span>
+      <span><strong>{session.title.replace(/\s+/g, " ").slice(0, 180)}{session.title.length > 180 ? "…" : ""}</strong><small>{session.backend} · {session.account}{when(session.updated_at) && ` · ${when(session.updated_at)}`}</small>{session.reason && <small>{session.reason}</small>}</span>
     </label>)}</div>
     {error && <p role="alert">{error}</p>}
     <footer><button onClick={onClose} disabled={busy}>Cancel</button><button disabled={!selected.length || busy} onClick={async () => {

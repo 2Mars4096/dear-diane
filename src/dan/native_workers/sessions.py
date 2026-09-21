@@ -28,8 +28,8 @@ def _read_only(db: Path) -> sqlite3.Connection:
     return sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)
 
 
-def cursor_chats(workspace: str) -> list[tuple[str, str]]:
-    """Cursor editor chats for one local folder: (composer id, title). Never writes Cursor's store."""
+def cursor_chats(workspace: str) -> list[tuple[str, str, float]]:
+    """Cursor editor chats for one local folder: (composer id, title, updated seconds). Never writes Cursor's store."""
     base = cursor_user_dir()
     workspace_ids = []
     for meta in (base / "workspaceStorage").glob("*/workspace.json"):
@@ -42,20 +42,20 @@ def cursor_chats(workspace: str) -> list[tuple[str, str]]:
     db = base / "globalStorage/state.vscdb"
     if not workspace_ids or not db.is_file():
         return []
-    chats: dict[str, str] = {}
+    chats: dict[str, tuple[str, float]] = {}
     try:
         with _read_only(db) as con:
             has_headers = con.execute("SELECT 1 FROM sqlite_master WHERE name = 'composerHeaders'").fetchone()
             if has_headers:
                 marks = ",".join("?" * len(workspace_ids))
-                for composer_id, value in con.execute(
-                        f"SELECT composerId, value FROM composerHeaders WHERE workspaceId IN ({marks}) "
+                for composer_id, value, updated in con.execute(
+                        f"SELECT composerId, value, COALESCE(lastUpdatedAt, createdAt, 0) FROM composerHeaders WHERE workspaceId IN ({marks}) "
                         "AND COALESCE(isSubagent, 0) = 0 AND COALESCE(isArchived, 0) = 0 ORDER BY lastUpdatedAt DESC", workspace_ids):
                     try:
                         header = json.loads(value or "{}")
                     except ValueError:
                         header = {}
-                    chats[composer_id] = str(header.get("name") or header.get("subtitle") or "Cursor chat")
+                    chats[composer_id] = (str(header.get("name") or header.get("subtitle") or "Cursor chat"), float(updated or 0) / 1000)
             # Older Cursor versions list chats only in each workspace's own store.
             for workspace_id in workspace_ids:
                 local = base / "workspaceStorage" / workspace_id / "state.vscdb"
@@ -71,10 +71,10 @@ def cursor_chats(workspace: str) -> list[tuple[str, str]]:
                     composer_id = item.get("composerId") if isinstance(item, dict) else None
                     if composer_id and composer_id not in chats and not item.get("isArchived") and \
                             con.execute("SELECT 1 FROM cursorDiskKV WHERE key = ?", (f"composerData:{composer_id}",)).fetchone():
-                        chats[composer_id] = str(item.get("name") or "Cursor chat")
+                        chats[composer_id] = (str(item.get("name") or "Cursor chat"), float(item.get("lastUpdatedAt") or item.get("createdAt") or 0) / 1000)
     except sqlite3.Error:
         return []
-    return list(chats.items())
+    return [(composer_id, title, updated) for composer_id, (title, updated) in chats.items()]
 
 
 def cursor_messages(db: Path, composer_id: str) -> list[dict]:
@@ -115,8 +115,8 @@ def discover(workspace: str) -> list[dict]:
             if backend == "cursor":
                 if account_id == "default":
                     db = cursor_user_dir() / "globalStorage/state.vscdb"
-                    for composer_id, title in cursor_chats(workspace):
-                        add(found, backend, account_id, composer_id, title, str(db), workspace)
+                    for composer_id, title, updated in cursor_chats(workspace):
+                        add(found, backend, account_id, composer_id, title, str(db), workspace, updated)
                 continue
             if backend == "codex":
                 home = Path(profile.get("env", {}).get("CODEX_HOME", str(user_home() / ".codex")))
@@ -130,10 +130,12 @@ def discover(workspace: str) -> list[dict]:
                         # Codex also stores its own internal threads (subagents, guardian
                         # auto-reviews); only threads a person started are importable.
                         internal = "AND COALESCE(thread_source, 'user') NOT IN ('subagent', 'guardian_review', 'agent_created_thread')" if "thread_source" in columns else ""
-                        rows = con.execute(f"SELECT id, cwd, title, rollout_path FROM threads WHERE archived = 0 {internal}").fetchall()
+                        stamps = [name for name in ("recency_at", "updated_at", "created_at") if name in columns]
+                        recency = f"COALESCE({', '.join(stamps + ['0'])})" if stamps else "0"  # COALESCE needs two arguments
+                        rows = con.execute(f"SELECT id, cwd, title, rollout_path, {recency} AS updated FROM threads WHERE archived = 0 {internal}").fetchall()
                     for row in rows:
                         if same_folder(row["cwd"], workspace):
-                            add(found, backend, account_id, row["id"], row["title"], row["rollout_path"], workspace)
+                            add(found, backend, account_id, row["id"], row["title"], row["rollout_path"], workspace, float(row["updated"] or 0))
                 except (sqlite3.Error, OSError):
                     continue
             elif backend == "claude":
@@ -164,7 +166,7 @@ def discover(workspace: str) -> list[dict]:
                     except (OSError, ValueError, AttributeError):
                         continue
                     if not internal and same_folder(cwd, workspace):
-                        add(found, backend, account_id, path.stem, title, str(path), workspace)
+                        add(found, backend, account_id, path.stem, title, str(path), workspace, path.stat().st_mtime)
             elif backend == "antigravity":
                 path = user_home() / ".gemini/antigravity-cli/cache/last_conversations.json"
                 try:
@@ -174,14 +176,15 @@ def discover(workspace: str) -> list[dict]:
                             add(found, backend, account_id, session_id, "Antigravity conversation", "", workspace)
                 except (OSError, ValueError, AttributeError):
                     pass
-    return list(found.values())
+    # Newest first across every runtime.
+    return sorted(found.values(), key=lambda row: row["updated_at"], reverse=True)
 
 
-def add(found, backend, account, session_id, title, path, workspace):
+def add(found, backend, account, session_id, title, path, workspace, updated_at: float = 0.0):
     # Shared histories can be visible under multiple accounts; preserve account choice.
     key = hashlib.sha256(f"{backend}:{account}:{session_id}".encode()).hexdigest()[:24]
     found[key] = {"id": key, "backend": backend, "account": account, "session_id": session_id,
-                  "title": title or session_id, "path": path, "workspace": workspace,
+                  "title": title or session_id, "path": path, "workspace": workspace, "updated_at": updated_at,
                   "can_import": backend != "antigravity", "fork": True,
                   # Cursor editor chats cannot be resumed headlessly; the import is a transcript copy.
                   "continuation": "history" if backend == "cursor" else "native",

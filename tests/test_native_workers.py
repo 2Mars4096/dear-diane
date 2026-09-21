@@ -234,7 +234,7 @@ def test_cursor_chat_import_reads_store_without_writing(monkeypatch, tmp_path):
     con.commit(); con.close()
     before = db.stat().st_mtime_ns
     monkeypatch.setenv("DAN_CURSOR_USER_DIR", str(user))
-    chats = dict(sessions.cursor_chats(str(project)))
+    chats = {composer_id: title for composer_id, title, _ in sessions.cursor_chats(str(project))}
     assert chats == {"c1": "Plan the reader", "old": "Older chat"}  # archived, subagent, remote, and pruned chats are skipped
     rows = {row["session_id"]: row for row in sessions.discover(str(project)) if row["backend"] == "cursor"}
     assert rows["c1"]["can_import"] and rows["c1"]["continuation"] == "history"
@@ -278,3 +278,22 @@ def test_claude_discovery_skips_subagent_transcripts(monkeypatch, tmp_path):
     (project / "s1" / "subagents" / "agent-x.jsonl").write_text(row())
     monkeypatch.setattr(sessions, "accounts", lambda: {"claude": {"default": {"env": {"CLAUDE_CONFIG_DIR": str(home)}}}})
     assert [r["session_id"] for r in sessions.discover(str(tmp_path))] == ["s1"]
+
+
+def test_discovery_sorts_newest_first_across_runtimes(monkeypatch, tmp_path):
+    import os, sqlite3
+    from dan.native_workers import sessions
+    codex = tmp_path / ".codex"; codex.mkdir()
+    con = sqlite3.connect(codex / "state_5.sqlite")
+    con.execute("CREATE TABLE threads (id TEXT, cwd TEXT, title TEXT, rollout_path TEXT, archived INTEGER, thread_source TEXT, recency_at INTEGER, updated_at INTEGER, created_at INTEGER)")
+    con.execute("INSERT INTO threads VALUES ('old', ?, 'Old codex', 'p', 0, 'user', 100, 100, 100)", (str(tmp_path),))
+    con.execute("INSERT INTO threads VALUES ('new', ?, 'New codex', 'p', 0, 'user', 300, 300, 300)", (str(tmp_path),))
+    con.commit(); con.close()
+    claude = tmp_path / ".claude"; project = claude / "projects" / "p"; project.mkdir(parents=True)
+    transcript = project / "mid.jsonl"
+    transcript.write_text(json.dumps({"type": "user", "cwd": str(tmp_path), "message": {"role": "user", "content": "Mid"}}) + "\n")
+    os.utime(transcript, (200, 200))
+    monkeypatch.setattr(sessions, "accounts", lambda: {"codex": {"default": {"env": {"CODEX_HOME": str(codex)}}}, "claude": {"default": {"env": {"CLAUDE_CONFIG_DIR": str(claude)}}}})
+    rows = sessions.discover(str(tmp_path))
+    assert [row["session_id"] for row in rows] == ["new", "mid", "old"]
+    assert [row["updated_at"] for row in rows] == [300.0, 200.0, 100.0]

@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-21
+- [feat] Native session import lists sessions newest first across Codex (thread recency), Claude (transcript mtime), and Cursor (lastUpdatedAt), and shows each session's date; previously the order was database/glob order.
 - [fix] The sidebar swipe-to-archive/restore label is only shown while a row is swiped; it showed through transparent rows.
 - [fix] Claude Code import discovery also skips subagent transcripts (nested `subagents/` files and rows tagged `isSidechain`/`agentId`); Cursor already skipped `isSubagent` chats.
 
