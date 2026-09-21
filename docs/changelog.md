@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-21
+- [feat] Claude model menu adds full IDs (claude-fable-5-1, claude-opus-5, claude-sonnet-5, claude-haiku-4-5) alongside the aliases, since Claude Code 2.1.66 has no `fable` alias. Codex reasoning levels now come from its model cache per model (minimal…ultra), so the Reasoning menu matches the selected model. Claude Code 2.1.66 only accepts low/medium/high.
 - [fix] Codex accounts that share one history store (codexx `share_history` symlinks, or CODEX_HOME == ~/.codex) no longer list every session once per account; the "Personal Codex" account is offered only when CODEX_HOME points elsewhere. One real project dropped from 460 listed sessions to 117 unique ones.
 - [feat] Native session import lists sessions newest first across Codex (thread recency), Claude (transcript mtime), and Cursor (lastUpdatedAt), and shows each session's date; previously the order was database/glob order.
 - [fix] The sidebar swipe-to-archive/restore label is only shown while a row is swiped; it showed through transparent rows.

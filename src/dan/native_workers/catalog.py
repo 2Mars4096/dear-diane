@@ -88,6 +88,7 @@ def catalog() -> dict:
     for runtime, label in RUNTIMES.items():
         executable = binary(runtime)
         models = []
+        model_efforts: dict[str, list[str]] = {}
         if runtime == "codex":
             homes = [Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))]
             homes += [entry["home"] for entry in configured[runtime].values() if "home" in entry]
@@ -98,10 +99,14 @@ def catalog() -> dict:
                         slug = model.get("slug")
                         if slug and slug not in models:
                             models.append(slug)
+                            levels = [str(level.get("effort")) for level in model.get("supported_reasoning_levels") or [] if isinstance(level, dict) and level.get("effort")]
+                            if levels:
+                                model_efforts[slug] = levels
                 except (OSError, ValueError, TypeError):
                     pass
         elif runtime == "claude":
-            models = ["sonnet", "opus", "haiku"]
+            # Aliases resolve to the CLI's latest; full IDs pin a model (Fable 5.1 predates the alias in older CLIs).
+            models = ["opus", "sonnet", "haiku", "claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
         version = ""
         if executable:
             try:
@@ -114,7 +119,9 @@ def catalog() -> dict:
         claude_fast = bool(parsed and tuple(map(int, parsed.groups())) >= (2, 1, 205))
         result.append({"id": runtime, "label": label, "available": bool(executable), "version": version,
                        "accounts": [{"id": key, "label": value["label"]} for key, value in configured[runtime].items()],
-                       "models": models, "efforts": [] if runtime == "cursor" else ["low", "medium", "high"] + (["xhigh", "max", "ultra"] if runtime == "codex" else []),
+                       "models": models, "model_efforts": model_efforts,
+                       # Claude Code 2.1.66 accepts low/medium/high only; Codex levels come from its model cache per model.
+                       "efforts": [] if runtime == "cursor" else ["low", "medium", "high"] + (sorted({level for levels in model_efforts.values() for level in levels} - {"low", "medium", "high"}, key=["minimal", "xhigh", "max", "ultra"].index) if runtime == "codex" else []),
                        "fast": runtime == "codex" or (runtime == "claude" and claude_fast),
                        "setup": "" if executable else {"antigravity": "Install agy and sign in with agy.",
                                                         "cursor": "Install the Cursor CLI (curl https://cursor.com/install -fsS | bash), then run agent login."}.get(runtime, "")})
@@ -153,7 +160,7 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
     permission = str(profile.get("permission") or "auto")
     if permission not in PERMISSIONS:
         raise ValueError("Unsupported permission mode")
-    allowed = {"low", "medium", "high"} | ({"xhigh", "max", "ultra"} if runtime == "codex" else set())
+    allowed = {"low", "medium", "high"} | ({"minimal", "xhigh", "max", "ultra"} if runtime == "codex" else set())
     if effort and effort not in allowed:
         raise ValueError("Unsupported reasoning effort")
     if runtime == "cursor":
