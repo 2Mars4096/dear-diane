@@ -11,6 +11,8 @@ The pre-Universal graph builder, visual graph editor, Code/Research/Content mode
 
 ## Workbench
 
+DAN's icon uses an ivory impressionist network of cooperating agents, shared by new desktop packages and the browser favicon.
+
 Activity shows a short current-action label while working; expand **Work details** for the recorded steps afterward.
 
 Waiting follow-ups appear only in **Up next**, keeping the active reply in view. They enter the conversation when delivered.

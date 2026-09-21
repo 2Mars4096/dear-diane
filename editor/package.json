@@ -50,7 +50,7 @@
           ]
         }
       ],
-      "icon": "build/icon.icns",
+      "icon": "resources/icons/icon.icns",
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "identity": null
@@ -65,7 +65,7 @@
           ]
         }
       ],
-      "icon": "build/icon.ico"
+      "icon": "resources/icons/icon.ico"
     },
     "nsis": {
       "oneClick": false,
@@ -92,7 +92,7 @@
         }
       ],
       "category": "Development",
-      "icon": "build/icon.png"
+      "icon": "resources/icons/icon.png"
     },
     "publish": {
       "provider": "github",

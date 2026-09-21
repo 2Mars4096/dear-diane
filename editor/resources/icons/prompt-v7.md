@@ -1,0 +1,8 @@
+# Selected DAN icon — ivory v7
+
+Generated with built-in imagegen; user selected this variant. The earlier reference images and unused variants were removed at the user’s request.
+
+
+Artwork: `source-v7.png`
+
+Use case: precise-object-edit / palette variation. Edit the supplied impressionist DAN app icon with a restrained COLOR-ONLY change. Preserve its exact overall composition, three collaborating circular agent nodes, three curved connections to the glowing golden center, rounded square silhouette, proportions, tactile oil-painted impasto and visible directional brushstrokes. Keep top node coral-peach, bottom-left node clear sky/cobalt blue, bottom-right node jade/turquoise, and center warm golden yellow. Remove ALL purple, violet, lavender, mauve, magenta and plum from the background, edges, shadows and foreground; replace purple in the blue node with true blue/cyan. No letters or typography. Preserve this expressive painting as an app icon; do not redesign it or introduce new objects. Maintain clear shape separation and legibility. One finished square icon, no mockup, no captions, no palette swatches. Variant: WARM IVORY. Replace the entire dark purple/indigo background tile with a light warm porcelain ivory / soft off-white background, with subtle warm pale stone-gray shadows and creamy white impasto highlights. Not yellow, not pink, no purple. Quiet refined contemporary technology product aesthetic. Keep coral, true blue, jade agent nodes vivid and rich; preserve golden orange outlines around the luminous center to distinguish it from the light ground. Subtle cool gray-blue contact shadows around the network ensure readable separation. Preserve painterly background texture without extra marks, exact network layout and rounded tile.
