@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-21
+- [fix] Up next no longer flashes for a first message: only waiting follow-up messages are listed, never the run's own task while it is briefly queued.
 - [fix] Saved Claude alias models (opus/sonnet/haiku/fable) migrate to the full IDs on load, so the menu no longer shows both "opus" and "Opus 5".
 - [fix] Mode menu: the gap between the button and its panel is part of the hover zone, so moving into the panel no longer closes it; removed the native tooltip that appeared over the hover-opened menu.
 - [fix] Hover menus (Lead, Team, mode) close 90 ms after the pointer leaves instead of 180 ms.

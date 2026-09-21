@@ -5940,3 +5940,9 @@ describe("workspace blueprint nodes", () => {
     expect(nodes.find((node) => node.id === "blueprint:answer")).toBeUndefined();
   });
 });
+
+it("never lists a run's own queued task in Up next", async () => {
+  const { queueRowsFromTasksForTest } = await import("../ChunkWorkspaceApp");
+  const fresh = { task_id: "t", thread_id: "s", status: "queued", phase: "queued", latest_progress: "", latest_artifact_refs: [], blocker: "", trace_refs: [], metadata: {} } as never;
+  expect(queueRowsFromTasksForTest([fresh], true)).toEqual([]);
+});

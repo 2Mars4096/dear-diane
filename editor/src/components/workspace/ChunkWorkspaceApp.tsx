@@ -9133,8 +9133,9 @@ function queueRowsFromTasks(tasks: ChatV2TaskSnapshot[], waitingOnly = false) {
       });
     }
   }
-  // The composer shows pending delivery only; injected items remain in run history.
-  if (waitingOnly) return rows.filter((row) => ["queued", "waiting_dependency"].includes(row.status.toLowerCase()));
+  // Up next lists waiting follow-up messages only: never the run's own task (which is
+  // briefly "queued" before it starts), and never items already delivered.
+  if (waitingOnly) return rows.filter((row) => row.kind === "followup" && ["queued", "waiting_dependency"].includes(row.status.toLowerCase()));
   return rows.slice(0, 8);
 }
 
