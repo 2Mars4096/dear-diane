@@ -7,8 +7,8 @@
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev": "npm run ocr:assets && vite",
+    "build": "npm run ocr:assets && tsc -b && vite build",
     "bundle:check": "node scripts/check-bundle-budgets.mjs",
     "build:verify": "npm run build && npm run bundle:check",
     "lint": "eslint .",
@@ -20,7 +20,8 @@
     "dist": "npm run build && npm run electron:compile && electron-builder",
     "dist:mac": "npm run build && npm run electron:compile && CXXFLAGS=\"-isystem $(xcrun --show-sdk-path)/usr/include/c++/v1\" electron-builder --mac --publish never && codesign --force --deep --sign - release/mac-arm64/DAN.app",
     "dist:win": "npm run build && npm run electron:compile && electron-builder --win",
-    "dist:linux": "npm run build && npm run electron:compile && electron-builder --linux"
+    "dist:linux": "npm run build && npm run electron:compile && electron-builder --linux",
+    "ocr:assets": "node scripts/copy-ocr-assets.mjs"
   },
   "build": {
     "appId": "com.dan.desktop",
@@ -107,15 +108,18 @@
     ]
   },
   "dependencies": {
+    "@tesseract.js-data/eng": "^1.0.0",
     "dompurify": "^3.3.3",
     "electron-updater": "^6.8.9",
     "highlight.js": "^11.11.1",
     "katex": "^0.16.38",
     "lucide-react": "^0.575.0",
     "marked": "^17.0.4",
+    "pdf-lib": "^1.17.1",
     "pdfjs-dist": "6.2.108",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "tesseract.js": "^6.0.1",
     "typescript": "~5.9.3",
     "zustand": "^5.0.11"
   },

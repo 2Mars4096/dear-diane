@@ -22,3 +22,5 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+# OCR runtime assets copied from node_modules at build time
+public/tesseract/

@@ -16,6 +16,7 @@ from dan.server.routers.chat_v2 import router as chat_v2_router, resume_recovere
 from dan.server.routers.misc import router as workspace_router
 from dan.server.routers.sessions import router as sessions_router
 from dan.server.routers.native_workers import router as native_workers_router
+from dan.server.routers.reader import router as reader_router
 
 
 def create_app() -> FastAPI:
@@ -49,6 +50,7 @@ def create_app() -> FastAPI:
     app.include_router(sessions_router)
     app.include_router(chat_v2_router)
     app.include_router(native_workers_router)
+    app.include_router(reader_router)
     return app
 
 

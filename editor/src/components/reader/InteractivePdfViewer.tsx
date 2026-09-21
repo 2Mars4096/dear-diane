@@ -59,6 +59,7 @@ type InteractivePdfViewerProps = {
   positionIdentity: string;
   onAskSelection: (selection: SelectionAction) => string | null;
   onCommentSelection: (selection: SelectionAction) => void;
+  onDocument?: (document: PDFDocumentProxy | null) => void; // DAN: lets the reader extract text / run OCR
   onPageChange: (pageNumber: number) => void;
   ocrPages: MaterialPdfOcrPage[];
   pageNumber: number;
@@ -425,6 +426,7 @@ export function InteractivePdfViewer({
   positionIdentity,
   onAskSelection,
   onCommentSelection,
+  onDocument,
   onPageChange,
   ocrPages,
   pageNumber,
@@ -586,6 +588,7 @@ export function InteractivePdfViewer({
         setPageCount(pdfDocument.numPages);
         setStatus("ready");
         setMessage("");
+        onDocument?.(pdfDocument);
       } catch {
         if (!cancelled) {
           setStatus("error");
@@ -602,8 +605,10 @@ export function InteractivePdfViewer({
       const loadingTask = loadingTaskRef.current;
       loadingTaskRef.current = null;
       documentRef.current = null;
+      onDocument?.(null);
       void loadingTask?.destroy();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- onDocument is a stable callback from the reader
   }, [sourceUrl]);
 
   useEffect(() => {
