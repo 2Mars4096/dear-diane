@@ -1,7 +1,7 @@
 # Architecture
 
 ## Design artwork
-- `output/imagegen/` holds generated DAN icon candidates and their prompt records; these are review assets, separate from the installed app icon.
+- User-selected ivory v7 and its generation prompt live in tracked `editor/resources/icons/`, alongside PNG/ICNS/ICO exports for desktop packaging; `editor/public/favicon.png` is the browser export. Unselected generated variants were deleted. Local macOS updates retain their existing icon-preservation behavior.
 
 ## Latest-request editing
 - `WorkbenchConversation` lazy-loads `RequestActions` for the latest user message. It owns the temporary edit/error state; `ChunkWorkspaceApp` validates the request, preserves attachments, persists replacement history, and uses the existing run admission path. Admission failure restores the prior transcript. Editing is disabled while a reply is pending.

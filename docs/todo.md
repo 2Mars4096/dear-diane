@@ -1,5 +1,15 @@
 # Todo
 
+- [x] Reinstall DAN with ivory v7; verify launch and backend health; remove rejected icon variants and retain selected source/prompt.
+
+- [x] Adopt selected ivory v7 DAN icon for new desktop packages and web favicon; source assets in `editor/resources/icons/`.
+
+- [x] Explore purple-free impressionist DAN icon palettes; selected ivory v7 retained in `editor/resources/icons/`, other variants removed.
+
+- [x] Explore colorful gouache and impressionist DAN icons; completed exploration, unused variants removed.
+
+- [x] Revise DAN icon to represent agent coordination without alphabet forms; design carried into selected v7.
+
 - [x] [DAN icon concept](UI-plans/1-work-notes-gui.md) — generated retro-futuristic artwork and saved its prompt in `output/imagegen/`.
 
 ## Universal product stack

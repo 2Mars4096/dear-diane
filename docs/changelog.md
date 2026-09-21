@@ -1,6 +1,17 @@
 # Changelog
 
 ## 2026-09-21
+- [infra] Reinstall signed arm64 DAN in `/Applications/DAN.app` with selected ivory v7 icon; launch and backend health verified. Keep a rollback app bundle. Remove all six rejected icon variants from the workspace and generated-image cache; retain v7 source and prompt in tracked icon resources.
+- [docs] Record selected icon assets and completed design exploration; build uses the locally installed Electron distribution when network download is unavailable.
+
+## 2026-09-21
+- [feat] Adopt user-approved ivory impressionist v7 as DAN's desktop package icon and browser favicon. Add tracked PNG/ICNS/ICO resources and update package paths. Existing local macOS updates still preserve the installed icon.
+- [test] Production build and bundle budgets pass; exported ICNS decodes with macOS iconutil and PNG/ICO formats are recognized.
+
+## 2026-09-21
+- [docs] Save three impressionist DAN icon palette edits: pale blush pink v5, slate blue v6, and warm ivory v7, preserving the agent-network composition while replacing purple tones. Record full imagegen prompts alongside the artwork.
+
+## 2026-09-21
 - [fix] The desktop app's static server serves `.wasm` as application/wasm (pdf.js image decoders and colour management, tesseract) and resolves asset paths without their query string; paths cannot leave the dist folder.
 - [style] Settings: Skills is a scrollable table (shared, skill, from, what it does) with a sticky header instead of stacked cards; the Updates block has consistent button styling and spacing.
 - [docs] Save two colorful DAN icon candidates: bold gouache v3 and impressionist oil-paint v4. Both retain the letter-free agent-coordination motif; prompts are recorded in `output/imagegen/dan-colorful-icon-prompts.md`.
