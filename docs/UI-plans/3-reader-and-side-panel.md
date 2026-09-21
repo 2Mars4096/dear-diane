@@ -16,6 +16,7 @@
   - [x] 2-4. Comment saves a highlight with an optional note; comments list jumps back to the highlight.
 - [x] 3. Validation: unit tests for ported libs, browser check with a real PDF (render, Ask staging, Comment/highlight, position restore, dark mode).
 - [x] 5. OCR for scanned pages (tesseract.js in-browser, server cache), text-anchored highlights with re-location, annotated-PDF export, themed viewer overlays.
+- [x] 6. Main-column tab bar (chat + PDFs), side panel follows the active tab, Notes tab for comments.
 - [ ] 4. Send a real Ask and confirm the answer streams in the side chat without moving the reader.
 
 ## Decisions

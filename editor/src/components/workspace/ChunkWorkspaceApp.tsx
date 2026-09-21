@@ -6,6 +6,7 @@ import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from ".
 import { TeamPanel, TeamStrip, useTeamWorkers } from "../workbench/TeamProgress";
 import { SideTabs, readLastSideTab, rememberSideTab, type SideTab, type SideTabItem } from "../workbench/SideTabs";
 import type { ReaderAsk, ReaderFile } from "../reader/ReaderView";
+import { MainTabs, closeMainTab, type MainTab } from "../workbench/MainTabs";
 import { ProjectSettings } from "../workbench/ProjectSettings";
 import { streamedMessageContent, completedMessageContent } from "../workbench/eventPresentation";
 import { WorkbenchNavigation } from "../workbench/WorkbenchNavigation";
@@ -151,6 +152,7 @@ import MarkdownRenderer from "../shared/MarkdownRenderer";
 const FollowupQueue = lazy(() => import("../workbench/FollowupQueue").then(module => ({ default: module.FollowupQueue })));
 const DanSettings = lazy(() => import("../workbench/DanSettings").then(module => ({ default: module.DanSettings })));
 const ReaderView = lazy(() => import("../reader/ReaderView").then((module) => ({ default: module.ReaderView })));
+const ReaderNotes = lazy(() => import("../reader/ReaderNotes").then((module) => ({ default: module.ReaderNotes })));
 const UsagePanel = lazy(() => import("../workbench/UsagePanel").then((module) => ({ default: module.UsagePanel })));
 const ImportNativeSessions = lazy(() => import("../workbench/ImportNativeSessions").then((module) => ({ default: module.ImportNativeSessions })));
 
@@ -13258,7 +13260,11 @@ export default function ChunkWorkspaceApp() {
   const showSidecarPreview = sideTab === "preview";
   const setShowSidecarPreview = useMemo(() => sideSetter("preview"), [sideSetter]);
   const [sidecarSelection, setSidecarSelection] = useState({ text: "", token: 0 });
-  const [readerFile, setReaderFile] = useState<ReaderFile | null>(null);
+  // Main column tabs: the conversation plus any open PDFs. The side panel follows the active tab.
+  const [mainTabs, setMainTabs] = useState<MainTab[]>([{ id: "chat", kind: "chat", label: "Chat" }]);
+  const [activeMainTab, setActiveMainTab] = useState("chat");
+  const [readerFiles, setReaderFiles] = useState<Record<string, ReaderFile>>({});
+  const readerFile = readerFiles[activeMainTab] ?? null;
   const [readerSelection, setReaderSelection] = useState<{ text: string; token: number; context?: string }>({ text: "", token: 0 });
   const [workbenchOutline, setWorkbenchOutline] = useState(false);
   const [deletingArchived, setDeletingArchived] = useState(false);
@@ -14585,10 +14591,23 @@ export default function ChunkWorkspaceApp() {
     return { ...payload, profile_policy: { ...payload.profile_policy, native_workers: nativeWorkerProfiles, ...(selectedAgentId !== "native" ? { lead_profile: leadProfiles[selectedAgentId] || {} } : {}) } };
   };
   const openReader = (entry: WorkspaceFileEntry) => {
-    setReaderFile({ name: entry.name, path: entry.path, url: workspaceFilePreviewUrl(entry.path, developmentRoot || undefined, entry.relative_path) });
-    // Reading gets the full width; the side chat opens when a question is asked.
-    if (sideTab !== "chat") openSideTab(null);
+    const id = `pdf:${entry.path}`;
+    setReaderFiles((current) => current[id] ? current : { ...current, [id]: { name: entry.name, path: entry.path, url: workspaceFilePreviewUrl(entry.path, developmentRoot || undefined, entry.relative_path) } });
+    setMainTabs((tabs) => tabs.some((tab) => tab.id === id) ? tabs : [...tabs, { id, kind: "pdf", label: entry.name, title: entry.path }]);
+    setActiveMainTab(id);
   };
+  const closeTab = (id: string) => {
+    const next = closeMainTab(mainTabs, activeMainTab, id);
+    setMainTabs(next.tabs); setActiveMainTab(next.active);
+    if (id !== "chat") setReaderFiles((current) => { const copy = { ...current }; delete copy[id]; return copy; });
+  };
+  // Opening or starting a chat always brings the conversation tab back to the front.
+  useEffect(() => {
+    setMainTabs((tabs) => tabs.some((tab) => tab.id === "chat") ? tabs : [{ id: "chat", kind: "chat", label: "Chat" }, ...tabs]);
+    setActiveMainTab("chat");
+  }, [activeThread?.id]);
+  // Notes belongs to a PDF; fall back to Chat when the conversation tab is active.
+  useEffect(() => { if (sideTab === "notes" && !readerFile) openSideTab("chat"); }, [sideTab, readerFile, openSideTab]);
   const askFromReader = (ask: ReaderAsk) => {
     const where = ask.anchor ? ` (the passage appears after "…${ask.anchor.prefix.slice(-40)}" and before "${ask.anchor.suffix.slice(0, 40)}…")` : "";
     setReaderSelection({ text: ask.quote, context: `Page ${ask.pageNumber}${where}: ${ask.pageText}`, token: Date.now() });
@@ -14600,6 +14619,7 @@ export default function ChunkWorkspaceApp() {
     const runningWorkers = team.workers.filter((worker) => worker.status === "running").length;
     const tabs: SideTabItem[] = [
       { id: "chat", label: readerFile ? "Reading" : "Chat" },
+      ...(readerFile ? [{ id: "notes" as const, label: "Notes" }] : []),
       { id: "files", label: "Files" },
       ...(activePreviewFileEntry || selectedBlueprintNode || selectedChunk || promptLogPreview ? [{ id: "preview" as const, label: "Preview" }] : []),
       ...(agentEvents.length || activeRunningTask ? [{ id: "activity" as const, label: "Activity", live: Boolean(activeRunningTask) }] : []),
@@ -18664,7 +18684,8 @@ export default function ChunkWorkspaceApp() {
             )}
           >
             <div className="flex min-h-0 min-w-0 flex-col bg-white/90 dark:bg-slate-950">
-              {readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView file={readerFile} onAsk={askFromReader} onClose={() => setReaderFile(null)} /></Suspense> : <>
+              {mainTabs.length > 1 && <MainTabs tabs={mainTabs.map((tab) => tab.id === "chat" ? { ...tab, label: activeThread?.title || "New chat" } : tab)} active={activeMainTab} onSelect={setActiveMainTab} onClose={closeTab} />}
+              {readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView key={readerFile.path} file={readerFile} onAsk={askFromReader} onNotes={() => openSideTab("notes")} /></Suspense> : <>
               <div className="wb-conversation-heading"><div className="wb-conversation-actions">
                 {activeThread && <button title={`Copy session ID: ${activeThread.id}`} onClick={() => { void navigator.clipboard.writeText(activeThread.id).then(() => setStatus("Session ID copied"), () => setStatus(`Session ID: ${activeThread.id}`)); }}>Session <code>{activeThread.id}</code></button>}
                 {activeRunningTask && activeThread && <button className="wb-stop" onClick={() => void stopSessionRun({ id: activeThread.id, workflow_id: activeThread.workflowId, title: activeThread.title || "Active session", message_count: messages.length, created_at: "", updated_at: "" }, activeRunningTask)}><Square size={11} />Stop run</button>}
@@ -18901,6 +18922,7 @@ export default function ChunkWorkspaceApp() {
               <PanelRight size={14} />
             </CollapsedPaneRail>
           )}
+          {sideTab === "notes" && readerFile && <Suspense fallback={null}><ReaderNotes file={readerFile} header={renderSideTabs()} /></Suspense>}
           {sidecarChat && readerFile && <SidecarChat key={`reader:${readerFile.path}`} parentId={`reader:${readerFile.path}`}
             workflowId={activeThread?.workflowId || workspace?.id || activeWorkspaceId || "_unassigned"}
             workspaceId={workspace?.id || ""} workspaceRoot={developmentRoot || workspaceRoot} context={[]} selection={readerSelection}

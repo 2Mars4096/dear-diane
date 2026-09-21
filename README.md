@@ -33,7 +33,7 @@ Work opens with a familiar project/chat sidebar: New chat, search, collapsible p
 - **All sessions:** use the project sidebar or the wheel's “All sessions” button. Drafts survive switching.
 - **Skills:** DAN settings → Skills lets Claude Code use skills installed for Codex or Cursor, without changing any CLI's own folders.
 - **Usage:** hover the sidebar's Usage button for remaining quota (5h/week/model windows) on the accounts you used most recently.
-- **Reader:** click a PDF in Files (or **Read** in Preview). Select text → **Ask** stages it in the side chat with the page's text; **Comment** saves a highlight with an optional note. Scanned pages are OCR'd in-app so they become selectable; highlights are text-anchored so they survive PDF changes; **Export** saves a copy with comments as PDF highlights. Zoom, page references (**Refs**), comments, and your position are remembered per PDF.
+- **Reader:** click a PDF in Files (or **Read** in Preview); it opens as a tab beside the conversation. The side panel's **Reading** and **Notes** tabs follow the active PDF. Select text → **Ask** stages it in the side chat with the page's text; **Comment** saves a highlight with an optional note. Scanned pages are OCR'd in-app so they become selectable; highlights are text-anchored so they survive PDF changes; **Export** saves a copy with comments as PDF highlights. Zoom, page references (**Refs**), comments, and your position are remembered per PDF.
 
 Codex events use the shared activity display. The [native worker design](docs/UI-plans/2-native-agent-workers.md) describes persistent Codex/Claude children; a Claude worker adapter is still pending.
 

@@ -513,3 +513,38 @@
 .wb-skill-list label > span { display:grid; gap:2px; min-width:0; }
 .wb-skill-list strong { font-size:12px; font-weight:500; }
 .wb-skill-list small { font-size:10px; color:var(--wb-muted); }
+/* Main column tabs: conversation + open documents. */
+.wb-main-tabs { display:flex; align-items:flex-end; gap:2px; flex-shrink:0; height:38px; padding:0 12px; border-bottom:1px solid var(--wb-line); background:var(--wb-paper); overflow-x:auto; scrollbar-width:none; }
+.wb-main-tabs::-webkit-scrollbar { display:none; }
+.wb-main-tab { display:flex; align-items:center; max-width:220px; min-width:0; height:30px; border:1px solid transparent; border-bottom:0; border-radius:8px 8px 0 0; color:var(--wb-muted); }
+.wb-main-tab[data-active] { background:var(--wb-soft); border-color:var(--wb-line); color:var(--wb-ink); }
+.wb-main-tab > button[role=tab] { display:flex; align-items:center; gap:7px; min-width:0; height:100%; padding:0 6px 0 10px; font-size:12px; }
+.wb-main-tab > button[role=tab] span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.wb-main-tab > button[role=tab] svg { flex-shrink:0; }
+.wb-main-tab:not([data-active]):hover { color:var(--wb-ink); }
+.wb-main-tab-close { flex-shrink:0; width:18px; height:18px; margin-right:6px; display:grid; place-items:center; border-radius:4px; color:var(--wb-muted); opacity:0; }
+.wb-main-tab:hover .wb-main-tab-close, .wb-main-tab[data-active] .wb-main-tab-close, .wb-main-tab-close:focus-visible { opacity:1; }
+.wb-main-tab-close:hover { background:var(--wb-line); color:var(--wb-ink); }
+.wb-reader-bar { height:36px; padding:0 12px; }
+/* Notes tab: the comment composer and the PDF's highlights live in the side panel. */
+.wb-reader-notes { display:flex; flex-direction:column; }
+.wb-notes-composer { margin:12px; padding:12px; border:1px solid var(--wb-line); border-radius:12px; background:var(--wb-soft); font-size:12px; }
+.wb-notes-composer q, .wb-notes-list q { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; line-height:1.5; }
+.wb-notes-composer q { color:var(--wb-muted); }
+.wb-notes-composer textarea, .wb-notes-list textarea { width:100%; min-height:60px; margin-top:8px; padding:8px 10px; border:1px solid var(--wb-line); border-radius:8px; background:var(--wb-paper); color:var(--wb-ink); resize:none; font-size:13px; }
+.wb-notes-composer textarea:focus, .wb-notes-list textarea:focus { outline:none; border-color:var(--wb-muted); }
+.wb-notes-composer footer { display:flex; justify-content:flex-end; gap:6px; margin-top:8px; }
+.wb-notes-composer footer button { padding:6px 10px; border-radius:6px; color:var(--wb-muted); }
+.wb-notes-composer footer button[type=submit] { background:var(--wb-ink); color:var(--wb-paper); }
+.wb-notes-list { list-style:none; margin:0; padding:4px 12px 24px; overflow:auto; font-size:12px; }
+.wb-notes-list li { padding:10px 0; border-bottom:1px solid var(--wb-line); }
+.wb-notes-jump { display:grid; gap:4px; width:100%; text-align:left; border-radius:6px; }
+.wb-notes-jump span { font-size:10px; color:var(--wb-muted); }
+.wb-notes-jump q { color:var(--wb-ink); border-left:2px solid #f2c14e; padding-left:8px; }
+.wb-notes-jump:hover q { border-left-color:var(--wb-accent); }
+.wb-notes-list li > p { margin:6px 0 0 10px; line-height:1.55; color:var(--wb-ink); white-space:pre-wrap; }
+.wb-notes-actions { display:flex; gap:2px; margin:6px 0 0 4px; opacity:0; transition:opacity 120ms; }
+.wb-notes-list li:hover .wb-notes-actions, .wb-notes-list li:focus-within .wb-notes-actions { opacity:1; }
+.wb-notes-actions button { display:flex; align-items:center; gap:5px; padding:3px 6px; border-radius:5px; font-size:11px; color:var(--wb-muted); }
+.wb-notes-actions button:hover { background:var(--wb-soft); color:var(--wb-ink); }
+.wb-notes-list li[data-stale=missing] q { opacity:.55; text-decoration:line-through; }

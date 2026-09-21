@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BookOpen, Download, MessageSquareQuote, ScanText, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Download, MessageSquareQuote, ScanText } from "lucide-react";
 import type { PDFDocumentProxy } from "pdfjs-dist/types/src/pdf";
-import { InteractivePdfViewer, type PdfCommentFocus } from "./InteractivePdfViewer";
-import { readPaperComments, writePaperComments, type PaperComment, type PaperCommentAnchor, type PdfSelectionAnchor } from "./lib/paper-comments";
+import { InteractivePdfViewer } from "./InteractivePdfViewer";
+import type { PaperComment, PaperCommentAnchor, PdfSelectionAnchor } from "./lib/paper-comments";
+import { readerActions, useReaderState } from "./readerStore";
 import { fingerprintText, locateVisualSelection, resolveTextAnchor } from "./lib/paper-anchors";
 import type { MaterialPdfOcrPage } from "./lib/pdf-ocr";
 import { extractPageTexts, ocrPage, ocrPageText, sparsePages } from "./lib/ocr-runner";
@@ -19,31 +20,21 @@ type OcrState = { status: "idle" | "checking" | "running" | "done" | "error"; do
  * questions go to the side chat, comments stay as anchored highlights on the page.
  * Scanned pages get an OCR text layer; comments export as standard PDF highlights.
  */
-export function ReaderView({ file, onAsk, onClose }: { file: ReaderFile; onAsk: (ask: ReaderAsk) => void; onClose: () => void }) {
+export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: (ask: ReaderAsk) => void; onNotes: () => void }) {
   const root = useRef<HTMLDivElement>(null);
-  const note = useRef<HTMLTextAreaElement>(null);
-  const material = useMemo(() => ({ material_id: file.path }), [file.path]);
+  const { comments, stale, focus: commentFocus } = useReaderState(file.path);
   const [pageNumber, setPageNumber] = useState(1);
-  const [comments, setComments] = useState<PaperComment[]>(() => readPaperComments(material));
-  const [commentFocus, setCommentFocus] = useState<PdfCommentFocus | null>(null);
-  const [anchor, setAnchor] = useState<PdfSelectionAnchor | null>(null);
-  const [draft, setDraft] = useState("");
-  const [listOpen, setListOpen] = useState(false);
   const [pageTexts, setPageTexts] = useState<Map<number, string>>(new Map());
   const [ocrPages, setOcrPages] = useState<MaterialPdfOcrPage[]>([]);
   const [ocr, setOcr] = useState<OcrState>({ status: "idle", done: 0, total: 0 });
-  const [stale, setStale] = useState<Record<string, "moved" | "missing">>({});
   const [exporting, setExporting] = useState(false);
   const documentRef = useRef<PDFDocumentProxy | null>(null);
 
   useEffect(() => {
-    setComments(readPaperComments(material)); setPageNumber(1); setAnchor(null); setListOpen(false);
-    setPageTexts(new Map()); setOcrPages([]); setOcr({ status: "idle", done: 0, total: 0 }); setStale({});
-  }, [material]);
-  const save = (next: PaperComment[]) => {
-    setComments(next);
-    try { writePaperComments(material, next); } catch { /* highlights still show for this visit */ }
-  };
+    setPageNumber(1); setPageTexts(new Map()); setOcrPages([]); setOcr({ status: "idle", done: 0, total: 0 });
+  }, [file.path]);
+  const save = (next: PaperComment[]) => readerActions.setComments(file.path, next);
+  useEffect(() => { if (commentFocus) setPageNumber(commentFocus.pageNumber); }, [commentFocus]);
 
   /** Page text for anchoring and Ask context: pdf.js text, or the OCR layer for scanned pages. */
   const pageText = useCallback((page: number): string => {
@@ -109,11 +100,11 @@ export function ReaderView({ file, onAsk, onClose }: { file: ReaderFile; onAsk: 
       const next = comments.map((comment) => {
         if (comment.pageNumber !== number || !comment.anchor || comment.anchor.pageFingerprint === current) return comment;
         const resolved = resolveTextAnchor(text, comment.anchor);
-        if (resolved.status === "missing") { setStale((s) => s[comment.commentId] === "missing" ? s : { ...s, [comment.commentId]: "missing" }); return comment; }
+        if (resolved.status === "missing") { readerActions.setStale(file.path, comment.commentId, "missing"); return comment; }
         const rects = rectsForQuote(pageElement, resolved.selection.quote);
         if (!rects.length) return comment;
         changed = true;
-        setStale((s) => { const copy = { ...s }; delete copy[comment.commentId]; return copy; });
+        readerActions.setStale(file.path, comment.commentId, null);
         return { ...comment, rects, anchor: { ...resolved.selection, pageFingerprint: current } };
       });
       if (changed) save(next);
@@ -140,22 +131,10 @@ export function ReaderView({ file, onAsk, onClose }: { file: ReaderFile; onAsk: 
     onAsk({ quote: selection.quote, pageNumber: selection.pageNumber, pageText: pageText(selection.pageNumber), file, anchor: anchorFor(selection) });
     return null;
   };
+  // Comment hands the selection to the side panel's Notes tab, where the note is written.
   const comment = (selection: PdfSelectionAnchor) => {
-    setAnchor(selection);
-    setDraft("");
-    window.requestAnimationFrame(() => note.current?.focus());
-  };
-  const saveComment = () => {
-    if (!anchor) return;
-    const now = new Date().toISOString();
-    save([...comments, { ...anchor, anchor: anchorFor(anchor), commentId: crypto.randomUUID(), createdAt: now, materialId: file.path, text: draft.trim(), updatedAt: now }].slice(-200));
-    setAnchor(null);
-    setDraft("");
-  };
-  const jump = (item: PaperComment) => {
-    setPageNumber(item.pageNumber);
-    setCommentFocus({ commentId: item.commentId, pageNumber: item.pageNumber, requestId: Date.now(), top: item.rects[0]?.top ?? 0 });
-    setListOpen(false);
+    readerActions.setDraft(file.path, { ...selection, anchor: anchorFor(selection) });
+    onNotes();
   };
   const exportPdf = async () => {
     if (!comments.length || exporting) return;
@@ -178,29 +157,14 @@ export function ReaderView({ file, onAsk, onClose }: { file: ReaderFile; onAsk: 
 
   return <div className="wb-reader" ref={root}>
     <header className="wb-reader-bar">
-      <BookOpen size={14} aria-hidden="true" />
-      <strong title={file.path}>{file.name}</strong>
       {ocr.status === "running" && <span className="wb-reader-ocr" title="Recognizing text on scanned pages"><ScanText size={12} />OCR {ocr.done}/{ocr.total}</span>}
       {ocr.status === "error" && <span className="wb-reader-ocr" data-error title={ocr.message}><ScanText size={12} />OCR failed</span>}
       <div className="wb-reader-actions">
-        <button type="button" aria-expanded={listOpen} onClick={() => setListOpen(!listOpen)} disabled={!comments.length}>
-          <MessageSquareQuote size={13} />Comments{comments.length ? ` ${comments.length}` : ""}
-        </button>
-        <button type="button" onClick={() => void exportPdf()} disabled={!comments.length || exporting} title="Download a copy with comments as PDF highlights">
+        <button type="button" onClick={onNotes}><MessageSquareQuote size={13} />Notes{comments.length ? ` ${comments.length}` : ""}</button>
+        <button type="button" onClick={() => void exportPdf()} disabled={!comments.length || exporting} title="Download a copy with notes as PDF highlights">
           <Download size={13} />{exporting ? "Exporting…" : "Export"}
         </button>
-        <button type="button" onClick={onClose} aria-label="Close reader"><X size={15} /></button>
       </div>
-      {listOpen && <ol className="wb-reader-comments" aria-label="Comments">
-        {[...comments].sort((a, b) => a.pageNumber - b.pageNumber || (a.rects[0]?.top ?? 0) - (b.rects[0]?.top ?? 0)).map((item) => <li key={item.commentId} data-stale={stale[item.commentId]}>
-          <button type="button" onClick={() => jump(item)}>
-            <span>p. {item.pageNumber}{stale[item.commentId] === "missing" ? " · not found in this version" : stale[item.commentId] === "moved" ? " · moved" : ""}</span>
-            <q>{item.quote}</q>
-            {item.text && <em>{item.text}</em>}
-          </button>
-          <button type="button" aria-label="Delete comment" onClick={() => save(comments.filter((entry) => entry.commentId !== item.commentId))}><Trash2 size={12} /></button>
-        </li>)}
-      </ol>}
     </header>
     <div className="wb-reader-stage">
       <InteractivePdfViewer
@@ -219,15 +183,5 @@ export function ReaderView({ file, onAsk, onClose }: { file: ReaderFile; onAsk: 
         title={file.name}
       />
     </div>
-    {anchor && <form className="wb-reader-note" onSubmit={(event) => { event.preventDefault(); saveComment(); }}>
-      <q>{anchor.quote}</q>
-      <textarea ref={note} value={draft} placeholder="Add a note (optional)" aria-label="Comment"
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") setAnchor(null);
-          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); saveComment(); }
-        }} />
-      <footer><button type="button" onClick={() => setAnchor(null)}>Cancel</button><button type="submit">{draft.trim() ? "Save comment" : "Highlight"}</button></footer>
-    </form>}
   </div>;
 }
