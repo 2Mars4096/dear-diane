@@ -17163,6 +17163,8 @@ export default function ChunkWorkspaceApp() {
           <div
             className={cx(
               "pointer-events-none absolute inset-y-0 flex items-center px-3 text-[10px] font-semibold uppercase tracking-[0.14em]",
+              // Only shown while the row is swiped; rows are transparent at rest.
+              !swipeOffset && "invisible",
               archived
                 ? "left-0 text-slate-500 dark:text-slate-400"
                 : "right-0 text-slate-500 dark:text-slate-400",

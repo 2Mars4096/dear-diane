@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-21
+- [fix] The sidebar swipe-to-archive/restore label is only shown while a row is swiped; it showed through transparent rows.
 - [fix] Claude Code import discovery also skips subagent transcripts (nested `subagents/` files and rows tagged `isSidechain`/`agentId`); Cursor already skipped `isSubagent` chats.
 
 ## 2026-09-20
