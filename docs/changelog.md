@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-21
+- [feat] DAN settings opens as a closable tab in the main column (beside the conversation and PDFs) instead of a modal popup; the same component still renders as a dialog when not given `page`.
+- [docs] Save built-in imagegen's retro-futuristic DAN icon candidate and reproducible prompt under `output/imagegen/`; app configuration remains unchanged.
+
+## 2026-09-21
 - [style] Sidebar typography: 13px (macOS sidebar standard) with tighter 30px rows; projects medium weight, chats regular in softer ink that firms up on hover/selection; search and footer match.
 - [style] Composer box radius is 12px, concentric with its 6px controls (New/Next, mode, Lead, Team) instead of 18px.
 - [feat] Token usage analyzer in DAN settings. Reads Claude Code and Codex transcripts already on disk (no instrumentation, works on old sessions) and rebuilds each session as chat rounds → model calls and steps. *By session*: totals, context-size curve, chat rounds, most expensive steps, avoidable patterns (large tool results, unchanged re-reads, repeated commands, failed calls), subagents, and ranked advice. *All sessions*: combined tokens per day, by project/agent/model/activity, heaviest sessions. Step cost is context burden: tokens added × later model calls before the next compaction. Sessions started by DAN are marked via `native_session_id`. `GET /api/token-usage/{sessions,session,overview,settings}`, `POST /api/token-usage/classify`.

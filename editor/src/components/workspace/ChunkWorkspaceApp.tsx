@@ -8,7 +8,6 @@ import { SideTabs, readLastSideTab, rememberSideTab, type SideTab, type SideTabI
 import type { ReaderAsk, ReaderFile } from "../reader/ReaderView";
 import { MainTabs, closeMainTab, type MainTab } from "../workbench/MainTabs";
 import { useProcesses } from "../workbench/processes";
-import { ProjectSettings } from "../workbench/ProjectSettings";
 import { streamedMessageContent, completedMessageContent } from "../workbench/eventPresentation";
 import { WorkbenchNavigation } from "../workbench/WorkbenchNavigation";
 import { WorkbenchConversation, WorkbenchActivity } from "../workbench/WorkbenchConversation";
@@ -155,6 +154,7 @@ const DanSettings = lazy(() => import("../workbench/DanSettings").then(module =>
 const ReaderView = lazy(() => import("../reader/ReaderView").then((module) => ({ default: module.ReaderView })));
 const ProcessesPanel = lazy(() => import("../workbench/ProcessesPanel").then((module) => ({ default: module.ProcessesPanel })));
 const ReaderNotes = lazy(() => import("../reader/ReaderNotes").then((module) => ({ default: module.ReaderNotes })));
+const ProjectSettings = lazy(() => import("../workbench/ProjectSettings").then((module) => ({ default: module.ProjectSettings })));
 const UsagePanel = lazy(() => import("../workbench/UsagePanel").then((module) => ({ default: module.UsagePanel })));
 const ImportNativeSessions = lazy(() => import("../workbench/ImportNativeSessions").then((module) => ({ default: module.ImportNativeSessions })));
 
@@ -13235,7 +13235,6 @@ export default function ChunkWorkspaceApp() {
   const [workbenchSettings, setWorkbenchSettings] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
   const [importNativeSessions, setImportNativeSessions] = useState<{ id: string; root: string } | null>(null);
-  const [danSettings, setDanSettings] = useState(false);
   // One side panel with tabs; the legacy per-panel flags are views of this single value.
   const [sideTab, setSideTab] = useState<SideTab | null>(() =>
     initialLayout.showSidecarPreview ? "preview" : initialLayout.showFileExplorer ? "files" : null);
@@ -14598,10 +14597,14 @@ export default function ChunkWorkspaceApp() {
     setMainTabs((tabs) => tabs.some((tab) => tab.id === id) ? tabs : [...tabs, { id, kind: "pdf", label: entry.name, title: entry.path }]);
     setActiveMainTab(id);
   };
+  const openSettingsTab = () => {
+    setMainTabs((tabs) => tabs.some((tab) => tab.id === "settings") ? tabs : [...tabs, { id: "settings", kind: "settings", label: "Settings" }]);
+    setActiveMainTab("settings"); setActivePane("work");
+  };
   const closeTab = (id: string) => {
     const next = closeMainTab(mainTabs, activeMainTab, id);
     setMainTabs(next.tabs); setActiveMainTab(next.active);
-    if (id !== "chat") setReaderFiles((current) => { const copy = { ...current }; delete copy[id]; return copy; });
+    if (id.startsWith("pdf:")) setReaderFiles((current) => { const copy = { ...current }; delete copy[id]; return copy; });
   };
   // Opening or starting a chat always brings the conversation tab back to the front.
   useEffect(() => {
@@ -17349,9 +17352,8 @@ export default function ChunkWorkspaceApp() {
           <button aria-label="Workspace settings" title="Workspace settings" aria-pressed={workbenchSettings} onClick={() => { setCreatingProject(false); setWorkbenchSettings(true); }}><MoreHorizontal size={18} /></button>
         </div>
       </header>}
-      {danSettings && <Suspense fallback={null}><DanSettings onClose={() => setDanSettings(false)} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} /></Suspense>}
       {importNativeSessions && <Suspense fallback={null}><ImportNativeSessions workspace={importNativeSessions.root} workspaceId={importNativeSessions.id} onClose={() => setImportNativeSessions(null)} onImport={async (thread) => { bindThreadToWorkspace(thread.workflow_id, thread.id, importNativeSessions.id); await refreshThreads(); }} /></Suspense>}
-      {activePane === "work" && workbenchSettings && <ProjectSettings
+      {activePane === "work" && workbenchSettings && <Suspense fallback={null}><ProjectSettings
         name={creatingProject ? "" : workspace?.name || "Project"}
         root={creatingProject ? "" : workspace?.pinnedPaths[0] || ""}
         creating={creatingProject}
@@ -17365,7 +17367,7 @@ export default function ChunkWorkspaceApp() {
           }
           setWorkbenchSettings(false); setShowSessionRail(true); setShowFileExplorer(false); setShowConversationChunks(true); setPhonePage("chat");
         }}
-      />}
+      /></Suspense>}
       {Boolean(activePane === "notes") && (
       <header className="dan-workspace-header relative z-40 flex h-14 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/95 px-4 shadow-[0_1px_0_rgba(15,23,42,0.03)] backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
         <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -18494,7 +18496,7 @@ export default function ChunkWorkspaceApp() {
               })}
               {sessionGroups.every((group) => sessionShelfScope === "archived" ? !group.archived : group.archived) && <p className="wb-shelf-empty">{threadQuery.trim() ? "No matching chats" : sessionShelfScope === "archived" ? "No archived chats" : "Create a project to get started"}</p>}
             </div>
-            <div className="wb-sidebar-footer">{sessionShelfScope === "archived" && <><button className="wb-delete-archived" disabled={deletingArchived || !threads.some((thread) => thread.archived)} onClick={() => void deleteAllArchivedSessions()}><Trash2 size={15} />{deletingArchived ? "Deleting archived chats…" : "Delete all archived chats"}</button>{archiveDeleteProgress && <p role="status" className="wb-archive-delete-progress">{archiveDeleteProgress}</p>}</>}<button onClick={() => { setSessionShelfScope(sessionShelfScope === "archived" ? "all" : "archived"); }}><Archive size={15} />{sessionShelfScope === "archived" ? "Back to projects" : "Archived chats"}</button><button onClick={() => setDanSettings(true)}><MoreHorizontal size={15} />DAN settings</button><Suspense fallback={null}><UsagePanel /></Suspense></div>
+            <div className="wb-sidebar-footer">{sessionShelfScope === "archived" && <><button className="wb-delete-archived" disabled={deletingArchived || !threads.some((thread) => thread.archived)} onClick={() => void deleteAllArchivedSessions()}><Trash2 size={15} />{deletingArchived ? "Deleting archived chats…" : "Delete all archived chats"}</button>{archiveDeleteProgress && <p role="status" className="wb-archive-delete-progress">{archiveDeleteProgress}</p>}</>}<button onClick={() => { setSessionShelfScope(sessionShelfScope === "archived" ? "all" : "archived"); }}><Archive size={15} />{sessionShelfScope === "archived" ? "Back to projects" : "Archived chats"}</button><button onClick={openSettingsTab}><MoreHorizontal size={15} />DAN settings</button><Suspense fallback={null}><UsagePanel /></Suspense></div>
           </aside>}
           {!isPhoneViewport && !renderFileExplorer && (
             <CollapsedPaneRail
@@ -18700,7 +18702,7 @@ export default function ChunkWorkspaceApp() {
           >
             <div className="flex min-h-0 min-w-0 flex-col bg-white/90 dark:bg-slate-950">
               {mainTabs.length > 1 && <MainTabs tabs={mainTabs.map((tab) => tab.id === "chat" ? { ...tab, label: activeThread?.title || "New chat" } : tab)} active={activeMainTab} onSelect={setActiveMainTab} onClose={closeTab} />}
-              {readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView key={readerFile.path} file={readerFile} onAsk={askFromReader} onNotes={() => openSideTab("notes")} /></Suspense> : <>
+              {activeMainTab === "settings" ? <Suspense fallback={null}><DanSettings page onClose={() => closeTab("settings")} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} /></Suspense> : readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView key={readerFile.path} file={readerFile} onAsk={askFromReader} onNotes={() => openSideTab("notes")} /></Suspense> : <>
               <div className="wb-conversation-heading"><div className="wb-conversation-actions">
                 {activeThread && <button title={`Copy session ID: ${activeThread.id}`} onClick={() => { void navigator.clipboard.writeText(activeThread.id).then(() => setStatus("Session ID copied"), () => setStatus(`Session ID: ${activeThread.id}`)); }}>Session <code>{activeThread.id}</code></button>}
                 {activeRunningTask && activeThread && <button className="wb-stop" onClick={() => void stopSessionRun({ id: activeThread.id, workflow_id: activeThread.workflowId, title: activeThread.title || "Active session", message_count: messages.length, created_at: "", updated_at: "" }, activeRunningTask)}><Square size={11} />Stop run</button>}

@@ -7,18 +7,21 @@ import { useSettingsStore } from "../../store/useSettingsStore";
 import { NativeWorkerSettings, type WorkerProfiles } from "./NativeWorkers";
 import { PALETTE_ROLES, WORKBENCH_PALETTES, workbenchPalette } from "../../lib/workbenchPalette";
 
-export function DanSettings({ onClose, profiles, onProfilesChange }: {
-  onClose: () => void; profiles: WorkerProfiles; onProfilesChange: (profiles: WorkerProfiles) => void;
+export function DanSettings({ onClose, profiles, onProfilesChange, page = false }: {
+  onClose: () => void; profiles: WorkerProfiles; onProfilesChange: (profiles: WorkerProfiles) => void; page?: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const settings = useSettingsStore();
   useEffect(() => {
+    if (page) return;
     const previous = document.activeElement as HTMLElement | null;
     dialog.current?.showModal();
     return () => previous?.focus();
-  }, []);
-  return <dialog onClick={(event) => { const box = event.currentTarget.getBoundingClientRect(); if (event.target === event.currentTarget && (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom)) onClose(); }} ref={dialog} className="wb-project-settings wb-dan-settings" onCancel={onClose} aria-labelledby="dan-settings-title">
-    <header><h2 id="dan-settings-title">DAN settings</h2><button aria-label="Close DAN settings" onClick={onClose}><X size={18} /></button></header>
+  }, [page]);
+  // As a main-column tab the same content renders in a page frame instead of a modal dialog.
+  const Frame = (page ? "section" : "dialog") as "dialog";
+  return <Frame onClick={(event) => { const box = event.currentTarget.getBoundingClientRect(); if (event.target === event.currentTarget && (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom)) onClose(); }} ref={dialog} className={page ? "wb-dan-settings wb-settings-page" : "wb-project-settings wb-dan-settings"} onCancel={onClose} aria-labelledby="dan-settings-title">
+    <header><h2 id="dan-settings-title">DAN settings</h2>{!page && <button aria-label="Close DAN settings" onClick={onClose}><X size={18} /></button>}</header>
     <p>Preferences for this DAN app profile. Changes save automatically.</p>
     <h3>Appearance</h3>
     <label className="wb-appearance-field">Mode<select value={settings.theme} onChange={(event) => settings.updateSetting("theme", event.target.value as typeof settings.theme)}>
@@ -37,6 +40,6 @@ export function DanSettings({ onClose, profiles, onProfilesChange }: {
     <NativeWorkerSettings profiles={profiles} onChange={onProfilesChange} />
     <Suspense fallback={<p>Loading skills…</p>}><SkillPool /></Suspense>
     <Suspense fallback={<p>Loading token usage…</p>}><TokenUsage /></Suspense>
-    <footer><button onClick={onClose}>Done</button></footer>
-  </dialog>;
+    {!page && <footer><button onClick={onClose}>Done</button></footer>}
+  </Frame>;
 }
