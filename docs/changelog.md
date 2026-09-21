@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-21
+- [style] Settings: Skills is a scrollable table (shared, skill, from, what it does) with a sticky header instead of stacked cards; the Updates block has consistent button styling and spacing.
+- [docs] Save two colorful DAN icon candidates: bold gouache v3 and impressionist oil-paint v4. Both retain the letter-free agent-coordination motif; prompts are recorded in `output/imagegen/dan-colorful-icon-prompts.md`.
+
+## 2026-09-21
 - [style] Usage bars and the percent-left figure turn amber when less than 25% of a limit is left and red under 10%.
 - [docs] Generate a letter-free retro-futuristic DAN icon v2 depicting connected agents and a shared coordination core, following the user's functional design direction. Save artwork and prompt in `output/imagegen/`.
 

@@ -649,3 +649,25 @@
 .wb-token-takeaway p { margin:4px 0 0; font-size:13px; line-height:1.55; color:var(--wb-ink); }
 .wb-usage-row[data-level=mid] .wb-usage-pct { color:#b7791f; font-weight:500; }
 .wb-usage-row[data-level=high] .wb-usage-pct { color:var(--wb-danger,#bc3030); font-weight:600; }
+
+/* Settings page polish: Updates block and the Skills table. */
+.wb-visually-hidden { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+.wb-settings-page .wb-desktop-updates { padding:0 0 20px; border-bottom:0; }
+.wb-settings-page .wb-desktop-updates > p { margin:2px 0; }
+.wb-settings-page .wb-desktop-updates > p[role=status] { color:var(--wb-ink); font-size:13px; }
+.wb-settings-page .wb-update-actions { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 4px; }
+.wb-settings-page .wb-update-actions button, .wb-settings-page .wb-native-settings-panel button { height:30px; padding:0 12px; border:1px solid var(--wb-line); border-radius:7px; background:var(--wb-paper); color:var(--wb-ink); font-size:12px; font-weight:500; transition:background 120ms,border-color 120ms; }
+.wb-settings-page .wb-update-actions button:hover:not(:disabled) { background:var(--wb-soft); border-color:var(--wb-muted); }
+.wb-settings-page .wb-update-actions button:disabled { opacity:.45; cursor:not-allowed; }
+.wb-settings-page .wb-skill-pool label.wb-native-enabled { display:flex; align-items:center; gap:8px; margin:10px 0; font-size:13px; }
+.wb-skill-table { max-height:320px; overflow:auto; margin-top:10px; border:1px solid var(--wb-line); border-radius:10px; background:var(--wb-paper); }
+.wb-skill-table table { width:100%; border-collapse:collapse; font-size:12px; table-layout:fixed; }
+.wb-skill-table th { position:sticky; top:0; z-index:1; padding:8px 10px; text-align:left; font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--wb-muted); background:var(--wb-soft); border-bottom:1px solid var(--wb-line); }
+.wb-skill-table th:first-child, .wb-skill-table td:first-child { width:34px; padding-right:0; text-align:center; }
+.wb-skill-table th:nth-child(2) { width:30%; } .wb-skill-table th:nth-child(3) { width:16%; }
+.wb-skill-table td { padding:7px 10px; border-bottom:1px solid var(--wb-line); vertical-align:middle; color:var(--wb-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.wb-skill-table tr:last-child td { border-bottom:0; }
+.wb-skill-table tbody tr:hover td { background:var(--wb-soft); }
+.wb-skill-table td label { display:inline; margin:0; font-size:12px; font-weight:500; color:var(--wb-ink); cursor:pointer; }
+.wb-skill-table tr[data-off] td label { color:var(--wb-muted); font-weight:400; }
+.wb-skill-table input[type=checkbox] { margin:0; vertical-align:middle; }

@@ -31,14 +31,21 @@ export function SkillPool() {
     {error && <p role="alert">{error}</p>}
     {data && <>
       <label className="wb-native-enabled"><input type="checkbox" checked={data.enabled} disabled={saving} onChange={(event) => void save(event.target.checked, data.excluded)} />Share skills across agents{data.enabled && sharedCount ? ` · ${sharedCount} shared` : ""}</label>
-      {data.enabled && <ul className="wb-skill-list">{shareable.map((skill) => {
-        const excluded = data.excluded.includes(skill.name);
-        const blocked = !excluded && !skill.shared_with.length;  // same name already installed for the receiver
-        return <li key={`${skill.source}:${skill.name}`}><label title={skill.description}>
-          <input type="checkbox" checked={!excluded && !blocked} disabled={saving || blocked} onChange={(event) => void save(true, event.target.checked ? data.excluded.filter((name) => name !== skill.name) : [...data.excluded, skill.name])} />
-          <span><strong>{skill.name}</strong><small>{NAMES[skill.source] ?? skill.source}{blocked ? " · already installed there" : ""}</small></span>
-        </label></li>;
-      })}</ul>}
+      {data.enabled && <div className="wb-skill-table" role="region" aria-label="Skills" tabIndex={0}><table>
+        <thead><tr><th scope="col"><span className="wb-visually-hidden">Shared</span></th><th scope="col">Skill</th><th scope="col">From</th><th scope="col">What it does</th></tr></thead>
+        <tbody>{shareable.map((skill) => {
+          const excluded = data.excluded.includes(skill.name);
+          const blocked = !excluded && !skill.shared_with.length;  // same name already installed for the receiver
+          const id = `skill-${skill.source}-${skill.name}`;
+          return <tr key={`${skill.source}:${skill.name}`} data-off={excluded || blocked || undefined}>
+            <td><input id={id} type="checkbox" checked={!excluded && !blocked} disabled={saving || blocked} aria-label={`Share ${skill.name}`}
+              onChange={(event) => void save(true, event.target.checked ? data.excluded.filter((name) => name !== skill.name) : [...data.excluded, skill.name])} /></td>
+            <td><label htmlFor={id}>{skill.name}</label></td>
+            <td>{NAMES[skill.source] ?? skill.source}{blocked ? " · already installed" : ""}</td>
+            <td title={skill.description}>{skill.description}</td>
+          </tr>;
+        })}</tbody>
+      </table></div>}
     </>}
     {!data && !error && <p>Loading skills…</p>}
   </section>;
