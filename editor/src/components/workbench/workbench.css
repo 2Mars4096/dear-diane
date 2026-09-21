@@ -635,7 +635,7 @@
 .wb-project-sidebar .wb-shelf-search input, .wb-project-sidebar .wb-sidebar-footer button, .wb-project-sidebar .wb-sidebar-footer .wb-usage > summary, .wb-project-sidebar .wb-shelf-empty { font-size:13px; }
 .wb-project-sidebar .wb-projects-heading { letter-spacing:0; }
 /* DAN settings as a main-column page (tab) rather than a modal. */
-.wb-settings-page { flex:1; min-height:0; max-height:none; overflow:auto; width:100%; max-width:720px; margin:0 auto; padding:28px 36px 60px; background:var(--wb-paper); color:var(--wb-ink); font-size:13px; }
+.wb-settings-page { flex:1; min-height:0; max-height:none; overflow:auto; width:100%; box-sizing:border-box; padding:28px max(36px, calc((100% - 720px) / 2)) 60px; background:var(--wb-paper); color:var(--wb-ink); font-size:13px; }
 .wb-settings-page > header h2 { font-size:22px; font-weight:500; letter-spacing:-.02em; margin:0 0 6px; }
 .wb-settings-page > p, .wb-settings-page p { color:var(--wb-muted); font-size:12px; }
 .wb-settings-page label { display:block; margin:14px 0; font-size:12px; }
