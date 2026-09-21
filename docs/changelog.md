@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-21
+- [fix] Hover menus (Lead, Team, mode) close 90 ms after the pointer leaves instead of 180 ms.
 - [fix] Model menus show each CLI's own names: Codex uses its cache display names (GPT-5.5, GPT-6-Astra…), Claude shows Fable 5.1 / Opus 5 / Sonnet 5 / Haiku 4.5; values stay the real model IDs.
 - [fix] Unified Claude menus: models are the four full IDs (Fable 5.1, Opus 5, Sonnet 5, Haiku 4.5) with no alias duplicates, and reasoning offers low/medium/high/max (the CLI accepts `--effort max`; its help text is stale). Fast mode allowed on Fable 5.1 as well as Opus.
 - [feat] Claude model menu adds full IDs (claude-fable-5-1, claude-opus-5, claude-sonnet-5, claude-haiku-4-5) alongside the aliases, since Claude Code 2.1.66 has no `fable` alias. Codex reasoning levels now come from its model cache per model (minimal…ultra), so the Reasoning menu matches the selected model. Claude Code 2.1.66 only accepts low/medium/high.

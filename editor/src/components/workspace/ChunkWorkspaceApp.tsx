@@ -16884,7 +16884,7 @@ export default function ChunkWorkspaceApp() {
             onPointerLeave={(event) => {
               if (event.pointerType !== "mouse") return;
               window.clearTimeout(autonomyHoverRef.current.timer);
-              autonomyHoverRef.current.timer = window.setTimeout(() => setAutonomyMenuOpen(false), 180);
+              autonomyHoverRef.current.timer = window.setTimeout(() => setAutonomyMenuOpen(false), 90);
             }}
           >
             <button

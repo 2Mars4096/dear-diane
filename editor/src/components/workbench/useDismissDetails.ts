@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-const CLOSE_DELAY = 180;
+const CLOSE_DELAY = 90;
 
 /**
  * Opens on mouse hover (click and keyboard still work) and dismisses on
