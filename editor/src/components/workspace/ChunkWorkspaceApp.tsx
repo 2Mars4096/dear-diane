@@ -18709,7 +18709,13 @@ export default function ChunkWorkspaceApp() {
                 <WorkbenchConversation key={activeThread?.id ?? "new"} messages={visibleQueuedTranscript(messages, workPanelTasks, pendingAssistantIds)} pending={pendingAssistantIds} loading={loadingThreadId !== null} status={status} liveActions={liveActions} onEdit={activeThread ? editLastRequest : undefined} actionsDisabled={Boolean(activeRunningTask) || sending || Object.values(pendingAssistantIds).some(Boolean)} onRegenerate={activeThread && !activeRunningTask && !sending ? () => void regenerateLastRequest() : undefined} onFork={activeThread && !activeRunningTask && !sending ? () => void forkConversation() : undefined} onSidecar={activeThread ? (text) => { setSidecarSelection({text, token:Date.now()}); setSidecarChat(true); setWorkbenchActivity(false); setTeamPanel(false); setShowSidecarPreview(false); } : undefined} onQuote={(text, messageIds) => {
                   if (!activeThread) return;
                   setComposerReferences((current) => ({ ...current, [referenceKey]: { text, messageIds, title: activeThread.title || "Conversation", threadId: activeThread.id, workflowId: activeThread.workflowId } }));
-                  composerRef.current?.focus();
+                  // The reply button's click clears the selection after this handler; focus once that has settled.
+                  window.requestAnimationFrame(() => {
+                    const input = composerRef.current;
+                    if (!input) return;
+                    input.focus();
+                    input.setSelectionRange(input.value.length, input.value.length);
+                  });
                 }} />
               )}
 

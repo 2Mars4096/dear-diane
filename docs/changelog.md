@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-21
+- [fix] Reply to selection now focuses the composer with the caret at the end; focus was previously lost to the reply button's selection clearing.
 - [fix] User bubbles use 1.5 line-height and no paragraph margins, so a one-line message is a compact single line.
 - [fix] User bubbles tightened further: 6px 12px padding and less space before the Edit/Regenerate/Fork row.
 - [fix] User messages drop the "You" label and use the composer's tighter padding (10px 14px) instead of 16px 20px.
