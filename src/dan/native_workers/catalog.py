@@ -105,8 +105,9 @@ def catalog() -> dict:
                 except (OSError, ValueError, TypeError):
                     pass
         elif runtime == "claude":
-            # Aliases resolve to the CLI's latest; full IDs pin a model (Fable 5.1 predates the alias in older CLIs).
-            models = ["opus", "sonnet", "haiku", "claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+            # Full IDs only: older CLIs lack a `fable` alias, and one entry per model keeps the menu unified.
+            models = ["claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+            model_efforts = {model: ["low", "medium", "high", "max"] for model in models}
         version = ""
         if executable:
             try:
@@ -120,8 +121,8 @@ def catalog() -> dict:
         result.append({"id": runtime, "label": label, "available": bool(executable), "version": version,
                        "accounts": [{"id": key, "label": value["label"]} for key, value in configured[runtime].items()],
                        "models": models, "model_efforts": model_efforts,
-                       # Claude Code 2.1.66 accepts low/medium/high only; Codex levels come from its model cache per model.
-                       "efforts": [] if runtime == "cursor" else ["low", "medium", "high"] + (sorted({level for levels in model_efforts.values() for level in levels} - {"low", "medium", "high"}, key=["minimal", "xhigh", "max", "ultra"].index) if runtime == "codex" else []),
+                       # Codex levels come from its model cache per model; Claude's --effort passes max through to the API.
+                       "efforts": [] if runtime == "cursor" else ["low", "medium", "high"] + sorted({level for levels in model_efforts.values() for level in levels} - {"low", "medium", "high"}, key=["minimal", "xhigh", "max", "ultra"].index),
                        "fast": runtime == "codex" or (runtime == "claude" and claude_fast),
                        "setup": "" if executable else {"antigravity": "Install agy and sign in with agy.",
                                                         "cursor": "Install the Cursor CLI (curl https://cursor.com/install -fsS | bash), then run agent login."}.get(runtime, "")})
@@ -160,7 +161,7 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
     permission = str(profile.get("permission") or "auto")
     if permission not in PERMISSIONS:
         raise ValueError("Unsupported permission mode")
-    allowed = {"low", "medium", "high"} | ({"minimal", "xhigh", "max", "ultra"} if runtime == "codex" else set())
+    allowed = {"low", "medium", "high"} | ({"minimal", "xhigh", "max", "ultra"} if runtime == "codex" else {"max"} if runtime == "claude" else set())
     if effort and effort not in allowed:
         raise ValueError("Unsupported reasoning effort")
     if runtime == "cursor":
@@ -198,7 +199,7 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
             cmd += ["--dangerously-skip-permissions"] if permission == "full" else ["--permission-mode", "plan" if permission == "plan" else "acceptEdits"]
             if fast and not any(row["fast"] for row in catalog()["runtimes"] if row["id"] == runtime):
                 raise ValueError("Update Claude Code to use fast mode in headless workers")
-            if fast and model not in {"opus", "claude-opus-5", "claude-opus-4-8"}:
+            if fast and model not in {"opus", "claude-opus-5", "claude-opus-4-8", "claude-fable-5-1"}:
                 raise ValueError("Claude fast mode requires a supported Opus model")
             settings: dict = {"fastMode": fast}
             if permission == "auto":
