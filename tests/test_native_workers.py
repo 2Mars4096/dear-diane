@@ -323,3 +323,11 @@ def test_personal_account_only_when_codex_home_differs(monkeypatch, tmp_path):
     assert "personal" not in catalog.accounts()["codex"]
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "other"))
     assert "personal" in catalog.accounts()["codex"]
+
+
+def test_default_claude_account_does_not_force_config_dir(monkeypatch):
+    from dan.native_workers import catalog
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    assert "CLAUDE_CONFIG_DIR" not in catalog.accounts()["claude"]["default"]["env"]
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/tmp/custom")
+    assert catalog.accounts()["claude"]["default"]["env"] == {"CLAUDE_CONFIG_DIR": "/tmp/custom"}

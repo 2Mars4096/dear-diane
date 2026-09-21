@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-21
+- [fix] Claude leads/workers reported "Not logged in · Please run /login" although the CLI was logged in: Claude Code keys keychain credentials by config dir, and DAN forced CLAUDE_CONFIG_DIR=~/.claude for the default account. The default account now inherits the user's environment; named profiles still set their own directory.
 - [fix] Up next no longer flashes for a first message: only waiting follow-up messages are listed, never the run's own task while it is briefly queued.
 - [fix] Saved Claude alias models (opus/sonnet/haiku/fable) migrate to the full IDs on load, so the menu no longer shows both "opus" and "Opus 5".
 - [fix] Mode menu: the gap between the button and its panel is part of the hover zone, so moving into the panel no longer closes it; removed the native tooltip that appeared over the hover-opened menu.

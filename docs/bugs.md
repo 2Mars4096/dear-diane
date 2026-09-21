@@ -1134,6 +1134,8 @@
 
 - **codexx `share_history` symlinks account session stores to `~/.codex` (2026-09-21).** `~/.codex-accounts/<name>/.codex/sessions` and `state_5.sqlite` are symlinks, so per-account session deletion is impossible without deleting everyone's; discovery dedupes by resolved store path.
 
+- **Claude Code + CLAUDE_CONFIG_DIR (2026-09-21).** Setting `CLAUDE_CONFIG_DIR`, even to the default `~/.claude`, changes the keychain lookup so a claude.ai login appears logged out in headless runs. Never set it unless the user did.
+
 ## Recently Fixed
 
 - ~~**P2: DAN Research continuation retries could reopen weaker versions of already-settled facts because the product had no durable claim memory and no typed series/metric identity above free-form prose.**~~ **FIXED 2026-04-18.** Live oil/coal/ETF runs showed the planner could rediscover the same fact family repeatedly even after one pass had already reached an authoritative answer, because later retries only saw raw prose plus unresolved gaps and had no session-level memory that one version of the claim was already frozen. Fix: persist closed verification facts in a session-level claim ledger, carry canonical claim metadata (`claim_key`, authority rank, typed scope/series/metric hints) through the research product seam, and feed that ledger back into continuation planning so later retries do not casually reopen weaker versions of the same claim.

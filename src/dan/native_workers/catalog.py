@@ -26,7 +26,11 @@ def user_path(value: str) -> Path:
 def accounts() -> dict[str, dict[str, dict]]:
     result = {runtime: {"default": {"label": "Current CLI account", "env": {}}} for runtime in RUNTIMES}
     result["codex"]["default"]["env"] = {"CODEX_HOME": os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))}
-    result["claude"]["default"]["env"] = {"CLAUDE_CONFIG_DIR": os.environ.get("CLAUDE_CONFIG_DIR", str(user_home() / ".claude"))}
+    # Claude Code keys its keychain credentials by config dir: setting CLAUDE_CONFIG_DIR
+    # explicitly (even to ~/.claude) makes a claude.ai login look logged out. Only
+    # forward a value the user already set; named profiles set their own.
+    if os.environ.get("CLAUDE_CONFIG_DIR"):
+        result["claude"]["default"]["env"] = {"CLAUDE_CONFIG_DIR": os.environ["CLAUDE_CONFIG_DIR"]}
     # "personal" is only distinct when CODEX_HOME points somewhere other than ~/.codex.
     if (user_home() / ".codex").is_dir() and Path(result["codex"]["default"]["env"]["CODEX_HOME"]).expanduser().resolve() != (user_home() / ".codex").resolve():
         result["codex"]["personal"] = {"label": "Personal Codex", "env": {"CODEX_HOME": str(user_home() / ".codex")}, "home": user_home() / ".codex"}
