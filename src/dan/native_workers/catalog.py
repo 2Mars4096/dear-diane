@@ -89,6 +89,7 @@ def catalog() -> dict:
         executable = binary(runtime)
         models = []
         model_efforts: dict[str, list[str]] = {}
+        model_labels: dict[str, str] = {}  # names as each CLI's own model picker shows them
         if runtime == "codex":
             homes = [Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))]
             homes += [entry["home"] for entry in configured[runtime].values() if "home" in entry]
@@ -99,6 +100,8 @@ def catalog() -> dict:
                         slug = model.get("slug")
                         if slug and slug not in models:
                             models.append(slug)
+                            if model.get("display_name"):
+                                model_labels[slug] = str(model["display_name"])
                             levels = [str(level.get("effort")) for level in model.get("supported_reasoning_levels") or [] if isinstance(level, dict) and level.get("effort")]
                             if levels:
                                 model_efforts[slug] = levels
@@ -107,6 +110,7 @@ def catalog() -> dict:
         elif runtime == "claude":
             # Full IDs only: older CLIs lack a `fable` alias, and one entry per model keeps the menu unified.
             models = ["claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+            model_labels = {"claude-fable-5-1": "Fable 5.1", "claude-opus-5": "Opus 5", "claude-sonnet-5": "Sonnet 5", "claude-haiku-4-5-20251001": "Haiku 4.5"}
             model_efforts = {model: ["low", "medium", "high", "max"] for model in models}
         version = ""
         if executable:
@@ -120,7 +124,7 @@ def catalog() -> dict:
         claude_fast = bool(parsed and tuple(map(int, parsed.groups())) >= (2, 1, 205))
         result.append({"id": runtime, "label": label, "available": bool(executable), "version": version,
                        "accounts": [{"id": key, "label": value["label"]} for key, value in configured[runtime].items()],
-                       "models": models, "model_efforts": model_efforts,
+                       "models": models, "model_efforts": model_efforts, "model_labels": model_labels,
                        # Codex levels come from its model cache per model; Claude's --effort passes max through to the API.
                        "efforts": [] if runtime == "cursor" else ["low", "medium", "high"] + sorted({level for levels in model_efforts.values() for level in levels} - {"low", "medium", "high"}, key=["minimal", "xhigh", "max", "ultra"].index),
                        "fast": runtime == "codex" or (runtime == "claude" and claude_fast),
