@@ -13,14 +13,14 @@ it("keeps lead, account, model, reasoning, and fast settings inside a single dro
   function Harness() {
     const [selected, select] = useState<LeadAgentId>("native");
     const [profiles, update] = useState<WorkerProfiles>({});
-    return createElement(LeadAgentMenu, {selected,onChange:select,profiles,onProfilesChange:(next) => { update(next); saved(next); },modelId:"default",modelOptions:[{id:"default",label:"Default"}],onModelChange:vi.fn()});
+    return createElement(LeadAgentMenu, {selected,onChange:select,profiles,onProfilesChange:(next) => { update(next); saved(next); }});
   }
   try {
     await act(async () => root.render(createElement(Harness)));
     const agent=host.querySelector<HTMLSelectElement>('select[aria-label="Lead agent"]')!;
     await act(async () => {agent.value="codex"; agent.dispatchEvent(new Event("change",{bubbles:true}));});
     expect(host.querySelectorAll("summary")).toHaveLength(1);
-    const select = (label: string) => [...host.querySelectorAll("label")].find((node) => node.textContent?.startsWith(label))!.querySelector("select")!;
+    const select = (label: string) => [...host.querySelectorAll("label")].find((node) => node.firstChild?.textContent === label)!.querySelector("select")!;
     for (const [label,value] of [["Account","work"],["Model","gpt-test"],["Reasoning","high"]]) {
       act(() => {const input=select(label);input.value=value;input.dispatchEvent(new Event("change",{bubbles:true}));});
     }

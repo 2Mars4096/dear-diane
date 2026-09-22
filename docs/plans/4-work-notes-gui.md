@@ -19,6 +19,7 @@
 - The GUI consumes the same Super DAN control-plane contracts as the terminal UI.
 
 ## Workbench refresh
+- [x] [4-4-agent-model-selection](4-4-agent-model-selection.md): independent agent/model-source/model settings for Lead and Team with direct OpenRouter harness routing.
 - [x] [4-1-agent-workbench](4-1-agent-workbench.md): conversation-first shell and spatial project/session navigation.
 - [ ] [Native worker integration](../UI-plans/2-native-agent-workers.md): persistent mixed Codex/Claude children and scoped controls.
 

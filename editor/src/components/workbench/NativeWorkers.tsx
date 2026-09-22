@@ -1,21 +1,20 @@
 import { useEffect, useState } from "react";
 import { useDismissDetails } from "./useDismissDetails";
 import { ChevronDown } from "lucide-react";
+import { ModelFields } from "./ModelFields";
+import { EMPTY_PROFILE as empty, modelSource, type WorkerProfile, type WorkerProfiles, type Runtime } from "./modelSelection";
+export type { WorkerProfile, WorkerProfiles, Runtime } from "./modelSelection";
 
-export type WorkerProfile = { enabled: boolean; account: string; model: string; effort: string; fast: boolean; base_url?: string };
-export type WorkerProfiles = Record<string, WorkerProfile>;
-export type Runtime = { id: string; label: string; available: boolean; accounts: { id: string; label: string }[]; models: string[]; model_efforts?: Record<string, string[]>; model_labels?: Record<string, string>; efforts: string[]; fast: boolean; setup: string; version: string };
-const empty: WorkerProfile = { enabled: false, account: "default", model: "", effort: "", fast: false };
 // Older profiles saved Claude aliases; the menu now lists full IDs only.
 const CLAUDE_ALIASES: Record<string, string> = { opus: "claude-opus-5", sonnet: "claude-sonnet-5", haiku: "claude-haiku-4-5-20251001", fable: "claude-fable-5-1" };
 export function loadWorkerProfiles(key = "dan.nativeWorkerProfiles.v1"): WorkerProfiles {
   try {
     const stored = JSON.parse(localStorage.getItem(key) || "{}");
     if (!stored || typeof stored !== "object" || Array.isArray(stored)) return {};
-    return Object.fromEntries(["dan", "codex", "claude", "antigravity", "cursor"].filter((id) => stored[id] && typeof stored[id] === "object").map((id) => [id, { ...empty, ...stored[id], model: id === "claude" ? CLAUDE_ALIASES[stored[id].model] ?? stored[id].model : stored[id].model }]));
+    return Object.fromEntries(["dan", "codex", "claude", "antigravity", "cursor"].filter((id) => stored[id] && typeof stored[id] === "object").map((id) => [id, { ...empty, ...stored[id], model: id === "claude" && modelSource(stored[id]) === "native" ? CLAUDE_ALIASES[stored[id].model] ?? stored[id].model : stored[id].model }]));
   } catch { return {}; }
 }
-export function NativeWorkerSettings({ profiles, onChange, lead, inline = false, catalog }: { profiles: WorkerProfiles; onChange: (profiles: WorkerProfiles) => void; lead?: string; inline?: boolean; catalog?: Runtime[] }) {
+export function NativeWorkerSettings({ profiles, onChange, lead, inline = false, catalog, disabled = false }: { profiles: WorkerProfiles; onChange: (profiles: WorkerProfiles) => void; lead?: string; inline?: boolean; catalog?: Runtime[]; disabled?: boolean }) {
   const details = useDismissDetails();
   const [viewedRuntime, setViewedRuntime] = useState("codex");
   const [runtimes, setRuntimes] = useState<Runtime[]>([]);
@@ -41,11 +40,7 @@ export function NativeWorkerSettings({ profiles, onChange, lead, inline = false,
           {!inline && <legend>{runtime.label}</legend>}
           {!lead && <label className="wb-native-enabled"><input type="checkbox" checked={profile.enabled} disabled={!runtime.available} onChange={(event) => update({ enabled: event.target.checked })} />Include in team</label>}
           {!runtime.available ? <p>{runtime.setup || "Install this CLI to enable it."}</p> : <>
-            <label>Account<select value={profile.account} onChange={(event) => update({ account: event.target.value })}>{runtime.accounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}</select></label>
-            {runtime.id === "dan" && <label>Provider<select value={profile.base_url || ""} onChange={(event) => update({ base_url: event.target.value })}><option value="">DAN configuration</option><option value="https://openrouter.ai/api/v1">OpenRouter</option></select></label>}
-            <label>Model{runtime.models.length ? <select value={profile.model} onChange={(event) => update({ model: event.target.value, fast: runtime.id === "claude" && !["opus", "claude-opus-5", "claude-opus-4-8", "claude-fable-5-1"].includes(event.target.value) ? false : profile.fast })}><option value="">Default</option>{[...new Set([...runtime.models, ...(profile.model ? [profile.model] : [])])].map((model) => <option key={model} value={model}>{runtime.model_labels?.[model] ?? model}</option>)}</select> : <input value={profile.model} placeholder="Default or model ID" onChange={(event) => update({ model: event.target.value })} />}</label>
-            <label>Reasoning<select disabled={!runtime.efforts.length} value={profile.effort} onChange={(event) => update({ effort: event.target.value })}><option value="">CLI default</option>{(runtime.model_efforts?.[profile.model] ?? runtime.efforts).map((effort) => <option key={effort}>{effort}</option>)}</select></label>
-            <label className="wb-native-enabled"><input type="checkbox" checked={profile.fast} disabled={!runtime.fast || (runtime.id === "claude" && !["opus", "claude-opus-5", "claude-opus-4-8", "claude-fable-5-1"].includes(profile.model))} onChange={(event) => update({ fast: event.target.checked })} />Fast mode</label>
+            <ModelFields runtime={runtime} profile={profile} onChange={update} disabled={disabled} />
           </>}
         </fieldset>;
       })}

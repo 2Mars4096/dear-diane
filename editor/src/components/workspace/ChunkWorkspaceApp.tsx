@@ -3,6 +3,7 @@ import { ProjectMenu } from "../workbench/ProjectMenu";
 import { SidecarChat } from "../workbench/SidecarChat";
 import { LeadAgentMenu } from "../workbench/LeadAgentMenu";
 import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from "../workbench/NativeWorkers";
+import { EMPTY_PROFILE, leadExecutionProfile, modelSource, OPENROUTER_URL, withLeadSelection } from "../workbench/modelSelection";
 import { TeamPanel, TeamStrip, useTeamWorkers } from "../workbench/TeamProgress";
 import { SideTabs, readLastSideTab, rememberSideTab, type SideTab, type SideTabItem } from "../workbench/SideTabs";
 import type { ReaderAsk, ReaderFile } from "../reader/ReaderView";
@@ -14588,8 +14589,8 @@ export default function ChunkWorkspaceApp() {
   const teamParentIds = useMemo(() => [...new Set(tasks.map(taskRunId).filter(Boolean))], [tasks]);
   const team = useTeamWorkers(teamParentIds, Boolean(activeRunningTask));
   const sidecarExecution = () => {
-    const payload = buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode);
-    return { ...payload, profile_policy: { ...payload.profile_policy, native_workers: nativeWorkerProfiles, ...(selectedAgentId !== "native" ? { lead_profile: leadProfiles[selectedAgentId] || {} } : {}) } };
+    const payload = withLeadSelection(buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode), selectedAgentId, leadProfiles);
+    return { ...payload, profile_policy: { ...payload.profile_policy, native_workers: nativeWorkerProfiles } };
   };
   const openReader = (entry: WorkspaceFileEntry) => {
     const id = `pdf:${entry.path}`;
@@ -14831,7 +14832,15 @@ export default function ChunkWorkspaceApp() {
   const hasActiveRun = Boolean(activeRunId && activeRunningTask);
   const [nativeWorkerProfiles, setNativeWorkerProfiles] = useState<WorkerProfiles>(loadWorkerProfiles);
   useEffect(() => { localStorage.setItem("dan.nativeWorkerProfiles.v1", JSON.stringify(nativeWorkerProfiles)); }, [nativeWorkerProfiles]);
-  const [leadProfiles, setLeadProfiles] = useState<WorkerProfiles>(() => loadWorkerProfiles("dan.leadProfiles.v1"));
+  const [leadProfiles, setLeadProfiles] = useState<WorkerProfiles>(() => {
+    const profiles = loadWorkerProfiles("dan.leadProfiles.v1");
+    if (!profiles.dan) {
+      const legacy = readStoredWorkspaceSelection();
+      const model = workspaceModelOptionForId(legacy.modelSelectionsByAgent.native, "native");
+      profiles.dan = { ...EMPTY_PROFILE, model: model.model || "", base_url: model.baseUrl, provider: model.baseUrl === OPENROUTER_URL ? "openrouter" : "native" };
+    }
+    return profiles;
+  });
   useEffect(() => { localStorage.setItem("dan.leadProfiles.v1", JSON.stringify(leadProfiles)); }, [leadProfiles]);
   const [selectedAgentId, setSelectedAgentId] = useState<WorkspaceAgentSelectionId>(() => {
     return readStoredWorkspaceSelection().agentId;
@@ -14840,7 +14849,7 @@ export default function ChunkWorkspaceApp() {
   const [autonomyMode, setAutonomyMode] = useState<WorkspaceAutonomyMode>(() =>
     readStoredWorkspaceAutonomyMode(),
   );
-  const [modelSelectionsByAgent, setModelSelectionsByAgent] = useState<WorkspaceModelSelectionByAgent>(() => {
+  const [modelSelectionsByAgent] = useState<WorkspaceModelSelectionByAgent>(() => {
     return readStoredWorkspaceSelection().modelSelectionsByAgent;
   });
   const [autonomyMenuOpen, setAutonomyMenuOpen] = useState(false);
@@ -14854,8 +14863,15 @@ export default function ChunkWorkspaceApp() {
     selectedAgentId,
   ).id;
   const selectedModelOption = useMemo(
-    () => workspaceModelOptionForId(selectedModelId, selectedAgentId),
-    [selectedAgentId, selectedModelId],
+    () => {
+      const legacy = workspaceModelOptionForId(selectedModelId, selectedAgentId);
+      const profile = leadExecutionProfile(selectedAgentId, leadProfiles);
+      const source = modelSource(profile);
+      return { ...legacy, model: profile.model || undefined, baseUrl: source === "openrouter" ? OPENROUTER_URL : profile.base_url,
+        label: profile.model ? `${source === "openrouter" ? "OpenRouter · " : ""}${profile.model}` : legacy.label,
+        shortLabel: profile.model || legacy.shortLabel };
+    },
+    [selectedAgentId, selectedModelId, leadProfiles],
   );
   const selectedAutonomyOption = useMemo(
     () => workspaceAutonomyOptionForId(autonomyMode),
@@ -16465,9 +16481,8 @@ export default function ChunkWorkspaceApp() {
       const executed = await executeChatV2AgentRun(
         runId,
         (() => {
-          const payload = buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode);
+          const payload = withLeadSelection(buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode), selectedAgentId, leadProfiles);
           payload.profile_policy.native_workers = nativeWorkerProfiles;
-          if (selectedAgentId !== "native") payload.profile_policy.lead_profile = leadProfiles[selectedAgentId] || {};
           return payload;
         })(),
       );
@@ -16980,9 +16995,7 @@ export default function ChunkWorkspaceApp() {
             )}
           </div>
           <LeadAgentMenu selected={selectedAgentId} onChange={setSelectedAgentId} disabled={hasActiveRun || sending}
-            profiles={leadProfiles} onProfilesChange={setLeadProfiles}
-            modelId={selectedModelOption.id} modelOptions={workspaceModelOptionsForAgent("native")}
-            onModelChange={(id) => setModelSelectionsByAgent((current) => ({ ...current, native: id }))} />
+            profiles={leadProfiles} onProfilesChange={setLeadProfiles} />
           <NativeWorkerSettings profiles={nativeWorkerProfiles} onChange={setNativeWorkerProfiles} />
           <button
             type="button"

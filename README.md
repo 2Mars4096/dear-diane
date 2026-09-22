@@ -175,11 +175,15 @@ docs/plans/              Active numbered roadmap (1–6)
 
 Git is the archive. Do not add an in-tree legacy archive or reintroduce old product modes for compatibility. If historical code is needed, inspect `0d630dca`, the complete pushed pre-cutover recovery point (including legacy tests and their assets).
 
-### Manager models and native subagents
+### Agents and models
 
-The composer model menu includes OpenRouter DeepSeek V4.1 Flash and Kimi K2.6. Set `OPENROUTER_API_KEY` on the DAN server, or reuse `DAN_LLM_API_KEY` with `DAN_LLM_BASE_URL=https://openrouter.ai/api/v1`.
+**Lead** and **Team** separate the agent harness from its model. Choose DAN, Codex, Claude Code, Cursor, or Antigravity, then choose **Model source**, **Model**, **Reasoning**, and supported **Fast mode**. Native model suggestions come from the runtime catalog; OpenRouter offers DeepSeek V4.1 Flash, Kimi K2.6, and a custom model ID. Each source remembers its settings when you switch back.
 
-Open **Subagents** beside the model picker to enable Codex, Claude Code, or Antigravity workers and choose their account, model, reasoning, and supported fast mode. Codex accounts come from local codexx configuration (`DAN_CODEXX_CONFIG` can override its path). Claude uses its current configuration or profiles under `DAN_CLAUDE_ACCOUNTS_DIR` (default `~/.claude-accounts`). Install and authenticate each CLI separately; Antigravity uses `agy`. Unsupported controls stay disabled.
+Codex and Claude Code can run **directly on OpenRouter models**, independently of their teammates. DAN also supports OpenRouter. Cursor and Antigravity currently support their native model sources only. Claude Code with non-Anthropic gateway models is experimental, with reasoning managed by the model; fast mode is disabled for OpenRouter selections. DAN's native configuration uses API credentials, not a Codex or Claude subscription.
+
+The server loads project `.env` at startup. Set `OPENROUTER_API_KEY` (or `DAN_OPENROUTER_API_KEY`), or reuse `DAN_LLM_API_KEY` with `DAN_LLM_BASE_URL=https://openrouter.ai/api/v1`. Restart the backend after changing credentials. Keys stay server-side; selecting OpenRouter does not rewrite your CLI configuration or log out native accounts.
+
+Open **Team** to enable delegates and configure each harness/model combination. Codex accounts come from local codexx configuration (`DAN_CODEXX_CONFIG` can override its path). Native Claude uses its current configuration or profiles under `DAN_CLAUDE_ACCOUNTS_DIR` (default `~/.claude-accounts`). Install each CLI separately and authenticate it when using native models; Antigravity uses `agy`. Unsupported controls stay disabled.
 
 **Import native session** in the project sidebar finds conversations matching the project's folder. Select one and choose **Import as fork**, or Cancel. JSONL transcript imports support up to 256 MB. Imports preserve original history; Codex/Claude native continuation forks before use. Antigravity import is currently unavailable because its headless fork path is unverified. Workers run concurrently under a DAN manager; remaining workers stop when the manager finishes. Authenticated live acceptance and restart-resume/approval UI remain pending.
 
@@ -187,7 +191,7 @@ Project **⋯** menus offer New chat, Edit project, and **Remove from DAN**. Rem
 
 Project menus (•••) include **Import native sessions**, with multi-select and **Select all**. Imports create forks and preserve native originals. The sidebar footer opens **DAN settings** for profile-wide preferences.
 
-Choose **Lead** (DAN, Codex, Claude Code, or Antigravity), configure account/model/reasoning/fast inside the same dropdown, and choose delegates in **Team**. Native leads retain their sessions and can delegate through a run-scoped bridge. Native follow-ups queue after the current turn; saved follow-ups resume automatically after a backend restart using their recorded account and settings. Stop closes the lead and its team. Installed native CLIs require their own login.
+Native leads retain their sessions and can delegate through a run-scoped bridge. Switching model sources keeps DAN history while using separate native continuations for each source. Native follow-ups queue after the current turn; saved follow-ups resume automatically after a backend restart using their recorded account and settings. Stop closes the lead and its team.
 
 In **Archived chats**, **Delete all archived chats** removes archived DAN copies after confirmation. Active chats, native originals, and project files are preserved.
 

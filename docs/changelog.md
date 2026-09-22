@@ -1,6 +1,11 @@
 # Changelog
 
 ## 2026-09-22
+- [feat] Unify Lead and Team model controls: independently select harness, source, model, reasoning, and supported fast mode; remember source-specific choices, migrate legacy DAN selections, and persist accurate execution metadata for main/reader chats.
+- [test] 223 focused frontend tests and production build/bundle budgets pass. Browser checks verify Astra/medium/fast restoration, OpenRouter DeepSeek selection, reload persistence, and 390px phone layout; screenshots saved under `output/playwright/`.
+- [docs] Clarify direct harness/OpenRouter support, credential loading, compatibility limits, and remote-control reuse of the same model profiles.
+
+## 2026-09-22
 - [feat] Separate model source from native agent harness: direct Codex/Claude OpenRouter routing, source-scoped continuations, isolated gateway credentials, and per-run DAN reasoning. Keep Cursor/Antigravity external sources unavailable until verified.
 - [fix] Load `.env` at server startup so catalog discovery and execution both recognize existing OpenRouter gateway credentials.
 - [test] 149 targeted backend/server tests pass. Live Codex/OpenRouter, Claude/OpenRouter, and DAN gateway fixed-reply checks pass using DeepSeek V4.1 Flash in isolated workspaces.

@@ -15,6 +15,8 @@ Make difficult agent work durable, steerable, verifiable, and understandable wit
 
 ## Near-term priorities
 
+- Independent harness/model-source selection is delivered and live-verified for Codex/Claude with OpenRouter. SSH remote execution follows this shared profile contract; see [4-4](plans/4-4-agent-model-selection.md) and [6](plans/6-remote-control.md).
+
 - Desktop local update/restart flow is implemented. Activate signed release delivery and package/version the separate Python backend before treating desktop releases as standalone full-product upgrades.
 
 - Workbench presentation refresh delivered: conversation-first Work, spatial project/session navigation, progressive activity/tool disclosure, and responsive keyboard access.

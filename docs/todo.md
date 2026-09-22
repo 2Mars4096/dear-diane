@@ -20,7 +20,7 @@
 - [x] [2-universal-organism](plans/2-universal-organism.md) — one dependency-aware organism runtime.
 - [x] [3-super-dan](plans/3-super-dan.md) — general live runtime, tools, hooks, blueprints, and TUI.
 - [ ] [4-work-notes-gui](plans/4-work-notes-gui.md) — active Work/Notes UX refinement.
-  - [ ] [4-4-agent-model-selection](plans/4-4-agent-model-selection.md) — independent harness/model-source/model choices, prioritized before SSH remote control.
+  - [x] [4-4-agent-model-selection](plans/4-4-agent-model-selection.md) — independent harness/model-source/model choices; live Codex/Claude OpenRouter routing verified before SSH work.
   - [ ] [UI plan](UI-plans/1-work-notes-gui.md)
   - [x] [4-1-agent-workbench](plans/4-1-agent-workbench.md) — lightweight conversation, native window header, conventional project/chat sidebar with persistent Cmd+B toggle, optional carousel/wheel with directional chords, visible folder drop box, activity disclosures, quote reply, stable selection, source-linked reference staging, one-to-six-line input, compact follow-up queue, full-response recovery, and saved sidecar chat.
   - [x] Stop → follow-up lifecycle: fresh control state, run-scoped terminal events, and honest no-run feedback — [4-1](plans/4-1-agent-workbench.md).
@@ -44,6 +44,7 @@
 - [ ] [3-human-assist](live-test-plans/3-human-assist.md)
 
 ## Backlog
+- [ ] Include Claude's isolated OpenRouter transcript directory in native discovery/token-analysis coverage.
 - [x] Raise native import limit to 256 MB, resolve native/legacy placeholder titles, leave new projects empty, and expand Up next with checkpoint-receipt filtering — [workbench](plans/4-1-agent-workbench.md), [native workers](UI-plans/2-native-agent-workers.md).
 - [ ] Complete Mac release signing/notarization and live private-release validation after Apple Developer account setup — [desktop updates](plans/4-2-desktop-updates.md).
 - [x] Add all eight supplied light/dark palettes to Settings, apply changes immediately, and retain the selection across launches.
