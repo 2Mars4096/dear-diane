@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-09-22
+- [docs] Plan SSH-bootstrapped remote DAN execution and authenticated phone/desktop access through `ny`; record existing native adapters, authentication/state/approval gaps, and laptop-off acceptance criteria. Verify `ny` reachability with read-only SSH inspection; no remote deployment performed.
+
 ## 2026-09-21
 - [infra] Reinstall signed arm64 DAN in `/Applications/DAN.app` with selected ivory v7 icon; launch and backend health verified. Keep a rollback app bundle. Remove all six rejected icon variants from the workspace and generated-image cache; retain v7 source and prompt in tracked icon resources.
 - [docs] Record selected icon assets and completed design exploration; build uses the locally installed Electron distribution when network download is unavailable.

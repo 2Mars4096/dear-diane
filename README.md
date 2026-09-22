@@ -168,7 +168,7 @@ src/dan/tools/           Selectively loaded Super DAN capabilities
 src/dan/skills/          Skill discovery and loading
 editor/                  Work/Notes React + Electron app
 mobile/                  Optional Flutter phone app
-docs/plans/              Active numbered roadmap (1–5)
+docs/plans/              Active numbered roadmap (1–6)
 ```
 
 ## Archive policy

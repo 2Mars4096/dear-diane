@@ -14,6 +14,8 @@
 
 ## Universal product stack
 
+- [ ] [6-remote-control](plans/6-remote-control.md) — SSH bootstrap, persistent remote execution, authenticated `ny` relay, and phone control with the laptop offline; design recorded, implementation pending.
+
 - [x] [1-universal-cell](plans/1-universal-cell.md) — one typed, brief-driven execution cell.
 - [x] [2-universal-organism](plans/2-universal-organism.md) — one dependency-aware organism runtime.
 - [x] [3-super-dan](plans/3-super-dan.md) — general live runtime, tools, hooks, blueprints, and TUI.

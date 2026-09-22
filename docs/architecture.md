@@ -23,6 +23,8 @@
 
 ## Product stack
 
+Planned remote deployment (not implemented): [6-remote-control](plans/6-remote-control.md) keeps the backend, native CLI processes, credentials, and durable records on the execution host. An authenticated `ny` gateway serves the existing client and proxies through a host-owned SSH tunnel. Desktop and phone become clients of the same host; the bootstrap laptop is not required after setup.
+
 ```text
 Work/Notes GUI + Super DAN TUI
             ↓
