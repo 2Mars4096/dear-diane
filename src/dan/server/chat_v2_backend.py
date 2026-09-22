@@ -840,6 +840,11 @@ class SuperDanBackendAdapter:
         runtime: AgentBackendRuntime | None = None,
     ) -> AgentBackendRunResult:
         super_cli = _load_super_dan_cli()
+        from dan.native_workers.models import dan_model_policy, ReasoningProvider, OPENROUTER_URL
+        if "lead_profile" in request.profile_policy:
+            request = request.model_copy(update={"profile_policy": {
+                **request.profile_policy, **dan_model_policy(request.profile_policy["lead_profile"]),
+            }})
         workspace_root = super_cli.normalize_workspace_root(request.workspace_root or "~")
         effective_objective = _objective_with_surface_context(request)
         args = _build_super_dan_args(
@@ -1028,6 +1033,11 @@ class SuperDanBackendAdapter:
                     api_key=getattr(args, "api_key", None),
                     base_url=getattr(args, "base_url", None),
                 )
+                effort = request.profile_policy.get("reasoning_effort")
+                if effort and str(getattr(args, "base_url", "") or "").rstrip("/") == OPENROUTER_URL:
+                    if effort not in {"low", "medium", "high"}:
+                        raise ValueError("OpenRouter reasoning must be low, medium, or high")
+                    provider = ReasoningProvider(provider, effort)
                 super_cli._log_live_event(
                     event_logger,
                     "provider.build.completed",

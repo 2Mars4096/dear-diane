@@ -56,7 +56,9 @@ def build_gateway_backed_live_provider(
             llm_api_key=str(resolved.get("api_key") or ""),
             llm_base_url=str(resolved.get("base_url") or "") or None,
             providers=providers,
-            model_provider_map=_model_provider_map(),
+            model_provider_map=({**_model_provider_map(), model: "default"}
+                                if base_url and base_url.rstrip("/") == "https://openrouter.ai/api/v1"
+                                else _model_provider_map()),
         )
     )
     return registry.resolve(model)

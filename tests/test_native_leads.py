@@ -43,6 +43,23 @@ async def test_lead_streams_and_resumes_same_account_only(monkeypatch, tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_changing_source_uses_separate_continuation_without_losing_native_session(monkeypatch, tmp_path):
+    monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path / "graphs"))
+    calls = []
+    def launch(runtime, profile, prompt, workspace, session=""):
+        calls.append(session)
+        native_id = "router-session" if profile.get("provider") == "openrouter" else "native-session"
+        row = {"type": "result", "session_id": native_id, "result": "Answer"}
+        return [sys.executable, "-c", f"print({json.dumps(row)!r})"], {}
+    monkeypatch.setattr("dan.native_workers.service.launch", launch)
+    adapter = NativeLeadAdapter("claude")
+    for source in ["native", "openrouter", "openrouter", "native"]:
+        result = await adapter.run(request(tmp_path, profile_policy={"lead_profile": {"provider": source}}), lambda event: None)
+        assert result.status == "completed"
+    assert calls == ["", "", "router-session", "native-session"]
+
+
+@pytest.mark.asyncio
 async def test_stop_cleans_up_native_lead_and_bridge(monkeypatch, tmp_path):
     monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path / "graphs"))
     monkeypatch.setattr("dan.native_workers.service.launch", lambda *args: ([sys.executable, "-c", "import time; time.sleep(30)"], {}))

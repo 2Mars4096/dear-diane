@@ -71,9 +71,32 @@ async def test_live_steer_stays_in_same_turn_and_streams_result(tmp_path, app_se
         await team.close()
 
 
+@pytest.mark.asyncio
+async def test_openrouter_live_resume_passes_provider_and_model(tmp_path, app_server):
+    team = NativeTeam("run", str(tmp_path), {"codex": {"enabled": True, "_live_steering": True,
+        "provider": "openrouter", "model": "deepseek/deepseek-v4.1-flash", "effort": "medium",
+        "resume_session": "router-thread"}}, tmp_path / "records")
+    worker = await team.start("codex", "Work")
+    try:
+        async with asyncio.timeout(5):
+            while not team.steering:
+                await asyncio.sleep(.01)
+            await team.steering[worker["worker_id"]].steer([SimpleNamespace(id="q", text="Finish", metadata={})])
+            await team.tasks[worker["worker_id"]]
+        calls = [json.loads(line) for line in app_server.read_text().splitlines()]
+        thread = next(call["params"] for call in calls if call.get("method") == "thread/resume")
+        assert thread["modelProvider"] == "dan_openrouter"
+        assert thread["model"] == "deepseek/deepseek-v4.1-flash"
+        assert thread["threadId"] == "router-thread"
+        turn = next(call["params"] for call in calls if call.get("method") == "turn/start")
+        assert turn["effort"] == "medium"
+    finally:
+        await team.close()
+
+
 def store_with_queue(tmp_path):
     store=ChatV2Store(tmp_path/"store")
-    accepted=store.accept_bridge_context(build_v2_bridge_context(ChatMessageRequest(workflow_id="w",thread_id="t",message="Work",mode="agent")),stream_channel_id="test")
+    accepted=store.accept_bridge_context(build_v2_bridge_context(ChatMessageRequest(workflow_id="w",thread_id="t",message="Work",mode="agent", surface_context={"workspace_root":str(tmp_path)})),stream_channel_id="test")
     store.update_run_metadata(accepted.run_id,{"selected_backend":"codex","live_steering":True},status="running")
     for text in ["First","Second"]:
         store.queue_agent_command(AgentRunCommand(command="continue_after_current",run_id=accepted.run_id,task_id=accepted.task_id,idempotency_key=text,payload={"text":text}))

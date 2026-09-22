@@ -35,6 +35,10 @@ class NativeLeadAdapter:
         profile.pop("source_session", None)
         profile.pop("resume_session", None)
         identity = json.dumps([request.thread_id or request.run_id, workspace, backend, profile.get("account", "default")])
+        from .models import model_source
+        source_name = model_source(profile)
+        if source_name != "native":
+            identity += ":" + source_name
         key = hashlib.sha256(identity.encode()).hexdigest()
         if key in _active_sessions:
             return AgentBackendRunResult(status="blocked", backend=backend, summary="This native lead session is already running.")
@@ -78,7 +82,7 @@ class NativeLeadAdapter:
                 saved = json.loads(state_path.read_text())
                 profile["resume_session"] = saved.get("native_session_id", "")
             import_path = base / "native_imports" / f"{request.thread_id}.json"
-            if not profile.get("resume_session") and request.thread_id and Path(request.thread_id).name == request.thread_id and import_path.is_file():
+            if source_name == "native" and not profile.get("resume_session") and request.thread_id and Path(request.thread_id).name == request.thread_id and import_path.is_file():
                 source = json.loads(import_path.read_text())
                 if source.get("continuation") != "history" and source["backend"] == backend and source["account"] == profile.get("account", "default") and same_folder(source["workspace"], workspace):
                     profile["source_session"] = source["session_id"]

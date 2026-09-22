@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import tomllib
 
+from .models import OPENROUTER_URL, openrouter_key, source_catalog, validate_model_source
+
 RUNTIMES = {"codex": "Codex", "claude": "Claude Code", "antigravity": "Antigravity", "cursor": "Cursor"}
 
 
@@ -136,14 +138,11 @@ def catalog() -> dict:
                                                         "cursor": "Install the Cursor CLI (curl https://cursor.com/install -fsS | bash), then run agent login."}.get(runtime, "")})
     result.insert(0, {"id": "dan", "label": "DAN", "available": True, "version": "",
                       "accounts": [{"id": "default", "label": "DAN configuration"}],
-                      "models": ["deepseek/deepseek-v4.1-flash", "moonshotai/kimi-k2.6"],
+                      "models": [],
                       "efforts": [], "fast": False, "setup": ""})
-    from dan.cli import resolve_config
-    configured = resolve_config()
-    openrouter_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("DAN_OPENROUTER_API_KEY")
-    if str(configured.get("base_url") or "").rstrip("/") == "https://openrouter.ai/api/v1":
-        openrouter_key = openrouter_key or configured.get("api_key")
-    return {"runtimes": result, "openrouter_configured": bool(openrouter_key)}
+    for runtime in result:
+        runtime["sources"] = source_catalog(runtime["id"])
+    return {"runtimes": result, "openrouter_configured": bool(openrouter_key())}
 
 
 # DAN mode -> native setting. Plan reads and proposes; Auto edits/runs inside the
@@ -154,6 +153,7 @@ PERMISSIONS = {"plan", "auto", "full"}
 def launch(runtime: str, profile: dict, objective: str, workspace: str, session: str = "") -> tuple[list[str], dict[str, str]]:
     if runtime not in RUNTIMES:
         raise ValueError("Unknown native runtime")
+    source = validate_model_source(runtime, profile)
     executable = binary(runtime)
     if not executable:
         raise ValueError(f"{RUNTIMES[runtime]} CLI is not installed")
@@ -200,9 +200,33 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
         cmd += ["-c", 'service_tier="fast"' if fast else 'service_tier="default"']
         if fast:
             cmd += ["-c", "features.fast_mode=true"]
+        if source == "openrouter":
+            env["DAN_CODEX_OPENROUTER_KEY"] = openrouter_key()
+            # Replace a DAN-owned provider table in memory, never the user's config.toml.
+            provider = '{name="OpenRouter",base_url="' + OPENROUTER_URL + '",wire_api="responses",env_key="DAN_CODEX_OPENROUTER_KEY",requires_openai_auth=false}'
+            cmd += ["-c", 'model_provider="dan_openrouter"', "-c", f"model_providers.dan_openrouter={provider}"]
+            if effort:
+                cmd += ["-c", "model_supports_reasoning_summaries=true"]
+        elif profile.get("provider") == "native":
+            cmd += ["-c", 'model_provider="openai"']
     else:
         cmd = [executable, "-p", objective, "--output-format", "stream-json"]
         if runtime == "claude":
+            if source == "openrouter":
+                from dan.server.paths import resolve_graphs_dir
+                # Isolate gateway login from cached subscription/keychain credentials.
+                import hashlib
+                account_id = hashlib.sha256(str(profile.get("account") or "default").encode()).hexdigest()[:16]
+                config_dir = Path(resolve_graphs_dir()) / "model_accounts" / "claude_openrouter" / account_id
+                config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                env.update(CLAUDE_CONFIG_DIR=str(config_dir), ANTHROPIC_BASE_URL="https://openrouter.ai/api",
+                           ANTHROPIC_AUTH_TOKEN=openrouter_key(), ANTHROPIC_API_KEY="",
+                           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1")
+                for key in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"):
+                    env.pop(key, None)
+                for role in ("FABLE", "OPUS", "SONNET", "HAIKU"):
+                    env[f"ANTHROPIC_DEFAULT_{role}_MODEL"] = model
+                env["CLAUDE_CODE_SUBAGENT_MODEL"] = model
             cmd += ["--verbose", "--include-partial-messages"]
             cmd += ["--dangerously-skip-permissions"] if permission == "full" else ["--permission-mode", "plan" if permission == "plan" else "acceptEdits"]
             if fast and not any(row["fast"] for row in catalog()["runtimes"] if row["id"] == runtime):

@@ -15,6 +15,7 @@
 - Keep interrupted, disconnected, failed, and completed distinct. Reconnect by cursor and deduplicate event IDs before appending text.
 
 ## Tasks
+- [x] Direct OpenRouter model source for Codex/Claude harnesses with provider-scoped continuation and isolated credentials; fixed-reply live acceptance passes. Shared selection UI tracked in [4-4](../plans/4-4-agent-model-selection.md).
 - [x] Raise JSONL transcript import limit from 128 MB to 256 MB; retain explicit rejection above the limit and source preservation.
 - [x] Live Codex lead steering via persistent app-server, active-run capability, acknowledgement-gated queue delivery, and per-entry Steer now controls.
 - [x] Automatically resume durable follow-up queues after backend restart with saved account/policy, legacy native-profile recovery, normal delivery acknowledgement, and no new queue buttons.

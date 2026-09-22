@@ -120,6 +120,11 @@ async def run_live(team, record, command, env):
         params = {"cwd": team.workspace, "approvalPolicy": "never", "sandbox": {"plan":"read-only", "auto":"workspace-write", "full":"danger-full-access"}[permission]}
         if profile.get("model"):
             params["model"] = profile["model"]
+        from .models import model_source
+        if model_source(profile) == "openrouter":
+            params["modelProvider"] = "dan_openrouter"
+        elif profile.get("provider") == "native":
+            params["modelProvider"] = "openai"
         session = record.get("native_session_id") or profile.get("resume_session", "")
         if session:
             params["threadId"] = session

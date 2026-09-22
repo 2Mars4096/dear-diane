@@ -62,6 +62,8 @@ class NativeTeam:
         selected_profile = previous["profile"] if previous else profile
         session = previous.get("native_session_id", "") if previous else str(profile.get("resume_session") or "")
         if backend == "dan":
+            from .models import dan_model_policy
+            dan_model_policy(selected_profile)  # Validate before admitting a worker.
             record = previous or {"worker_id": uuid4().hex, "parent_run_id": self.parent_id, "backend": backend,
                                   "profile": dict(profile), "workspace_root": self.workspace, "created_at": time.time(), "native_session_id": ""}
             history = (record.get("history", []) + [{"role": "user", "content": record["prompt"]}, {"role": "assistant", "content": record["response"]}] if previous else [])
@@ -96,9 +98,8 @@ class NativeTeam:
     async def run_dan(self, record: dict, history: list):
         from dan.server.chat_v2_backend import AgentBackendRunRequest, SuperDanBackendAdapter
         profile = record["profile"]
-        policy = {"model": profile.get("model", ""), "native_workers": {}}
-        if profile.get("base_url"):
-            policy["base_url"] = profile["base_url"]
+        from .models import dan_model_policy
+        policy = {**dan_model_policy(profile), "native_workers": {}}
         inherited = {key: getattr(self.parent_request, key, {}) for key in ("mutation_policy", "approval_policy", "tool_policy")}
         request = AgentBackendRunRequest(**inherited, task_id=record["worker_id"], run_id=record["worker_id"],
             objective=record["prompt"], workspace_root=self.workspace, history=history, profile_policy=policy)

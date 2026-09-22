@@ -156,12 +156,39 @@ Then read `/api/v2/tasks`, `/api/v2/agent-runs/{run_id}`, and `/api/v2/agent-run
 
 Enabled mutation-capable GUI manager stages receive `native_worker(action, backend?, prompt?, worker_id?)`. Backends: `codex`, `claude`, `antigravity`. `start` returns immediately; start multiple independent tasks before polling `status`. Status waits up to ten seconds and returns saved output/status. `stop` affects only its named child. `resume` sends a follow-up to a settled child within the same active parent; it cannot modify another parent's worker. Inspect child results before ending the manager run, which stops remaining children.
 
-Runtime choices are in the execute request's `profile_policy.native_workers`, keyed by backend, with `enabled`, `account`, `model`, `effort`, and `fast`. Account names resolve server-side; never send credentials in this payload. Imported native context always forks before continuation.
+Runtime choices are in the execute request's `profile_policy.native_workers`, keyed by backend, with `enabled`, `account`, `provider`, `model`, `effort`, and `fast`. `provider` is `native` (default/current configuration) or `openrouter`, independently of the harness. Account names resolve server-side; never send credentials in this payload. Imported native context always forks before native continuation.
 
 Read-only discovery: `GET /api/native-workers/catalog`, `GET /api/native-sessions?workspace=...`. Import only after user selection: `POST /api/native-sessions/import` with `{source_id, workspace, workspace_id, fork:true}`. Native worker history: `GET /api/native-workers/{parent_id}` and `/{worker_id}/events`; scoped stop: `POST /api/native-workers/{parent_id}/{worker_id}/stop`.
 
 ### Native leads and team delegation
-- Agent-run execute backends: `native_codex`, `claude`, `antigravity`; `super_dan` remains the DAN lead. Existing `codex` backend is retained for compatibility.
-- `profile_policy.lead_profile`: account, model, effort, fast; continuation IDs are server-owned and scoped to thread/folder/runtime/account.
-- `profile_policy.native_workers`: enabled profiles keyed by `dan`, `codex`, `claude`, `antigravity`; DAN profiles optionally set `base_url` and model.
+- Agent-run execute backends: `native_codex`, `claude`, `antigravity`, `cursor`; `super_dan` remains the DAN lead. Existing `codex` backend is retained for compatibility; use `native_codex` for the new source-aware Codex adapter.
+- `profile_policy.lead_profile`: account, provider, model, effort, fast; also accepted for `super_dan`. Continuation IDs are server-owned and scoped to thread/folder/runtime/account/source.
+- `profile_policy.native_workers`: enabled profiles keyed by `dan`, `codex`, `claude`, `antigravity`, `cursor`; DAN profiles optionally set `base_url` for legacy callers.
 - `native_worker` accepts start/status/stop/resume. Native leads receive an equivalent run-scoped shell bridge. Team members cannot recursively delegate.
+
+### Independent model sources
+
+Example execute payload: Codex orchestrates and DeepSeek powers Codex itself.
+
+```json
+{
+  "backend": "native_codex",
+  "background": true,
+  "profile_policy": {
+    "permission_mode": "auto",
+    "lead_profile": {
+      "provider": "openrouter",
+      "model": "deepseek/deepseek-v4.1-flash",
+      "effort": "medium",
+      "fast": false,
+      "account": "default"
+    }
+  }
+}
+```
+
+- OpenRouter is implemented for `dan`, `codex`, and `claude`; Cursor/Antigravity reject it. It requires a full provider/model ID and a server credential. Read catalog `runtimes[].sources` for capabilities and configured status.
+- Credentials: `DAN_OPENROUTER_API_KEY` or `OPENROUTER_API_KEY`; otherwise reuse `DAN_LLM_API_KEY` only when the configured gateway is `https://openrouter.ai/api/v1`. The server loads `.env` at startup without overriding exported variables.
+- DAN/Codex OpenRouter reasoning accepts default (empty), low, medium, or high. Claude forwards effort only for `anthropic/` models; other gateway models manage their own reasoning and remain experimental in that harness. Fast mode is unavailable for OpenRouter selections.
+- Native Codex/Claude subscription accounts are not model credentials for the DAN harness. DAN configuration uses its API provider; native Codex with explicit `provider: native` selects the built-in OpenAI provider.
+- Provider changes preserve DAN history but use separate provider-scoped native continuations. Keys never appear in browser profiles, API catalog responses, or CLI arguments.

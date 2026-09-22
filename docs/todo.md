@@ -20,6 +20,7 @@
 - [x] [2-universal-organism](plans/2-universal-organism.md) — one dependency-aware organism runtime.
 - [x] [3-super-dan](plans/3-super-dan.md) — general live runtime, tools, hooks, blueprints, and TUI.
 - [ ] [4-work-notes-gui](plans/4-work-notes-gui.md) — active Work/Notes UX refinement.
+  - [ ] [4-4-agent-model-selection](plans/4-4-agent-model-selection.md) — independent harness/model-source/model choices, prioritized before SSH remote control.
   - [ ] [UI plan](UI-plans/1-work-notes-gui.md)
   - [x] [4-1-agent-workbench](plans/4-1-agent-workbench.md) — lightweight conversation, native window header, conventional project/chat sidebar with persistent Cmd+B toggle, optional carousel/wheel with directional chords, visible folder drop box, activity disclosures, quote reply, stable selection, source-linked reference staging, one-to-six-line input, compact follow-up queue, full-response recovery, and saved sidecar chat.
   - [x] Stop → follow-up lifecycle: fresh control state, run-scoped terminal events, and honest no-run feedback — [4-1](plans/4-1-agent-workbench.md).

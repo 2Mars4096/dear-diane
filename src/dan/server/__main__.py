@@ -28,6 +28,8 @@ def build_uvicorn_log_config(level: str | None = None) -> dict[str, Any]:
 
 
 def main() -> None:
+    from dan.cli import load_env
+    load_env()
     parser = argparse.ArgumentParser(description="DAN visual editor server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)

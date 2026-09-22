@@ -9,6 +9,8 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from dan.cli import load_env
+
 from dan.server.chat_store import ChatStore
 from dan.server.chat_v2_store import ChatV2Store
 from dan.server.paths import resolve_graphs_dir
@@ -20,6 +22,8 @@ from dan.server.routers.reader import router as reader_router
 
 
 def create_app() -> FastAPI:
+    # Catalog/auth must see the same .env as execution, including direct uvicorn use.
+    load_env()
     @asynccontextmanager
     async def lifespan(app):
         store = app.state.chat_v2_store

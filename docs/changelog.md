@@ -1,6 +1,11 @@
 # Changelog
 
 ## 2026-09-22
+- [feat] Separate model source from native agent harness: direct Codex/Claude OpenRouter routing, source-scoped continuations, isolated gateway credentials, and per-run DAN reasoning. Keep Cursor/Antigravity external sources unavailable until verified.
+- [fix] Load `.env` at server startup so catalog discovery and execution both recognize existing OpenRouter gateway credentials.
+- [test] 149 targeted backend/server tests pass. Live Codex/OpenRouter, Claude/OpenRouter, and DAN gateway fixed-reply checks pass using DeepSeek V4.1 Flash in isolated workspaces.
+
+## 2026-09-22
 - [docs] Plan SSH-bootstrapped remote DAN execution and authenticated phone/desktop access through `ny`; record existing native adapters, authentication/state/approval gaps, and laptop-off acceptance criteria. Verify `ny` reachability with read-only SSH inspection; no remote deployment performed.
 
 ## 2026-09-21
