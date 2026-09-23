@@ -671,3 +671,12 @@
 .wb-skill-table td label { display:inline; margin:0; font-size:12px; font-weight:500; color:var(--wb-ink); cursor:pointer; }
 .wb-skill-table tr[data-off] td label { color:var(--wb-muted); font-weight:400; }
 .wb-skill-table input[type=checkbox] { margin:0; vertical-align:middle; }
+/* Connection forms retain the settings page's quiet, responsive layout. */
+.wb-remote-row { padding: 14px 0; border-bottom: 1px solid var(--dan-wb-border); }
+.wb-remote-row > span { margin-left: 12px; color: var(--dan-wb-muted); }
+.wb-remote-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 12px; }
+.wb-remote-connections input:not([type="checkbox"]) { width: 100%; min-width: 0; box-sizing: border-box; }
+.wb-remote-connections input[type="checkbox"] { width: auto; }
+.wb-remote-connections p { overflow-wrap: anywhere; }
+.wb-navigation::after { content: var(--dan-remote-label, none); color: var(--dan-wb-muted); font-size: 12px; white-space: nowrap; }
+.dan-remote-status { position: fixed; bottom: 60px; left: 12px; right: 12px; z-index: 120; padding: 12px; background: var(--dan-wb-surface); color: var(--dan-wb-text); border: 1px solid var(--dan-wb-border); border-radius: 8px; font: 13px/1.5 system-ui; }

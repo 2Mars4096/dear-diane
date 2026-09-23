@@ -14029,9 +14029,12 @@ export default function ChunkWorkspaceApp() {
 
   useEffect(() => {
     void refreshBackgroundTasks();
-    const timer = window.setInterval(() => void refreshBackgroundTasks(), 10_000);
+    const timer = window.setInterval(() => {
+      void refreshBackgroundTasks();
+      if (document.querySelector('meta[name="dan-remote-machine"]')) void refreshThreads();
+    }, 10_000);
     return () => window.clearInterval(timer);
-  }, [refreshBackgroundTasks]);
+  }, [refreshBackgroundTasks, refreshThreads]);
 
   const refreshTasks = useCallback(async (threadId: string) => {
     const isSelectedThread = () => activeThreadRef.current?.id === threadId;

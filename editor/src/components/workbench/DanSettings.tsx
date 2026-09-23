@@ -3,6 +3,7 @@ import { X } from "lucide-react";
 const DesktopUpdates = lazy(() => import("./DesktopUpdates").then(module => ({ default: module.DesktopUpdates })));
 const TokenUsage = lazy(() => import("./TokenUsage").then(module => ({ default: module.TokenUsage })));
 const SkillPool = lazy(() => import("./SkillPool").then(module => ({ default: module.SkillPool })));
+const RemoteConnections = lazy(() => import("./RemoteConnections").then(module => ({ default: module.RemoteConnections })));
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { NativeWorkerSettings, type WorkerProfiles } from "./NativeWorkers";
 import { PALETTE_ROLES, WORKBENCH_PALETTES, workbenchPalette } from "../../lib/workbenchPalette";
@@ -34,6 +35,7 @@ export function DanSettings({ onClose, profiles, onProfilesChange, page = false 
     <div className="wb-palette-preview" aria-label="Current palette colors">{PALETTE_ROLES.map((role) => <span key={role} title={role === "text" ? "Primary text" : role === "muted" ? "Muted text" : role}><i style={{ background: `var(--dan-wb-${role})` }} aria-hidden="true" /><span>{role === "background" ? "Base" : role === "text" ? "Text" : role}</span></span>)}</div>
     <p>The same scheme follows light and dark mode.</p>
     <Suspense fallback={<p>Loading update controls…</p>}><DesktopUpdates /></Suspense>
+    <Suspense fallback={<p>Loading remote connections…</p>}><RemoteConnections /></Suspense>
     <h3>Notes appearance</h3>
     <label>Surface<select value={settings.workspaceSurfaceTheme} onChange={(event) => settings.updateSetting("workspaceSurfaceTheme", event.target.value as typeof settings.workspaceSurfaceTheme)}><option value="original">Original</option><option value="industrial">Industrial</option><option value="factory-worn">Factory worn</option></select></label>
     <label>Color mode<select value={settings.workspaceSurfaceTone} onChange={(event) => settings.updateSetting("workspaceSurfaceTone", event.target.value as typeof settings.workspaceSurfaceTone)}><option value="system">System</option><option value="day">Day</option><option value="night">Night</option></select></label>
