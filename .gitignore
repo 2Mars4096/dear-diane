@@ -66,6 +66,8 @@ logs/
 
 # Local runtime databases
 docjobs.db
+graphs/remote_connections/
+graphs/remote-projects.json
 
 # SWE-bench official harness summary artifacts written next to the repo root
 /kimi-*.json

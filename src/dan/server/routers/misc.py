@@ -439,6 +439,7 @@ def _workspace_file_response(path: Path) -> FileResponse:
         headers={
             "Content-Disposition": f'inline; filename="{safe_name}"',
             "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'",
         },
     )
 

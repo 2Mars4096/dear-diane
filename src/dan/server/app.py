@@ -19,6 +19,8 @@ from dan.server.routers.misc import router as workspace_router
 from dan.server.routers.sessions import router as sessions_router
 from dan.server.routers.native_workers import router as native_workers_router
 from dan.server.routers.reader import router as reader_router
+from dan.server.routers.remote import router as remote_router
+from dan.server.routers.remote_registry import router as remote_registry_router
 
 
 def create_app() -> FastAPI:
@@ -37,9 +39,11 @@ def create_app() -> FastAPI:
                 await recovery
 
     app = FastAPI(title="DAN Work and Notes", version="0.2.0", lifespan=lifespan)
+    from dan.remote.access import access_config, RemoteAccess
+    remote = access_config()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=[remote["url"]] if remote else ["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -55,6 +59,25 @@ def create_app() -> FastAPI:
     app.include_router(chat_v2_router)
     app.include_router(native_workers_router)
     app.include_router(reader_router)
+    app.include_router(remote_router)
+    app.include_router(remote_registry_router)
+    if remote:
+        app.add_middleware(RemoteAccess, config=remote)
+    import os
+    static_dir = os.environ.get("DAN_STATIC_DIR")
+    if static_dir:
+        from fastapi.staticfiles import StaticFiles
+        if remote:
+            from fastapi.responses import HTMLResponse
+            import html
+
+            @app.get("/", response_class=HTMLResponse)
+            @app.get("/index.html", response_class=HTMLResponse)
+            async def remote_index():
+                page = (Path(static_dir) / "index.html").read_text()
+                marker = '<meta name="dan-remote-machine" content="' + html.escape(remote["id"], quote=True) + '">'
+                return HTMLResponse(page.replace("<head>", "<head>" + marker), headers={"Cache-Control": "no-store"})
+        app.mount("/", StaticFiles(directory=static_dir, html=True), name="web")
     return app
 
 
