@@ -11,7 +11,7 @@ Make difficult agent work durable, steerable, verifiable, and understandable wit
 3. [Super DAN](plans/3-super-dan.md) — completed core runtime/TUI.
 4. [Work and Notes GUI](plans/4-work-notes-gui.md) — active UX refinement.
 5. [Universal Product Cutover](plans/5-universal-product-cutover.md) — completed; legacy code/docs are archived in Git and the boundary is locked.
-6. [Remote control](plans/6-remote-control.md) — planned: bootstrap persistent execution through SSH, then use authenticated desktop/phone access through `ny` while the laptop is offline.
+6. [Remote control](plans/6-remote-control.md) — implementing Mac-managed SSH profiles, persistent execution, and authenticated private-network desktop/phone access through a replaceable `ny` relay; test on mini, leave s600 to the user.
 
 ## Near-term priorities
 

@@ -23,7 +23,11 @@
 
 ## Product stack
 
-Planned remote deployment (not implemented): [6-remote-control](plans/6-remote-control.md) keeps the backend, native CLI processes, credentials, and durable records on the execution host. An authenticated `ny` gateway serves the existing client and proxies through a host-owned SSH tunnel. Desktop and phone become clients of the same host; the bootstrap laptop is not required after setup.
+Remote deployment: [6-remote-control](plans/6-remote-control.md) keeps the backend, native CLI processes, credentials, and durable records on the execution host. `dan.remote.profiles` saves private local connection records and installs versioned releases using SSH; `install` provisions systemd user services and checks boot lingering. `relay` transparently forwards TCP over an existing private network, so HTTP streams and WebSockets share the same path without a laptop-owned tunnel. Each host uses its own relay port/browser origin. Relay SSH alias/address are profile fields, not a hard-coded `ny` dependency.
+
+`RemoteAccess` protects every HTTP/static/file/WebSocket route on configured remote servers: per-machine access key, signed expiring HttpOnly session cookie, exact Host/Origin checks, login throttling, and no wildcard remote CORS. Plain HTTP is restricted to existing private/VPN interfaces; this is not public HTTPS deployment. SSH setup endpoints reject remote browsers and nonlocal origins. Profiles and keys are stored in mode-0600 ignored files, never browser localStorage. SSH uses pinned existing host keys, no agent forwarding, and independent connections to avoid stalled shared control sockets.
+
+`remote_registry` persists project metadata with field-level patches. `remoteProjects.ts` hydrates before mounting the remote workbench and periodically syncs; transient tabs and selection remain local. Remote origin isolation applies uniformly to existing `/api` requests, previews, uploads, and event streams, and remote pages have no Electron filesystem bridge. Local legacy bindings are unchanged. Authenticated remote HTML carries a machine marker used for hydration and a visible machine label.
 
 ```text
 Work/Notes GUI + Super DAN TUI

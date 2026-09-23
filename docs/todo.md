@@ -14,7 +14,8 @@
 
 ## Universal product stack
 
-- [ ] [6-remote-control](plans/6-remote-control.md) — SSH bootstrap, persistent remote execution, authenticated `ny` relay, and phone control with the laptop offline; design recorded, implementation pending.
+- [ ] [6-remote-control](plans/6-remote-control.md) — Settings profiles, SSH installer, authenticated `ny` relay, and shared projects deployed/tested on mini; direct VPN verified; physical-phone acceptance pending, s600 reserved for user testing.
+  - [ ] [6-1-private-relay](plans/6-1-private-relay.md) — mini/ny services and native/OpenRouter live tests pass; direct VPN verified; physical-phone acceptance pending.
 
 - [x] [1-universal-cell](plans/1-universal-cell.md) — one typed, brief-driven execution cell.
 - [x] [2-universal-organism](plans/2-universal-organism.md) — one dependency-aware organism runtime.

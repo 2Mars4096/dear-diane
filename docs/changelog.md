@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-23
+- [feat] Add Mac-managed SSH profiles and Settings controls for host inspection, relay configuration, install/update, opt-in OpenRouter provisioning, and browser access credentials.
+- [infra] Package versioned Linux user-service releases with separate durable state and credentials; check boot lingering and relay HTTP/WebSocket traffic over the existing VPN without a laptop tunnel.
+- [feat] Authenticate remote API/files/events with expiring signed sessions and origin checks; hydrate shared projects before opening sessions and sync field-level updates across browsers. Each machine has its own browser origin.
+- [test] 116 server/native-agent tests, 76 workbench tests, and production build/bundle budgets pass. Mini live native Codex Astra/medium/fast, Codex/OpenRouter, and Claude/OpenRouter checks return the expected reply. Authenticated phone-width UI, cross-browser projects, WebSocket reconnect, and enabled/lingering service restarts verified through ny.
+- [infra] Deploy mini on VPN port 18765 and ny relay on 8765 using existing alias networking. Public access remains unexposed; user enabled the VPN-only firewall rule, and direct authenticated API/360px browser access passed after removing the temporary SSH proxy. Physical-phone/cellular acceptance remains. Save s600 for user testing without connecting to it.
+
+
 ## 2026-09-22
 - [feat] Unify Lead and Team model controls: independently select harness, source, model, reasoning, and supported fast mode; remember source-specific choices, migrate legacy DAN selections, and persist accurate execution metadata for main/reader chats.
 - [test] 223 focused frontend tests and production build/bundle budgets pass. Browser checks verify Astra/medium/fast restoration, OpenRouter DeepSeek selection, reload persistence, and 390px phone layout; screenshots saved under `output/playwright/`.

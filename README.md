@@ -41,6 +41,20 @@ Work opens with a familiar project/chat sidebar: New chat, search, collapsible p
 
 Codex events use the shared activity display. The [native worker design](docs/UI-plans/2-native-agent-workers.md) describes persistent Codex/Claude children; a Claude worker adapter is still pending.
 
+## Remote machines and phone access
+
+In **DAN settings → Remote connections**, save a machine's SSH alias, existing remote workspace, private/VPN address, and relay details. Use **Check SSH**, then **Install DAN**. The local installer needs this source checkout and `cd editor && npm run build:verify`; set `DAN_SOURCE_ROOT` when the backend runs outside the checkout. Linux targets need Python 3.11+, systemd user services, and trusted SSH host keys. Install native agent CLIs and log in on the execution host.
+
+Each machine gets its own browser address on the relay. **Show access key** supplies its sign-in credential. Open that address from your phone while connected to the existing VPN. Execution and saved chats stay on the remote machine when the Mac/browser disconnects. Projects synchronize across browsers; local tabs and preferences remain separate. Backend restarts can interrupt active agent work.
+
+The Mac manages setup. OpenRouter provisioning is an explicit installation checkbox; native account directories are never copied. Keys are kept in private files on the Mac/execution host. The initial relay is private-network HTTP over your VPN, not a public website. Change relay fields to use another relay; retire the previous service after verifying the replacement. Each remote needs a distinct relay port.
+
+For slow package networks, the connection form offers the Tsinghua PyPI mirror. Prepared deployments can set `DAN_REMOTE_WHEELHOUSE` to a folder of compatible Linux/Python wheels, including build dependencies; those wheels are bundled and installed without reaching a package index.
+
+If the relay firewall blocks its selected port, allow that port only from your VPN peers. DAN reports installation and connection failures separately; it does not change existing firewall or VPN rules.
+
+Services are `dan-execution-<machine>.service` on the execution host and `dan-relay-<machine>.service` on the relay, managed with `systemctl --user`. Releases/state are under `~/.local/share/dan-remote/<machine>/`. Check logs with `journalctl --user -u <service>`; install reports whether boot persistence is enabled. Updates restart the service, so finish active work first. See [remote control](docs/plans/6-remote-control.md) for remaining public login, approval, and recovery work.
+
 ## Requirements
 
 - Python 3.11+
