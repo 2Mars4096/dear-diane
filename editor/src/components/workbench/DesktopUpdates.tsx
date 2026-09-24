@@ -40,11 +40,12 @@ export function DesktopUpdates() {
     {state?.phase === "downloading" && <progress aria-label="Update download" max={100} value={state.percent}>{state.percent}%</progress>}
     <div className="wb-update-actions">
       <button disabled={!state || busy || (!state.releaseConfigured && !state.localSupported) || state.phase === "ready"} onClick={() => void action("check")}>Check for updates</button>
-      {state?.localBuildAvailable && state.phase !== "ready" && <button disabled={busy} onClick={() => void action("install-local")}>Install local update</button>}
+      {state?.localSupported && state.phase !== "ready" && <button disabled={busy || !state.localBuildAvailable} onClick={() => void action("install-local")}>Install local update</button>}
       {state?.phase === "available" && <button disabled={busy} onClick={() => void action("download")}>Download {state.version}</button>}
       {state?.phase === "ready" && <button disabled={busy} onClick={() => void action("install")}>Install and restart</button>}
     </div>
     {state?.localSupported && <details><summary>Other update options</summary><button disabled={busy} onClick={() => void action("choose")}>Choose a different build…</button></details>}
+    {state?.localSupported && !state.localBuildAvailable && state.phase !== "ready" && <p>No prepared local update was found. Local updates do not require GitHub sign-in.</p>}
     {state?.localBuildAvailable && state.phase !== "ready" && <p>A prepared local update is available. Installing restarts DAN after checking for active work.</p>}
     {state?.phase === "ready" && <p>Finish active work first. DAN will close, install {state.version}, and reopen. Chats and settings stay on this Mac.</p>}
   </section>;

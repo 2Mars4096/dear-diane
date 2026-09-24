@@ -21,3 +21,8 @@ An agent running inside the existing app can start `editor/scripts/install-local
 - Verify actual signed update delivery on a test installation before enabling a public channel. Current coverage uses updater event mocks and filesystem handoff tests, not a live remote release.
 
 References: [electron-builder auto-update](https://www.electron.build/v26/docs/features/auto-update/), [Electron autoUpdater](https://www.electronjs.org/docs/latest/api/auto-updater).
+
+## Packaged-runtime verification
+
+- Electron mounts `.asar` as a virtual directory. Physical archive comparisons use `original-fs`; marker reads inside an archive keep Electron filesystem semantics.
+- After `npm run electron:compile`, run `electron scripts/check-prepared-build.cjs`. An optional absolute module path tests `preparedBuild.js` inside the installed app. This exercises real ASAR archives; ordinary Node tests are insufficient.

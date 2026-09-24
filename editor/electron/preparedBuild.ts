@@ -1,11 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+// Electron mounts .asar archives as virtual directories. Hash their physical files.
+const archiveFs: typeof import('node:fs') = process.versions.electron ? require('original-fs') : require('node:fs');
 
 async function digest(file: string): Promise<string> {
   const hash = createHash('sha256');
-  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  for await (const chunk of archiveFs.createReadStream(file)) hash.update(chunk);
   return hash.digest('hex');
 }
 
@@ -22,7 +23,7 @@ export async function findPreparedBuild(marker: string, target: string, remember
       const installed = await fs.realpath(target);
       if (source === installed || source.startsWith(installed + path.sep)) continue;
       const asar = (bundle: string) => path.join(bundle, 'Contents/Resources/app.asar');
-      const [a, b] = await Promise.all([fs.stat(asar(source)), fs.stat(asar(installed))]);
+      const [a, b] = await Promise.all([archiveFs.promises.stat(asar(source)), archiveFs.promises.stat(asar(installed))]);
       const key = `${source}\0${installed}`;
       const stamp = `${a.size}:${a.mtimeMs}:${a.ctimeMs}:${b.size}:${b.mtimeMs}:${b.ctimeMs}`;
       let result = comparisons.get(key);

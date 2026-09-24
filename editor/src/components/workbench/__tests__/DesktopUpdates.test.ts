@@ -15,6 +15,8 @@ it("supports local prepare/install without pretending an unconfigured release ch
     expect(host.textContent).toContain("Published updates aren’t configured");
     const button = (label: string) => [...host.querySelectorAll("button")].find(b => b.textContent === label)!;
     expect(button("Check for updates").disabled).toBe(false);
+    expect(button("Install local update").disabled).toBe(true);
+    expect(host.textContent).toContain("Local updates do not require GitHub sign-in");
     await act(async () => button("Choose a different build…").click());
     expect(api.action).toHaveBeenCalledWith("choose");
     expect(api.action).not.toHaveBeenCalledWith("install");

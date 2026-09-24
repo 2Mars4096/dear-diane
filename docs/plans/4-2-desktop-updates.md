@@ -37,3 +37,7 @@
 - [x] Move Usage above Archived chats and DAN settings in the bottom-left footer.
 - [x] Eleven focused tests, production build/bundle checks, Electron compilation, signed package verification, and live footer ordering pass.
 - [x] User explicitly approved installation. Verified no active/queued work and checked full process arguments; installed/launched `/Applications/DAN.app` with rollback copy, verified app-owned backend health, and confirmed the installed archive matches the prepared build.
+
+- [x] Fix packaged-Electron discovery: use `original-fs` for physical ASAR stats/hashes; keep Electron-aware filesystem reads for the marker inside the app archive. Plain Node tests had missed Electron treating `.asar` as a directory.
+- [x] Add real-Electron archive regression for changed/identical builds, including the module extracted at runtime from the installed app. Keep Install local update visible when unavailable, with a no-GitHub-required explanation.
+- [x] Install corrected updater and PDF repairs under existing approval. Relaunch after interruption passes installed proxy health, exact Unicode PDF byte-range delivery, and decoder availability. Seven focused tests, real Electron regression, frontend build/budgets, compilation, and signed bundle verification pass.
