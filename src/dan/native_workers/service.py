@@ -106,7 +106,9 @@ class NativeTeam:
         # Team members are leaves: a DAN child must not inherit its parent's team.
         token = current_team.set(None)
         try:
-            result = await SuperDanBackendAdapter()._run(request, lambda event: self.event(record, event.model_dump(mode="json")))
+            from dan.tools._browser_session import browser_scope
+            async with browser_scope(self.workspace, request.run_id):
+                result = await SuperDanBackendAdapter()._run(request, lambda event: self.event(record, event.model_dump(mode="json")))
             record.update(status=result.status, response=result.summary)
         except asyncio.CancelledError:
             record["status"] = "stopped"

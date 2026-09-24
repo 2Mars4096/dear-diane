@@ -827,7 +827,9 @@ class SuperDanBackendAdapter:
         active_teams[request.run_id] = team
         token = current_team.set(team)
         try:
-            return await self._run(request, emit_event, runtime)
+            from dan.tools._browser_session import browser_scope
+            async with browser_scope(request.workspace_root or str(Path.cwd()), request.run_id):
+                return await self._run(request, emit_event, runtime)
         finally:
             await team.close()
             active_teams.pop(request.run_id, None)
@@ -1989,8 +1991,12 @@ def _build_super_dan_args(
     if execution_policy:
         setattr(args, "_tui_execution_policy", execution_policy)
     surface_policy = _request_policy_payload(request, "surface_policy")
-    if surface_policy:
-        setattr(args, "_tui_surface_policy", surface_policy)
+    # Browser discovery must work for ordinary GUI requests as well as TUI
+    # requests carrying a classified policy. Availability does not launch it.
+    if "capability_packs" not in surface_policy:
+        surface_policy = {**surface_policy, "capability_packs": ["browser_control"]}
+    surface_policy.setdefault("permission_scope", "transient_execute")
+    setattr(args, "_tui_surface_policy", surface_policy)
     setattr(
         args,
         "_surface_image_attachments",

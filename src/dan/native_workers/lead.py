@@ -10,7 +10,7 @@ import sys
 import tempfile
 import time
 
-from . import bridge, proc_bridge
+from . import bridge, proc_bridge, browser_bridge
 from .service import NativeTeam, active_teams, describe
 
 _active_sessions: set[str] = set()
@@ -51,6 +51,7 @@ class NativeLeadAdapter:
         team = None
         server = None
         proc_server = None
+        browser_server = None
         temporary = None
         record = None
         children = None
@@ -128,6 +129,18 @@ class NativeLeadAdapter:
             context = json.dumps(history, ensure_ascii=False) if history else ""
             # Always present: the process bridge needs a workspace-local queue the sandbox can write to.
             temporary = tempfile.TemporaryDirectory(prefix=".dan-team-", dir=workspace)
+            browser_client = Path(temporary.name) / "browser.py"
+            browser_client.write_text(Path(browser_bridge.__file__).read_text())
+            def browser_event(action, state, result):
+                event("status_reported", f"Browser {action}: {state}",
+                      {"tool_id": f"browser_{action}", "state": state,
+                       "session": result.get("session", {}), "path": result.get("path")},
+                      "native_lead.browser")
+            browser_server = asyncio.create_task(browser_bridge.serve(
+                Path(temporary.name), workspace, request.run_id, permission, browser_event,
+            ))
+            browser_command = f"{shlex.quote(sys.executable)} {shlex.quote(str(browser_client))} --queue {shlex.quote(temporary.name)}"
+            prompt += browser_bridge.instructions(browser_command, permission)
             if context:
                 if len(context) > 16000:
                     history_file = Path(temporary.name) / "conversation.json"
@@ -209,6 +222,9 @@ class NativeLeadAdapter:
             if proc_server:
                 proc_server.cancel()
                 await asyncio.gather(proc_server, return_exceptions=True)
+            if browser_server:
+                browser_server.cancel()
+                await asyncio.gather(browser_server, return_exceptions=True)
             if lead:
                 await lead.close()
                 if record:
