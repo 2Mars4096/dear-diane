@@ -8,6 +8,7 @@ import { fingerprintText, locateVisualSelection, resolveTextAnchor } from "./lib
 import type { MaterialPdfOcrPage } from "./lib/pdf-ocr";
 import { extractPageTexts, ocrPage, ocrPageText, sparsePages } from "./lib/ocr-runner";
 import { rectsForQuote } from "./lib/text-layer";
+import { readFontCompatibility, rememberFontCompatibility } from "./lib/font-compatibility";
 
 export type ReaderFile = { name: string; path: string; url: string };
 export type ReaderAsk = { quote: string; pageNumber: number; pageText: string; file: ReaderFile; anchor?: PaperCommentAnchor | null };
@@ -28,6 +29,7 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
   const [ocrPages, setOcrPages] = useState<MaterialPdfOcrPage[]>([]);
   const [ocr, setOcr] = useState<OcrState>({ status: "idle", done: 0, total: 0 });
   const [exporting, setExporting] = useState(false);
+  const [fontCompatibility, setFontCompatibility] = useState(() => readFontCompatibility(file.path));
   const documentRef = useRef<PDFDocumentProxy | null>(null);
 
   useEffect(() => {
@@ -47,11 +49,11 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
   const onDocument = useCallback((document: PDFDocumentProxy | null) => {
     documentRef.current = document;
     if (!document) return;
-    let cancelled = false;
+    const isCurrent = () => documentRef.current === document;
     void (async () => {
       setOcr({ status: "checking", done: 0, total: 0 });
       const texts = await extractPageTexts(document);
-      if (cancelled) return;
+      if (!isCurrent()) return;
       setPageTexts(texts);
       const needed = sparsePages(texts);
       if (!needed.length) { setOcr({ status: "idle", done: 0, total: 0 }); return; }
@@ -62,19 +64,21 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
       } catch { /* OCR cache is optional */ }
       const have = new Set(saved.map((page) => page.page_number));
       const pending = needed.filter((page) => !have.has(page));
-      if (cancelled) return;
+      if (!isCurrent()) return;
       setOcrPages(saved);
       if (!pending.length) { setOcr({ status: "done", done: needed.length, total: needed.length }); return; }
       setOcr({ status: "running", done: needed.length - pending.length, total: needed.length });
       const results = [...saved];
       for (const number of pending) {
-        if (cancelled || documentRef.current !== document) return;
+        if (!isCurrent()) return;
         try {
           const page = await ocrPage(document, number);
+          if (!isCurrent()) return;
           results.push(page);
           setOcrPages([...results]);
           setOcr((current) => ({ ...current, done: current.done + 1 }));
         } catch (error) {
+          if (!isCurrent()) return;
           setOcr({ status: "error", done: 0, total: needed.length, message: error instanceof Error ? error.message : "OCR failed" });
           return;
         }
@@ -83,8 +87,9 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
       try {
         if (!file.url.startsWith("blob:")) await fetch(`/api/reader/ocr?path=${encodeURIComponent(file.path)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pages: results }) });
       } catch { /* next open will OCR again */ }
-    })();
-    return () => { cancelled = true; };
+    })().catch((error: unknown) => {
+      if (isCurrent()) setOcr({ status: "error", done: 0, total: 0, message: error instanceof Error ? error.message : "Text extraction failed" });
+    });
   }, [file.path, file.url]);
 
   // Re-find anchored highlights whose page text changed; redraw from the text layer.
@@ -170,8 +175,14 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
         ocrPages={ocrPages}
         pageNumber={pageNumber}
         sourceUrl={file.url}
+        fontCompatibility={fontCompatibility}
         title={file.name}
         toolbarExtras={<>
+          <button type="button" aria-pressed={fontCompatibility}
+            title="Try this if letters look garbled. Uses a different font renderer and remembers this PDF."
+            onClick={() => { const enabled = !fontCompatibility; rememberFontCompatibility(file.path, enabled); setFontCompatibility(enabled); }}>
+            {fontCompatibility ? "Text repair on" : "Repair text"}
+          </button>
           {ocr.status === "running" && <span title="Recognizing text on scanned pages"><ScanText size={12} />OCR {ocr.done}/{ocr.total}</span>}
           {ocr.status === "error" && <span data-error title={ocr.message}><ScanText size={12} />OCR failed</span>}
           <button type="button" onClick={onNotes}><MessageSquareQuote size={13} />Notes{comments.length ? ` ${comments.length}` : ""}</button>

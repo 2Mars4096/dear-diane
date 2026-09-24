@@ -43,6 +43,8 @@ Work opens with a familiar project/chat sidebar: New chat, search, collapsible p
 
 Codex events use the shared activity display. The [native worker design](docs/UI-plans/2-native-agent-workers.md) describes persistent Codex/Claude children; a Claude worker adapter is still pending.
 
+If PDF letters look garbled, try **Repair text** in the PDF toolbar. This switches to a local font renderer and preserves your reading position. The setting is remembered for project/desktop file paths; importing another browser copy creates a new document identity. It does not edit the original PDF.
+
 ## Open files in DAN
 
 Drop files into DAN or use **Open file** (⌘/Ctrl+O). PDFs open in the reader; text/code files open in editable tabs, Markdown supports Preview, and images/audio/video open in viewers. Project Files also open in tabs. Use **Save** or ⌘/Ctrl+S for original desktop/project files; changed files on disk require reopening, with **Download copy** available to preserve your draft. Unsaved edits survive tab/Notes switches and prompt before closing.

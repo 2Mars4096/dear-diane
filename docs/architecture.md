@@ -1,5 +1,8 @@
 # Architecture
 
+## PDF font compatibility
+- ReaderView persists font compatibility per file identity through `reader/lib/font-compatibility.ts`; InteractivePdfViewer reloads with `disableFontFace` and system-font substitution disabled while preserving saved position. Repair remains local and does not change PDF bytes. Reader text/OCR callbacks ignore results from replaced documents.
+
 ## Persistent side tools
 - Work owns one side-panel frame/header. `workbench/PersistentPanel.tsx` mounts a tool on first visit, then hides it without unmounting; chat polling and drafts continue, and scroll/expanded logs survive. Files and Preview use the same frame on desktop and phone. Project/PDF/thread keys isolate context-specific state.
 - `MainTabs` handles the dedicated active-tab close shortcut and calls the existing guarded close callback. Native window shortcuts are not intercepted.

@@ -1,5 +1,8 @@
 # Todo
 
+- [x] Add local PDF font compatibility mode and verify an embedded-font fixture — [reader](UI-plans/3-reader-and-side-panel.md).
+- [ ] User verification: try Repair text on the private garbled PDF; no file access requested again.
+
 - [x] Preserve right-panel state and add a dedicated close-tab shortcut; verify desktop and phone switching — [reader and side panel](UI-plans/3-reader-and-side-panel.md).
 
 - [x] Repair packaged Electron update discovery and install the PDF fixes; verify actual app health and Unicode PDF delivery — [desktop updates](plans/4-2-desktop-updates.md).

@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-24
+- [feat] Add a local, per-document Repair text toggle for garbled PDF fonts; use PDF.js glyph outlines without browser/system font substitution, retain reading position, and ignore stale OCR results during document reloads.
+- [test] Generated an embedded subset-font fixture and visually verified compatibility rendering, selectable text, page retention, and stable-path reopen with no browser FontFace creation. The user’s private PDF was not accessed; its specific corruption remains unverified.
+
+## 2026-09-24
 - [fix] Keep right-side tools mounted after first use beneath one stable tab bar; preserve reading/note/process drafts, expanded logs, and scroll when switching or closing/reopening. Reuse the frame on phone layouts.
 - [feat] Close the active main tab with Control–Command–W on macOS or Ctrl+Alt+W elsewhere; reuse unsaved-edit confirmation and leave native window shortcuts untouched. Show the shortcut on close buttons.
 - [test] Eighteen focused panel, shortcut, and reader tests plus build/budgets pass. Browser checks confirm stable header DOM/geometry, draft retention, and a 390px phone layout without overflow.

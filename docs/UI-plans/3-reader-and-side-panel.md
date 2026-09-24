@@ -26,6 +26,9 @@
 - [x] 9. Keep side tools mounted after first visit in one frame; preserve drafts/scroll/log expansion, scope state to project/PDF/thread, and verify desktop + 390px phone switching.
 - [x] 10. Dedicated active-tab close shortcut (Mac Control–Command–W / other Ctrl+Alt+W), discoverable on × buttons and routed through the unsaved-edit guard.
 
+- [x] 11. Local Repair text toggle with per-document font compatibility, position preservation, and stale OCR cancellation guards; embedded subset-font fixture verified visually and across reopening.
+  - [ ] 11-1. User checks their private PDF; screenshot alone cannot establish the cause or confirm repair.
+
 ## Decisions
 - Reader is a surface (like Work / Notes), not an autonomy mode. Plan/Auto/Full access still govern what the sidecar agent may do.
 - Ported later: OCR (in-browser instead of server), passage anchoring (client-side against page text), annotated-PDF export. Still not ported: teaching layers/modes and the tutor model picker; DAN answers through the configured lead. DAN reads PDFs directly from the project folder and answers through the configured lead.
