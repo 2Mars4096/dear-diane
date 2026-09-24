@@ -7,6 +7,11 @@
 - `WorkbenchConversation` lazy-loads `RequestActions` for the latest user message. It owns the temporary edit/error state; `ChunkWorkspaceApp` validates the request, preserves attachments, persists replacement history, and uses the existing run admission path. Admission failure restores the prior transcript. Editing is disabled while a reply is pending.
 - Work settings are lazy-loaded on opening to preserve the workspace shell bundle budget.
 
+## Document workspace
+- Lazy `components/documents/` modules connect global file drops and Open file to main tabs. Desktop preload resolves File objects to original paths; browsers retain local File/blob copies and download edits explicitly. Existing project files open through the same tab path.
+- Text draft/revision snapshots live in a workspace-owned ref across panel unmounts; dirty state guards tab close and page unload. PDFs reuse ReaderView; browser-only PDFs skip filesystem OCR cache.
+- `routers/documents.py` provides bounded strict UTF-8 reads and revision-checked atomic writes under the existing workspace-root resolver. Saves preserve file permissions; stale revisions fail without replacing content. External programs do not participate in the in-process save lock.
+
 ## Saved attachment links
 - `WorkbenchConversation` lazy-loads `MessageAttachment` to open persisted `ChatAttachment.path` through Electron `shell.openPath`, retaining the original filename as the link label. Browser use relies on `workspaceFilePreviewUrl`; the file is not loaded until opened.
 

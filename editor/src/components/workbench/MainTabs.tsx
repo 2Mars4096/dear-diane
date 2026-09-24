@@ -1,6 +1,6 @@
 import { FileText, MessageSquareText, Settings, X } from "lucide-react";
 
-export type MainTab = { id: string; kind: "chat" | "pdf" | "settings"; label: string; title?: string };
+export type MainTab = { id: string; kind: "chat" | "pdf" | "file" | "settings"; label: string; title?: string };
 
 /** Tab bar for the main column: the conversation plus any open documents, all closable. */
 export function MainTabs({ tabs, active, onSelect, onClose }: { tabs: MainTab[]; active: string; onSelect: (id: string) => void; onClose: (id: string) => void }) {
@@ -8,7 +8,7 @@ export function MainTabs({ tabs, active, onSelect, onClose }: { tabs: MainTab[];
     {tabs.map((tab) => <div key={tab.id} className="wb-main-tab" data-active={tab.id === active || undefined}>
       <button type="button" role="tab" aria-selected={tab.id === active} title={tab.title ?? tab.label} onClick={() => onSelect(tab.id)}
         onAuxClick={(event) => { if (event.button === 1) onClose(tab.id); }}>
-        {tab.kind === "pdf" ? <FileText size={13} aria-hidden="true" /> : tab.kind === "settings" ? <Settings size={13} aria-hidden="true" /> : <MessageSquareText size={13} aria-hidden="true" />}
+        {(tab.kind === "pdf" || tab.kind === "file") ? <FileText size={13} aria-hidden="true" /> : tab.kind === "settings" ? <Settings size={13} aria-hidden="true" /> : <MessageSquareText size={13} aria-hidden="true" />}
         <span>{tab.label}</span>
       </button>
       {tabs.length > 1 && <button type="button" className="wb-main-tab-close" aria-label={`Close ${tab.label}`} onClick={() => onClose(tab.id)}><X size={12} /></button>}

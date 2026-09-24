@@ -57,8 +57,8 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
       if (!needed.length) { setOcr({ status: "idle", done: 0, total: 0 }); return; }
       let saved: MaterialPdfOcrPage[] = [];
       try {
-        const response = await fetch(`/api/reader/ocr?path=${encodeURIComponent(file.path)}`);
-        if (response.ok) saved = ((await response.json()).pages ?? []) as MaterialPdfOcrPage[];
+        const response = file.url.startsWith("blob:") ? null : await fetch(`/api/reader/ocr?path=${encodeURIComponent(file.path)}`);
+        if (response?.ok) saved = ((await response.json()).pages ?? []) as MaterialPdfOcrPage[];
       } catch { /* OCR cache is optional */ }
       const have = new Set(saved.map((page) => page.page_number));
       const pending = needed.filter((page) => !have.has(page));
@@ -81,11 +81,11 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
       }
       setOcr({ status: "done", done: needed.length, total: needed.length });
       try {
-        await fetch(`/api/reader/ocr?path=${encodeURIComponent(file.path)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pages: results }) });
+        if (!file.url.startsWith("blob:")) await fetch(`/api/reader/ocr?path=${encodeURIComponent(file.path)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pages: results }) });
       } catch { /* next open will OCR again */ }
     })();
     return () => { cancelled = true; };
-  }, [file.path]);
+  }, [file.path, file.url]);
 
   // Re-find anchored highlights whose page text changed; redraw from the text layer.
   useEffect(() => {

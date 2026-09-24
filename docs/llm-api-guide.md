@@ -1,5 +1,7 @@
 # LLM-Facing API Guide
 
+Document editing: `GET /api/workspace-files/document?path=...&root_path=...` returns strict UTF-8 `content` and a SHA-256 `revision` (2 MB limit). `PUT` to the same endpoint accepts `{path, root_path, content, revision}` and returns the new revision; HTTP 409 retains externally changed content. Browser-selected local documents are not implicitly uploaded or available to agents beyond supplied excerpts.
+
 Use this guide when constructing DAN work programmatically. The old workflow graph builder, node taxonomy, edge types, and engine API no longer exist in the active tree.
 
 Remote execution uses the same API on a machine-specific origin. Remote clients authenticate with a server-side access key as a Bearer credential or through `/remote/login` (expiring HttpOnly cookie); browser mutations and WebSockets must use that origin. Never put provider keys in client payloads. Local-only `/api/remote/connections` lists/saves SSH profiles; `/{id}/inspect`, `/{id}/install`, and `/{id}/access-key` are explicit POST actions. Install returns a job polled at `/api/remote/jobs/{id}`. On remote servers, `/api/remote/registry` GET/PATCH shares project metadata, while chat/run endpoints remain unchanged. The relay does not submit or replay agent commands.

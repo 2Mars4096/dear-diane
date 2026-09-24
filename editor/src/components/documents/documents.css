@@ -1,0 +1,16 @@
+.dan-file-drop { position:fixed; inset:60px 16px 16px; z-index:100; display:grid; place-items:center; pointer-events:none; border:2px dashed var(--wb-accent); border-radius:8px; background:color-mix(in srgb,var(--wb-paper) 94%,transparent); color:var(--wb-ink); font-size:18px; }
+.dan-file-error { position:fixed; top:60px; right:16px; z-index:101; max-width:calc(100vw - 32px); padding:12px; background:var(--wb-paper); color:var(--wb-ink); border:1px solid var(--wb-line); }
+.dan-file-error button { margin-left:12px; text-decoration:underline; }
+.dan-document { flex:1; min-height:0; min-width:0; display:flex; flex-direction:column; background:var(--wb-paper); color:var(--wb-ink); }
+.dan-document[hidden] { display:none; }
+.dan-document-toolbar { display:flex; align-items:center; gap:12px; padding:8px 12px; border-bottom:1px solid var(--wb-line); font-size:12px; flex-wrap:wrap; }
+.dan-document-toolbar > span { flex:1; min-width:80px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--wb-muted); }
+.dan-document-toolbar button, .dan-document-toolbar a { padding:4px 6px; border-radius:4px; }
+.dan-document-toolbar button:hover, .dan-document-toolbar a:hover { background:var(--wb-soft); }
+.dan-document-toolbar button:disabled { opacity:.45; }
+.dan-document textarea { flex:1; min-height:100px; resize:none; padding:16px; outline:none; background:transparent; color:inherit; font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace; tab-size:4; white-space:pre; overflow:auto; }
+.dan-document textarea:focus-visible { box-shadow:inset 0 0 0 1px var(--wb-accent); }
+.dan-document-message { padding:8px 12px; font-size:12px; overflow-wrap:anywhere; }
+.dan-document-preview { padding:20px; overflow:auto; flex:1; }
+.dan-document-media { flex:1; min-height:0; overflow:auto; display:grid; place-items:center; padding:16px; }
+.dan-document-media img, .dan-document-media video { max-width:100%; max-height:100%; object-fit:contain; }

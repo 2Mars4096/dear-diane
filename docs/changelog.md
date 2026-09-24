@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-24
+- [feat] Open dropped/selected files in DAN tabs: existing PDF reader, UTF-8 text editing, Markdown preview, images, audio, and video. Desktop opens originals; browser selections remain local copies with explicit downloads.
+- [fix] Preserve drafts across document/Notes switches, guard dirty close/reload, and save only against an unchanged file revision. Reject oversized/binary/non-UTF-8 edits; skip server OCR cache for browser-only PDFs.
+- [test] 8 backend and 91 frontend tests, production bundle budgets, and Electron compilation pass. Live PDF/drop/edit/preview/save/conflict/mobile checks pass; updated desktop package prepared.
+
+
 ## 2026-09-23
 - [feat] Add Mac-managed SSH profiles and Settings controls for host inspection, relay configuration, install/update, opt-in OpenRouter provisioning, and browser access credentials.
 - [infra] Package versioned Linux user-service releases with separate durable state and credentials; check boot lingering and relay HTTP/WebSocket traffic over the existing VPN without a laptop tunnel.

@@ -21,6 +21,7 @@
 - [x] [2-universal-organism](plans/2-universal-organism.md) — one dependency-aware organism runtime.
 - [x] [3-super-dan](plans/3-super-dan.md) — general live runtime, tools, hooks, blueprints, and TUI.
 - [ ] [4-work-notes-gui](plans/4-work-notes-gui.md) — active Work/Notes UX refinement.
+  - [x] [4-6-document-workspace](plans/4-6-document-workspace.md) — drop/open PDFs, editable text and Markdown tabs, media viewers, guarded Save, and browser-copy downloads.
   - [x] [4-4-agent-model-selection](plans/4-4-agent-model-selection.md) — independent harness/model-source/model choices; live Codex/Claude OpenRouter routing verified before SSH work.
   - [ ] [UI plan](UI-plans/1-work-notes-gui.md)
   - [x] [4-1-agent-workbench](plans/4-1-agent-workbench.md) — lightweight conversation, native window header, conventional project/chat sidebar with persistent Cmd+B toggle, optional carousel/wheel with directional chords, visible folder drop box, activity disclosures, quote reply, stable selection, source-linked reference staging, one-to-six-line input, compact follow-up queue, full-response recovery, and saved sidecar chat.

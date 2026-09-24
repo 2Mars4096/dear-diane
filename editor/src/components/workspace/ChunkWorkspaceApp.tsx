@@ -1,3 +1,4 @@
+import type { DocumentFile, DocumentDraft } from "../documents/documents";
 import { visibleQueuedTranscript } from "../workbench/queuedTranscript";
 import { ProjectMenu } from "../workbench/ProjectMenu";
 import { SidecarChat } from "../workbench/SidecarChat";
@@ -152,6 +153,8 @@ import MarkdownRenderer from "../shared/MarkdownRenderer";
 // Reader (pdf.js) loads on first use so it stays out of the workspace shell chunk.
 const FollowupQueue = lazy(() => import("../workbench/FollowupQueue").then(module => ({ default: module.FollowupQueue })));
 const DanSettings = lazy(() => import("../workbench/DanSettings").then(module => ({ default: module.DanSettings })));
+const FileOpener = lazy(() => import("../documents/FileOpener"));
+const DocumentView = lazy(() => import("../documents/DocumentView"));
 const ReaderView = lazy(() => import("../reader/ReaderView").then((module) => ({ default: module.ReaderView })));
 const ProcessesPanel = lazy(() => import("../workbench/ProcessesPanel").then((module) => ({ default: module.ProcessesPanel })));
 const ReaderNotes = lazy(() => import("../reader/ReaderNotes").then((module) => ({ default: module.ReaderNotes })));
@@ -13265,6 +13268,15 @@ export default function ChunkWorkspaceApp() {
   // Main column tabs: the conversation plus any open PDFs. The side panel follows the active tab.
   const [mainTabs, setMainTabs] = useState<MainTab[]>([{ id: "chat", kind: "chat", label: "Chat" }]);
   const [activeMainTab, setActiveMainTab] = useState("chat");
+  const documentDrafts = useRef<Record<string, DocumentDraft>>({});
+  const [documents, setDocuments] = useState<Record<string, DocumentFile>>({});
+  const [dirtyDocuments, setDirtyDocuments] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!Object.values(dirtyDocuments).some(Boolean)) return;
+    const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", guard);
+    return () => window.removeEventListener("beforeunload", guard);
+  }, [dirtyDocuments]);
   const [readerFiles, setReaderFiles] = useState<Record<string, ReaderFile>>({});
   const readerFile = readerFiles[activeMainTab] ?? null;
   const [readerSelection, setReaderSelection] = useState<{ text: string; token: number; context?: string }>({ text: "", token: 0 });
@@ -14595,17 +14607,28 @@ export default function ChunkWorkspaceApp() {
     const payload = withLeadSelection(buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode), selectedAgentId, leadProfiles);
     return { ...payload, profile_policy: { ...payload.profile_policy, native_workers: nativeWorkerProfiles } };
   };
+  const openDocument = (file: DocumentFile) => {
+    const pdf = /\.pdf$/i.test(file.name);
+    const id = `${pdf ? "pdf" : "file"}:${file.path}`;
+    setDocuments(current => current[id] ? current : { ...current, [id]: file });
+    if (pdf) setReaderFiles(current => current[id] ? current : { ...current, [id]: file });
+    setMainTabs(tabs => tabs.some(tab => tab.id === id) ? tabs : [...tabs, { id, kind: pdf ? "pdf" : "file", label: file.name, title: file.path }]);
+    setActiveMainTab(id); setActivePane("work"); setPhonePage("chat"); setShowConversationChunks(true);
+  };
   const openReader = (entry: WorkspaceFileEntry) => {
-    const id = `pdf:${entry.path}`;
-    setReaderFiles((current) => current[id] ? current : { ...current, [id]: { name: entry.name, path: entry.path, url: workspaceFilePreviewUrl(entry.path, developmentRoot || undefined, entry.relative_path) } });
-    setMainTabs((tabs) => tabs.some((tab) => tab.id === id) ? tabs : [...tabs, { id, kind: "pdf", label: entry.name, title: entry.path }]);
-    setActiveMainTab(id);
+    void import("../documents/documents").then(({ pathDocument }) => openDocument(pathDocument(entry.path, entry.name)));
   };
   const openSettingsTab = () => {
     setMainTabs((tabs) => tabs.some((tab) => tab.id === "settings") ? tabs : [...tabs, { id: "settings", kind: "settings", label: "Settings" }]);
     setActiveMainTab("settings"); setActivePane("work");
   };
   const closeTab = (id: string) => {
+    if (mainTabs.length <= 1) return;
+    if (dirtyDocuments[documents[id]?.path] && !window.confirm(`Discard unsaved edits to ${documents[id].name}?`)) return;
+    delete documentDrafts.current[documents[id]?.path];
+    if (documents[id]?.ownedUrl) URL.revokeObjectURL(documents[id].url);
+    setDirtyDocuments(current => { const next = { ...current }; delete next[documents[id]?.path]; return next; });
+    setDocuments(current => { const next = { ...current }; delete next[id]; return next; });
     const next = closeMainTab(mainTabs, activeMainTab, id);
     setMainTabs(next.tabs); setActiveMainTab(next.active);
     if (id.startsWith("pdf:")) setReaderFiles((current) => { const copy = { ...current }; delete copy[id]; return copy; });
@@ -17363,6 +17386,7 @@ export default function ChunkWorkspaceApp() {
           onAllSessions={() => { setThreadQuery(""); setShowSessionRail(true); setPhonePage("sessions"); }}
         />
         <div className="wb-header-actions">
+          <Suspense fallback={null}><FileOpener onOpen={openDocument} /></Suspense>
           <button aria-label={sideTab ? "Hide side panel" : "Show side panel"} title={`${sideTab ? "Hide side panel" : "Show side panel"} (${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘⌥B" : "Ctrl+Alt+B"})`} aria-keyshortcuts="Meta+Alt+B Control+Alt+B" aria-pressed={Boolean(sideTab)} onClick={() => openSideTab(sideTab ? null : lastSideTab)}><PanelRight size={17} /></button>
           <button aria-label="Notes" title="Notes" onClick={() => { setActivePane("notes"); setPhonePage("note-preview"); }}><NotebookPen size={17} /></button>
           <button aria-label="Workspace settings" title="Workspace settings" aria-pressed={workbenchSettings} onClick={() => { setCreatingProject(false); setWorkbenchSettings(true); }}><MoreHorizontal size={18} /></button>
@@ -17387,6 +17411,7 @@ export default function ChunkWorkspaceApp() {
       {Boolean(activePane === "notes") && (
       <header className="dan-workspace-header relative z-40 flex h-14 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/95 px-4 shadow-[0_1px_0_rgba(15,23,42,0.03)] backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
         <div className="flex min-w-0 flex-1 items-center gap-3">
+          <Suspense fallback={null}><FileOpener onOpen={openDocument} /></Suspense>
           <div className="inline-flex shrink-0 rounded-lg border border-slate-200 bg-slate-100/70 p-0.5 shadow-inner dark:border-slate-800 dark:bg-slate-900">
             <button
               type="button"
@@ -18683,8 +18708,7 @@ export default function ChunkWorkspaceApp() {
                     expanded={expandedFileDirs}
                     onToggle={toggleFileDir}
                     onSelect={(entry) => {
-                      if (!isPhoneViewport && workspaceFilePreviewKind(entry) === "pdf") openReader(entry);
-                      else selectPreviewFile(entry);
+                      openReader(entry);
                     }}
                     onMove={moveDevelopmentEntry}
                   />
@@ -18717,8 +18741,9 @@ export default function ChunkWorkspaceApp() {
             )}
           >
             <div className="flex min-h-0 min-w-0 flex-col bg-white/90 dark:bg-slate-950">
-              {mainTabs.length > 1 && <MainTabs tabs={mainTabs.map((tab) => tab.id === "chat" ? { ...tab, label: activeThread?.title || "New chat" } : tab)} active={activeMainTab} onSelect={setActiveMainTab} onClose={closeTab} />}
-              {activeMainTab === "settings" ? <Suspense fallback={null}><DanSettings page onClose={() => closeTab("settings")} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} /></Suspense> : readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView key={readerFile.path} file={readerFile} onAsk={askFromReader} onNotes={() => openSideTab("notes")} /></Suspense> : <>
+              {mainTabs.length > 1 && <MainTabs tabs={mainTabs.map((tab) => tab.id === "chat" ? { ...tab, label: activeThread?.title || "New chat" } : { ...tab, label: `${tab.label}${dirtyDocuments[documents[tab.id]?.path] ? " •" : ""}` })} active={activeMainTab} onSelect={setActiveMainTab} onClose={closeTab} />}
+              <Suspense fallback={null}>{Object.entries(documents).filter(([id]) => id.startsWith("file:")).map(([id, file]) => <DocumentView key={id} file={file} active={id === activeMainTab} drafts={documentDrafts.current} onDirty={(path, dirty) => setDirtyDocuments(current => ({...current, [path]:dirty}))} />)}</Suspense>
+              {activeMainTab.startsWith("file:") ? null : activeMainTab === "settings" ? <Suspense fallback={null}><DanSettings page onClose={() => closeTab("settings")} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} /></Suspense> : readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView key={readerFile.path} file={readerFile} onAsk={askFromReader} onNotes={() => openSideTab("notes")} /></Suspense> : <>
               <div className="wb-conversation-heading"><div className="wb-conversation-actions">
                 {activeThread && <button title={`Copy session ID: ${activeThread.id}`} onClick={() => { void navigator.clipboard.writeText(activeThread.id).then(() => setStatus("Session ID copied"), () => setStatus(`Session ID: ${activeThread.id}`)); }}>Session <code>{activeThread.id}</code></button>}
                 {activeRunningTask && activeThread && <button className="wb-stop" onClick={() => void stopSessionRun({ id: activeThread.id, workflow_id: activeThread.workflowId, title: activeThread.title || "Active session", message_count: messages.length, created_at: "", updated_at: "" }, activeRunningTask)}><Square size={11} />Stop run</button>}
@@ -18791,7 +18816,7 @@ export default function ChunkWorkspaceApp() {
                 <div className="flex h-10 shrink-0 items-center justify-between border-b border-slate-200/80 px-4 dark:border-slate-800">
                   <div className="min-w-0 truncate text-xs text-slate-400">{activePreviewFileEntry?.name ?? ""}</div>
                   <div className="flex shrink-0 items-center gap-1">
-                    {activePreviewFileEntry && workspaceFilePreviewKind(activePreviewFileEntry) === "pdf" && <button type="button" className="wb-read-button" onClick={() => openReader(activePreviewFileEntry)}>Read</button>}
+                    {activePreviewFileEntry && <button type="button" className="wb-read-button" onClick={() => openReader(activePreviewFileEntry)}>Open in tab</button>}
                     <button
                       type="button"
                       onClick={openActiveFile}
@@ -18963,7 +18988,7 @@ export default function ChunkWorkspaceApp() {
             leadLabel={selectedAgentOption.shortLabel} execution={sidecarExecution()} header={renderSideTabs()}
             purpose={{
               title: `Reading ${readerFile.name}`,
-              framing: `You are a reading companion for the PDF "${readerFile.name}" (${readerFile.path}). The user is reading it and asks about a passage they selected. Answer directly and concisely, grounded in the passage and its page text; say plainly when that text is not enough. Do not modify files.`,
+              framing: `You are a reading companion for the PDF "${readerFile.name}" (${readerFile.url.startsWith("blob:") ? "browser-local copy; only supplied excerpts are available to you" : readerFile.path}). The user is reading it and asks about a passage they selected. Answer directly and concisely, grounded in the passage and its page text; say plainly when that text is not enough. Do not modify files.`,
               placeholder: "Ask about this passage…",
               empty: "Select text in the PDF and choose Ask. Answers stay here while you keep reading.",
             }}

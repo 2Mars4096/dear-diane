@@ -41,6 +41,12 @@ Work opens with a familiar project/chat sidebar: New chat, search, collapsible p
 
 Codex events use the shared activity display. The [native worker design](docs/UI-plans/2-native-agent-workers.md) describes persistent Codex/Claude children; a Claude worker adapter is still pending.
 
+## Open files in DAN
+
+Drop files into DAN or use **Open file** (⌘/Ctrl+O). PDFs open in the reader; text/code files open in editable tabs, Markdown supports Preview, and images/audio/video open in viewers. Project Files also open in tabs. Use **Save** or ⌘/Ctrl+S for original desktop/project files; changed files on disk require reopening, with **Download copy** available to preserve your draft. Unsaved edits survive tab/Notes switches and prompt before closing.
+
+Browser-selected files stay in your browser and offer **Download edits**, leaving the original unchanged. Text editing supports UTF-8 files up to 2 MB. Office documents and other binary formats offer download rather than in-app editing.
+
 ## Remote machines and phone access
 
 In **DAN settings → Remote connections**, save a machine's SSH alias, existing remote workspace, private/VPN address, and relay details. Use **Check SSH**, then **Install DAN**. The local installer needs this source checkout and `cd editor && npm run build:verify`; set `DAN_SOURCE_ROOT` when the backend runs outside the checkout. Linux targets need Python 3.11+, systemd user services, and trusted SSH host keys. Install native agent CLIs and log in on the execution host.

@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     openDirectory: () => ipcRenderer.invoke("dialog:openDirectory"),
   },
   fs: {
+    droppedFile: (file: File) => ipcRenderer.invoke("fs:droppedFile", webUtils.getPathForFile(file)),
     droppedDirectory: (file: File) => ipcRenderer.invoke("fs:droppedDirectory", webUtils.getPathForFile(file)),
     readFile: (filePath: string) => ipcRenderer.invoke("fs:readFile", filePath),
     writeFile: (filePath: string, content: string) =>

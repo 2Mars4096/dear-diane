@@ -406,6 +406,12 @@ function createTray() {
 
 // --- IPC Handlers: file operations for the renderer ---
 
+ipcMain.handle("fs:droppedFile", async (_event, filePath: unknown) => {
+  if (typeof filePath !== "string" || !path.isAbsolute(filePath)) return null;
+  try { return (await fs.promises.stat(filePath)).isFile() ? filePath : null; }
+  catch { return null; }
+});
+
 ipcMain.handle("fs:droppedDirectory", async (_event, folderPath: unknown) => {
   if (typeof folderPath !== "string" || !path.isAbsolute(folderPath)) return null;
   try {
