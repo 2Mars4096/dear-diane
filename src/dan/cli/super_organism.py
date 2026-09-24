@@ -207,7 +207,7 @@ _SUPER_DAN_TOOL_DESCRIPTIONS: dict[str, str] = {
     "browser_wait": "wait for browser page load, network idle, or a specific selector",
     "browser_extract": "read visible browser page text or a selected DOM element",
     "browser_screenshot": "capture the current browser page as local visual evidence",
-    "browser_click": "click a browser DOM element by CSS selector after grounding the page state",
+    "browser_click": "click a browser DOM element after inspection for requested research/navigation; posting, sending, purchasing, or changing external accounts requires user authorization; report CAPTCHA/login blocks without bypassing them",
     "browser_fill": "replace text in a browser input or contenteditable element",
     "browser_type": "append typed text into a browser element",
     "browser_select": "select an option in a browser dropdown by CSS selector and value",

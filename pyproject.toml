@@ -47,6 +47,7 @@ dan-super-tui = "dan.cli.super_tui:main"
 dansupertui = "dan.cli.super_tui:main"
 
 [project.optional-dependencies]
+browser = ["playwright>=1.40"]
 pdf = ["pypdf>=4.0", "pymupdf>=1.24"]
 spreadsheet = ["openpyxl>=3.1"]
 search = ["duckduckgo-search>=6.0"]

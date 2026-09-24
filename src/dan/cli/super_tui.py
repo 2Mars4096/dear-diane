@@ -2331,12 +2331,8 @@ _TUI_BROWSER_READ_ONLY_TOOL_IDS = (
     "browser_extract",
     "browser_screenshot",
 )
-_TUI_BROWSER_TRANSIENT_TOOL_IDS = ("browser_open",)
+_TUI_BROWSER_TRANSIENT_TOOL_IDS = ("browser_open", "browser_click", "browser_fill", "browser_type", "browser_select")
 _TUI_BROWSER_EXTERNAL_WRITE_TOOL_IDS = (
-    "browser_click",
-    "browser_fill",
-    "browser_type",
-    "browser_select",
     "browser_download",
 )
 _TUI_DESKTOP_READ_ONLY_TOOL_IDS = ("desktop_observe",)
@@ -3222,7 +3218,8 @@ def _run_simple_write_plan(
 def _tui_surface_capability_contract_text() -> str:
     return (
         "Super DAN TUI supports ordinary workspace file/git/shell work, plus optional UI-control capability packs. "
-        "browser_control provides persistent-browser tabs, URL/title/DOM/HTML/interactive-element inspection, page text, screenshots, selector clicks/fills/typing/selects, waits, and downloads. "
+        "browser_control provides browser tabs, URL/title/DOM/HTML/interactive-element inspection, page text, screenshots, selector clicks/fills/typing/selects, waits, and downloads. "
+        "Transient browser interaction permits requested research/navigation; it does not authorize posting, sending, purchasing, or changing external accounts. Ground selectors in inspection, and report login/CAPTCHA blocks instead of bypassing them. "
         "desktop_control provides local desktop observe/focus/click/type/hotkey; desktop mutation is call-time gated by DAN_COMPUTER_CONTROL=1 and should be grounded by observe metadata or screenshots. "
         "computer_control means both browser_control and desktop_control. "
         "Do not deny browser or desktop capability; distinguish available optional capability from whether it is active or gated in this specific turn."

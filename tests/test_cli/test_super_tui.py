@@ -6025,7 +6025,9 @@ def test_super_tui_read_only_tool_ids_expand_browser_actions_by_permission(monke
     external_write_ids = super_tui._tui_read_only_tool_ids(tmp_path, external_write)
 
     assert "browser_open" in transient_ids
-    assert "browser_click" not in transient_ids
+    assert "browser_click" in transient_ids
+    assert "browser_fill" in transient_ids
+    assert "browser_download" not in transient_ids
     assert "browser_open" in external_write_ids
     assert "browser_click" in external_write_ids
     assert "browser_fill" in external_write_ids

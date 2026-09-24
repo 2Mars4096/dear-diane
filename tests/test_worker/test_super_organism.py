@@ -118,7 +118,7 @@ def test_structured_surface_policy_keeps_transient_browser_open_separate_from_wo
         ["browser_open", "browser_click", "file_write"],
     )
 
-    assert allowed == ["browser_open"]
+    assert allowed == ["browser_open", "browser_click"]
 
 
 def test_structured_surface_policy_does_not_infer_browser_authority_from_prompt_text():

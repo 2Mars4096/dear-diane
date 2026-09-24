@@ -68,13 +68,9 @@ _READ_ONLY_TOOL_EXCLUSIONS = frozenset(
         "desktop_hotkey",
     }
 )
-_TRANSIENT_BROWSER_TOOL_IDS = frozenset({"browser_open"})
+_TRANSIENT_BROWSER_TOOL_IDS = frozenset({"browser_open", "browser_click", "browser_fill", "browser_type", "browser_select"})
 _EXTERNAL_BROWSER_TOOL_IDS = frozenset(
     {
-        "browser_click",
-        "browser_fill",
-        "browser_type",
-        "browser_select",
         "browser_download",
     }
 )

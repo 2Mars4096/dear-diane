@@ -258,6 +258,8 @@ class PlaywrightBrowserController:
         allowed_domains: list[Any] | None = None,
         headless: bool = True,
         profile: str | None = None,
+        artifact_dir: str | None = None,
+        web_only: bool = False,
     ) -> None:
         if not is_playwright_available():
             raise ImportError(
@@ -267,10 +269,13 @@ class PlaywrightBrowserController:
         self._allowed_domains = allowed_domains or []
         self._headless = headless
         self._profile = profile
+        self._artifact_dir = artifact_dir
+        self._web_only = web_only
         self._playwright: Any = None
         self._browser: Any = None
         self._page: Any = None
         self._context: Any = None
+        self._launch_lock = asyncio.Lock()
 
     def session_info(self) -> dict[str, Any]:
         """Return operator-visible browser session metadata."""
@@ -282,9 +287,23 @@ class PlaywrightBrowserController:
             "profile_dir": profile_dir,
             "gui_preview_available": not self._headless,
             "preview": "local GUI browser window" if not self._headless else "headless browser session",
+            "execution_host": "backend",
+            "isolated": self._profile is None,
         }
 
-    async def _ensure_browser(self) -> Any:
+    async def _ensure_browser(self, *, reopen: bool = False) -> Any:
+        async with self._launch_lock:
+            if self._page is not None and getattr(self._page, "is_closed", lambda: False)():
+                pages = list(self._context.pages) if self._context is not None else []
+                if pages:
+                    self._page = pages[-1]
+                elif not reopen:
+                    raise RuntimeError("The browser window was closed. Use browser_open with the intended URL to reopen it before continuing.")
+                else:
+                    await self.close()
+            return await self._launch_browser()
+
+    async def _launch_browser(self) -> Any:
         """Lazily launch browser and page.
 
         When *profile* is set, uses ``launch_persistent_context`` so cookies,
@@ -333,8 +352,12 @@ class PlaywrightBrowserController:
             raise PermissionError(f"Domain not in allowlist: {url}")
 
     async def open(self, url: str) -> dict:
+        if self._web_only:
+            from urllib.parse import urlsplit
+            if urlsplit(url).scheme not in {"http", "https"}:
+                raise ValueError("Browser navigation requires an http or https URL")
         self._check_domain(url)
-        page = await self._ensure_browser()
+        page = await self._ensure_browser(reopen=True)
         await page.goto(url, wait_until="domcontentloaded")
         if self.session:
             self.session.current_url = url
@@ -491,10 +514,12 @@ class PlaywrightBrowserController:
 
     async def screenshot(self) -> str:
         page = await self._ensure_browser()
-        d = _ensure_screenshot_dir()
+        d = self._artifact_dir or _ensure_screenshot_dir()
+        os.makedirs(d, exist_ok=True)
         path = os.path.join(d, f"browser_{int(time.time() * 1000)}.png")
         await page.screenshot(path=path)
-        _cleanup_old_screenshots()
+        if not self._artifact_dir:
+            _cleanup_old_screenshots()
         return path
 
     async def download(
@@ -555,18 +580,18 @@ class PlaywrightBrowserController:
         }
 
     async def close(self) -> None:
-        if self._browser:
-            await self._browser.close()
+        try:
+            if self._browser:
+                await self._browser.close()
+            elif self._context:
+                await self._context.close()
+        finally:
             self._browser = None
             self._page = None
             self._context = None
-        elif self._context:
-            await self._context.close()
-            self._page = None
-            self._context = None
-        if self._playwright:
-            await self._playwright.stop()
-            self._playwright = None
+            if self._playwright:
+                playwright, self._playwright = self._playwright, None
+                await playwright.stop()
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,8 @@ TOOL_METADATA = {
         "Trigger a file download from the current browser page, usually by clicking "
         "a CSS selector, and save it to a destination path. "
         "Useful for downloading PDFs from authenticated sites that require browser automation. "
-        "If no destination path is provided, the file is saved under ~/.dan/downloads/."
+        "GUI runs require a new destination path inside the project workspace. "
+        "Standalone calls without a destination save under ~/.dan/downloads/."
     ),
     "parameters": {
         "type": "object",
@@ -20,8 +21,8 @@ TOOL_METADATA = {
             "destination_path": {
                 "type": "string",
                 "description": (
-                    "Optional final path for the downloaded file. Supports absolute paths "
-                    "and ~/ paths such as ~/Dropbox/my-knowledge-base/static/papers/paper_id.pdf."
+                    "Final path for the downloaded file; required in GUI runs and must be a "
+                    "new file inside the workspace. Relative paths resolve against the workspace."
                 ),
             },
             "timeout_seconds": {
@@ -57,8 +58,9 @@ async def browser_download(
     timeout_seconds: float = 30.0,
     **_kwargs: object,
 ) -> dict:
-    from dan.tools._browser_session import get_controller
+    from dan.tools._browser_session import download_destination, get_controller
 
+    destination_path = download_destination(destination_path)
     ctrl = await get_controller()
     path = await ctrl.download(
         selector,
