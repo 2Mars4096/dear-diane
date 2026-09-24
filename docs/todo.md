@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Preserve right-panel state and add a dedicated close-tab shortcut; verify desktop and phone switching — [reader and side panel](UI-plans/3-reader-and-side-panel.md).
+
 - [x] Repair packaged Electron update discovery and install the PDF fixes; verify actual app health and Unicode PDF delivery — [desktop updates](plans/4-2-desktop-updates.md).
 
 - [x] Fix Chinese PDF filename headers and scanned-page decoder paths; verify the user book and prepare a signed local update — [reader](UI-plans/3-reader-and-side-panel.md).

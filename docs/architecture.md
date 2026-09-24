@@ -1,5 +1,9 @@
 # Architecture
 
+## Persistent side tools
+- Work owns one side-panel frame/header. `workbench/PersistentPanel.tsx` mounts a tool on first visit, then hides it without unmounting; chat polling and drafts continue, and scroll/expanded logs survive. Files and Preview use the same frame on desktop and phone. Project/PDF/thread keys isolate context-specific state.
+- `MainTabs` handles the dedicated active-tab close shortcut and calls the existing guarded close callback. Native window shortcuts are not intercepted.
+
 ## Design artwork
 - User-selected ivory v7 and its generation prompt live in tracked `editor/resources/icons/`, alongside PNG/ICNS/ICO exports for desktop packaging; `editor/public/favicon.png` is the browser export. Unselected generated variants were deleted. Local macOS updates retain their existing icon-preservation behavior.
 

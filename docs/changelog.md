@@ -1,6 +1,11 @@
 # Changelog
 
 ## 2026-09-24
+- [fix] Keep right-side tools mounted after first use beneath one stable tab bar; preserve reading/note/process drafts, expanded logs, and scroll when switching or closing/reopening. Reuse the frame on phone layouts.
+- [feat] Close the active main tab with Control–Command–W on macOS or Ctrl+Alt+W elsewhere; reuse unsaved-edit confirmation and leave native window shortcuts untouched. Show the shortcut on close buttons.
+- [test] Eighteen focused panel, shortcut, and reader tests plus build/budgets pass. Browser checks confirm stable header DOM/geometry, draft retention, and a 390px phone layout without overflow.
+
+## 2026-09-24
 - [fix] Read physical app archives with Electron original-fs so automatic local-update detection works in the packaged app. Keep the local update control visible and clarify that it does not require GitHub login.
 - [test] Seven focused tests plus a real-Electron changed/identical-ASAR regression pass, including the installed module. Corrected updater and PDF fixes installed; relaunched app health, exact Chinese PDF range delivery, and decoder serving verified.
 

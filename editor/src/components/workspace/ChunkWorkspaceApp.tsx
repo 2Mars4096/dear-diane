@@ -6,6 +6,7 @@ import { LeadAgentMenu } from "../workbench/LeadAgentMenu";
 import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from "../workbench/NativeWorkers";
 import { EMPTY_PROFILE, leadExecutionProfile, modelSource, OPENROUTER_URL, withLeadSelection } from "../workbench/modelSelection";
 import { TeamPanel, TeamStrip, useTeamWorkers } from "../workbench/TeamProgress";
+import { PersistentPanel } from "../workbench/PersistentPanel";
 import { SideTabs, readLastSideTab, rememberSideTab, type SideTab, type SideTabItem } from "../workbench/SideTabs";
 import type { ReaderAsk, ReaderFile } from "../reader/ReaderView";
 import { MainTabs, closeMainTab, type MainTab } from "../workbench/MainTabs";
@@ -13254,9 +13255,7 @@ export default function ChunkWorkspaceApp() {
     setSideTab(tab);
     if (tab) { setLastSideTab(tab); rememberSideTab(tab); }
   }, []);
-  const sidecarChat = sideTab === "chat";
   const setSidecarChat = useMemo(() => sideSetter("chat"), [sideSetter]);
-  const workbenchActivity = sideTab === "activity";
   const setWorkbenchActivity = useMemo(() => sideSetter("activity"), [sideSetter]);
   const teamPanel = sideTab === "team";
   const setTeamPanel = useMemo(() => sideSetter("team"), [sideSetter]);
@@ -14656,10 +14655,13 @@ export default function ChunkWorkspaceApp() {
     setReaderSelection({ text: ask.quote, context: `Page ${ask.pageNumber}${where}: ${ask.pageText}`, token: Date.now() });
     openSideTab("chat");
   };
+  const visibleSideTab = isPhoneViewport
+    ? phonePage === "files" ? "files" : phonePage === "preview" ? "preview" : phonePage === "chat" ? sideTab : null
+    : sideTab;
   const processState = useProcesses(developmentRoot, sideTab === "processes");
   // Tabs follow context: Preview once something is selected, Activity once a run has events, Team once a team exists.
   const renderSideTabs = () => {
-    if (!sideTab) return null;
+    if (!visibleSideTab) return null;
     const runningWorkers = team.workers.filter((worker) => worker.status === "running").length;
     const tabs: SideTabItem[] = [
       { id: "chat", label: readerFile ? "Reading" : "Chat" },
@@ -14670,7 +14672,7 @@ export default function ChunkWorkspaceApp() {
       ...(team.workers.length ? [{ id: "team" as const, label: "Team", count: runningWorkers }] : []),
       { id: "processes", label: "Processes", count: processState.processes.filter((item) => item.status === "running").length },
     ];
-    return <SideTabs tabs={tabs} active={sideTab} reading={Boolean(readerFile)} onSelect={openSideTab} onClose={() => openSideTab(null)} />;
+    return <SideTabs tabs={tabs} active={visibleSideTab} reading={Boolean(readerFile)} onSelect={(tab) => { openSideTab(tab); if (isPhoneViewport) setPhonePage("chat"); }} onClose={() => { openSideTab(null); if (isPhoneViewport) setPhonePage("chat"); }} />;
   };
   const sessionStatusTasks = useMemo(
     () => mergeTaskSnapshots(backgroundTasks, workPanelTasks),
@@ -18549,9 +18551,110 @@ export default function ChunkWorkspaceApp() {
               <Folder size={14} />
             </CollapsedPaneRail>
           )}
-          {renderFileExplorer && (
+
+
+          {!isPhoneViewport && !renderWorkMain && (
+            <CollapsedPaneRail
+              label="Work"
+              title="Show work panel"
+              onClick={() => setShowConversationChunks(true)}
+              className="md:order-3"
+            >
+              <Cable size={14} />
+            </CollapsedPaneRail>
+          )}
+          {renderWorkMain && (
+          <div
+            className="dan-phone-page grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] md:order-3"
+          >
+            <div className="flex min-h-0 min-w-0 flex-col bg-white/90 dark:bg-slate-950">
+              {mainTabs.length > 1 && <MainTabs tabs={mainTabs.map((tab) => tab.id === "chat" ? { ...tab, label: activeThread?.title || "New chat" } : { ...tab, label: `${tab.label}${dirtyDocuments[documents[tab.id]?.path] ? " •" : ""}` })} active={activeMainTab} onSelect={setActiveMainTab} onClose={closeTab} />}
+              <Suspense fallback={null}>{Object.entries(documents).filter(([id]) => id.startsWith("file:")).map(([id, file]) => <DocumentView key={id} file={file} active={id === activeMainTab} drafts={documentDrafts.current} onDirty={(path, dirty) => setDirtyDocuments(current => ({...current, [path]:dirty}))} />)}</Suspense>
+              {activeMainTab.startsWith("file:") ? null : activeMainTab === "settings" ? <Suspense fallback={null}><DanSettings page onClose={() => closeTab("settings")} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} /></Suspense> : readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView key={readerFile.path} file={readerFile} onAsk={askFromReader} onNotes={() => openSideTab("notes")} /></Suspense> : <>
+              <div className="wb-conversation-heading"><div className="wb-conversation-actions">
+                {activeThread && <button title={`Copy session ID: ${activeThread.id}`} onClick={() => { void navigator.clipboard.writeText(activeThread.id).then(() => setStatus("Session ID copied"), () => setStatus(`Session ID: ${activeThread.id}`)); }}>Session <code>{activeThread.id}</code></button>}
+                {activeRunningTask && activeThread && <button className="wb-stop" onClick={() => void stopSessionRun({ id: activeThread.id, workflow_id: activeThread.workflowId, title: activeThread.title || "Active session", message_count: messages.length, created_at: "", updated_at: "" }, activeRunningTask)}><Square size={11} />Stop run</button>}
+                <button aria-pressed={workbenchOutline} onClick={() => setWorkbenchOutline(!workbenchOutline)}>{workbenchOutline ? "Conversation" : "Task detail"}</button></div></div>
+
+              <TeamStrip workers={team.workers} lead={selectedAgentOption.shortLabel} leadRunning={Boolean(activeRunningTask)} open={teamPanel} onToggle={() => { setTeamPanel(!teamPanel); setWorkbenchActivity(false); setSidecarChat(false); setShowSidecarPreview(false); }} />
+              {workbenchOutline ? (              <div className="wb-outline min-h-0 flex-1 overflow-auto p-4">
+                {isPhoneViewport || showConversationChunks ? (
+                  <BlueprintView
+                    nodes={blueprintNodes}
+                    conversationChunks={userConversationChunks}
+                    tasks={workPanelTasks}
+                    agentEvents={agentEvents}
+                    activeTask={activeRunningTask}
+                    activeNodeId={activeBlueprintNode?.id ?? null}
+                    selectedNodeId={selectedBlueprintNode?.id ?? null}
+                    selectedChunkId={selectedChunk?.id ?? null}
+                    elapsedCounter={elapsedCounter}
+                    loading={loadingThreadId === activeThread?.id}
+                    onSelect={(node) => {
+                      setSelectedBlueprintNodeId(node.id);
+                      setPromptLogPreview(null);
+                      if (node.sourceChunkId) setSelectedChunkId(node.sourceChunkId);
+                      else setSelectedChunkId(null);
+                    }}
+                    onSelectConversationChunk={(chunk) => {
+                      setSelectedBlueprintNodeId(null);
+                      setSelectedChunkId(chunk.id);
+                      setPromptLogPreview(null);
+                    }}
+                  />
+                ) : (
+                  <div className="rounded-md border border-dashed border-slate-200 bg-white p-3 text-sm text-slate-400 dark:border-slate-800 dark:bg-slate-950">
+                    Work panel hidden.
+                  </div>
+                )}
+                <WorkspacePreviewArtifactsCard
+                  artifacts={previewArtifacts}
+                  selectedPath={activeFilePath}
+                  onSelect={selectPreviewFile}
+                />
+              </div>
+) : (
+                <WorkbenchConversation key={activeThread?.id ?? "new"} messages={visibleQueuedTranscript(messages, workPanelTasks, pendingAssistantIds)} pending={pendingAssistantIds} loading={loadingThreadId !== null} status={status} liveActions={liveActions} onEdit={activeThread ? editLastRequest : undefined} actionsDisabled={Boolean(activeRunningTask) || sending || Object.values(pendingAssistantIds).some(Boolean)} onRegenerate={activeThread && !activeRunningTask && !sending ? () => void regenerateLastRequest() : undefined} onFork={activeThread && !activeRunningTask && !sending ? () => void forkConversation() : undefined} onSidecar={activeThread ? (text) => { setSidecarSelection({text, token:Date.now()}); setSidecarChat(true); setWorkbenchActivity(false); setTeamPanel(false); setShowSidecarPreview(false); } : undefined} onQuote={(text, messageIds) => {
+                  if (!activeThread) return;
+                  setComposerReferences((current) => ({ ...current, [referenceKey]: { text, messageIds, title: activeThread.title || "Conversation", threadId: activeThread.id, workflowId: activeThread.workflowId } }));
+                  // The reply button's click clears the selection after this handler; focus once that has settled.
+                  window.requestAnimationFrame(() => {
+                    const input = composerRef.current;
+                    if (!input) return;
+                    input.focus();
+                    input.setSelectionRange(input.value.length, input.value.length);
+                  });
+                }} />
+              )}
+
+              {showAgentQueuePanel && <Suspense fallback={null}><FollowupQueue rows={visibleQueueRows} runId={activeRunId} canSteer={canSteer} onTask={task => { mergeBackgroundTasks([task]); setTasks(previous => [task, ...previous.filter(item => item.task_id !== task.task_id)]); }} onRemoved={row => {
+                if (!row.clientMessageId || !activeThread) return;
+                const next = applyMessages(previous => previous.filter(message => message.id !== row.clientMessageId));
+                void persistMessages(activeThread, next, "agent");
+              }} /></Suspense>}
+
+              {renderWorkspaceComposer()}
+              </>}
+            </div>
+
+
+          </div>
+          )}
+          {!isPhoneViewport && !renderSidecarPreview && (
+            <CollapsedPaneRail
+              label="Preview"
+              title="Show preview pane"
+              onClick={() => setShowSidecarPreview(true)}
+              edge="left"
+              className="md:order-4"
+            >
+              <PanelRight size={14} />
+            </CollapsedPaneRail>
+          )}
+          <aside className={cx("wb-side-panel", isPhoneViewport && (phonePage === "files" || phonePage === "preview") && "wb-side-page")} hidden={!visibleSideTab} aria-label="Side panel">
+            {renderSideTabs()}
+            <PersistentPanel active={visibleSideTab === "files"} name="Files" key={`files:${developmentRoot}`}>
             <aside className="dan-phone-page dan-files-page flex min-h-0 w-[270px] shrink-0 flex-col border-r border-slate-200/80 bg-white/85 dark:border-slate-800 dark:bg-slate-950 md:order-2">
-              {!isPhoneViewport && renderSideTabs()}
               <div className="flex h-10 shrink-0 items-center justify-between border-b border-slate-200/80 px-3 dark:border-slate-800">
                 <div className="min-w-0 truncate text-xs text-slate-400">{fileName(developmentRoot) || "Project files"}</div>
                 <div className="flex items-center gap-1">
@@ -18717,102 +18820,9 @@ export default function ChunkWorkspaceApp() {
                 )}
               </div>
             </aside>
-          )}
-
-          {!isPhoneViewport && !renderWorkMain && (
-            <CollapsedPaneRail
-              label="Work"
-              title="Show work panel"
-              onClick={() => setShowConversationChunks(true)}
-              className="md:order-3"
-            >
-              <Cable size={14} />
-            </CollapsedPaneRail>
-          )}
-          {renderWorkMain && (
-          <div
-            className={cx(
-              "dan-phone-page grid min-h-0 min-w-0 flex-1 md:order-3",
-              renderSidecarPreview
-                ? isPhoneViewport
-                  ? "grid-cols-[minmax(280px,0.95fr)_minmax(300px,1.05fr)]"
-                  : "grid-cols-[minmax(0,1fr)_var(--wb-side-width)]"
-                : "grid-cols-[minmax(0,1fr)]",
-            )}
-          >
-            <div className="flex min-h-0 min-w-0 flex-col bg-white/90 dark:bg-slate-950">
-              {mainTabs.length > 1 && <MainTabs tabs={mainTabs.map((tab) => tab.id === "chat" ? { ...tab, label: activeThread?.title || "New chat" } : { ...tab, label: `${tab.label}${dirtyDocuments[documents[tab.id]?.path] ? " •" : ""}` })} active={activeMainTab} onSelect={setActiveMainTab} onClose={closeTab} />}
-              <Suspense fallback={null}>{Object.entries(documents).filter(([id]) => id.startsWith("file:")).map(([id, file]) => <DocumentView key={id} file={file} active={id === activeMainTab} drafts={documentDrafts.current} onDirty={(path, dirty) => setDirtyDocuments(current => ({...current, [path]:dirty}))} />)}</Suspense>
-              {activeMainTab.startsWith("file:") ? null : activeMainTab === "settings" ? <Suspense fallback={null}><DanSettings page onClose={() => closeTab("settings")} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} /></Suspense> : readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView key={readerFile.path} file={readerFile} onAsk={askFromReader} onNotes={() => openSideTab("notes")} /></Suspense> : <>
-              <div className="wb-conversation-heading"><div className="wb-conversation-actions">
-                {activeThread && <button title={`Copy session ID: ${activeThread.id}`} onClick={() => { void navigator.clipboard.writeText(activeThread.id).then(() => setStatus("Session ID copied"), () => setStatus(`Session ID: ${activeThread.id}`)); }}>Session <code>{activeThread.id}</code></button>}
-                {activeRunningTask && activeThread && <button className="wb-stop" onClick={() => void stopSessionRun({ id: activeThread.id, workflow_id: activeThread.workflowId, title: activeThread.title || "Active session", message_count: messages.length, created_at: "", updated_at: "" }, activeRunningTask)}><Square size={11} />Stop run</button>}
-                <button aria-pressed={workbenchOutline} onClick={() => setWorkbenchOutline(!workbenchOutline)}>{workbenchOutline ? "Conversation" : "Task detail"}</button></div></div>
-
-              <TeamStrip workers={team.workers} lead={selectedAgentOption.shortLabel} leadRunning={Boolean(activeRunningTask)} open={teamPanel} onToggle={() => { setTeamPanel(!teamPanel); setWorkbenchActivity(false); setSidecarChat(false); setShowSidecarPreview(false); }} />
-              {workbenchOutline ? (              <div className="wb-outline min-h-0 flex-1 overflow-auto p-4">
-                {isPhoneViewport || showConversationChunks ? (
-                  <BlueprintView
-                    nodes={blueprintNodes}
-                    conversationChunks={userConversationChunks}
-                    tasks={workPanelTasks}
-                    agentEvents={agentEvents}
-                    activeTask={activeRunningTask}
-                    activeNodeId={activeBlueprintNode?.id ?? null}
-                    selectedNodeId={selectedBlueprintNode?.id ?? null}
-                    selectedChunkId={selectedChunk?.id ?? null}
-                    elapsedCounter={elapsedCounter}
-                    loading={loadingThreadId === activeThread?.id}
-                    onSelect={(node) => {
-                      setSelectedBlueprintNodeId(node.id);
-                      setPromptLogPreview(null);
-                      if (node.sourceChunkId) setSelectedChunkId(node.sourceChunkId);
-                      else setSelectedChunkId(null);
-                    }}
-                    onSelectConversationChunk={(chunk) => {
-                      setSelectedBlueprintNodeId(null);
-                      setSelectedChunkId(chunk.id);
-                      setPromptLogPreview(null);
-                    }}
-                  />
-                ) : (
-                  <div className="rounded-md border border-dashed border-slate-200 bg-white p-3 text-sm text-slate-400 dark:border-slate-800 dark:bg-slate-950">
-                    Work panel hidden.
-                  </div>
-                )}
-                <WorkspacePreviewArtifactsCard
-                  artifacts={previewArtifacts}
-                  selectedPath={activeFilePath}
-                  onSelect={selectPreviewFile}
-                />
-              </div>
-) : (
-                <WorkbenchConversation key={activeThread?.id ?? "new"} messages={visibleQueuedTranscript(messages, workPanelTasks, pendingAssistantIds)} pending={pendingAssistantIds} loading={loadingThreadId !== null} status={status} liveActions={liveActions} onEdit={activeThread ? editLastRequest : undefined} actionsDisabled={Boolean(activeRunningTask) || sending || Object.values(pendingAssistantIds).some(Boolean)} onRegenerate={activeThread && !activeRunningTask && !sending ? () => void regenerateLastRequest() : undefined} onFork={activeThread && !activeRunningTask && !sending ? () => void forkConversation() : undefined} onSidecar={activeThread ? (text) => { setSidecarSelection({text, token:Date.now()}); setSidecarChat(true); setWorkbenchActivity(false); setTeamPanel(false); setShowSidecarPreview(false); } : undefined} onQuote={(text, messageIds) => {
-                  if (!activeThread) return;
-                  setComposerReferences((current) => ({ ...current, [referenceKey]: { text, messageIds, title: activeThread.title || "Conversation", threadId: activeThread.id, workflowId: activeThread.workflowId } }));
-                  // The reply button's click clears the selection after this handler; focus once that has settled.
-                  window.requestAnimationFrame(() => {
-                    const input = composerRef.current;
-                    if (!input) return;
-                    input.focus();
-                    input.setSelectionRange(input.value.length, input.value.length);
-                  });
-                }} />
-              )}
-
-              {showAgentQueuePanel && <Suspense fallback={null}><FollowupQueue rows={visibleQueueRows} runId={activeRunId} canSteer={canSteer} onTask={task => { mergeBackgroundTasks([task]); setTasks(previous => [task, ...previous.filter(item => item.task_id !== task.task_id)]); }} onRemoved={row => {
-                if (!row.clientMessageId || !activeThread) return;
-                const next = applyMessages(previous => previous.filter(message => message.id !== row.clientMessageId));
-                void persistMessages(activeThread, next, "agent");
-              }} /></Suspense>}
-
-              {renderWorkspaceComposer()}
-              </>}
-            </div>
-
-            {renderSidecarPreview && (
+            </PersistentPanel>
+            <PersistentPanel active={visibleSideTab === "preview"} name="Preview">
               <aside className="wb-preview-panel flex min-h-0 min-w-0 flex-col border-l border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-950">
-                {!isPhoneViewport && renderSideTabs()}
                 <div className="flex h-10 shrink-0 items-center justify-between border-b border-slate-200/80 px-4 dark:border-slate-800">
                   <div className="min-w-0 truncate text-xs text-slate-400">{activePreviewFileEntry?.name ?? ""}</div>
                   <div className="flex shrink-0 items-center gap-1">
@@ -18888,104 +18898,14 @@ export default function ChunkWorkspaceApp() {
                   </div>
                 )}
               </aside>
-            )}
-          </div>
-          )}
-          {!renderWorkMain && renderSidecarPreview && (
-            <aside className="dan-phone-page flex min-h-0 min-w-0 flex-1 flex-col border-l border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-950 md:order-4">
-              <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 px-4 dark:border-slate-800">
-                <div className="min-w-0">
-                  <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
-                    Preview
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={openActiveFile}
-                      disabled={!canOpenPreview}
-                      title="Open current preview"
-                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
-                    >
-                      Open
-                  </button>
-                  {!isPhoneViewport && (
-                    <PaneHeaderButton
-                      title="Collapse preview pane"
-                      onClick={() => setShowSidecarPreview(false)}
-                    >
-                      <ChevronRight size={13} />
-                    </PaneHeaderButton>
-                  )}
-                </div>
-              </div>
-              <div className="min-h-0 flex-1 overflow-auto p-4">
-                {promptLogPreview ? (
-                  <div className="space-y-3">
-                    <div className="rounded-md border border-slate-200 bg-slate-50/80 p-3 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-900/50 dark:text-slate-400">
-                      <div className="font-semibold text-slate-700 dark:text-slate-200">
-                        {promptLogPreview.title}
-                      </div>
-                      <div className="mt-1">
-                        {promptLogPreview.status === "loading"
-                          ? "Loading prompt log"
-                          : `${promptLogPreview.entryCount} model ${promptLogPreview.entryCount === 1 ? "call" : "calls"} recorded`}
-                      </div>
-                      {promptLogPreview.path && (
-                        <div className="mt-1 break-all font-mono">{promptLogPreview.path}</div>
-                      )}
-                    </div>
-                    {promptLogPreview.status === "loading" ? (
-                      <div className="flex items-center gap-2 text-sm text-slate-400">
-                        <Loader2 size={14} className="animate-spin" />
-                        Loading prompt log
-                      </div>
-                    ) : (
-                      <MarkdownRenderer content={promptLogPreview.body || "_No prompt log content._"} />
-                    )}
-                  </div>
-                ) : selectedBlueprintNode ? (
-                  <BlueprintNodePreview
-                    node={selectedBlueprintNode}
-                    tasks={workPanelTasks}
-                    events={agentEvents}
-                    activeTask={activeRunningTask}
-                  />
-                ) : selectedChunk ? (
-                  <MarkdownRenderer
-                    content={previewMarkdownContent(selectedChunk.body)}
-                    autoHighlightCode={false}
-                  />
-                ) : activePreviewFileEntry ? (
-                  <WorkspaceFilePreviewPanel
-                    entry={activePreviewFileEntry}
-                    root={developmentRoot}
-                    content={activeFileContent}
-                    status={activeFileStatus}
-                  />
-                ) : (
-                  <div className="text-sm text-slate-400">Select a step or development file.</div>
-                )}
-              </div>
-            </aside>
-          )}
-          {!isPhoneViewport && !renderSidecarPreview && (
-            <CollapsedPaneRail
-              label="Preview"
-              title="Show preview pane"
-              onClick={() => setShowSidecarPreview(true)}
-              edge="left"
-              className="md:order-4"
-            >
-              <PanelRight size={14} />
-            </CollapsedPaneRail>
-          )}
-          {sideTab === "processes" && <Suspense fallback={null}><ProcessesPanel cwd={developmentRoot} workspaceId={workspace?.id || ""} processes={processState.processes} error={processState.error} onChanged={() => void processState.refresh()} header={renderSideTabs()} /></Suspense>}
-          {sideTab === "notes" && readerFile && <Suspense fallback={null}><ReaderNotes file={readerFile} header={renderSideTabs()} /></Suspense>}
-          {sidecarChat && readerFile && <SidecarChat key={`reader:${readerFile.path}`} parentId={`reader:${readerFile.path}`}
+            </PersistentPanel>
+          <PersistentPanel active={visibleSideTab === "processes"} name="Processes" key={`processes:${developmentRoot}`}><Suspense fallback={null}><ProcessesPanel cwd={developmentRoot} workspaceId={workspace?.id || ""} processes={processState.processes} error={processState.error} onChanged={() => void processState.refresh()} header={false} /></Suspense></PersistentPanel>
+          <PersistentPanel active={visibleSideTab === "notes"} name="Notes" key={`notes:${readerFile?.path ?? ""}`} >{readerFile && <Suspense fallback={null}><ReaderNotes file={readerFile} header={false} /></Suspense>}</PersistentPanel>
+          <PersistentPanel active={visibleSideTab === "chat"} name="Reading or chat" key={`chat:${readerFile?.path ?? `${activeThread?.workflowId}:${activeThread?.id}`}`}>
+          {readerFile && <SidecarChat key={`reader:${readerFile.path}`} parentId={`reader:${readerFile.path}`}
             workflowId={activeThread?.workflowId || workspace?.id || activeWorkspaceId || "_unassigned"}
             workspaceId={workspace?.id || ""} workspaceRoot={developmentRoot || workspaceRoot} context={[]} selection={readerSelection}
-            leadLabel={selectedAgentOption.shortLabel} execution={sidecarExecution()} header={renderSideTabs()}
+            leadLabel={selectedAgentOption.shortLabel} execution={sidecarExecution()} header={false}
             purpose={{
               title: `Reading ${readerFile.name}`,
               framing: `You are a reading companion for the PDF "${readerFile.name}" (${readerFile.url.startsWith("blob:") ? "browser-local copy; only supplied excerpts are available to you" : readerFile.path}). The user is reading it and asks about a passage they selected. Answer directly and concisely, grounded in the passage and its page text; say plainly when that text is not enough. Do not modify files.`,
@@ -18993,13 +18913,15 @@ export default function ChunkWorkspaceApp() {
               empty: "Select text in the PDF and choose Ask. Answers stay here while you keep reading.",
             }}
             onClose={() => setSidecarChat(false)} onCreated={() => { void refreshThreads(); }} />}
-          {sidecarChat && !readerFile && activeThread && <SidecarChat key={`${activeThread.workflowId}:${activeThread.id}`} parentId={activeThread.id} workflowId={activeThread.workflowId}
+          {!readerFile && activeThread && <SidecarChat key={`${activeThread.workflowId}:${activeThread.id}`} parentId={activeThread.id} workflowId={activeThread.workflowId}
             workspaceId={workspace?.id || ""} workspaceRoot={workspaceRootForTasks(tasks) || workspaceRoot || developmentRoot} context={messages} selection={sidecarSelection}
             leadLabel={selectedAgentOption.shortLabel} execution={sidecarExecution()}
-            header={renderSideTabs()} onClose={() => setSidecarChat(false)} onCreated={() => { void refreshThreads(); }} />}
-          {sidecarChat && !readerFile && !activeThread && <aside className="wb-activity-panel">{renderSideTabs()}<p className="wb-activity-empty wb-side-empty">Start a conversation to open a side chat about it.</p></aside>}
-          {workbenchActivity && <aside className="wb-activity-panel">{renderSideTabs()}<WorkbenchActivity events={agentEvents} /></aside>}
-          {teamPanel && <TeamPanel header={renderSideTabs()} workers={team.workers} error={team.error} onStop={(worker) => void team.stop(worker)} onClose={() => setTeamPanel(false)} />}
+            header={false} onClose={() => setSidecarChat(false)} onCreated={() => { void refreshThreads(); }} />}
+          {!readerFile && !activeThread && <aside className="wb-activity-panel"><p className="wb-activity-empty wb-side-empty">Start a conversation to open a side chat about it.</p></aside>}
+          </PersistentPanel>
+          <PersistentPanel active={visibleSideTab === "activity"} name="Activity"> <aside className="wb-activity-panel"><WorkbenchActivity events={agentEvents} /></aside></PersistentPanel>
+          <PersistentPanel active={visibleSideTab === "team"} name="Team"> <TeamPanel header={false} workers={team.workers} error={team.error} onStop={(worker) => void team.stop(worker)} onClose={() => setTeamPanel(false)} /></PersistentPanel>
+          </aside>
 
         </section>
       )}

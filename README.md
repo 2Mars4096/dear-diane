@@ -33,6 +33,8 @@ Work opens with a familiar project/chat sidebar: New chat, search, collapsible p
 - **Projects:** `⌘/Ctrl + Shift + P` opens the carousel. Scroll or use left/right arrows, then Enter. Escape cancels.
 - **Sessions:** `⌘/Ctrl + Shift + S` opens the current project's wheel. Press `1–8` to open; arrows or `WASD` aim (hold two directions for diagonals); `Q/E/Z/C` also select diagonals directly. Press Enter to open. The newest eight sessions keep stable slots based on creation, never last edit.
 - **All sessions:** use the project sidebar or the wheel's “All sessions” button. Drafts survive switching.
+- **Side tabs:** switching Reading, Notes, Files, Processes, and other right-side tools preserves drafts, scroll, and expanded logs, including after closing/reopening the panel.
+- **Close tab:** `⌃⌘W` (Control–Command–W) on Mac; `Ctrl+Alt+W` on Windows/Linux. Unsaved edits prompt before closing. Hover a tab’s × to see the shortcut; macOS window shortcuts stay unchanged.
 - **Processes:** the side panel's Processes tab runs commands that must stay up (dev servers, watchers). They keep running after a chat or agent run ends; agents start them through DAN for the same reason.
 - **Skills:** DAN settings → Skills lets Claude Code use skills installed for Codex or Cursor, without changing any CLI's own folders.
 - **Usage:** hover the sidebar's Usage button for remaining quota (5h/week/model windows) on the accounts you used most recently.
