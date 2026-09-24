@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-24
+- [infra] Install and launch the signed persistent-panel, guarded-tab-shortcut, and PDF font-compatibility build after no-active-work and full-process-identity checks; retain rollback. Installed archive contains all three changes; owned backend and desktop proxy health pass.
+- [test] Browser shortcut acceptance confirms cancel preserves unsaved text and confirm closes the document. Use a deterministic confirm response because CLI dialog handling dismissed the initial native-dialog check; no fixture edits saved.
+
+## 2026-09-24
 - [feat] Add a local, per-document Repair text toggle for garbled PDF fonts; use PDF.js glyph outlines without browser/system font substitution, retain reading position, and ignore stale OCR results during document reloads.
 - [test] Generated an embedded subset-font fixture and visually verified compatibility rendering, selectable text, page retention, and stable-path reopen with no browser FontFace creation. The user’s private PDF was not accessed; its specific corruption remains unverified.
 

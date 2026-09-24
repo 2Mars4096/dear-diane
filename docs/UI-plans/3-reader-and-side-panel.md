@@ -29,6 +29,8 @@
 - [x] 11. Local Repair text toggle with per-document font compatibility, position preservation, and stale OCR cancellation guards; embedded subset-font fixture verified visually and across reopening.
   - [ ] 11-1. User checks their private PDF; screenshot alone cannot establish the cause or confirm repair.
 
+- [x] 12. Signed desktop build installed/launched with rollback; verify packaged features, owned backend, desktop proxy, and unsaved-edit confirmation through the shortcut.
+
 ## Decisions
 - Reader is a surface (like Work / Notes), not an autonomy mode. Plan/Auto/Full access still govern what the sidecar agent may do.
 - Ported later: OCR (in-browser instead of server), passage anchoring (client-side against page text), annotated-PDF export. Still not ported: teaching layers/modes and the tutor model picker; DAN answers through the configured lead. DAN reads PDFs directly from the project folder and answers through the configured lead.
