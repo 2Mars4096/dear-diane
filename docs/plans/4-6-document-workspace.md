@@ -18,4 +18,4 @@
 ## Validation
 - 8 backend document/remote tests and 91 frontend document/workbench/reader tests pass; production bundle budgets and Electron compilation pass.
 - Live browser: PDF render, file drop, Markdown preview, draft retention across tabs/Notes, canceled dirty close, actual file save, stale-revision conflict, and 390px layout verified.
-- Desktop package prepared; replacing the running installation remains an explicit Updates action.
+- Updated desktop package installed on September 24 after explicit user approval; app launch and owned backend health verified.

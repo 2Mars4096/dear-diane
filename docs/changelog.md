@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-24
+- [infra] Install the user-approved desktop update with a verified signature, no active/queued work, full-argument process checks, and a retained rollback bundle. App launch and owned backend health pass; matching archive detection avoids offering the same update again. File tabs, automatic local updates, and the reordered Usage menu are now in the installed app.
+
+## 2026-09-24
 - [feat] Discover prepared local desktop builds automatically, compare archive contents for same-version updates, and install through one action without a file chooser. Keep active-work checks and signature/rollback validation.
 - [fix] Summarize GitHub update failures without raw headers/stacks; move Usage above the bottom-left menu group.
 - [test] Eleven updater tests, frontend bundle checks, Electron compilation, and signature verification pass. Live footer order verified; installation awaits explicit approval after automatic review blocked replacement.

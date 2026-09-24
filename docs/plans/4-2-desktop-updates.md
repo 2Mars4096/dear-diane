@@ -36,4 +36,4 @@
 - [x] Replace GitHub HTTP/header/stack dumps with short actionable messages; retain the active-work and rollback guards.
 - [x] Move Usage above Archived chats and DAN settings in the bottom-left footer.
 - [x] Eleven focused tests, production build/bundle checks, Electron compilation, signed package verification, and live footer ordering pass.
-- [ ] Install the prepared update: automatic approval review requires explicit user authorization before replacing/launching the installed app.
+- [x] User explicitly approved installation. Verified no active/queued work and checked full process arguments; installed/launched `/Applications/DAN.app` with rollback copy, verified app-owned backend health, and confirmed the installed archive matches the prepared build.
