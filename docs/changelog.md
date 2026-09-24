@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-24
+- [test] Revalidate the pending browser-research runtime, native bridge, and GUI/TUI integration before committing: 460 focused tests pass, with one existing skip. Preserve prior live acceptance evidence and its native Claude authentication limitation.
+
+## 2026-09-24
 - [infra] Install and launch the signed persistent-panel, guarded-tab-shortcut, and PDF font-compatibility build after no-active-work and full-process-identity checks; retain rollback. Installed archive contains all three changes; owned backend and desktop proxy health pass.
 - [test] Browser shortcut acceptance confirms cancel preserves unsaved text and confirm closes the document. Use a deterministic confirm response because CLI dialog handling dismissed the initial native-dialog check; no fixture edits saved.
 
@@ -29,12 +32,24 @@
 - [fix] Summarize GitHub update failures without raw headers/stacks; move Usage above the bottom-left menu group.
 - [test] Eleven updater tests, frontend bundle checks, Electron compilation, and signature verification pass. Live footer order verified; installation awaits explicit approval after automatic review blocked replacement.
 
-
 ## 2026-09-24
 - [feat] Open dropped/selected files in DAN tabs: existing PDF reader, UTF-8 text editing, Markdown preview, images, audio, and video. Desktop opens originals; browser selections remain local copies with explicit downloads.
 - [fix] Preserve drafts across document/Notes switches, guard dirty close/reload, and save only against an unchanged file revision. Reject oversized/binary/non-UTF-8 edits; skip server OCR cache for browser-only PDFs.
 - [test] 8 backend and 91 frontend tests, production bundle budgets, and Electron compilation pass. Live PDF/drop/edit/preview/save/conflict/mobile checks pass; updated desktop package prepared.
 
+## 2026-09-23
+- [fix] Guide native leads toward DAN’s ready browser connection for fresh tasks, while respecting requests for an existing logged-in native browser. Recover from a closed tab using remaining tabs; a closed window requires explicit navigation before reopening.
+- [test] Installed-app GUI admission → native Codex/app-server → visible browser → saved/verified BibTeX passes (`arun-c4698dee0995`). The app is running with the updated Python backend.
+- [test] 257 focused tests pass (one existing skip); real headed-browser window closure/reopen passes. Extend the single acceptance runner with the GUI admission endpoint for installed-app tests. Default native Claude is blocked by missing sign-in; record that separately from browser availability.
+
+## 2026-09-23
+- [feat] Connect ordinary DAN chats and native leads to the existing browser controller; default GUI sessions to visible windows on desktop hosts and headless on hosts without a display. Native leads use a run-scoped stdlib browser bridge.
+- [fix] Isolate browser state per run, close it on completion/Stop, expire queued browser calls, keep downloads within the workspace without overwriting files, and expose popup-tab selection. Permit transient research clicks/fills without granting authority for external account changes.
+- [refactor] Reuse existing browser tool implementations; consolidate live browser acceptance in one opt-in runner and document backend dependency/visibility settings.
+- [test] 422 focused tests pass (one existing skip). Headed browser fixture, direct Scholar export, and authenticated Codex lead → Scholar → verified references.bib all pass. Existing user backend was not restarted.
+
+## 2026-09-23
+- [docs] Audit browser capability wiring from GUI through Super DAN dispatch and native leads; reproduce absent default browser tools versus 11 with an explicit pack. Record headless default, environment-dependent Playwright installation, and pending Scholar/BibTeX acceptance; no runtime settings changed.
 
 ## 2026-09-23
 - [feat] Add Mac-managed SSH profiles and Settings controls for host inspection, relay configuration, install/update, opt-in OpenRouter provisioning, and browser access credentials.
@@ -42,7 +57,6 @@
 - [feat] Authenticate remote API/files/events with expiring signed sessions and origin checks; hydrate shared projects before opening sessions and sync field-level updates across browsers. Each machine has its own browser origin.
 - [test] 116 server/native-agent tests, 76 workbench tests, and production build/bundle budgets pass. Mini live native Codex Astra/medium/fast, Codex/OpenRouter, and Claude/OpenRouter checks return the expected reply. Authenticated phone-width UI, cross-browser projects, WebSocket reconnect, and enabled/lingering service restarts verified through ny.
 - [infra] Deploy mini on VPN port 18765 and ny relay on 8765 using existing alias networking. Public access remains unexposed; user enabled the VPN-only firewall rule, and direct authenticated API/360px browser access passed after removing the temporary SSH proxy. Physical-phone/cellular acceptance remains. Save s600 for user testing without connecting to it.
-
 
 ## 2026-09-22
 - [feat] Unify Lead and Team model controls: independently select harness, source, model, reasoning, and supported fast mode; remember source-specific choices, migrate legacy DAN selections, and persist accurate execution metadata for main/reader chats.

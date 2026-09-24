@@ -46,7 +46,7 @@
   - [x] FIFO continuation delivery across partial draining/new arrivals/reload; remove reused-rank sorting — [4-1](plans/4-1-agent-workbench.md).
   - [x] Latest-message Edit with attachment-preserving resend, cancellation, active-run guard, and failed-send recovery — [4-1](plans/4-1-agent-workbench.md).
   - [x] [4-3-token-usage-analyzer](plans/4-3-token-usage-analyzer.md) — per-session and combined token analyzer in Settings with Jev stage labelling.
-  - [ ] [Reader and side panel](UI-plans/3-reader-and-side-panel.md) — tabbed side panel and ported PDF reader delivered; live Ask answer run and phone layout remain.
+  - [ ] [Reader and side panel](UI-plans/3-reader-and-side-panel.md) — persistent side panel, phone layout, and PDF reader delivered; live Ask answer run and private-PDF font verification remain.
   - [ ] [Native agent workers](UI-plans/2-native-agent-workers.md) — Codex/Claude/Antigravity worker baseline and opt-in forked imports delivered; team progress strip/panel delivered; live acceptance, restart-resume, approval transport, and browser thumbnails remain.
 - [x] [5-universal-product-cutover](plans/5-universal-product-cutover.md) — deleted the backed-up legacy tree, renumbered docs, validated, committed, and pushed.
 
@@ -57,6 +57,8 @@
 - [ ] [3-human-assist](live-test-plans/3-human-assist.md)
 
 ## Backlog
+- [x] [4-5-browser-research](plans/4-5-browser-research.md) — ordinary-chat browser tools and native bridge; visible sessions, cleanup, 422 tests, live Codex → Scholar → BibTeX, and installed-app chat acceptance verified.
+- [ ] Verify native Claude browser use in the installed app after the selected account signs in; current default account returns `/login` before browsing.
 - [ ] Include Claude's isolated OpenRouter transcript directory in native discovery/token-analysis coverage.
 - [x] Raise native import limit to 256 MB, resolve native/legacy placeholder titles, leave new projects empty, and expand Up next with checkpoint-receipt filtering — [workbench](plans/4-1-agent-workbench.md), [native workers](UI-plans/2-native-agent-workers.md).
 - [ ] Complete Mac release signing/notarization and live private-release validation after Apple Developer account setup — [desktop updates](plans/4-2-desktop-updates.md).

@@ -15,6 +15,8 @@
 - Keep interrupted, disconnected, failed, and completed distinct. Reconnect by cursor and deduplicate event IDs before appending text.
 
 ## Tasks
+- [x] Audit browser integration: native leads lack a DAN browser bridge; default GUI DAN dispatch lacks explicit browser packs; headed mode is not the default.
+- [x] Connect browser research to normal DAN/native-lead chats; verify visible Scholar search/citation export with a live Codex lead and shared-adapter regressions — [4-5](../plans/4-5-browser-research.md). Browser windows run on the backend host.
 - [x] Direct OpenRouter model source for Codex/Claude harnesses with provider-scoped continuation and isolated credentials; fixed-reply live acceptance passes. Shared selection UI tracked in [4-4](../plans/4-4-agent-model-selection.md).
 - [x] Raise JSONL transcript import limit from 128 MB to 256 MB; retain explicit rejection above the limit and source preservation.
 - [x] Live Codex lead steering via persistent app-server, active-run capability, acknowledgement-gated queue delivery, and per-entry Steer now controls.

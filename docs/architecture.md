@@ -61,6 +61,14 @@ provider / tools / sandbox / memory / structured output
 
 There is one active agent product. Task families such as coding, research, design, games, academic work, or market analysis are brief/blueprint shapes, not separate runtimes or GUI modes.
 
+## Browser research
+
+- `tools/_browser_session.py` binds a lazy controller to each GUI run through a ContextVar, including DAN delegates. Fresh contexts isolate chats and close on completion/cancellation; standalone tools retain their legacy persistent profile. Desktop-aware visibility honours `DAN_BROWSER_HEADLESS`.
+- Ordinary Super DAN GUI requests default to the browser capability unless an explicit capability policy is supplied. Research navigation/click/fill/select are transient UI operations; this does not grant authority for external account changes.
+- `native_workers/browser_bridge.py` exposes the existing browser tools through a copied stdlib-only client for native leads. Lead instructions prefer the ready connection for fresh tasks and an already-configured native integration when the user explicitly requests existing logged-in Chrome tabs. It validates actions/arguments, expires queued requests, restricts Plan actions, emits activity, and closes its controller on cancellation. No arbitrary browser evaluation endpoint is exposed.
+- Scoped downloads require a new workspace path; screenshots live under `output/browser/<run-hash>/`. `browser_tabs(index=...)` selects popup tabs. The optional `browser` extra installs Playwright in the backend environment.
+- `tests/eval/run_browser_research.py` is the single opt-in real-browser acceptance runner for fixture, Scholar, and authenticated native-lead paths.
+
 ## Python layout
 
 - `src/dan/worker/cell.py` — fixed Universal Cell system prompt and `build_cell`.

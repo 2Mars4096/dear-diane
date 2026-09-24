@@ -6,6 +6,12 @@ Use this guide when constructing DAN work programmatically. The old workflow gra
 
 Remote execution uses the same API on a machine-specific origin. Remote clients authenticate with a server-side access key as a Bearer credential or through `/remote/login` (expiring HttpOnly cookie); browser mutations and WebSockets must use that origin. Never put provider keys in client payloads. Local-only `/api/remote/connections` lists/saves SSH profiles; `/{id}/inspect`, `/{id}/install`, and `/{id}/access-key` are explicit POST actions. Install returns a job polled at `/api/remote/jobs/{id}`. On remote servers, `/api/remote/registry` GET/PATCH shares project metadata, while chat/run endpoints remain unchanged. The relay does not submit or replay agent commands.
 
+## Browser research tools
+
+Ordinary GUI Super DAN requests expose `browser_open`, `browser_inspect`, `browser_click`, `browser_fill`, `browser_type`, `browser_select`, `browser_wait`, `browser_extract`, `browser_screenshot`, `browser_tabs`, and `browser_download`. Explicit `surface_policy.capability_packs` still controls availability. Native leads receive a run-scoped `browser.py --queue ... ACTION --args JSON` command; its `help` action returns tool schemas.
+
+Inspect before choosing selectors. `browser_tabs(index=1)` activates an inspected popup tab. Retrieve citation text from its actual source and verify title/authors/year before saving it with file tools. Scoped `browser_download` requires `destination_path` inside the workspace and refuses existing files. Navigation takes HTTP(S) URLs. Browser contexts are fresh per run, close when it ends, and open on the backend host (visible on desktop by default). `DAN_BROWSER_HEADLESS=0|1|auto` overrides visibility. Search interactions do not authorize posting or account changes; report CAPTCHA/login blocks instead of bypassing them. Native Plan mode allows observation/navigation only.
+
 ## 1. Build a Universal Cell
 
 ```python

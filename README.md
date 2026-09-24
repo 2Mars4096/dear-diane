@@ -9,6 +9,12 @@ DAN is a focused agent product built as one stack:
 
 The pre-Universal graph builder, visual graph editor, Code/Research/Content modes, concierge, messaging adapters, publishing, RAG, and product-specific organism families were removed on 2026-08-02. They remain recoverable from Git history.
 
+## Browser research
+
+Ask DAN to use the browser to search for a paper, retrieve its actual BibTeX, and save `references.bib`. Built-in DAN chats and native leads have a lazy browser connection. On desktop hosts it opens visibly; without a display it runs headless. Set `DAN_BROWSER_HEADLESS=0` or `1` to override. The browser runs on the backend machine, uses a fresh isolated session, and closes when the run finishes or stops. It does not attach to your existing Chrome profile.
+
+Install browser support in the backend Python environment with `pip install -e '.[browser]'`; DAN uses installed Chrome when managed Chromium is unavailable, or install it with `python -m playwright install chromium`. Native leads use DAN’s browser bridge, so their shell does not need its own Playwright installation. Use a project chat in Auto mode and describe the browser task normally; no manual browser command is needed. Native agents still require their usual account sign-in. Plan mode permits observation/navigation only. CAPTCHA/login challenges may require human help; no citation is fabricated when access fails.
+
 ## Workbench
 
 DAN's icon uses an ivory impressionist network of cooperating agents, shared by new desktop packages and the browser favicon.
