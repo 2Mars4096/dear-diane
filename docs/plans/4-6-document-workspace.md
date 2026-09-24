@@ -19,3 +19,5 @@
 - 8 backend document/remote tests and 91 frontend document/workbench/reader tests pass; production bundle budgets and Electron compilation pass.
 - Live browser: PDF render, file drop, Markdown preview, draft retention across tabs/Notes, canceled dirty close, actual file save, stale-revision conflict, and 390px layout verified.
 - Updated desktop package installed on September 24 after explicit user approval; app launch and owned backend health verified.
+
+- September 24 follow-up: fix non-Latin preview headers and worker-relative PDF decoder assets. Five backend file/document tests and twelve reader tests pass; exact user book renders on cover and page 10 with JBIG2 HTTP 200. Signed update prepared for automatic local discovery; applying it restarts the backend to load the server fix.

@@ -436,8 +436,9 @@ def _workspace_file_response(path: Path) -> FileResponse:
     return FileResponse(
         path,
         media_type=media_type or "application/octet-stream",
+        filename=safe_name,
+        content_disposition_type="inline",
         headers={
-            "Content-Disposition": f'inline; filename="{safe_name}"',
             "X-Content-Type-Options": "nosniff",
             "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'",
         },

@@ -1,3 +1,4 @@
+import { pdfAssetBase } from "./lib/pdf-assets";
 // Ported from learning-assistant apps/web/app/materials/[materialId]/guide/interactive-pdf-viewer.tsx.
 // Changes: local import paths and a bundled pdf.js worker.
 import {
@@ -580,9 +581,9 @@ export function InteractivePdfViewer({
       try {
         const pdfjs = await import("pdfjs-dist");
         pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-        const assets = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/pdfjs`;
-        const loadingTask = pdfjs.getDocument({ url: sourceUrl, cMapUrl: `${assets}/cmaps/`, cMapPacked: true,
-          standardFontDataUrl: `${assets}/standard_fonts/`, wasmUrl: `${assets}/wasm/` });
+        const assets = pdfAssetBase(import.meta.env.BASE_URL, window.location.href);
+        const loadingTask = pdfjs.getDocument({ url: sourceUrl, cMapUrl: `${assets}cmaps/`, cMapPacked: true,
+          standardFontDataUrl: `${assets}standard_fonts/`, wasmUrl: `${assets}wasm/` });
         loadingTaskRef.current = loadingTask;
         const pdfDocument = await loadingTask.promise;
         if (cancelled) {
@@ -597,7 +598,7 @@ export function InteractivePdfViewer({
       } catch {
         if (!cancelled) {
           setStatus("error");
-          setMessage("The PDF could not be rendered here. Open the text view or original file.");
+          setMessage("The PDF could not be loaded. Close this tab and try opening the file again.");
         }
       }
     })();

@@ -21,6 +21,8 @@
 
 - [x] 7. [Document workspace](../plans/4-6-document-workspace.md): global file drops/Open file, PDFs and editable/viewable document tabs, desktop original paths, and browser copies.
 
+- [x] 8. Unicode file delivery and absolute PDF decoder/font URLs; verify the supplied 411-page Chinese scanned book through the desktop-path route, including cover and page 10.
+
 ## Decisions
 - Reader is a surface (like Work / Notes), not an autonomy mode. Plan/Auto/Full access still govern what the sidecar agent may do.
 - Ported later: OCR (in-browser instead of server), passage anchoring (client-side against page text), annotated-PDF export. Still not ported: teaching layers/modes and the tutor model picker; DAN answers through the configured lead. DAN reads PDFs directly from the project folder and answers through the configured lead.

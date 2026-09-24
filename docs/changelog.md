@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-24
+- [fix] Encode non-Latin preview filenames through FileResponse instead of raw Latin-1 HTTP headers. Resolve PDF worker decoder/font assets against the app URL, avoiding missing JBIG2 decoders for scanned books.
+- [test] Five backend file/document and twelve reader tests pass, plus production build/budgets. The supplied 411-page Chinese book renders on its cover and page 10; signed update prepared for automatic local discovery.
+
+## 2026-09-24
 - [infra] Install the user-approved desktop update with a verified signature, no active/queued work, full-argument process checks, and a retained rollback bundle. App launch and owned backend health pass; matching archive detection avoids offering the same update again. File tabs, automatic local updates, and the reordered Usage menu are now in the installed app.
 
 ## 2026-09-24

@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Fix Chinese PDF filename headers and scanned-page decoder paths; verify the user book and prepare a signed local update — [reader](UI-plans/3-reader-and-side-panel.md).
+
 - [x] Automatically find prepared desktop updates, shorten update errors, and place Usage first in the sidebar footer — [desktop updates](plans/4-2-desktop-updates.md).
 
 - [x] Reinstall DAN with ivory v7; verify launch and backend health; remove rejected icon variants and retain selected source/prompt.
