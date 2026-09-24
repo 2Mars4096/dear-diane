@@ -219,6 +219,6 @@ Codex’s built-in subagents also appear automatically in **Team**, with recorde
 
 ### Desktop updates
 
-Open **DAN settings → Updates** to choose a prepared local `DAN.app`, then **Install and restart**. Finish active runs and queued messages first. DAN stages and verifies the new build, closes its owned backend, replaces the app, and reopens it; chats/settings stay in Application Support. A previous app copy is retained for rollback. Local Mac installs preserve your icon.
+Open **DAN settings → Updates → Install local update** to install an automatically detected prepared build without selecting a file. Finish active runs and queued messages first. DAN verifies the build, closes its owned backend, replaces the app, and reopens it; chats/settings stay in Application Support. A rollback copy and your icon are retained. **Check for updates** tries a prepared local build before GitHub. Manual selection is under **Other update options**; `DAN_LOCAL_UPDATE_PATH` can specify another `.app`.
 
 Published releases use `electron-updater`; **Check for updates** and **Download** become available when the packaged release channel is configured. The channel points to private GitHub Releases for this repository. Use **Sign in to GitHub** in Updates to authorize in your browser; the personal build uses the installed GitHub CLI behind the scenes. A production signing identity and published releases are still needed. See [release setup](docs/desktop-updates.md). The Python backend is currently separately installed; a desktop update does not upgrade that environment.

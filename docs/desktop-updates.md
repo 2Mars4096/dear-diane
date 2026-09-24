@@ -1,6 +1,6 @@
 # Desktop update operations
 
-- Local flow: Settings → Updates → Choose local build → select a signed `DAN.app` → Install and restart.
+- Local flow: Settings → Updates → Install local update. The compiled app records its build location; remembered selections and `DAN_LOCAL_UPDATE_PATH` are also supported. Changed app archives are detected even at the same version. Check for updates prefers a local build; Other update options retains a file picker.
 - Requires a packaged macOS client, matching bundle ID/architecture, a writable app parent directory, an app-owned backend, and no running/queued work. Ad-hoc signed local development bundles are supported.
 - Preparation stages a verified copy beside the installed app, preserves the old icon, and re-signs the staged local copy. It never modifies the source build or user data.
 - The detached installer waits up to two minutes for app/backend exit before touching the installed app. Replacement/open-command failures restore the prior app. Later startup crashes require manual rollback using the retained `.DAN-previous-*.app` next to the installation. Installation status/logs are in the profile's `updates/` directory.

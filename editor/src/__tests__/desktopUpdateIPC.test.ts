@@ -2,10 +2,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-const mocks = vi.hoisted(() => ({ handlers: new Map<string, (...args: any[]) => any>(), events: new Map<string, (...args: any[]) => any>(), quit: vi.fn(), install: vi.fn(), idle: vi.fn(), check: vi.fn(), download: vi.fn() }));
+const mocks = vi.hoisted(() => ({ handlers: new Map<string, (...args: any[]) => any>(), events: new Map<string, (...args: any[]) => any>(), quit: vi.fn(), install: vi.fn(), idle: vi.fn(), check: vi.fn(), download: vi.fn(), prepare: vi.fn() }));
 vi.mock("electron", () => ({ app: { getPath: () => "/tmp/dan-update-ipc", getVersion: () => "1.0.0", isPackaged: true, quit: mocks.quit, once: vi.fn() }, ipcMain: { handle: (name: string, fn: (...args: any[]) => any) => mocks.handlers.set(name, fn) }, dialog: {} }));
 vi.mock("electron-updater", () => ({ autoUpdater: { on: (name: string, fn: (...args: any[]) => any) => mocks.events.set(name, fn), checkForUpdates: mocks.check, downloadUpdate: mocks.download, setFeedURL: vi.fn(), quitAndInstall: mocks.install } }));
-vi.mock("../../electron/localUpdate", () => ({ assertNoActiveWork: mocks.idle, stageBundle: vi.fn() }));
+vi.mock("../../electron/localUpdate", () => ({ assertNoActiveWork: mocks.idle, stageBundle: mocks.prepare }));
 vi.mock("../../electron/githubAuth", () => ({
   githubRelease: { provider: "github", owner: "owner", repo: "private" },
   GitHubAuth: class { state = { status: "connected", login: "tester", code: "", message: "" }; refresh = vi.fn(); cancel = vi.fn(); start = vi.fn(); token = vi.fn().mockResolvedValue("test-secret"); },
@@ -39,4 +39,12 @@ it("restricts update IPC to the main window, separates download from install, an
     Object.defineProperty(process, "resourcesPath", { configurable: true, value: previous });
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+it("checks active work before preparing an automatically found local build", async () => {
+  const frame={},contents={mainFrame:frame};
+  registerDesktopUpdates({window:()=>({webContents:contents}) as any,graphs:()=>"/tmp/graphs",backend:()=>({owned:true})});
+  mocks.prepare.mockClear();mocks.idle.mockRejectedValueOnce(Error("Finish active work"));
+  const result=await mocks.handlers.get("updates:action")!({sender:contents,senderFrame:frame},"install-local");
+  expect(result.message).toBe("Finish active work");expect(mocks.prepare).not.toHaveBeenCalled();
 });

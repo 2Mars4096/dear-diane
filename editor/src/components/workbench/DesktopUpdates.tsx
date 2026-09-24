@@ -16,7 +16,7 @@ export function DesktopUpdates() {
   }, [api]);
   if (!api) return <section aria-label="Desktop updates"><h3>Updates</h3><p>{window.electronAPI ? "Install the first update-enabled build to manage future upgrades here." : "Desktop updates are available in the DAN app."}</p></section>;
   const busy = pending || ["checking", "staging", "downloading", "installing"].includes(state?.phase || "");
-  async function action(name: "check" | "choose" | "download" | "install" | "github-sign-in" | "github-cancel" | "github-status") {
+  async function action(name: "check" | "choose" | "install-local" | "download" | "install" | "github-sign-in" | "github-cancel" | "github-status") {
     if (!api) return;
     setPending(true); setError("");
     try { setState(await api.action(name)); } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
@@ -24,7 +24,7 @@ export function DesktopUpdates() {
   }
   return <section aria-label="Desktop updates" className="wb-desktop-updates">
     <h3>Updates{state ? ` · ${state.currentVersion}` : ""}</h3>
-    <p role="status" aria-live="polite">{state?.message || (state ? "Check for a release or choose a prepared DAN.app build." : "Loading update status…")}</p>
+    <p role="status" aria-live="polite">{state?.message || (state ? "Check for updates. Prepared local builds are found automatically." : "Loading update status…")}</p>
     {state && !state.releaseConfigured && <p>Published updates aren’t configured for this build. Local builds can still be installed here.</p>}
     {state?.github && <div aria-label="GitHub account">
       <p>{state.github.status === "connected" ? `GitHub: ${state.github.login}` : state.github.message}</p>
@@ -39,11 +39,13 @@ export function DesktopUpdates() {
     {error && <p role="alert">{error}</p>}
     {state?.phase === "downloading" && <progress aria-label="Update download" max={100} value={state.percent}>{state.percent}%</progress>}
     <div className="wb-update-actions">
-      <button disabled={!state || busy || !state.releaseConfigured || state.phase === "ready"} onClick={() => void action("check")}>Check for updates</button>
-      {state?.localSupported && <button disabled={busy} onClick={() => void action("choose")}>Choose local build…</button>}
+      <button disabled={!state || busy || (!state.releaseConfigured && !state.localSupported) || state.phase === "ready"} onClick={() => void action("check")}>Check for updates</button>
+      {state?.localBuildAvailable && state.phase !== "ready" && <button disabled={busy} onClick={() => void action("install-local")}>Install local update</button>}
       {state?.phase === "available" && <button disabled={busy} onClick={() => void action("download")}>Download {state.version}</button>}
       {state?.phase === "ready" && <button disabled={busy} onClick={() => void action("install")}>Install and restart</button>}
     </div>
+    {state?.localSupported && <details><summary>Other update options</summary><button disabled={busy} onClick={() => void action("choose")}>Choose a different build…</button></details>}
+    {state?.localBuildAvailable && state.phase !== "ready" && <p>A prepared local update is available. Installing restarts DAN after checking for active work.</p>}
     {state?.phase === "ready" && <p>Finish active work first. DAN will close, install {state.version}, and reopen. Chats and settings stay on this Mac.</p>}
   </section>;
 }

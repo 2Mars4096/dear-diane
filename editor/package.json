@@ -14,7 +14,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "electron:compile": "tsc -p electron/tsconfig.json && cp electron/preload.cjs electron/updateInstaller.cjs dist-electron/ && echo '{\"type\":\"commonjs\"}' > dist-electron/package.json",
+    "electron:compile": "tsc -p electron/tsconfig.json && cp electron/preload.cjs electron/updateInstaller.cjs dist-electron/ && echo '{\"type\":\"commonjs\"}' > dist-electron/package.json && node scripts/write-local-build.cjs",
     "electron:dev": "npm run electron:compile && concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:build": "npm run build && npm run electron:compile",
     "dist": "npm run build && npm run electron:compile && electron-builder",

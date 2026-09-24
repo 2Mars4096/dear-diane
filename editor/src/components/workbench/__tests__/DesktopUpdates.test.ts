@@ -14,8 +14,8 @@ it("supports local prepare/install without pretending an unconfigured release ch
     await act(async () => root.render(createElement(DesktopUpdates)));
     expect(host.textContent).toContain("Published updates aren’t configured");
     const button = (label: string) => [...host.querySelectorAll("button")].find(b => b.textContent === label)!;
-    expect(button("Check for updates").disabled).toBe(true);
-    await act(async () => button("Choose local build…").click());
+    expect(button("Check for updates").disabled).toBe(false);
+    await act(async () => button("Choose a different build…").click());
     expect(api.action).toHaveBeenCalledWith("choose");
     expect(api.action).not.toHaveBeenCalledWith("install");
     await act(async () => button("Install and restart").click());
@@ -42,4 +42,17 @@ it("offers browser sign-in, shows the device code, and supports cancellation", a
     expect(api.action).toHaveBeenCalledWith("github-cancel");
     expect(host.textContent).not.toContain("ABCD-1234");
   } finally { act(() => root.unmount()); delete window.electronAPI; }
+});
+
+it("installs a detected local update without opening the file chooser", async () => {
+  const api = { status: vi.fn().mockResolvedValue({phase:"idle",currentVersion:"1",localSupported:true,localBuildAvailable:true}), action: vi.fn().mockResolvedValue({phase:"installing",message:"Restarting"}) };
+  Object.defineProperty(window,"electronAPI",{configurable:true,value:{isElectron:true,updates:api}});
+  const host=document.createElement("div");const root=createRoot(host);
+  try {
+    await act(async()=>root.render(createElement(DesktopUpdates)));
+    const button=[...host.querySelectorAll("button")].find(b=>b.textContent==="Install local update")!;
+    await act(async()=>button.click());
+    expect(api.action).toHaveBeenCalledWith("install-local");
+    expect(api.action).not.toHaveBeenCalledWith("choose");
+  } finally {act(()=>root.unmount());delete window.electronAPI;}
 });

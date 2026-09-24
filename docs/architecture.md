@@ -7,6 +7,10 @@
 - `WorkbenchConversation` lazy-loads `RequestActions` for the latest user message. It owns the temporary edit/error state; `ChunkWorkspaceApp` validates the request, preserves attachments, persists replacement history, and uses the existing run admission path. Admission failure restores the prior transcript. Editing is disabled while a reply is pending.
 - Work settings are lazy-loaded on opening to preserve the workspace shell bundle budget.
 
+## Local update discovery
+- Electron compilation emits an ignored `local-build.json` path marker inside the app. `preparedBuild.ts` checks that path, a remembered selection, or `DAN_LOCAL_UPDATE_PATH`; archive hashes identify same-version changes, cached by filesystem metadata. Detected builds still pass the existing signature/identity/architecture validation before staging.
+- Update settings offer Install local update; checks prefer a prepared local build before GitHub. Provider errors are mapped to short messages without response headers or stacks.
+
 ## Document workspace
 - Lazy `components/documents/` modules connect global file drops and Open file to main tabs. Desktop preload resolves File objects to original paths; browsers retain local File/blob copies and download edits explicitly. Existing project files open through the same tab path.
 - Text draft/revision snapshots live in a workspace-owned ref across panel unmounts; dirty state guards tab close and page unload. PDFs reuse ReaderView; browser-only PDFs skip filesystem OCR cache.

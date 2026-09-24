@@ -1,6 +1,12 @@
 # Changelog
 
 ## 2026-09-24
+- [feat] Discover prepared local desktop builds automatically, compare archive contents for same-version updates, and install through one action without a file chooser. Keep active-work checks and signature/rollback validation.
+- [fix] Summarize GitHub update failures without raw headers/stacks; move Usage above the bottom-left menu group.
+- [test] Eleven updater tests, frontend bundle checks, Electron compilation, and signature verification pass. Live footer order verified; installation awaits explicit approval after automatic review blocked replacement.
+
+
+## 2026-09-24
 - [feat] Open dropped/selected files in DAN tabs: existing PDF reader, UTF-8 text editing, Markdown preview, images, audio, and video. Desktop opens originals; browser selections remain local copies with explicit downloads.
 - [fix] Preserve drafts across document/Notes switches, guard dirty close/reload, and save only against an unchanged file revision. Reject oversized/binary/non-UTF-8 edits; skip server OCR cache for browser-only PDFs.
 - [test] 8 backend and 91 frontend tests, production bundle budgets, and Electron compilation pass. Live PDF/drop/edit/preview/save/conflict/mobile checks pass; updated desktop package prepared.

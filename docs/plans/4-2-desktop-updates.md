@@ -13,7 +13,7 @@
 - [x] Document release signing/feed requirements and the one-time bootstrap for older installed builds.
 
 ## Decisions
-- Local development builds use an explicitly selected, signature-verified DAN.app; do not run Git pull or dependency installers in the app.
+- Local development builds automatically discover the recorded/remembered or `DAN_LOCAL_UPDATE_PATH` build and validate its signature before installation; do not run Git pull or dependency installers in the app.
 - Remote releases use electron-updater and configured app-update.yml; no channel is fabricated or published.
 - Current Python backend remains separately installed; local source fixes take effect on backend restart. Standalone backend bundling is a separate release prerequisite.
 - Installation is a user action. Checking/downloading never quits the app automatically.
@@ -29,3 +29,11 @@
 - Validation: nine focused update/auth/UI tests pass; private repository access rechecked successfully after browser authorization.
 - September 20 follow-up: GitHub ADMIN access confirmed; no releases published. Eight auth/updater/UI tests pass. Installed `/Applications/DAN.app` still lacks update/sign-in modules; prepared arm64 bundle contains both. Existing bootstrap helper is running with the correct app-owned backend; do not start a duplicate. Keychain check outside the sandbox confirms zero valid signing identities.
 - [ ] Complete Developer ID signing/notarization after operator supplies Apple Developer account availability; verify a signed remote release on a test installation.
+
+## September 24 update usability
+- [x] Record the local build path during Electron compilation; discover changed app archives even when the version number is unchanged. Cache comparisons until archive metadata changes.
+- [x] Offer Install local update with no file picker; Check for updates prefers prepared local builds. Keep manual selection under Other update options.
+- [x] Replace GitHub HTTP/header/stack dumps with short actionable messages; retain the active-work and rollback guards.
+- [x] Move Usage above Archived chats and DAN settings in the bottom-left footer.
+- [x] Eleven focused tests, production build/bundle checks, Electron compilation, signed package verification, and live footer ordering pass.
+- [ ] Install the prepared update: automatic approval review requires explicit user authorization before replacing/launching the installed app.
