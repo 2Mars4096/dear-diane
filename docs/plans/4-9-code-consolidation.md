@@ -1,4 +1,4 @@
-# 4-8: Code consolidation
+# 4-9: Code consolidation
 
 **Parent:** [4-work-notes-gui](4-work-notes-gui.md)
 **Status:** in-progress
@@ -8,7 +8,7 @@
 - [x] Reconcile closed reading sessions and preserve unsynced recovery; add lifecycle regressions.
 - [x] Share bounded JSON transport and one library poller; verify timeout, abort, and subscriber cleanup.
 - [x] Generate the Electron preload from TypeScript; delete handwritten duplicate and verify sandboxed IPC.
-- [ ] Extract document/tab lifecycle and project actions; share explicit file-target construction.
+- [x] Extract document/tab lifecycle and project actions; share explicit file-target construction.
 - [x] Extract metadata parsing and permission-aware atomic writes below HTTP routers.
 - [ ] Run focused regressions, production build/budgets and Electron checks; commit logical batches and push.
 

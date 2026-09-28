@@ -8,7 +8,7 @@ let host: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 beforeEach(() => { Object.assign(globalThis,{IS_REACT_ACT_ENVIRONMENT:true}); host=document.createElement('div');document.body.append(host);root=createRoot(host); });
 afterEach(() => {act(()=>root.unmount());host.remove();vi.restoreAllMocks();vi.unstubAllGlobals();});
-const file={name:'notes.md',path:'/tmp/notes.md',root:'/tmp',url:'/preview/notes.md'};
+const file={source:'local' as const,name:'notes.md',path:'/tmp/notes.md',root:'/tmp',url:'/preview/notes.md'};
 it('retains drafts across unmounts and sends revisions without dropping edits on conflicts',async()=>{
  const drafts: Record<string,DocumentDraft> = {[file.path]:{text:'unsaved draft',saved:'original',revision:'v1'}};
  const fetcher=vi.fn(async()=>new Response(JSON.stringify({detail:'File changed on disk'}),{status:409}));vi.stubGlobal('fetch',fetcher);

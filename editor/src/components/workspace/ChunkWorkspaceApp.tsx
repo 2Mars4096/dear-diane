@@ -1,5 +1,7 @@
-import type { Paper, ReadingSession } from "../papers/library";
-import type { DocumentFile, DocumentDraft } from "../documents/documents";
+import { fileName, normalizeRootPath } from "../../lib/workspacePaths";
+import { ensureProjectForRoot, saveWorkbenchProject, selectWorkbenchProject } from "../workbench/projects";
+import type { Paper } from "../papers/library";
+import type { DocumentFile } from "../documents/documents";
 import { visibleQueuedTranscript } from "../workbench/queuedTranscript";
 import { ProjectMenu } from "../workbench/ProjectMenu";
 import { SidecarChat } from "../workbench/SidecarChat";
@@ -9,8 +11,8 @@ import { EMPTY_PROFILE, leadExecutionProfile, modelSource, OPENROUTER_URL, withL
 import { TeamPanel, TeamStrip, useTeamWorkers } from "../workbench/TeamProgress";
 import { PersistentPanel } from "../workbench/PersistentPanel";
 import { SideTabs, readLastSideTab, rememberSideTab, type SideTab, type SideTabItem } from "../workbench/SideTabs";
-import type { ReaderAsk, ReaderFile } from "../reader/ReaderView";
-import { closeMainTab, type MainTab } from "../workbench/mainTabState";
+import type { ReaderAsk } from "../reader/ReaderView";
+import { useDocumentTabs } from "../documents/useDocumentTabs";
 import { useProcesses } from "../workbench/processes";
 import { streamedMessageContent, completedMessageContent } from "../workbench/eventPresentation";
 import { WorkbenchNavigation } from "../workbench/WorkbenchNavigation";
@@ -188,12 +190,6 @@ const AGENT_SELECTION_STORAGE_KEY = "dan.chunkWorkspace.agentSelection.v1";
 const MODEL_SELECTION_STORAGE_KEY = "dan.chunkWorkspace.modelSelection.v1";
 const MODEL_SELECTIONS_BY_AGENT_STORAGE_KEY = "dan.chunkWorkspace.modelSelectionsByAgent.v1";
 const AUTONOMY_MODE_STORAGE_KEY = "dan.chunkWorkspace.autonomyMode.v1";
-const WORKSPACE_ROOT_ALIASES = new Map([
-  [
-    "/Volumes/data/Dropbox/Projects/deep-agent-network",
-    "/Users/lizhi/Downloads/local_projects/deep-agent-network",
-  ],
-]);
 const WORKSPACE_SURFACE_TYPE = "frontend";
 const WORKSPACE_SURFACE_ID = "chunk-workspace";
 const WORKSPACE_SURFACE = `${WORKSPACE_SURFACE_TYPE}:${WORKSPACE_SURFACE_ID}`;
@@ -1292,10 +1288,6 @@ function displayChatContent(content: string) {
   return formatStructuredAgentSummary(content) || normalizeStructuredMarkdown(content);
 }
 
-function fileName(path: string) {
-  return path.split(/[\\/]/).filter(Boolean).pop() || path;
-}
-
 function pathParts(path: string) {
   return path.split(/[\\/]/).map((part) => part.trim()).filter(Boolean);
 }
@@ -2341,13 +2333,6 @@ function noteParentPathLabel(note: WorkspaceNote, root: string) {
     ? parts.slice(0, -2)
     : parts.slice(0, -1);
   return folderParts.join("/");
-}
-
-function normalizeRootPath(path: string) {
-  const trimmed = path.trim();
-  if (trimmed === "/" || /^[a-z]:[\\/]$/i.test(trimmed)) return trimmed;
-  const normalized = trimmed.replace(/[\\/]+$/, "");
-  return WORKSPACE_ROOT_ALIASES.get(normalized) ?? normalized;
 }
 
 function rootSuggestion(
@@ -13271,12 +13256,10 @@ export default function ChunkWorkspaceApp() {
   const showSidecarPreview = sideTab === "preview";
   const setShowSidecarPreview = useMemo(() => sideSetter("preview"), [sideSetter]);
   const [sidecarSelection, setSidecarSelection] = useState({ text: "", token: 0 });
-  // Main column tabs: the conversation plus any open PDFs. The side panel follows the active tab.
-  const [mainTabs, setMainTabs] = useState<MainTab[]>([{ id: "chat", kind: "chat", label: "Chat" }]);
-  const [activeMainTab, setActiveMainTab] = useState("chat");
+  const { mainTabs, setMainTabs, activeMainTab, setActiveMainTab, openTab, openDocument: registerDocument,
+    closeTab, documents, documentDrafts, dirtyDocuments, setDirtyDocuments, setLibraryReadings,
+    libraryReading, readerFile } = useDocumentTabs();
   const [paperSearch, setPaperSearch] = useState(false);
-  const [libraryReadings, setLibraryReadings] = useState<Record<string, { paper: Paper; session: ReadingSession }>>({});
-  const libraryReading = libraryReadings[activeMainTab];
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
       if (event.code !== "KeyK" || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.repeat || event.isComposing || event.defaultPrevented) return;
@@ -13286,17 +13269,6 @@ export default function ChunkWorkspaceApp() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
-  const documentDrafts = useRef<Record<string, DocumentDraft>>({});
-  const [documents, setDocuments] = useState<Record<string, DocumentFile>>({});
-  const [dirtyDocuments, setDirtyDocuments] = useState<Record<string, boolean>>({});
-  useEffect(() => {
-    if (!Object.values(dirtyDocuments).some(Boolean)) return;
-    const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
-    window.addEventListener("beforeunload", guard);
-    return () => window.removeEventListener("beforeunload", guard);
-  }, [dirtyDocuments]);
-  const [readerFiles, setReaderFiles] = useState<Record<string, ReaderFile>>({});
-  const readerFile = readerFiles[activeMainTab] ?? null;
   const [readerSelection, setReaderSelection] = useState<{ text: string; token: number; context?: string }>({ text: "", token: 0 });
   useEffect(() => { setReaderSelection({ text: "", token: Date.now() }); }, [readerFile?.path]);
   const [workbenchOutline, setWorkbenchOutline] = useState(false);
@@ -14627,16 +14599,10 @@ export default function ChunkWorkspaceApp() {
     return { ...payload, profile_policy: { ...payload.profile_policy, native_workers: nativeWorkerProfiles } };
   };
   const openDocument = (file: DocumentFile) => {
-    const pdf = /\.pdf$/i.test(file.name);
-    const id = `${pdf ? "pdf" : "file"}:${file.path}`;
-    setDocuments(current => ({ ...current, [id]: current[id] ? { ...current[id], onClose: file.onClose ?? current[id].onClose } : file }));
-    if (pdf) setReaderFiles(current => current[id] ? current : { ...current, [id]: file });
-    setMainTabs(tabs => tabs.some(tab => tab.id === id) ? tabs : [...tabs, { id, kind: pdf ? "pdf" : "file", label: file.name, title: file.path }]);
-    setActiveMainTab(id); setActivePane("work"); setPhonePage("chat"); setShowConversationChunks(true);
+    registerDocument(file); setActivePane("work"); setPhonePage("chat"); setShowConversationChunks(true);
   };
   const openPaperLibrary = () => {
-    setMainTabs(tabs => tabs.some(tab => tab.id === "papers") ? tabs : [...tabs, { id: "papers", kind: "papers", label: "Papers" }]);
-    setActiveMainTab("papers"); setActivePane("work"); setPhonePage("chat"); setShowConversationChunks(true);
+    openTab({ id: "papers", kind: "papers", label: "Papers" }); setActivePane("work"); setPhonePage("chat"); setShowConversationChunks(true);
   };
   const openLibraryReading = async (paper: Paper) => {
     const { openPaper } = await import("../papers/workspace");
@@ -14654,21 +14620,7 @@ export default function ChunkWorkspaceApp() {
     void import("../documents/documents").then(({ pathDocument }) => openDocument(pathDocument(entry.path, entry.name)));
   };
   const openSettingsTab = () => {
-    setMainTabs((tabs) => tabs.some((tab) => tab.id === "settings") ? tabs : [...tabs, { id: "settings", kind: "settings", label: "Settings" }]);
-    setActiveMainTab("settings"); setActivePane("work");
-  };
-  const closeTab = (id: string) => {
-    if (mainTabs.length <= 1) return;
-    if (dirtyDocuments[documents[id]?.path] && !window.confirm(`Discard unsaved edits to ${documents[id].name}?`)) return;
-    documents[id]?.onClose?.();
-    setLibraryReadings(current => { const next = { ...current }; delete next[id]; return next; });
-    delete documentDrafts.current[documents[id]?.path];
-    if (documents[id]?.ownedUrl) URL.revokeObjectURL(documents[id].url);
-    setDirtyDocuments(current => { const next = { ...current }; delete next[documents[id]?.path]; return next; });
-    setDocuments(current => { const next = { ...current }; delete next[id]; return next; });
-    const next = closeMainTab(mainTabs, activeMainTab, id);
-    setMainTabs(next.tabs); setActiveMainTab(next.active);
-    if (id.startsWith("pdf:")) setReaderFiles((current) => { const copy = { ...current }; delete copy[id]; return copy; });
+    openTab({ id: "settings", kind: "settings", label: "Settings" }); setActivePane("work");
   };
   // Opening or starting a chat always brings the conversation tab back to the front.
   useEffect(() => {
@@ -15621,23 +15573,7 @@ export default function ChunkWorkspaceApp() {
     setStatus("Workspace root changed");
   }, [createWorkspace, setActiveWorkspace, updateWorkspace, workspace?.id]);
 
-  const workspaceIdForRoot = useCallback(
-    (root: string) => {
-      const normalizedRoot = normalizeRootPath(root);
-      if (!normalizedRoot) return "";
-      const existing = workspaces.find(
-        (item) => normalizeRootPath(item.pinnedPaths[0] ?? "") === normalizedRoot,
-      );
-      if (existing) return existing.id;
-      const id = createWorkspace(fileName(normalizedRoot), "chat");
-      updateWorkspace(id, {
-        pinnedPaths: [normalizedRoot],
-        name: fileName(normalizedRoot),
-      });
-      return id;
-    },
-    [createWorkspace, updateWorkspace, workspaces],
-  );
+  const workspaceIdForRoot = useCallback((root: string) => ensureProjectForRoot(root)?.id ?? "", []);
 
   const browseDevelopmentRoot = useCallback((root: string) => {
     const nextRoot = browsingRootPath(root);
@@ -15902,35 +15838,31 @@ export default function ChunkWorkspaceApp() {
   );
 
   const switchWorkbenchProject = useCallback((id: string) => {
-    if (id === activeWorkspaceId) return;
-    const target = workspaces.find((item) => item.id === id);
-    if (!target) return;
-    const thread = threads.find((item) => item.id === target.activeThreadId && !item.archived);
-    setActiveWorkspace(id);
+    const selected = selectWorkbenchProject(id, threads);
+    if (!selected) return;
     setPhonePage("chat");
-    if (thread) void openSession(thread, id, target.pinnedPaths[0]);
+    if (selected.thread) void openSession(selected.thread, id, selected.root);
     else {
       ++sessionSelectionSeqRef.current;
       clearActiveSessionView("Ready");
     }
-  }, [activeWorkspaceId, workspaces, threads, setActiveWorkspace, openSession, clearActiveSessionView]);
+  }, [threads, openSession, clearActiveSessionView]);
 
-  const openDroppedProject = useCallback((root: string) => {
-    const path = normalizeRootPath(root);
-    const existing = workspaces.find(item => normalizeRootPath(item.pinnedPaths[0] ?? "") === path);
-    if (existing) switchWorkbenchProject(existing.id);
-    else {
-      const id = createWorkspace(fileName(path) || path, "chat");
-      updateWorkspace(id, { pinnedPaths: [path] });
-      ++sessionSelectionSeqRef.current;
-      clearActiveSessionView("Ready");
-      setActiveFilePath(null);
-    }
+  const resetCreatedProject = () => {
+    ++sessionSelectionSeqRef.current;
+    clearActiveSessionView("Ready");
+    setActiveFilePath(null);
+  };
+  const openDroppedProject = (root: string) => {
+    const project = ensureProjectForRoot(root);
+    if (!project) return;
+    if (project.created) resetCreatedProject();
+    else switchWorkbenchProject(project.id);
     setActivePane("work");
     setPhonePage("chat");
     setShowSessionRail(true);
     setShowConversationChunks(true);
-  }, [workspaces, switchWorkbenchProject, createWorkspace, updateWorkspace, clearActiveSessionView]);
+  };
 
   const openSessionPromptLog = useCallback(async (thread: ChatV2ThreadSummary) => {
     if (thread.archived) {
@@ -17459,11 +17391,8 @@ export default function ChunkWorkspaceApp() {
         onClose={() => setWorkbenchSettings(false)}
         onBrowse={() => nativeDialog.openDirectory()}
         onSave={(name, root) => {
-          const id = creatingProject ? createWorkspace(name, "chat") : activeWorkspaceId;
-          if (id) {
-            updateWorkspace(id, { name, pinnedPaths: root ? [root, ...(creatingProject ? [] : workspace?.pinnedPaths.slice(1) ?? [])] : [] });
-            if (creatingProject) { ++sessionSelectionSeqRef.current; clearActiveSessionView("Ready"); setActiveFilePath(null); }
-          }
+          const id = saveWorkbenchProject(name, root, creatingProject);
+          if (id && creatingProject) resetCreatedProject();
           setWorkbenchSettings(false); setShowSessionRail(true); setShowFileExplorer(false); setShowConversationChunks(true); setPhonePage("chat");
         }}
       /></Suspense>}

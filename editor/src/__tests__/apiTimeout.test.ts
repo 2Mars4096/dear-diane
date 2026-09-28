@@ -28,7 +28,7 @@ describe("api request timeouts", () => {
     }) as typeof fetch;
 
     const result = expect(getServerHealth()).rejects.toThrow(
-      "Request timed out after 10000ms: /health",
+      "Request timed out after 10000ms: /api/health",
     );
     await vi.advanceTimersByTimeAsync(10000);
     await result;

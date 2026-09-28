@@ -1,5 +1,10 @@
 # Architecture
 
+## Workspace lifecycle and file targets
+- `documents/useDocumentTabs.ts` owns tabs, drafts, dirty/unload guards, document close callbacks, and browser URL cleanup. PDF files derive from the document registry, removing the second reader-file map. Library/paper modules remain lazy; switching tools does not release a tab.
+- `workbench/projects.ts` shares registry creation, root reuse, edits, and selection; the workspace retains session sequencing and view changes. `lib/workspacePaths.ts` preserves existing normalization and legacy root aliases.
+- `lib/fileTargets.ts` constructs explicit local/remote/browser-copy targets and preview URLs for documents and attachments. Display names do not change URL filenames; remote targets never invoke the local shell. Electron/backend path validation remains in place.
+
 ## Shared metadata and durable writes
 - `dan.notes_frontmatter` provides the existing lightweight Hugo parser to Notes routes and the paper catalogue without importing a router. It is not a general YAML parser.
 - `dan._atomic_file` serves tools, runtime mutations, document editing, profiles, paper state, and the remote project registry. Existing workspace permissions are preserved; private state explicitly uses mode 0600 from temporary-file creation through replacement. Unique sibling temporaries, fsync, and failure cleanup are shared. The standalone SSH installer keeps its dependency-free writer.

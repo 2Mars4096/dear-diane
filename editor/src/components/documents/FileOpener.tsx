@@ -1,3 +1,4 @@
+import { browserFileTarget } from '../../lib/fileTargets';
 import { useEffect, useRef, useState } from 'react';
 import { droppedFolderPath } from '../workbench/folderDrop';
 import { FolderOpen } from 'lucide-react';
@@ -18,10 +19,7 @@ export default function FileOpener({ onOpen, onFolder }: { onOpen: (file: Docume
     for (const file of files) {
       try {
         const path = await nativeFs.droppedFile(file);
-        callback.current(path ? pathDocument(path, file.name) : {
-          name: file.name, path: `browser:${crypto.randomUUID()}:${file.name}`,
-          url: URL.createObjectURL(file), local: file, ownedUrl: true,
-        });
+        callback.current(path ? pathDocument(path, file.name) : browserFileTarget(file));
       } catch (e) { setError(`Could not open ${file.name}: ${e instanceof Error ? e.message : String(e)}`); }
     }
   };

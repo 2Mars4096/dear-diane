@@ -27,3 +27,15 @@ it("opens saved attachments, encodes links, and reports unavailable files", asyn
     expect(host.textContent).toContain("Original file unavailable");
   } finally { await act(async () => root.unmount()); host.remove(); }
 });
+
+it("keeps remote attachments on the remote preview even if an Electron bridge is present", async () => {
+  const meta = document.createElement('meta'); meta.name = 'dan-remote-machine'; meta.content = 'mini'; document.head.append(meta);
+  const host = document.createElement('div'), root = createRoot(host);
+  vi.mocked(nativeShell.openPath).mockClear();
+  try {
+    await act(async () => root.render(createElement(MessageAttachment, { attachment: { path: '/home/me/paper.pdf', filename: 'paper.pdf' } })));
+    await act(async () => host.querySelector('a')!.click());
+    expect(nativeShell.openPath).not.toHaveBeenCalled();
+    expect(host.querySelector('a')!.href).toContain('/api/workspace-files/preview/');
+  } finally { act(() => root.unmount()); meta.remove(); }
+});
