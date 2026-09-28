@@ -9,6 +9,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          if (id.endsWith("/components/shared/MarkdownRenderer.tsx")) return "content";
           if (!id.includes("node_modules")) return;
           if (id.includes("monaco-editor") || id.includes("@monaco-editor/react")) {
             return "monaco";

@@ -17423,6 +17423,7 @@ export default function ChunkWorkspaceApp() {
         isElectron() && "dan-native-window",
         "dan-phone-workspace flex h-screen flex-col overflow-hidden bg-[#f4f7fb] text-slate-950 antialiased dark:bg-slate-950 dark:text-slate-100",
       )}
+      data-workspace-root={developmentRoot}
     >
       {paperSearch && <Suspense fallback={null}><PaperSearch onOpen={openLibraryReading} onBrowse={openPaperLibrary} onClose={() => setPaperSearch(false)} /></Suspense>}
       {activePane === "work" && <header className="wb-header">

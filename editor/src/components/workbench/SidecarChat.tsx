@@ -106,7 +106,7 @@ export function SidecarChat({ parentId, workflowId, workspaceRoot, workspaceId, 
     <div className="wb-sidecar-messages" aria-live="polite">
       {loading && <p className="wb-muted">Opening sidecar…</p>}
       {!loading && !messages.length && <p className="wb-muted">{purpose?.empty ?? "A separate conversation about this session. Replies stay here."}</p>}
-      {messages.map((item) => <article key={item.id} className={`wb-message wb-message-${item.role}`}><div className="wb-message-author">{item.role === "user" ? "You" : leadLabel}</div><MarkdownRenderer content={item.content || "Working…"} /></article>)}
+      {messages.map((item) => <article key={item.id} className={`wb-message wb-message-${item.role}`}><div className="wb-message-author">{item.role === "user" ? "You" : leadLabel}</div><MarkdownRenderer content={item.content || "Working…"} workspaceRoot={workspaceRoot} /></article>)}
     </div>
     <div className="wb-sidecar-composer">
       {quote && <div className="wb-sidecar-quote"><span>{quote}</span><button aria-label="Remove sidecar quote" onClick={() => { setQuote(""); setQuoteContext(""); }}><X size={14} /></button></div>}

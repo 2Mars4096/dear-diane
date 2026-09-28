@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     writeTempAttachment: (payload) => ipcRenderer.invoke("fs:writeTempAttachment", payload),
   },
   shell: {
+    fileLink: (request) => ipcRenderer.invoke("shell:fileLink", request),
     openPath: (filePath) => ipcRenderer.invoke("shell:openPath", filePath),
     openExternal: (url) => ipcRenderer.invoke("shell:openExternal", url),
   },

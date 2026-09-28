@@ -11,9 +11,11 @@ import {
   waitForBackendHealthOrRelease,
 } from "./backendHealth";
 import { buildBackendLaunchEnv } from "./backendLaunch";
+import { registerFileLinks } from "./fileLinks";
 import { registerDesktopUpdates } from "./desktopUpdates";
 
 let mainWindow: BrowserWindow | null = null;
+registerFileLinks(() => mainWindow);
 let tray: Tray | null = null;
 
 const isDev = !app.isPackaged;

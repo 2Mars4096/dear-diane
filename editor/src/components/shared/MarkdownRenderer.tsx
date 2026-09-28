@@ -1,9 +1,22 @@
-import { useMemo, type MouseEvent } from "react";
+import { useMemo, useState, type MouseEvent } from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import { Marked, Renderer } from "marked";
 import hljs from "../../lib/hljs";
 import { sanitizeHtml } from "../../lib/sanitizeHtml";
+
+function escapeAttribute(value: string): string {
+  return escapeHtml(value).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+export function isLocalFileLink(href: string): boolean {
+  if (!href || /^[#?]/.test(href) || /[\x00-\x1f]/.test(href) || href.startsWith("//")) return false;
+  return /^file:/i.test(href) || /^[a-z]:[\\/]/i.test(href) || !/^[a-z][a-z\d+.-]*:/i.test(href.replace(/:\d+(?::\d+)?$/, ""));
+}
+
+function fileAnchor(href: string, text: string): string {
+  return `<a href="#" data-file-link="${escapeAttribute(href)}" title="Open ${escapeAttribute(href)}" class="dan-file-link underline underline-offset-2">${text}</a>`;
+}
 
 function escapeHtml(value: string): string {
   return value
@@ -304,7 +317,8 @@ function createRenderer(options: MarkdownRenderOptions = {}): Marked {
         return `<span class="dan-markdown-inline-math-code">${renderKatex(tex, false)}</span>`;
       }
     }
-    return `<code class="${inlineCodeClass(text)}">${escapeHtml(text)}</code>`;
+    const code = `<code class="${inlineCodeClass(text)}">${escapeHtml(text)}</code>`;
+    return inlineCodeKind(text) === "file" && isLocalFileLink(text) ? fileAnchor(text, code) : code;
   };
 
   renderer.blockquote = function blockquote(token: any) {
@@ -367,10 +381,11 @@ function createRenderer(options: MarkdownRenderOptions = {}): Marked {
   renderer.hr = () => `<hr class="my-4 border-slate-200 dark:border-slate-700" />`;
 
   renderer.link = function link(token: any) {
-    const text = this.parser.parseInline(token.tokens);
+    const text = this.parser.parseInline(token.tokens).replace(/<a\b[^>]*>([\s\S]*?)<\/a>/g, "$1");
     const href = String(token.href ?? "");
     if (/^\s*javascript\s*:/i.test(href)) return escapeHtml(text);
-    const safeHref = /^(https?:|mailto:|#)/.test(href) ? href : "#";
+    if (isLocalFileLink(href)) return fileAnchor(href, text);
+    const safeHref = /^(https?:|mailto:|#)/i.test(href) ? escapeAttribute(href) : "#";
     return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" class="text-slate-950 underline decoration-slate-300 underline-offset-2 hover:decoration-slate-900 dark:text-slate-100 dark:decoration-slate-600">${text}</a>`;
   };
 
@@ -432,23 +447,46 @@ export default function MarkdownRenderer({
   autoHighlightCode = true,
   renderMathCodeSpans = false,
   onClick,
+  workspaceRoot,
 }: {
   content: string;
   className?: string;
   autoHighlightCode?: boolean;
   renderMathCodeSpans?: boolean;
   onClick?: (event: MouseEvent<HTMLDivElement>) => void;
+  workspaceRoot?: string;
 }) {
   const html = useMemo(
     () => renderMarkdownToHtml(content, { autoHighlightCode, renderMathCodeSpans }),
     [autoHighlightCode, content, renderMathCodeSpans],
   );
   const markup = useMemo(() => ({ __html: html }), [html]);
-  return (
+  const [fileError, setFileError] = useState("");
+  const handleFile = (event: MouseEvent<HTMLDivElement>, menu = false) => {
+    const link = (event.target as Element).closest?.("a[data-file-link]");
+    if (!link || !event.currentTarget.contains(link)) return false;
+    event.preventDefault(); event.stopPropagation();
+    const href = link.getAttribute("data-file-link") || "";
+    const root = workspaceRoot ?? event.currentTarget.closest<HTMLElement>("[data-workspace-root]")?.dataset.workspaceRoot ?? "";
+    setFileError("");
+    if (document.querySelector('meta[name="dan-remote-machine"]')) {
+      setFileError("This path is on the remote host. Open it through the project Files panel.");
+    } else if (!window.electronAPI?.shell.fileLink) {
+      setFileError("Open file and folder links in the updated DAN desktop app.");
+    } else {
+      void window.electronAPI.shell.fileLink({ href, root, menu }).then(result => {
+        if (!result.ok) setFileError(result.error || "Could not open this path.");
+      }).catch(error => setFileError(String(error.message || error)));
+    }
+    return true;
+  };
+  return <>
     <div
       className={`dan-markdown text-sm ${className}`}
       dangerouslySetInnerHTML={markup}
-      onClick={onClick}
+      onClick={event => { if (!handleFile(event)) onClick?.(event); }}
+      onContextMenu={event => { handleFile(event, true); }}
     />
-  );
+    {fileError && <div role="alert" className="dan-file-link-error my-2 text-sm text-red-700 dark:text-red-300">{fileError} <button type="button" onClick={() => setFileError("")}>Dismiss</button></div>}
+  </>;
 }

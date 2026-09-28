@@ -31,6 +31,7 @@ interface ElectronAPI {
     }) => Promise<string>;
   };
   shell: {
+    fileLink?: (request: { href: string; root: string; menu?: boolean }) => Promise<{ ok: boolean; error?: string }>;
     openPath: (filePath: string) => Promise<boolean>;
     openExternal: (url: string) => Promise<boolean>;
   };
