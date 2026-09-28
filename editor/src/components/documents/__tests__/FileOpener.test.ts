@@ -52,3 +52,11 @@ it('leaves project settings drops to their own handler and clears cancelled drag
   await drag('dragenter'); await act(async () => { window.dispatchEvent(new Event('blur')); });
   expect(host.querySelector('.dan-file-drop')).toBeNull();
 });
+it('leaves literature PDF drops to the import panel', async () => {
+  const target = document.createElement('section'); target.dataset.literatureDrop = ''; host.append(target);
+  const resolve = vi.spyOn(nativeFs, 'droppedFile');
+  await drag('dragenter', false, 1, target);
+  expect(host.querySelector('.dan-file-drop')).toBeNull();
+  await drag('drop', false, 1, target);
+  expect(resolve).not.toHaveBeenCalled(); expect(onOpen).not.toHaveBeenCalled();
+});

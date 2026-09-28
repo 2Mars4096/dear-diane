@@ -1,6 +1,10 @@
 # Todo
 
+- [x] Reinstall and verify the Literature desktop update — [4-8](plans/4-8-literature-import.md).
+
 - [x] Verify and install startup/closing flash fix — [4-1](plans/4-1-agent-workbench.md).
+
+- [x] [4-8-literature-import](plans/4-8-literature-import.md) — Literature side panel with persistent batch import, citation matching, notes, and safe KB ingestion.
 
 - [x] Complete [code consolidation](plans/4-9-code-consolidation.md): reading ownership, shared requests/polling, generated preload, workspace/file targets, and backend helpers; isolated validation passes and implementation batches pushed.
 

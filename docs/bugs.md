@@ -1,5 +1,10 @@
 # Known Issues & Failed Approaches
 
+- **Literature reinstall check (2026-09-28):** the first idle-check command referenced `./editor/dist-electron` while already in `editor/`; reran from the repository root before installation. The app was closed, so no process termination was needed. The manual idle gate also checks literature batches, including metadata preparation before an Agent V2 run exists.
+
+- **Literature import validation (2026-09-28):** Crossref can return a successful DOI record/export with no title or authors (observed for `10.3982/ECTA9623`). Skip incomplete records and fall back to title search; do not treat an HTTP 200 as a usable citation. DOI lookup for `10.1038/nature14539` and title fallback both pass live.
+- **Literature integration checks (2026-09-28):** the global capture-phase file drop handler must exclude the Literature surface. Staged previews must use the shared typed FileTarget with the actual server staging path. Internal `_dan_imports` threads must be excluded from ordinary project/chat discovery. Regressions cover drop ownership, ready-subset apply, preview, retry, and interrupted/queued recovery. An initial npm test command used the repository root; rerunning from `editor/` passes. Localhost binding/network checks require sandbox escalation; the isolated browser was reopened after its initial session closed.
+
 - **Consolidation frontend validation (2026-09-28):** happy-dom lacks `window.confirm`; stubbed the browser dialog in the dirty-close regression. The old API timeout assertion expected a path without `/api`; the shared transport reports the actual full request URL, so the expectation now matches. All 353 frontend tests pass.
 
 - **Fixed in source 2026-09-28: white desktop startup surface.** BrowserWindow was visible immediately with Electron’s default white background; HTML/body had no background. Gate reveal on themed load/paint and keep native/page colors matched. Shutdown previously stopped services before windows closed; defer cleanup to `will-quit`. Tray `show() || createWindow()` also created duplicate windows because `show()` returns void; use explicit branching.

@@ -161,6 +161,7 @@ const FileOpener = lazy(() => import("../documents/FileOpener"));
 const DocumentView = lazy(() => import("../documents/DocumentView"));
 const MainTabs = lazy(() => import("../workbench/MainTabs").then(module => ({ default: module.MainTabs })));
 const ReadingChat = lazy(() => import("../papers/ReadingChat").then(module => ({ default: module.ReadingChat })));
+const LiteraturePanel = lazy(() => import("../papers/LiteraturePanel"));
 const PaperLibrary = lazy(() => import("../papers/PaperLibrary").then(module => ({ default: module.PaperLibrary })));
 const PaperSearch = lazy(() => import("../papers/PaperLibrary").then(module => ({ default: module.PaperSearch })));
 const PaperSidebar = lazy(() => import("../papers/PaperLibrary").then(module => ({ default: module.PaperSidebar })));
@@ -14004,7 +14005,7 @@ export default function ChunkWorkspaceApp() {
 
   const refreshThreads = useCallback(async () => {
     try {
-      setThreads((await listChatV2Threads()).filter(thread => thread.workflow_id !== "_dan_reading"));
+      setThreads((await listChatV2Threads()).filter(thread => !["_dan_reading", "_dan_imports"].includes(thread.workflow_id)));
     } catch {
       setThreads([]);
     }
@@ -14657,6 +14658,7 @@ export default function ChunkWorkspaceApp() {
       { id: "chat", label: readerFile ? "Reading" : "Chat" },
       ...(readerFile ? [{ id: "notes" as const, label: "Notes" }] : []),
       { id: "files", label: "Files" },
+      { id: "literature", label: "Literature" },
       ...(activePreviewFileEntry || selectedBlueprintNode || selectedChunk || promptLogPreview ? [{ id: "preview" as const, label: "Preview" }] : []),
       ...(agentEvents.length || activeRunningTask ? [{ id: "activity" as const, label: "Activity", live: Boolean(activeRunningTask) }] : []),
       ...(team.workers.length ? [{ id: "team" as const, label: "Team", count: runningWorkers }] : []),
@@ -18889,6 +18891,7 @@ export default function ChunkWorkspaceApp() {
                 )}
               </aside>
             </PersistentPanel>
+          <PersistentPanel active={visibleSideTab === "literature"} name="Literature"><Suspense fallback={<p className="wb-side-empty">Opening literature…</p>}><LiteraturePanel execution={sidecarExecution()} leadLabel={selectedAgentOption.shortLabel} onOpen={openLibraryReading} onDocument={openDocument} onBrowse={openPaperLibrary} /></Suspense></PersistentPanel>
           <PersistentPanel active={visibleSideTab === "processes"} name="Processes" key={`processes:${developmentRoot}`}><Suspense fallback={null}><ProcessesPanel cwd={developmentRoot} workspaceId={workspace?.id || ""} processes={processState.processes} error={processState.error} onChanged={() => void processState.refresh()} header={false} /></Suspense></PersistentPanel>
           <PersistentPanel active={visibleSideTab === "notes"} name="Notes" key={`notes:${readerFile?.path ?? ""}`} >{readerFile && <Suspense fallback={null}><ReaderNotes file={readerFile} header={false} /></Suspense>}</PersistentPanel>
           <PersistentPanel active={visibleSideTab === "chat"} name="Reading or chat" key={`chat:${readerFile?.path ?? `${activeThread?.workflowId}:${activeThread?.id}`}`}>

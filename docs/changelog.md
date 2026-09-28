@@ -1,6 +1,15 @@
 # Changelog
 
 ## 2026-09-28
+- [infra] Reinstall the signed Literature desktop build with rollback retained after idle-work checks. Installed archive/signature, owned backend and desktop-proxy health, Literature endpoints, and the 305-paper catalogue pass; user state is preserved.
+- [test] Revalidate 19 backend and 27 frontend tests, production build/bundle budgets, and Electron compilation before packaging.
+
+## 2026-09-28
+- [feat] Add Literature beside Chat/Files in the persistent side panel: library search, batch PDF staging, optional BibTeX, citation review, selected-lead reading notes, per-document retry, Stop preparation, and ready-subset import into Hugo. Keep originals and existing notes; no Zotero required.
+- [infra] Persist imports on the backend host and recover queued/interrupted work. Package the skill’s deterministic ingestion writer with source/destination checks, verified copies, exclusive writes, and collision rollback.
+- [test] Nineteen backend and 23 frontend checks, production build/budgets, live Crossref lookup, and native Codex fixture ingestion pass. Browser desktop/390px preview/import/reload and an isolated Hugo build with the actual theme pass; user KB and installed app are unchanged.
+
+## 2026-09-28
 - [test] Validate the committed consolidation independently of concurrent work: 349 frontend tests, production build/budgets, Electron compilation, and real sandboxed preload IPC pass. All 81 selected backend regressions also pass. Five implementation batches pushed to origin/main; unrelated checkout changes preserved.
 
 ## 2026-09-28
