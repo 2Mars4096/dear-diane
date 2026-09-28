@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-28
+- [infra] Install and launch the signed SSH-setup update with rollback retained; desktop proxy health and local alias discovery verified. No existing connection records or remote services changed by validation.
+- [feat] Add a visible Add SSH connection action and short Codex-style dialog with display name, hostname/alias suggestions, optional port, and SSH config/agent or identity-file authentication. Keep workspace/package options behind Advanced and private phone-relay setup separate.
+- [fix] Allow saved SSH-only profiles without private network fields; generate unique IDs, reject accidental create-overwrite, preserve installed legacy profiles, and apply target port/key options consistently to SSH and SCP.
+- [test] Nine backend and four UI regressions plus production build/budgets pass. Isolated desktop/390px browser checks verify real profile saving, key paths with spaces, repeated Add, and no horizontal overflow. No remote hosts modified.
+
 ## 2026-09-24
 - [test] Revalidate the pending browser-research runtime, native bridge, and GUI/TUI integration before committing: 460 focused tests pass, with one existing skip. Preserve prior live acceptance evidence and its native Claude authentication limitation.
 

@@ -37,6 +37,11 @@
 ## Activity disclosure
 - Lazy `ActivitySummary` translates observed action summaries into concise progress labels without predicting results. Completed replies expose Work details rather than event counts; original records stay inside the disclosure.
 
+## SSH setup
+- `RemoteConnections` uses a native modal dialog for name/hostname/port/authentication, mirroring the installed Codex workflow. Workspace and package options are progressive; phone relay configuration is a separate action.
+- Profiles add optional `ssh_port`/`identity_file` and `relay_enabled`; missing flags retain legacy behavior. SSH-only profiles have no browser URL and cannot be deployed until a private relay is configured. Normalized comparisons retain installed state on legacy renames.
+- Local-only `/api/remote/ssh-hosts` reads literal aliases and bounded Include files, returning names only. SSH/SCP share argument construction; target identity/port are never applied to the relay.
+
 ## Product stack
 
 Remote deployment: [6-remote-control](plans/6-remote-control.md) keeps the backend, native CLI processes, credentials, and durable records on the execution host. `dan.remote.profiles` saves private local connection records and installs versioned releases using SSH; `install` provisions systemd user services and checks boot lingering. `relay` transparently forwards TCP over an existing private network, so HTTP streams and WebSockets share the same path without a laptop-owned tunnel. Each host uses its own relay port/browser origin. Relay SSH alias/address are profile fields, not a hard-coded `ny` dependency.

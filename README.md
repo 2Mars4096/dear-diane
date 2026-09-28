@@ -59,7 +59,9 @@ Browser-selected files stay in your browser and offer **Download edits**, leavin
 
 ## Remote machines and phone access
 
-In **DAN settings → Remote connections**, save a machine's SSH alias, existing remote workspace, private/VPN address, and relay details. Use **Check SSH**, then **Install DAN**. The local installer needs this source checkout and `cd editor && npm run build:verify`; set `DAN_SOURCE_ROOT` when the backend runs outside the checkout. Linux targets need Python 3.11+, systemd user services, and trusted SSH host keys. Install native agent CLIs and log in on the execution host.
+In **DAN settings → SSH connections → Add SSH connection**, enter a display name and hostname (`server.example`, `user@host`, or an existing alias such as `mini`). SSH port and identity file are optional; the default uses your SSH config/agent. Save, then choose **Check SSH**. No manual SSH config edit or VPN details are needed to save a host. Workspace and package-source options are under Advanced.
+
+For persistent remote DAN and phone access, choose **Set up phone access**, enter the private/VPN and relay details, save, then choose **Install DAN**. SSH-only profiles do not yet provide a direct SSH tunnel to DAN. The local installer needs this source checkout and `cd editor && npm run build:verify`; set `DAN_SOURCE_ROOT` when the backend runs outside the checkout. Linux targets need Python 3.11+, systemd user services, and trusted SSH host keys. Install native agent CLIs and log in on the execution host.
 
 Each machine gets its own browser address on the relay. **Show access key** supplies its sign-in credential. Open that address from your phone while connected to the existing VPN. Execution and saved chats stay on the remote machine when the Mac/browser disconnects. Projects synchronize across browsers; local tabs and preferences remain separate. Backend restarts can interrupt active agent work.
 

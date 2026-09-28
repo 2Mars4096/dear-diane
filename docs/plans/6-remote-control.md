@@ -49,6 +49,8 @@ Execution host: persistent DAN backend + durable stores
 
 ## Tasks
 
+- [x] [6-2-ssh-connection-setup](6-2-ssh-connection-setup.md) — simple Add SSH dialog, manual hosts/ports/identity files, alias suggestions, separate phone setup.
+
 - [ ] [6-1-private-relay](6-1-private-relay.md) — implemented/deployed on mini and ny; direct VPN verified; physical-phone acceptance pending.
 
 - [ ] 1. Package a headless execution service.
