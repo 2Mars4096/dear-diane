@@ -21,6 +21,7 @@ from dan.server.routers.native_workers import router as native_workers_router
 from dan.server.routers.reader import router as reader_router
 from dan.server.routers.remote import router as remote_router
 from dan.server.routers.documents import router as documents_router
+from dan.server.routers.papers import router as papers_router
 from dan.server.routers.remote_registry import router as remote_registry_router
 
 
@@ -63,6 +64,7 @@ def create_app() -> FastAPI:
     app.include_router(remote_router)
     app.include_router(remote_registry_router)
     app.include_router(documents_router)
+    app.include_router(papers_router)
     if remote:
         app.add_middleware(RemoteAccess, config=remote)
     import os

@@ -186,6 +186,7 @@ export function writePaperReferenceTray(
     paperReferenceTrayStorageKey(materialId),
     JSON.stringify(normalizePaperReferenceTray(tray, materialId, pageCount))
   );
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("dan:reader-progress", { detail: materialId }));
 }
 
 export function readPaperReferenceTags(

@@ -32,6 +32,7 @@ export const readerActions = {
   setComments(path: string, comments: PaperComment[]) {
     update(path, { comments });
     try { writePaperComments({ material_id: path }, comments); } catch { /* still shown for this visit */ }
+    window.dispatchEvent(new CustomEvent("dan:reader-progress", { detail: path }));
   },
   addComment(path: string, draft: ReaderDraft, text: string) {
     const now = new Date().toISOString();

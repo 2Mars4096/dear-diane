@@ -19,6 +19,11 @@ export function readPaperPdfPosition(identity: string, storage = paperHistorySto
   } catch { return null; }
 }
 
+export function clearPaperPdfPosition(identity: string) {
+  try { paperHistoryStorage()?.removeItem?.(positionKey(identity)); } catch { /* Best effort. */ }
+}
+
 export function writePaperPdfPosition(identity: string, value: PaperPdfPosition, storage = paperHistoryStorage()) {
   try { storage?.setItem(positionKey(identity), JSON.stringify(value)); } catch { /* Reading still works without storage. */ }
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("dan:reader-progress", { detail: identity }));
 }

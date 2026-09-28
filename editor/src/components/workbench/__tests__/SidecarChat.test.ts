@@ -28,3 +28,27 @@ it("creates a linked side chat and saves the response only to that thread", asyn
     expect(JSON.parse(localStorage.getItem("dan.sidecar.v1:project:parent")!)).toEqual({threadId:"side"});
   } finally {act(()=>root.unmount());host.remove();localStorage.clear();}
 });
+
+it('resumes a server-owned reading conversation and persists its run link before execution', async () => {
+  vi.clearAllMocks(); localStorage.clear();
+  const host = document.createElement('div'); document.body.append(host); const root = createRoot(host);
+  const order: string[] = [];
+  vi.mocked(api.executeChatV2AgentRun).mockImplementationOnce(async () => { order.push('execute'); return {} as Awaited<ReturnType<typeof api.executeChatV2AgentRun>>; });
+  try {
+    await act(async () => root.render(createElement(SidecarChat, {
+      parentId: 'reader:/papers/a.pdf', workflowId: '_dan_reading', workspaceId: '_dan_reading', workspaceRoot: '/papers', context: [],
+      selection: { text: '', token: 0 }, execution: { backend: 'claude' }, leadLabel: 'Claude', onClose: vi.fn(), onCreated: vi.fn(),
+      initialLink: { threadId: 'side' }, onLinkChange: async link => { order.push(link.runId ? 'save-run' : 'save-complete'); },
+      purpose: { title: 'Reading paper', framing: 'Discuss this paper.', placeholder: 'Ask', empty: 'Read' },
+    })));
+    expect(api.getChatV2Thread).toHaveBeenCalledWith('_dan_reading', 'side');
+    const input = host.querySelector('textarea')!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Explain the mechanism'); input.dispatchEvent(new Event('input', { bubbles: true })); });
+    await act(async () => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Send')!.click());
+    expect(api.createChatV2Thread).not.toHaveBeenCalled();
+    expect(order[0]).toBe('save-run');
+    expect(order).toContain('execute');
+    expect(order).toContain('save-complete');
+    expect(api.createChatV2AgentRun).toHaveBeenCalledWith(expect.objectContaining({ workflow_id: '_dan_reading', thread_id: 'side' }));
+  } finally { act(() => root.unmount()); host.remove(); localStorage.clear(); }
+});

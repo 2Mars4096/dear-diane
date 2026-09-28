@@ -5,19 +5,21 @@ import type { ChatMessage } from "../../types/chat";
 import { createChatV2Thread, getChatV2Thread, saveChatV2Thread, createChatV2AgentRun, executeChatV2AgentRun, getChatV2AgentRun, getChatV2AgentRunEvents, postChatV2AgentRunCommand } from "../../lib/chatV2Api";
 import { streamedMessageContent } from "./eventPresentation";
 
-type Link = { threadId: string; runId?: string; assistantId?: string };
+export type Link = { threadId: string; runId?: string; assistantId?: string };
 type Execution = Parameters<typeof executeChatV2AgentRun>[1];
 const message = (role: "user" | "assistant", content: string): ChatMessage => ({ id: crypto.randomUUID(), role, content, timestamp: Date.now() });
 /** A reading companion replaces the parent-conversation framing with the document being read. */
 export type SidecarPurpose = { title: string; framing: string; placeholder: string; empty: string };
-export function SidecarChat({ parentId, workflowId, workspaceRoot, workspaceId, context, selection, execution, leadLabel, onClose, onCreated, header, purpose }: {
+export function SidecarChat({ parentId, workflowId, workspaceRoot, workspaceId, context, selection, execution, leadLabel, onClose, onCreated, header, purpose, initialLink, onLinkChange }: {
+  initialLink?: Link;
+  onLinkChange?: (link: Link) => Promise<void>;
   header?: ReactNode;
   purpose?: SidecarPurpose;
   parentId: string; workflowId: string; workspaceRoot: string; workspaceId: string; context: ChatMessage[];
   selection: { text: string; token: number; context?: string }; execution: Execution; leadLabel: string; onClose: () => void; onCreated: () => void;
 }) {
   const key = `dan.sidecar.v1:${workflowId}:${parentId}`;
-  const [link, setLink] = useState<Link | null>(() => { try { return JSON.parse(localStorage.getItem(key) || "null"); } catch { return null; } });
+  const [link, setLink] = useState<Link | null>(() => { if (initialLink) return initialLink; try { return JSON.parse(localStorage.getItem(key) || "null"); } catch { return null; } });
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [quote, setQuote] = useState(selection.text);
@@ -29,7 +31,7 @@ export function SidecarChat({ parentId, workflowId, workspaceRoot, workspaceId, 
   const loadedThread = useRef("");
   const composer = useRef<HTMLTextAreaElement>(null);
   const update = (next: ChatMessage[]) => { currentMessages.current = next; setMessages(next); };
-  const remember = (next: Link) => { localStorage.setItem(key, JSON.stringify(next)); setLink(next); };
+  const remember = async (next: Link) => { await onLinkChange?.(next); localStorage.setItem(key, JSON.stringify(next)); setLink(next); };
   useEffect(() => { setQuote(selection.text); setQuoteContext(selection.context ?? ""); composer.current?.focus(); }, [selection.token, selection.text, selection.context]);
   useEffect(() => {
     if (!link?.threadId || loadedThread.current === link.threadId) return;
@@ -58,7 +60,7 @@ export function SidecarChat({ parentId, workflowId, workspaceRoot, workspaceId, 
         if (terminal) {
           await saveChatV2Thread(workflowId, active.threadId, { messages: next });
           if (disposed) return;
-          remember({ threadId: active.threadId });
+          await remember({ threadId: active.threadId });
           onCreated();
           return;
         }
@@ -76,7 +78,7 @@ export function SidecarChat({ parentId, workflowId, workspaceRoot, workspaceId, 
       if (!current) {
         const thread = await createChatV2Thread(workflowId, { title: `${purpose?.title ?? "Sidecar"}: ${draft.trim().slice(0, 65)}`, mode: "agent", parent_thread_id: parentId, branch_type: "explore" });
         loadedThread.current = thread.id;
-        current = { threadId: thread.id }; remember(current); onCreated();
+        current = { threadId: thread.id }; await remember(current); onCreated();
       }
       const text = `${quote ? `Selected passage:\n${quote}\n\n` : ""}${draft.trim()}`;
       const assistant = message("assistant", "");
@@ -93,7 +95,7 @@ export function SidecarChat({ parentId, workflowId, workspaceRoot, workspaceId, 
         surface_context: { workspace_root: workspaceRoot, workspace_id: workspaceId, parent_thread_id: parentId, workspace_mode:"work" } });
       const runId = created.task_run_ref?.run_id || created.v2_control_plane.run_id;
       if (!runId) throw new Error("No sidecar run was created");
-      remember({ ...current, runId, assistantId: assistant.id });
+      await remember({ ...current, runId, assistantId: assistant.id });
       await executeChatV2AgentRun(runId, execution);
       setDraft(""); setQuote(""); setQuoteContext("");
     } catch (error) { setError(String(error)); }
