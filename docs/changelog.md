@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-28
+- [infra] Restore mini’s existing connection in the desktop app’s active private profile store, retaining its access key. Direct SSH, authenticated relay health, and enabled/lingering services on mini/ny verified; no remote services changed.
 - [infra] Install and launch the signed SSH-setup update with rollback retained; desktop proxy health and local alias discovery verified. No existing connection records or remote services changed by validation.
 - [feat] Add a visible Add SSH connection action and short Codex-style dialog with display name, hostname/alias suggestions, optional port, and SSH config/agent or identity-file authentication. Keep workspace/package options behind Advanced and private phone-relay setup separate.
 - [fix] Allow saved SSH-only profiles without private network fields; generate unique IDs, reject accidental create-overwrite, preserve installed legacy profiles, and apply target port/key options consistently to SSH and SCP.

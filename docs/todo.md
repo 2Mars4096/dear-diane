@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Restore mini in the desktop Settings connection list and verify existing SSH/private-relay services — [private relay](plans/6-1-private-relay.md).
+
 - [x] Simplify adding SSH hosts to a Codex-style dialog; support manual hosts, optional ports/keys, and separate phone setup — [6-2](plans/6-2-ssh-connection-setup.md).
 
 - [x] Add local PDF font compatibility mode and verify an embedded-font fixture — [reader](UI-plans/3-reader-and-side-panel.md).

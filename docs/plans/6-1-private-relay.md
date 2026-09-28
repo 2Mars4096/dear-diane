@@ -44,3 +44,8 @@ ssh -t ny 'sudo ufw allow in on wgny proto tcp from 10.77.77.0/24 to 10.77.77.1 
 - Public HTTPS/account login, phone synchronization of the entire Mac connection directory, individual session revocation, uninstall UI, and native approval/restart-resume capabilities remain in the parent plan.
 - Browser disconnect does not stop execution. Backend restart can interrupt running work; existing recovery records reflect that. No live run was interrupted by restart checks.
 - Existing Mac legacy project/thread bindings remain local. New remote sessions share their server-side project ID.
+
+## Desktop connection restored, 2026-09-28
+- [x] Restore only mini from the original checkout profile store into the desktop app’s `~/Library/Application Support/dan/graphs/remote_connections/profiles.json` (0600), preserving its existing access key and installation state. The desktop had an empty connection directory.
+- [x] Direct SSH and authenticated relay health succeed; execution and relay services are active/enabled with `Linger=yes`. No service redeployment or provider credential transfer was needed; s600 was untouched.
+- Desktop Settings reads the restored Mini profile. Reopen Settings if it was already showing the empty list.
