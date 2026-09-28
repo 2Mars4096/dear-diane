@@ -261,9 +261,10 @@ export const listWorkspaceSkillSuggestions = (rootPath?: string, limit = 80) => 
   );
 };
 
-export const listWorkspaceRootSuggestions = (query?: string) => {
+export const listWorkspaceRootSuggestions = (query?: string, limit?: number) => {
   const params = new URLSearchParams();
   if (query?.trim()) params.set("query", query.trim());
+  if (limit !== undefined) params.set("limit", String(limit));
   const suffix = params.toString();
   return request<{ root: string; suggestions: WorkspaceRootSuggestion[] }>(
     `/workspace-roots${suffix ? `?${suffix}` : ""}`,

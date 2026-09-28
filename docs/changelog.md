@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-28
+- [feat] Open existing remote project folders through an inline, host-labelled chooser with subfolder browsing, path search, retry, and stale-response protection. Preserve the desktop picker/drop flow; remote project metadata persists on the execution host.
+- [test] Four project-dialog tests and production build/budgets pass. Live mini desktop/390px selection, server registry persistence, and reload checks pass; temporary test registration removed.
+- [infra] Update idle mini to the matching frontend/backend release through the existing installer; services healthy and boot-persistent, credentials retained. Open the user's requested example Dropbox project, fig-to-markdown, on mini.
 - [infra] Restore mini’s existing connection in the desktop app’s active private profile store, retaining its access key. Direct SSH, authenticated relay health, and enabled/lingering services on mini/ny verified; no remote services changed.
 - [infra] Install and launch the signed SSH-setup update with rollback retained; desktop proxy health and local alias discovery verified. No existing connection records or remote services changed by validation.
 - [feat] Add a visible Add SSH connection action and short Codex-style dialog with display name, hostname/alias suggestions, optional port, and SSH config/agent or identity-file authentication. Keep workspace/package options behind Advanced and private phone-relay setup separate.

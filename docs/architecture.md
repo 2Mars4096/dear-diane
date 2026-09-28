@@ -1,5 +1,8 @@
 # Architecture
 
+## Remote project folders
+- ProjectSettings detects the authenticated server's `dan-remote-machine` marker and replaces the desktop drop/picker with `RemoteProjectFolder`. The inline chooser uses the existing same-origin workspace-roots API, ignores stale responses, and returns a server-resolved path into the usual pinnedPaths/project registry flow. No SSH credentials or Mac paths enter this browser flow.
+
 ## PDF font compatibility
 - ReaderView persists font compatibility per file identity through `reader/lib/font-compatibility.ts`; InteractivePdfViewer reloads with `disableFontFace` and system-font substitution disabled while preserving saved position. Repair remains local and does not change PDF bytes. Reader text/OCR callbacks ignore results from replaced documents.
 

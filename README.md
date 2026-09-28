@@ -65,6 +65,8 @@ For persistent remote DAN and phone access, choose **Set up phone access**, ente
 
 Each machine gets its own browser address on the relay. **Show access key** supplies its sign-in credential. Open that address from your phone while connected to the existing VPN. Execution and saved chats stay on the remote machine when the Mac/browser disconnects. Projects synchronize across browsers; local tabs and preferences remain separate. Backend restarts can interrupt active agent work.
 
+To work on an existing remote project, choose **Open Mini** (or your saved host), then **New project**. Browse the folders on that machine, select one, and choose **Create project**. Use the arrow beside a folder to see its subfolders, or enter a remote path/prefix and choose **Go**. This registers the folder in DAN without moving or uploading files. Chats and agents use that remote working folder. Project settings also lets you change it later.
+
 The Mac manages setup. OpenRouter provisioning is an explicit installation checkbox; native account directories are never copied. Keys are kept in private files on the Mac/execution host. The initial relay is private-network HTTP over your VPN, not a public website. Change relay fields to use another relay; retire the previous service after verifying the replacement. Each remote needs a distinct relay port.
 
 For slow package networks, the connection form offers the Tsinghua PyPI mirror. Prepared deployments can set `DAN_REMOTE_WHEELHOUSE` to a folder of compatible Linux/Python wheels, including build dependencies; those wheels are bundled and installed without reaching a package index.

@@ -222,6 +222,24 @@
 .wb-project-settings footer button { font-size:12px; padding:9px 14px; border-radius:7px; }
 .wb-project-settings button[type=submit] { background:var(--wb-ink); color:var(--wb-paper); }
 .wb-project-settings button:disabled { opacity:.4; }
+.wb-project-settings { max-height:calc(100dvh - 32px); overflow-y:auto; }
+.wb-remote-project-folder > button { margin:10px 0; font-size:12px; text-decoration:underline; text-underline-offset:3px; }
+.wb-remote-folders { border:1px solid var(--wb-line); border-radius:7px; padding:12px; margin-bottom:14px; }
+.wb-remote-folders label { margin:0 0 8px; }
+.wb-remote-folder-search { display:flex; align-items:center; gap:8px; }
+.wb-project-settings .wb-remote-folder-search input { min-width:0; margin:0; flex:1; }
+.wb-remote-folder-search button { font-size:12px; padding:6px 2px; }
+.wb-remote-folders ul { list-style:none; padding:0; margin:10px 0; max-height:230px; overflow-y:auto; }
+.wb-remote-folders li { display:flex; border-bottom:1px solid var(--wb-line); }
+.wb-remote-folders li button { padding:9px 4px; }
+.wb-remote-folders li button:hover { background:var(--wb-soft); }
+.wb-remote-folders li button:focus-visible { outline:2px solid var(--wb-accent); outline-offset:-2px; }
+.wb-remote-folder-select { display:flex; align-items:center; gap:8px; flex:1; min-width:0; text-align:left; }
+.wb-remote-folder-select > svg { flex-shrink:0; }
+.wb-remote-folder-select > span { min-width:0; }
+.wb-remote-folder-select strong, .wb-remote-folder-select small { display:block; overflow-wrap:anywhere; font-size:12px; }
+.wb-remote-folder-select strong { font-weight:500; }
+.wb-remote-folder-select small { color:var(--wb-muted); margin-top:3px; font-size:11px; }
 @media (hover:none) { .wb-project-sidebar [data-session-action] { display:grid; } }
 .wb-folder-drop { border:1px dashed var(--wb-muted); border-radius:10px; padding:16px; margin:-6px 0 12px; display:flex; flex-direction:column; gap:16px; transition:background 120ms,border-color 120ms; }
 .wb-folder-drop.is-dragging { background:var(--wb-soft); border-color:var(--wb-accent); outline:2px solid var(--wb-accent); outline-offset:2px; }

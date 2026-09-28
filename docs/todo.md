@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Open existing mini folders as remote DAN projects with an inline folder chooser; deployed and opened a Dropbox project — [6-3](plans/6-3-remote-project-folders.md).
+
 - [x] Restore mini in the desktop Settings connection list and verify existing SSH/private-relay services — [private relay](plans/6-1-private-relay.md).
 
 - [x] Simplify adding SSH hosts to a Codex-style dialog; support manual hosts, optional ports/keys, and separate phone setup — [6-2](plans/6-2-ssh-connection-setup.md).
