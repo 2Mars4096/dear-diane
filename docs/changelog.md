@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-28
+- [refactor] Extract shared Hugo metadata parsing from the HTTP router and move atomic file replacement below tools/server. Reuse it for documents and private state, retaining workspace permissions and enforcing mode 0600 for private files. Keep the standalone SSH installer independent.
+- [test] All 81 selected backend regressions pass, including concurrent private writes, failure cleanup, workspace umask, documents, papers, remote profiles, and product APIs. The relay case passes with loopback permission after the sandbox blocked binding.
+
+## 2026-09-28
 - [refactor] Generate the runtime Electron preload from its sole TypeScript source and remove the handwritten CommonJS duplicate. Compilation removes the unused intermediate preload.js.
 - [test] Real hidden sandboxed Electron verification passes for IPC, watcher callbacks, drop bridge availability, and renderer isolation.
 

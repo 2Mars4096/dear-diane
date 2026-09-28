@@ -23,7 +23,7 @@ from dan.providers.multimodal import (
     parse_data_url_image,
 )
 from dan.tools import get_all_tools
-from dan.tools._atomic_file import atomic_write_bytes
+from dan._atomic_file import atomic_write_bytes
 from dan.tools._git_helpers import _find_repo, _git_binary
 from dan.worker.context_capsules import (
     build_tool_context_capsules,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import os
 
-from dan.tools._atomic_file import atomic_write_text
+from dan._atomic_file import atomic_write_text
 from dan.tools._source_structure import suspicious_source_structure_issues
 from dan.tools._workspace import validate_path
 

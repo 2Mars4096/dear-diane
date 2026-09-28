@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **Consolidation backend checks (2026-09-28):** the isolated relay test could not bind loopback under the sandbox; all other 80 selected tests passed. Rerunning that single case with network permission passed. No remote host was contacted.
+
 - **Transport extraction validation (2026-09-28):** TypeScript caught a preview-URL helper still using the API base constant after transport extraction. Restored that shared constant and reran compilation successfully before finalizing the unpublished batch.
 
 - **Consolidation test setup (2026-09-28):** an editor-prefixed path was accidentally used from inside `editor/`, placing the transport test in a nested directory and skipping the polling test creation. Moved the test, removed the empty accidental directories, and reran both explicit test paths successfully.

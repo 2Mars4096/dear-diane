@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from dan.remote.install import private_write
+from dan._atomic_file import atomic_write_text
 from dan.server.paths import resolve_graphs_dir, resolve_workspace_root
 
 router = APIRouter(prefix="/api/remote/registry")
@@ -46,5 +46,5 @@ async def patch_registry(patch: Patch):
             raise HTTPException(422, "Invalid project update")
         current = value["projects"].get(key, {})
         value["projects"][key] = {**current, **changes, "id": key}
-    private_write(Path(resolve_graphs_dir()) / "remote-projects.json", json.dumps(value))
+    atomic_write_text(Path(resolve_graphs_dir()) / "remote-projects.json", json.dumps(value), mode=0o600)
     return {"enabled": True, **value}

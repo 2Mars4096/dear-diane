@@ -79,8 +79,8 @@ def read_profiles():
 
 
 def write_profiles(profiles):
-    from dan.remote.install import private_write
-    private_write(directory() / "profiles.json", json.dumps(profiles, indent=2))
+    from dan._atomic_file import atomic_write_text
+    atomic_write_text(directory() / "profiles.json", json.dumps(profiles, indent=2), mode=0o600)
 
 
 def public_profile(value):

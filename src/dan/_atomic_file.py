@@ -1,4 +1,4 @@
-"""Crash-safe local file replacement helpers used by mutation tools."""
+"""Crash-safe local file replacement helpers shared by tools and durable server state."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import secrets
 import stat
 
 
-def atomic_write_bytes(path: str | Path, content: bytes) -> None:
+def atomic_write_bytes(path: str | Path, content: bytes, *, mode: int | None = None) -> None:
     """Replace ``path`` atomically after fully writing and syncing a sibling temp file."""
 
     target = Path(path)
@@ -19,14 +19,15 @@ def atomic_write_bytes(path: str | Path, content: bytes) -> None:
     except OSError:
         pass
 
-    descriptor, temporary = _open_sibling_temporary(target)
+    replacement_mode = mode if mode is not None else existing_mode
+    descriptor, temporary = _open_sibling_temporary(target, mode=replacement_mode)
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        if existing_mode is not None:
-            os.chmod(temporary, existing_mode)
+        if replacement_mode is not None:
+            os.chmod(temporary, replacement_mode)
         os.replace(temporary, target)
         _fsync_directory(target.parent)
     finally:
@@ -41,8 +42,9 @@ def atomic_write_text(
     content: str,
     *,
     encoding: str = "utf-8",
+    mode: int | None = None,
 ) -> None:
-    atomic_write_bytes(path, content.encode(encoding))
+    atomic_write_bytes(path, content.encode(encoding), mode=mode)
 
 
 def _fsync_directory(path: Path) -> None:
@@ -60,7 +62,7 @@ def _fsync_directory(path: Path) -> None:
             os.close(descriptor)
 
 
-def _open_sibling_temporary(target: Path) -> tuple[int, Path]:
+def _open_sibling_temporary(target: Path, *, mode: int | None = None) -> tuple[int, Path]:
     """Create a private-name sibling while honoring the process umask.
 
     ``tempfile.mkstemp`` always creates mode ``0600``. That is appropriate for
@@ -75,7 +77,7 @@ def _open_sibling_temporary(target: Path) -> tuple[int, Path]:
     for _attempt in range(100):
         temporary = target.parent / (f".{target.name}.dan-tmp-{secrets.token_hex(12)}")
         try:
-            descriptor = os.open(temporary, flags, 0o666)
+            descriptor = os.open(temporary, flags, 0o666 if mode is None else mode)
         except FileExistsError:
             continue
         return descriptor, temporary

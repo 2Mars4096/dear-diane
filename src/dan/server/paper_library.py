@@ -12,9 +12,9 @@ from textwrap import dedent
 from fastapi import HTTPException
 
 from dan.notes import default_workspace_notes_root, content_bootstrap_root_candidates
-from dan.remote.install import private_write
+from dan._atomic_file import atomic_write_text
 from dan.server.paths import resolve_graphs_dir, resolve_workspace_root
-from dan.server.routers.misc import _parse_yaml_frontmatter, _yaml_list
+from dan.notes_frontmatter import parse_yaml_frontmatter, yaml_list
 
 LOCK = threading.RLock()
 _cache: dict[str, tuple[tuple, dict]] = {}
@@ -34,7 +34,7 @@ def read_json(path: Path, fallback):
 
 
 def save_json(path: Path, value):
-    private_write(path, json.dumps(value, ensure_ascii=False))
+    atomic_write_text(path, json.dumps(value, ensure_ascii=False), mode=0o600)
 
 
 def settings() -> dict:
@@ -87,7 +87,7 @@ def metadata(raw: str) -> tuple[dict, str]:
     if not match:
         return {}, raw
     header = match.group(1)
-    data = _parse_yaml_frontmatter(header)
+    data = parse_yaml_frontmatter(header)
     for block in re.finditer(r"^([\w-]+):\s*([>|])[-+]?\s*\n((?:(?:[ \t]+[^\n]*|)\n?)+?)(?=^[\w-]+:|\Z)", header, re.M):
         value = dedent(block.group(3)).strip()
         data[block.group(1)] = re.sub(r"\s+", " ", value) if block.group(2) == ">" else value
@@ -138,7 +138,7 @@ def catalogue() -> dict:
                                  "title": str(data.get("title") or fields.get("title") or key),
                                  "authors": fields.get("author", str(data.get("authors", ""))), "year": fields.get("year", ""),
                                  "journal": fields.get("journal", fields.get("booktitle", "")),
-                                 "tags": _yaml_list(data.get("tags", [])), "abstract": str(data.get("abstract") or fields.get("abstract", "")),
+                                 "tags": yaml_list(data.get("tags", [])), "abstract": str(data.get("abstract") or fields.get("abstract", "")),
                                  "bibtex": bib, "notes": notes, "note_path": str(path),
                                  "path": str(pdf) if pdf and pdf.suffix.lower() == ".pdf" else "",
                                  "added": str(data.get("date") or datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat())}

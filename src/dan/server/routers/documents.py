@@ -1,12 +1,11 @@
 """Bounded UTF-8 document editing with optimistic revision checks."""
 import hashlib
-import os
-import tempfile
 import threading
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+from dan._atomic_file import atomic_write_bytes
 from dan.server.routers.misc import _resolve_workspace_file_path
 
 router = APIRouter()
@@ -54,18 +53,8 @@ def save_document(body: DocumentSave):
         current = read_text(resolved)
         if body.revision != current['revision']:
             raise HTTPException(409, 'File changed on disk. Download your edits before reopening it.')
-        temp = None
         try:
-            with tempfile.NamedTemporaryFile(dir=resolved.parent, prefix='.dan-edit-', delete=False) as handle:
-                temp = handle.name
-                os.fchmod(handle.fileno(), resolved.stat().st_mode & 0o777)
-                handle.write(raw)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp, resolved)
+            atomic_write_bytes(resolved, raw, mode=resolved.stat().st_mode & 0o777)
         except OSError as exc:
             raise HTTPException(500, 'File could not be saved') from exc
-        finally:
-            if temp and os.path.exists(temp):
-                os.unlink(temp)
     return {'revision': hashlib.sha256(raw).hexdigest()}

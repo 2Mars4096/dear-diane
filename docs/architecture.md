@@ -1,5 +1,9 @@
 # Architecture
 
+## Shared metadata and durable writes
+- `dan.notes_frontmatter` provides the existing lightweight Hugo parser to Notes routes and the paper catalogue without importing a router. It is not a general YAML parser.
+- `dan._atomic_file` serves tools, runtime mutations, document editing, profiles, paper state, and the remote project registry. Existing workspace permissions are preserved; private state explicitly uses mode 0600 from temporary-file creation through replacement. Unique sibling temporaries, fsync, and failure cleanup are shared. The standalone SSH installer keeps its dependency-free writer.
+
 ## JSON transport and library subscriptions
 - `lib/http.ts` owns JSON deadlines, caller abort propagation, header merging, and structured `ApiError` responses. API, papers, and SSH keep typed endpoint wrappers; ordinary requests default to 10 seconds, SSH inspection allows 45 seconds.
 - The paper store owns one focus listener and 30-second poller for all subscribers, released when the final consumer unsubscribes. Failed/deadline-expired catalogue requests release the shared pending promise.

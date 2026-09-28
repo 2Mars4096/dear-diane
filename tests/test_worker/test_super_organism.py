@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from dan.tools import _atomic_file
+from dan import _atomic_file
 from dan.tools.file_write import file_write
 import dan.worker.organisms.local_runtime as local_runtime_module
 from dan.providers import CompletionResult
