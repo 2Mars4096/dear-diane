@@ -38,12 +38,20 @@ async def save(profile_id: str, profile: profiles.Profile, request: Request):
     local(request)
     if profile_id != profile.id:
         raise HTTPException(400, "Machine ID does not match")
+    if request.headers.get("if-none-match") == "*" and profile_id in profiles.read_profiles():
+        raise HTTPException(409, "A connection with this ID already exists. Refresh connections and try again.")
     if any(job["machine"] == profile_id and job["status"] == "running" for job in jobs.values()):
         raise HTTPException(409, "Wait for this installation to finish")
     try:
         return profiles.save_profile(profile)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/ssh-hosts")
+async def ssh_hosts(request: Request):
+    local(request)
+    return {"hosts": await asyncio.to_thread(profiles.ssh_hosts)}
 
 
 def saved(profile_id):
@@ -77,6 +85,8 @@ class InstallRequest(BaseModel):
 async def install(profile_id: str, body: InstallRequest, request: Request):
     local(request)
     value = saved(profile_id)
+    if not value.get("relay_enabled", True):
+        raise HTTPException(409, "Set up phone access before installing the persistent remote service")
     if any(job["status"] == "running" for job in jobs.values()):
         raise HTTPException(409, "Another installation is running")
     job_id = secrets.token_hex(12)

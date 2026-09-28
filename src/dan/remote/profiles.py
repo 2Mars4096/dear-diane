@@ -12,7 +12,7 @@ import tempfile
 import time
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from dan.remote.relay import private_address
 from dan.server.paths import resolve_graphs_dir
@@ -22,10 +22,13 @@ class Profile(BaseModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")
     name: str = Field(min_length=1, max_length=80)
     ssh_alias: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.@-]{0,127}$")
+    ssh_port: int | None = Field(default=None, ge=1, le=65535)
+    identity_file: str = Field(default="", max_length=1024)
+    relay_enabled: bool = True  # Existing profiles already use the private relay.
     relay_ssh_alias: str = Field(default="ny", pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.@-]{0,127}$")
     ssh_via_relay: bool = True
     package_source: Literal["pypi", "tsinghua"] = "pypi"
-    address: str
+    address: str = ""
     port: int = Field(default=8765, ge=1024, le=65535)
     relay_address: str = "10.77.77.1"
     relay_port: int = Field(default=8765, ge=1024, le=65535)
@@ -34,7 +37,20 @@ class Profile(BaseModel):
     @field_validator("address", "relay_address")
     @classmethod
     def private_ip(cls, value):
-        return private_address(value)
+        return private_address(value) if value else ""
+
+    @field_validator("identity_file")
+    @classmethod
+    def safe_identity(cls, value):
+        if value and (not value.startswith(("/", "~/")) or any(ord(c) < 32 for c in value)):
+            raise ValueError("Use an absolute identity file path or ~/.ssh/key")
+        return value
+
+    @model_validator(mode="after")
+    def relay_ready(self):
+        if self.relay_enabled and (not self.address or not self.relay_address):
+            raise ValueError("Phone access requires the remote and relay private addresses")
+        return self
 
     @field_validator("workspace")
     @classmethod
@@ -45,6 +61,8 @@ class Profile(BaseModel):
 
     @property
     def url(self):
+        if not self.relay_enabled:
+            return None
         host = f"[{self.relay_address}]" if ":" in self.relay_address else self.relay_address
         return f"http://{host}:{self.relay_port}"
 
@@ -72,10 +90,11 @@ def public_profile(value):
 def save_profile(profile):
     values = read_profiles()
     for key, value in values.items():
-        if key != profile.id and (value["relay_address"], value["relay_port"]) == (profile.relay_address, profile.relay_port):
+        if profile.relay_enabled and value.get("relay_enabled", True) and key != profile.id and (value["relay_address"], value["relay_port"]) == (profile.relay_address, profile.relay_port):
             raise ValueError("Another machine already uses that relay address and port")
     old = values.get(profile.id, {})
-    changed = any(old.get(k) != v for k, v in profile.model_dump().items() if k != "name")
+    normalized = Profile.model_validate(old).model_dump() if old else {}
+    changed = any(normalized.get(k) != v for k, v in profile.model_dump().items() if k != "name")
     values[profile.id] = {**old, **profile.model_dump(), "url": profile.url, "access_key": old.get("access_key") or secrets.token_urlsafe(32), "installed": old.get("installed", False) and not changed}
     write_profiles(values)
     return public_profile(values[profile.id])
@@ -94,8 +113,52 @@ async def command(args, *, data=None, timeout=30):
     return stdout.decode()
 
 
-def ssh(alias, jump=None):
-    return ["ssh", "-o", "ControlPath=none", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", *(["-J", jump] if jump else []), alias]
+def ssh(alias, jump=None, *, port=None, identity_file=""):
+    return ["ssh", *ssh_options(jump, port=port, identity_file=identity_file), alias]
+
+
+def ssh_options(jump=None, *, port=None, identity_file="", scp=False):
+    return ["-o", "ControlPath=none", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", *(["-J", jump] if jump else []), *(["-P" if scp else "-p", str(port)] if port else []), *(["-i", str(Path(identity_file).expanduser())] if identity_file else [])]
+
+
+def ssh_hosts():
+    """Suggest literal aliases, including Include files; never return key/config contents."""
+    import glob
+    import re
+    hosts, visited = set(), set()
+    base = Path.home() / ".ssh"
+    def read(path, depth=0):
+        path = Path(path).expanduser().resolve()
+        if depth > 8 or path in visited or len(visited) >= 100:
+            return
+        visited.add(path)
+        try:
+            if path.stat().st_size > 1024 * 1024:
+                return
+            lines = path.read_text().splitlines()
+        except (OSError, UnicodeError):
+            return
+        for line in lines:
+            try:
+                words = shlex.split(line, comments=True)
+            except ValueError:
+                continue
+            if not words:
+                continue
+            directive, *args = words
+            if "=" in directive:
+                directive, value = directive.split("=", 1)
+                args = [value, *args]
+            args = [word for word in args if word and word != "="]
+            if directive.lower() == "host":
+                hosts.update(word for word in args if re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}", word))
+            elif directive.lower() == "include":
+                for pattern in args:
+                    pattern = Path(pattern).expanduser()
+                    for included in glob.iglob(str(pattern if pattern.is_absolute() else base / pattern)):
+                        read(included, depth + 1)
+    read(base / "config")
+    return sorted(hosts, key=str.lower)
 
 
 async def inspect(profile):
@@ -104,8 +167,8 @@ async def inspect(profile):
 from pathlib import Path
 h=Path.home()
 p=":".join(map(str,[h/".local/bin",*sorted((h/".nvm/versions/node").glob("*/bin"),reverse=True),h/".npm-global/bin",Path("/usr/local/bin"),Path("/usr/bin"),Path("/bin")]))
-print(json.dumps({"hostname":platform.node(),"platform":platform.system(),"home":str(h),"tools":{n:shutil.which(n,path=p) for n in ["python3.11","python3.12","python3.13","uv","node","codex","claude","cursor","agy"]},"linger":subprocess.run(["loginctl","show-user",os.environ["USER"],"-p","Linger"],capture_output=True,text=True).stdout.strip()}))'''
-    output = await command(ssh(profile.ssh_alias, profile.relay_ssh_alias if profile.ssh_via_relay else None) + ["python3 -c " + shlex.quote(script)])
+print(json.dumps({"hostname":platform.node(),"platform":platform.system(),"home":str(h),"tools":{n:shutil.which(n,path=p) for n in ["python3.11","python3.12","python3.13","uv","node","codex","claude","cursor","agy"]},"linger":subprocess.run(["loginctl","show-user",os.environ.get("USER",""),"-p","Linger"],capture_output=True,text=True).stdout.strip() if shutil.which("loginctl") else "Boot persistence not checked"}))'''
+    output = await command(ssh(profile.ssh_alias, profile.relay_ssh_alias if profile.ssh_via_relay else None, port=profile.ssh_port, identity_file=profile.identity_file) + ["python3 -c " + shlex.quote(script)])
     return json.loads(output)
 
 
@@ -131,6 +194,8 @@ def build_bundle():
 
 async def deploy(value, *, share_openrouter=False, progress=lambda message: None):
     profile = Profile.model_validate(value)
+    if not profile.relay_enabled:
+        raise ValueError("Set up phone access before installing the persistent remote service")
     release = time.strftime("%Y%m%d%H%M%S") + "-" + secrets.token_hex(3)
     config = {**profile.model_dump(), "url": profile.url, "access_key": value["access_key"], "release": release, "archive": f".dan-release-{release}.tar.gz"}
     installer = Path(__file__).with_name("install.py").read_text()
@@ -138,7 +203,7 @@ async def deploy(value, *, share_openrouter=False, progress=lambda message: None
     archive = await asyncio.to_thread(build_bundle)
     try:
         progress("Uploading the release to " + profile.ssh_alias)
-        await command(["scp", "-q", "-o", "ControlPath=none", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", *(["-J", profile.relay_ssh_alias] if profile.ssh_via_relay else []), str(archive), f"{profile.ssh_alias}:{config['archive']}"], timeout=600)
+        await command(["scp", "-q", *ssh_options(profile.relay_ssh_alias if profile.ssh_via_relay else None, port=profile.ssh_port, identity_file=profile.identity_file, scp=True), str(archive), f"{profile.ssh_alias}:{config['archive']}"], timeout=600)
     finally:
         archive.unlink(missing_ok=True)
     if share_openrouter:
@@ -148,7 +213,7 @@ async def deploy(value, *, share_openrouter=False, progress=lambda message: None
         if not config["openrouter_key"]:
             raise RuntimeError("No local OpenRouter key is configured")
     progress("Installing the persistent execution service")
-    execution = json.loads(await command(ssh(profile.ssh_alias, profile.relay_ssh_alias if profile.ssh_via_relay else None) + ["python3 -c " + shlex.quote(installer)], data=json.dumps({**config, "role": "execution"}).encode(), timeout=600))
+    execution = json.loads(await command(ssh(profile.ssh_alias, profile.relay_ssh_alias if profile.ssh_via_relay else None, port=profile.ssh_port, identity_file=profile.identity_file) + ["python3 -c " + shlex.quote(installer)], data=json.dumps({**config, "role": "execution"}).encode(), timeout=600))
     progress("Installing the relay on " + profile.relay_ssh_alias)
     relay_config = {**profile.model_dump(), "role": "relay", "relay_source": Path(__file__).with_name("relay.py").read_text()}
     relay = json.loads(await command(ssh(profile.relay_ssh_alias) + ["python3 -c " + shlex.quote(installer)], data=json.dumps(relay_config).encode(), timeout=90))

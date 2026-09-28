@@ -180,3 +180,84 @@ def test_service_paths_use_systemd_directive_syntax(monkeypatch, tmp_path):
     unit = (home / ".config/systemd/user/dan-relay-mini.service").read_text()
     assert f"WorkingDirectory={home}/.local/share/dan-remote/mini\n" in unit
     assert result["boot_persistent"] is True
+
+
+def test_manual_ssh_profiles_without_relay_and_create_collision(monkeypatch, tmp_path):
+    from dan.remote import profiles
+    monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path))
+    monkeypatch.delenv("DAN_REMOTE_CONFIG", raising=False)
+    profile = Profile(id="manual", name="Manual", ssh_alias="adam@server.example", ssh_port=2222,
+                      identity_file="~/.ssh/my key", relay_enabled=False, ssh_via_relay=False)
+    assert profile.url is None
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        body = profile.model_dump()
+        assert client.put("/api/remote/connections/manual", json=body, headers={"If-None-Match": "*"}).status_code == 200
+        assert client.put("/api/remote/connections/manual", json={**body, "name": "Overwrite"}, headers={"If-None-Match": "*"}).status_code == 409
+        assert read_profiles()["manual"]["name"] == "Manual"
+        assert client.post("/api/remote/connections/manual/install", json={}).status_code == 409
+        assert "access_key" not in client.get("/api/remote/connections").text
+    # Two SSH-only profiles need not reserve private relay ports.
+    save_profile(profile.model_copy(update={"id": "second"}))
+    for update in ({"ssh_port": 0}, {"ssh_port": 65536}, {"identity_file": "-oProxyCommand=bad"}, {"identity_file": "/tmp/key\nextra"}, {"relay_enabled": True}):
+        with pytest.raises(ValueError):
+            Profile.model_validate({**profile.model_dump(), **update})
+    # Introducing defaults must not mark an unchanged legacy install as stale.
+    legacy = Profile(id="mini", name="Mini", ssh_alias="mini", address="10.77.77.3").model_dump()
+    for key in ("ssh_port", "identity_file", "relay_enabled"):
+        legacy.pop(key)
+    profiles.write_profiles({"mini": {**legacy, "installed": True, "access_key": "keep"}})
+    assert save_profile(Profile.model_validate({**legacy, "name": "Rename"}))["installed"]
+
+
+def test_ssh_alias_suggestions_include_files_and_stay_local(monkeypatch, tmp_path):
+    from pathlib import Path
+    from dan.remote import profiles
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("DAN_REMOTE_CONFIG", raising=False)
+    folder = tmp_path / ".ssh"
+    folder.mkdir()
+    (folder / "config").write_text('Host mini s600 *.internal !excluded\n IdentityFile /secret/key\nInclude "extra config"\nHost=ny\n')
+    (folder / "extra config").write_text('Host work-host\nInclude config\nHost *\n')
+    assert profiles.ssh_hosts() == ["mini", "ny", "s600", "work-host"]
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.get("/api/remote/ssh-hosts")
+        assert response.json() == {"hosts": ["mini", "ny", "s600", "work-host"]}
+        assert "secret" not in response.text
+        assert client.get("/api/remote/ssh-hosts", headers={"Origin": "https://evil.test"}).status_code == 403
+        monkeypatch.setenv("DAN_REMOTE_CONFIG", "remote")
+        assert client.get("/api/remote/ssh-hosts").status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_manual_port_and_identity_reach_inspection_and_upload(monkeypatch, tmp_path):
+    import httpx
+    from dan.remote import profiles
+    monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path))
+    p = Profile(id="manual", name="Manual", ssh_alias="adam@server.example", address="10.77.77.3", ssh_port=2222, identity_file=str(tmp_path / "key with spaces"), ssh_via_relay=False)
+    save_profile(p)
+    calls = []
+    async def command(args, **kwargs):
+        calls.append(args)
+        return json.dumps({"hostname": "test", "boot_persistent": True})
+    monkeypatch.setattr(profiles, "command", command)
+    await profiles.inspect(p)
+    assert calls[0][-2] == p.ssh_alias
+    assert calls[0][calls[0].index("-p") + 1] == "2222"
+    assert calls[0][calls[0].index("-i") + 1] == p.identity_file
+    assert "-J" not in calls[0]
+    archive = tmp_path / "release.tar.gz"
+    archive.write_bytes(b"fixture")
+    monkeypatch.setattr(profiles, "build_bundle", lambda: archive)
+    async def get(self, url, **kwargs):
+        return httpx.Response(200, request=httpx.Request("GET", url))
+    monkeypatch.setattr(httpx.AsyncClient, "get", get)
+    await profiles.deploy(read_profiles()[p.id])
+    upload, execution, relay = calls[1:]
+    assert upload[0] == "scp" and upload[upload.index("-P") + 1] == "2222"
+    assert upload[upload.index("-i") + 1] == p.identity_file
+    assert execution[execution.index("-p") + 1] == "2222"
+    assert "-i" not in relay and "-p" not in relay
