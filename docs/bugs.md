@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **Transport extraction validation (2026-09-28):** TypeScript caught a preview-URL helper still using the API base constant after transport extraction. Restored that shared constant and reran compilation successfully before finalizing the unpublished batch.
+
 - **Consolidation test setup (2026-09-28):** an editor-prefixed path was accidentally used from inside `editor/`, placing the transport test in a nested directory and skipping the polling test creation. Moved the test, removed the empty accidental directories, and reran both explicit test paths successfully.
 
 - **Fixed 2026-09-28: paper reopening ignored newer server progress.** Closing a document leaves its reading sync entry cached; reopening copies only the server timestamp and keeps the old revision/position. A source-executing isolated harness returned revision 1/page 3 after the mocked server advanced to revision 2/page 9. Active-reader ownership now releases clean closed sessions and preserves conflict recovery; close/reopen and in-flight-save regressions pass. See [consolidation review](code-consolidation-review.md).

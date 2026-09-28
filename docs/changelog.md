@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-28
+- [refactor] Generate the runtime Electron preload from its sole TypeScript source and remove the handwritten CommonJS duplicate. Compilation removes the unused intermediate preload.js.
+- [test] Real hidden sandboxed Electron verification passes for IPC, watcher callbacks, drop bridge availability, and renderer isolation.
+
+## 2026-09-28
 - [refactor] Share typed JSON transport across core, paper, and SSH requests; retain caller cancellation and deadlines through body reads, normalize validation/proxy errors, and merge Headers correctly. Replace per-consumer paper timers with one subscription-owned poller.
 - [test] Seven transport/polling regressions plus fourteen paper/SSH tests pass.
 
