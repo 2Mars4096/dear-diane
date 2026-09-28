@@ -13,6 +13,12 @@
 - [x] Verify 9 backend tests, 4 UI tests, build budgets, and desktop/390px browser save, reopen, and identity-path persistence. No real remote host contacted or provisioned.
 - [x] Install the signed local update with rollback and no-active-work checks; desktop proxy health and installed alias endpoint pass (20 aliases discovered).
 
+## Compact connection list, 2026-09-28
+- [x] Replace verbose connection blocks with one host/status row and three icon actions. Keep Add visible.
+- [x] Move SSH properties, edit/check, phone settings, key reveal, and collapsed installation controls into a native details dialog. Retain explicit key provisioning and truthful checked status.
+- [x] Five focused tests, production build/budgets, and dark desktop/390px browser layout and Escape checks pass.
+- [x] Install the verified desktop update and confirm archive equality, signature, and app-owned backend/proxy health. Rollback retained.
+
 ## Decisions
 - Mirror the observed Codex interaction, implementing DAN-specific fields and behavior independently. No proprietary source added to this repo.
 - Existing aliases inherit SSH configuration unless explicitly overridden. Keys stay on the Mac; no private key contents are read or returned by alias discovery.

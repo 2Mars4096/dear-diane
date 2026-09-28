@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, Server, X } from "lucide-react";
+import { FolderOpen, Globe, MoreHorizontal, Pencil, Plus, Server, Smartphone, X } from "lucide-react";
 import { nativeShell } from "../../lib/electronBridge";
 
 interface Connection {
@@ -90,12 +90,23 @@ export function RemoteConnections() {
   const [error, setError] = useState("");
   const [shareKey, setShareKey] = useState(false);
   const [accessKey, setAccessKey] = useState<{ id: string; key: string } | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const detailDialog = useRef<HTMLDialogElement>(null);
+  const detail = connections.find(connection => connection.id === detailId);
   async function refresh() {
     const result = await api("/connections");
     setConnections(result.connections); setLocal(result.local); setMachine(result.machine || ""); setReady(true);
     return result.local;
   }
   useEffect(() => { void refresh().then(isLocal => { if (isLocal) void api("/ssh-hosts").then(value => setHosts(value.hosts || [])).catch(() => {}); }).catch(error => setError(String(error))); }, []);
+  useEffect(() => {
+    if (!detailId || editor) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const node = detailDialog.current;
+    node?.showModal();
+    return () => { node?.close(); previous?.focus(); };
+  }, [detailId, editor]);
   useEffect(() => {
     if (!job || job.status !== "running") return;
     const timer = window.setInterval(() => {
@@ -113,53 +124,70 @@ export function RemoteConnections() {
   }
   const busy = pending || job?.status === "running";
   const edit = (connection: Connection, phone = false) => {
-    setError(""); setAccessKey(null);
+    setError(""); setMessage(""); setAccessKey(null); setDetailId(null);
     setEditor({ draft: { ...blank, ...connection, relay_enabled: connection.relay_enabled !== false, ssh_via_relay: connection.ssh_via_relay !== false, ...(phone && connection.relay_enabled === false ? { relay_enabled: true } : {}) }, editing: true, phone });
   };
-  if (!local) return <section className="wb-desktop-updates" aria-label="Remote connection"><h3>Connected to {machine}</h3><p>Work runs on this machine and continues when you close the browser. A server restart can interrupt active work. Set up other machines from your local DAN app.</p><form method="post" action="/remote/logout"><button>Disconnect this browser</button></form></section>;
+  const openDetails = (connection: Connection) => { setDetailId(connection.id); setAccessKey(null); setError(""); setMessage(""); setShareKey(false); };
+  const closeDetails = () => { setDetailId(null); setAccessKey(null); setError(""); setMessage(""); setShareKey(false); };
+  const status = (connection: Connection) => checked[connection.id] === false || connection.connection_error ? "Needs attention" : checked[connection.id] ? "SSH connected" : connection.installed ? "Installed" : "Not connected";
+  if (!local) return <section className="wb-desktop-updates" aria-label="Remote connection"><h3>{machine}</h3><p>Connected</p><form method="post" action="/remote/logout"><button>Disconnect</button></form></section>;
   return <section className="wb-desktop-updates wb-remote-connections" aria-label="Remote connections">
-    <header className="wb-ssh-heading"><div><h3>SSH connections</h3><p>Add a remote machine by hostname or SSH alias.</p></div><button className="wb-ssh-add" disabled={busy || !ready} onClick={() => {
-      setError(""); setAccessKey(null);
+    <header className="wb-ssh-heading"><h3>SSH connections</h3><button className="wb-ssh-add" aria-label="Add SSH connection" disabled={busy || !ready} onClick={() => {
+      setError(""); setMessage(""); setAccessKey(null); setDetailId(null);
       let relayPort = 8765;
       while (connections.some(item => item.relay_enabled !== false && item.relay_address === blank.relay_address && item.relay_port === relayPort)) relayPort++;
       setEditor({ draft: { ...blank, relay_port: relayPort }, editing: false, phone: false });
-    }}><Plus size={14} />Add SSH connection</button></header>
+    }}><Plus size={14} />Add</button></header>
     {!ready && !error && <p role="status">Loading connections…</p>}
-    {ready && !connections.length && <div className="wb-ssh-empty"><Server size={22} /><div><strong>No SSH connections yet</strong><p>Choose Add SSH connection, enter a hostname, then save. Configure phone access later.</p></div></div>}
-    {connections.map(connection => <div className="wb-remote-row" key={connection.id}>
-      <strong>{connection.name}</strong><span>{connection.ssh_alias}{connection.ssh_port ? `:${connection.ssh_port}` : ""}{connection.ssh_via_relay !== false ? ` via ${connection.relay_ssh_alias}` : ""}</span>
-      <p>{connection.installed ? (connection.execution?.boot_persistent && connection.relay?.boot_persistent ? "Installed · starts at boot" : "Installed · boot persistence needs attention") : connection.relay_enabled === false ? "SSH saved · phone access not configured" : "Saved · installation needed"}</p>
-      {connection.connection_error && <p role="status">{connection.connection_error}</p>}
-      <div className="wb-update-actions">
-        <button disabled={busy} onClick={() => void action(async () => {
-          const result = await api(`/connections/${connection.id}/inspect`, { method: "POST" });
-          const tools = Object.entries(result.tools).filter(([, path]) => path).map(([name]) => name).join(", ");
-          setMessage(`${connection.name}: SSH connected to ${result.hostname} · ${result.platform}. Available: ${tools || "no supported tools found"}.`);
-        })}>Check SSH</button>
-        <button disabled={busy} onClick={() => edit(connection)}>Edit</button>
-        <button disabled={busy} onClick={() => edit(connection, true)}>{connection.relay_enabled === false ? "Set up phone access" : "Phone access"}</button>
-        {connection.relay_enabled !== false && <button disabled={busy} onClick={() => void action(async () => {
-          setJob(await api(`/connections/${connection.id}/install`, { method: "POST", body: JSON.stringify({ share_openrouter: shareKey }) }));
-        })}>{connection.installed ? "Update installation" : "Install DAN"}</button>}
-        {connection.installed && <>
-          <button disabled={busy} onClick={() => void action(async () => {
-            const result = await api(`/connections/${connection.id}/access-key`, { method: "POST" }); setAccessKey({ id: connection.id, key: result.access_key });
-          })}>Show access key</button>
-          <button onClick={() => void nativeShell.openExternal(connection.url!)}>Open {connection.name}</button>
-        </>}
+    {ready && !connections.length && <div className="wb-ssh-empty"><Server size={22} /><strong>No SSH connections</strong></div>}
+    {connections.length > 0 && <ul className="wb-ssh-list" aria-label="SSH hosts">{connections.map(connection => <li className="wb-ssh-row" key={connection.id}>
+      <Globe size={19} className="wb-ssh-host-icon" aria-hidden="true" />
+      <button className="wb-ssh-host" onClick={() => openDetails(connection)}>
+        <strong>{connection.name}</strong><span className="wb-ssh-status" data-connected={checked[connection.id] === true && !connection.connection_error}><i aria-hidden="true" />{status(connection)}</span>
+      </button>
+      <div className="wb-ssh-row-actions">
+        <button title="Connection details" aria-label={`Connection details for ${connection.name}`} onClick={() => openDetails(connection)}><MoreHorizontal size={19} /></button>
+        <button title={`Open projects on ${connection.name}`} aria-label={`Open projects on ${connection.name}`} disabled={!connection.installed || !connection.url} onClick={() => void action(async () => { await nativeShell.openExternal(connection.url!); })}><FolderOpen size={19} /></button>
+        <button title="Phone access" aria-label={`Phone access for ${connection.name}`} disabled={busy} onClick={() => { openDetails(connection); }}><Smartphone size={19} /></button>
       </div>
-      {connection.installed && <p><a href={connection.url} target="_blank" rel="noreferrer" onClick={event => { if (window.electronAPI) { event.preventDefault(); void nativeShell.openExternal(connection.url!); } }}>{connection.url}</a> · Open on your phone with access to the private network.</p>}
-      {accessKey?.id === connection.id && <label>Access key<input readOnly type="text" value={accessKey.key} onFocus={event => event.target.select()} /><button onClick={() => setAccessKey(null)}>Hide key</button></label>}
-    </div>)}
-    {connections.some(item => item.relay_enabled !== false) && <div className="wb-ssh-install-options"><label><input type="checkbox" checked={shareKey} disabled={busy} onChange={event => setShareKey(event.target.checked)} /> Provision this computer’s OpenRouter key when installing</label><p>Native agent logins stay on the remote machine. Install/update restarts its DAN service; finish active work first.</p></div>}
+    </li>)}</ul>}
+    {detail && !editor && <dialog ref={detailDialog} className="wb-ssh-dialog wb-ssh-details" aria-labelledby="ssh-details-title" onCancel={event => { event.preventDefault(); event.stopPropagation(); closeDetails(); }}>
+      <header><h3 id="ssh-details-title"><Globe size={20} />{detail.name}</h3><div><button title="Edit" aria-label="Edit SSH connection" disabled={busy} onClick={() => edit(detail)}><Pencil size={17} /></button><button aria-label="Close connection details" onClick={closeDetails}><X size={18} /></button></div></header>
+      <span className="wb-ssh-status" data-connected={checked[detail.id] === true && !detail.connection_error}><i aria-hidden="true" />{status(detail)}</span>
+      <dl className="wb-ssh-properties">
+        <div><dt>SSH host</dt><dd>{detail.ssh_alias}</dd></div>
+        <div><dt>Port</dt><dd>{detail.ssh_port || "SSH config"}</dd></div>
+        <div><dt>Identity file</dt><dd>{detail.identity_file || "SSH config / agent"}</dd></div>
+        {detail.ssh_via_relay !== false && <div><dt>Jump host</dt><dd>{detail.relay_ssh_alias}</dd></div>}
+        {detail.installed && <div><dt>Start at boot</dt><dd>{detail.execution?.boot_persistent && detail.relay?.boot_persistent ? "On" : "Needs attention"}</dd></div>}
+      </dl>
+      <div className="wb-ssh-detail-actions"><button disabled={busy} onClick={() => void action(async () => {
+        try { await api(`/connections/${detail.id}/inspect`, { method: "POST" }); setChecked(value => ({ ...value, [detail.id]: true })); }
+        catch (error) { setChecked(value => ({ ...value, [detail.id]: false })); throw error; }
+      })}>Check SSH</button></div>
+      <h4>Phone access</h4>
+      <div className="wb-ssh-phone-actions"><button disabled={busy} onClick={() => edit(detail, true)}>{detail.relay_enabled === false ? "Set up" : "Configure"}</button>
+        {detail.installed && <button disabled={busy} onClick={() => void action(async () => { const result = await api(`/connections/${detail.id}/access-key`, { method: "POST" }); setAccessKey({ id: detail.id, key: result.access_key }); })}>Show access key</button>}
+      </div>
+      {detail.installed && detail.url && <a className="wb-ssh-address" href={detail.url} target="_blank" rel="noreferrer" onClick={event => { if (window.electronAPI) { event.preventDefault(); void action(async () => { await nativeShell.openExternal(detail.url!); }); } }}>{detail.url}</a>}
+      {accessKey?.id === detail.id && <label>Access key<input readOnly value={accessKey.key} onFocus={event => event.target.select()} /><button onClick={() => setAccessKey(null)}>Hide key</button></label>}
+      {detail.relay_enabled !== false && <details className="wb-ssh-advanced"><summary>Installation</summary>
+        <label className="wb-ssh-check"><input type="checkbox" checked={shareKey} disabled={busy} onChange={event => setShareKey(event.target.checked)} />Copy this Mac’s OpenRouter key</label>
+        <p>Restarts remote DAN. Finish active work first.</p>
+        <button className="wb-ssh-install" disabled={busy} onClick={() => void action(async () => { setJob(await api(`/connections/${detail.id}/install`, { method: "POST", body: JSON.stringify({ share_openrouter: shareKey }) })); })}>{detail.installed ? "Update installation" : "Install DAN"}</button>
+      </details>}
+      {detail.connection_error && <p role="alert" className="wb-ssh-error">{detail.connection_error}</p>}
+      {job && <p role={job.status === "failed" ? "alert" : "status"}>{job.message}</p>}
+      {error && <p role="alert" className="wb-ssh-error">{error}</p>}
+    </dialog>}
     {editor && <ConnectionEditor initial={editor.draft} editing={editor.editing} phone={editor.phone} hosts={hosts} busy={Boolean(busy)} error={error} onClose={() => { setEditor(null); setError(""); }} onSave={value => void action(async () => {
       const connection = { ...value, id: editor.editing ? value.id : newId(value.ssh_alias, connections) };
       await api(`/connections/${connection.id}`, { method: "PUT", headers: editor.editing ? {} : { "If-None-Match": "*" }, body: JSON.stringify(connection) });
-      await refresh(); setEditor(null); setMessage(`${connection.name} saved. ${editor.phone ? connection.relay_enabled === false ? "Phone access is disabled in this profile; existing remote services are unchanged." : "Choose Install DAN to apply the phone-access setup." : "Choose Check SSH to test the connection."}`);
+      await refresh(); setEditor(null); setChecked(value => { const next = { ...value }; delete next[connection.id]; return next; }); setMessage(`${connection.name} saved.`);
     })} />}
-    {job && <p role={job.status === "failed" ? "alert" : "status"}>{job.message}</p>}
+    {job && !detail && <p role={job.status === "failed" ? "alert" : "status"}>{job.message}</p>}
     {message && <p role="status">{message}</p>}
-    {error && !editor && <p role="alert">{error}</p>}
+    {error && !editor && !detail && <p role="alert">{error}</p>}
     {!ready && error && <button onClick={() => void action(async () => { await refresh(); })}>Retry</button>}
   </section>;
 }

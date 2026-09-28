@@ -41,6 +41,7 @@
 - Lazy `ActivitySummary` translates observed action summaries into concise progress labels without predicting results. Completed replies expose Work details rather than event counts; original records stay inside the disclosure.
 
 ## SSH setup
+- SSH hosts render as compact rows; status is saved/installed until an explicit inspection succeeds. A native details dialog owns access-key reveal and opt-in installation settings, clearing secrets when closed; editor/phone forms remain separate.
 - `RemoteConnections` uses a native modal dialog for name/hostname/port/authentication, mirroring the installed Codex workflow. Workspace and package options are progressive; phone relay configuration is a separate action.
 - Profiles add optional `ssh_port`/`identity_file` and `relay_enabled`; missing flags retain legacy behavior. SSH-only profiles have no browser URL and cannot be deployed until a private relay is configured. Normalized comparisons retain installed state on legacy renames.
 - Local-only `/api/remote/ssh-hosts` reads literal aliases and bounded Include files, returning names only. SSH/SCP share argument construction; target identity/port are never applied to the relay.

@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-28
+- [feat] Reduce SSH settings to compact host/status rows with details, project, and phone icons. Move addresses, keys, relay settings, and opt-in installation controls into a host details dialog. SSH connected is shown only after a successful explicit check.
+- [test] Five SSH UI tests and production build/budgets pass; real dark-theme desktop and 390px details/Escape checks pass. Existing remote profiles and services are unchanged. Signed desktop update installed with rollback; archive/signature and owned backend health pass.
+
+## 2026-09-28
 - [test] Verify native Codex GPT-6-Astra/medium in read-only mode on mini's imported Dropbox project. Background run completes after the submitting connection closes; hostname, cwd, and README command results pass. Save the exact response in the remote project's execution-check chat; no deployment or project edits.
 
 ## 2026-09-28
