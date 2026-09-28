@@ -6,7 +6,7 @@
 
 ## Tasks
 - [x] Reconcile closed reading sessions and preserve unsynced recovery; add lifecycle regressions.
-- [ ] Share bounded JSON transport and one library poller; verify timeout, abort, and subscriber cleanup.
+- [x] Share bounded JSON transport and one library poller; verify timeout, abort, and subscriber cleanup.
 - [ ] Generate the Electron preload from TypeScript; delete handwritten duplicate and verify sandboxed IPC.
 - [ ] Extract document/tab lifecycle and project actions; share explicit file-target construction.
 - [ ] Extract metadata parsing and permission-aware atomic writes below HTTP routers.

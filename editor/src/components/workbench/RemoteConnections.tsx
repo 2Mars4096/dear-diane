@@ -1,3 +1,4 @@
+import { requestJson, type RequestOptions } from "../../lib/http";
 import { useEffect, useRef, useState } from "react";
 import { FolderOpen, Globe, MoreHorizontal, Pencil, Plus, Server, Smartphone, X } from "lucide-react";
 import { nativeShell } from "../../lib/electronBridge";
@@ -12,12 +13,7 @@ interface Connection {
 }
 interface Job { id: string; status: string; message: string }
 const blank: Connection = { id: "", name: "", ssh_alias: "", ssh_port: null, identity_file: "", relay_enabled: false, ssh_via_relay: false, relay_ssh_alias: "ny", address: "", port: 8765, relay_address: "10.77.77.1", relay_port: 8765, workspace: "~/Downloads/local_projects" };
-async function api(path: string, init?: RequestInit) {
-  const response = await fetch(`/api/remote${path}`, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
-  const body = await response.json();
-  if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : Array.isArray(body.detail) ? body.detail.map((item: { msg: string }) => item.msg).join(". ") : "Check the connection fields and try again.");
-  return body;
-}
+const api = <T = unknown>(path: string, init?: RequestOptions) => requestJson<T>(`/api/remote${path}`, init);
 function newId(host: string, connections: Connection[]) {
   const base = (host.split("@").pop() || "host").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
   const prefix = (/^[a-z]/.test(base) ? base : `host-${base}`).slice(0, 26) || "host";
@@ -95,11 +91,11 @@ export function RemoteConnections() {
   const detailDialog = useRef<HTMLDialogElement>(null);
   const detail = connections.find(connection => connection.id === detailId);
   async function refresh() {
-    const result = await api("/connections");
+    const result = await api<{ connections: Connection[]; local: boolean; machine?: string }>("/connections");
     setConnections(result.connections); setLocal(result.local); setMachine(result.machine || ""); setReady(true);
     return result.local;
   }
-  useEffect(() => { void refresh().then(isLocal => { if (isLocal) void api("/ssh-hosts").then(value => setHosts(value.hosts || [])).catch(() => {}); }).catch(error => setError(String(error))); }, []);
+  useEffect(() => { void refresh().then(isLocal => { if (isLocal) void api<{ hosts: string[] }>("/ssh-hosts").then(value => setHosts(value.hosts || [])).catch(() => {}); }).catch(error => setError(String(error))); }, []);
   useEffect(() => {
     if (!detailId || editor) return;
     const previous = document.activeElement as HTMLElement | null;
@@ -110,7 +106,7 @@ export function RemoteConnections() {
   useEffect(() => {
     if (!job || job.status !== "running") return;
     const timer = window.setInterval(() => {
-      void api(`/jobs/${job.id}`).then(value => {
+      void api<Job>(`/jobs/${job.id}`).then(value => {
         setJob(value);
         if (value.status !== "running") void refresh().catch(error => setError(String(error)));
       }).catch(error => { setError(String(error)); setJob(null); });
@@ -162,19 +158,19 @@ export function RemoteConnections() {
         {detail.installed && <div><dt>Start at boot</dt><dd>{detail.execution?.boot_persistent && detail.relay?.boot_persistent ? "On" : "Needs attention"}</dd></div>}
       </dl>
       <div className="wb-ssh-detail-actions"><button disabled={busy} onClick={() => void action(async () => {
-        try { await api(`/connections/${detail.id}/inspect`, { method: "POST" }); setChecked(value => ({ ...value, [detail.id]: true })); }
+        try { await api(`/connections/${detail.id}/inspect`, { method: "POST", timeoutMs: 45_000 }); setChecked(value => ({ ...value, [detail.id]: true })); }
         catch (error) { setChecked(value => ({ ...value, [detail.id]: false })); throw error; }
       })}>Check SSH</button></div>
       <h4>Phone access</h4>
       <div className="wb-ssh-phone-actions"><button disabled={busy} onClick={() => edit(detail, true)}>{detail.relay_enabled === false ? "Set up" : "Configure"}</button>
-        {detail.installed && <button disabled={busy} onClick={() => void action(async () => { const result = await api(`/connections/${detail.id}/access-key`, { method: "POST" }); setAccessKey({ id: detail.id, key: result.access_key }); })}>Show access key</button>}
+        {detail.installed && <button disabled={busy} onClick={() => void action(async () => { const result = await api<{ access_key: string }>(`/connections/${detail.id}/access-key`, { method: "POST" }); setAccessKey({ id: detail.id, key: result.access_key }); })}>Show access key</button>}
       </div>
       {detail.installed && detail.url && <a className="wb-ssh-address" href={detail.url} target="_blank" rel="noreferrer" onClick={event => { if (window.electronAPI) { event.preventDefault(); void action(async () => { await nativeShell.openExternal(detail.url!); }); } }}>{detail.url}</a>}
       {accessKey?.id === detail.id && <label>Access key<input readOnly value={accessKey.key} onFocus={event => event.target.select()} /><button onClick={() => setAccessKey(null)}>Hide key</button></label>}
       {detail.relay_enabled !== false && <details className="wb-ssh-advanced"><summary>Installation</summary>
         <label className="wb-ssh-check"><input type="checkbox" checked={shareKey} disabled={busy} onChange={event => setShareKey(event.target.checked)} />Copy this Mac’s OpenRouter key</label>
         <p>Restarts remote DAN. Finish active work first.</p>
-        <button className="wb-ssh-install" disabled={busy} onClick={() => void action(async () => { setJob(await api(`/connections/${detail.id}/install`, { method: "POST", body: JSON.stringify({ share_openrouter: shareKey }) })); })}>{detail.installed ? "Update installation" : "Install DAN"}</button>
+        <button className="wb-ssh-install" disabled={busy} onClick={() => void action(async () => { setJob(await api<Job>(`/connections/${detail.id}/install`, { method: "POST", body: JSON.stringify({ share_openrouter: shareKey }) })); })}>{detail.installed ? "Update installation" : "Install DAN"}</button>
       </details>}
       {detail.connection_error && <p role="alert" className="wb-ssh-error">{detail.connection_error}</p>}
       {job && <p role={job.status === "failed" ? "alert" : "status"}>{job.message}</p>}

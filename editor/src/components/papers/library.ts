@@ -1,4 +1,5 @@
-import { useEffect, useSyncExternalStore } from 'react';
+import { requestJson, type RequestOptions } from '../../lib/http';
+import { useSyncExternalStore } from 'react';
 import type { PaperPdfPosition } from '../reader/lib/paper-reading-position';
 import type { PaperReferenceTray } from '../reader/lib/paper-reference-tags';
 import type { PaperComment } from '../reader/lib/paper-comments';
@@ -13,12 +14,7 @@ let snapshot: Library = { papers: [], sessions: [], warnings: [], settings: { so
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach(listener => listener());
 let pending: Promise<void> | null = null;
-export async function paperRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api/papers${path}`, init);
-  const value = await response.json();
-  if (!response.ok) throw new Error(typeof value.detail === 'string' ? value.detail : 'The paper library could not complete this request.');
-  return value as T;
-}
+export const paperRequest = <T>(path: string, init?: RequestOptions) => requestJson<T>(`/api/papers${path}`, init);
 export const jsonBody = (value: unknown, method = 'PUT'): RequestInit => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
 export function refreshLibrary() {
   if (pending) return pending;
@@ -29,15 +25,25 @@ export function refreshLibrary() {
 export function updateReadingSummary(session: ReadingSummary) {
   snapshot = { ...snapshot, sessions: [session, ...snapshot.sessions.filter(item => item.id !== session.id)].sort((a,b) => b.last_opened.localeCompare(a.last_opened)) }; emit();
 }
-export function usePaperLibrary() {
-  useEffect(() => {
+let poller: ReturnType<typeof setInterval> | undefined;
+const refreshVisible = () => { if (!document.hidden) void refreshLibrary(); };
+function subscribe(listener: () => void) {
+  listeners.add(listener);
+  if (listeners.size === 1) {
+    window.addEventListener('focus', refreshVisible);
+    poller = setInterval(refreshVisible, 30_000);
     void refreshLibrary();
-    const refresh = () => { if (!document.hidden) void refreshLibrary(); };
-    window.addEventListener('focus', refresh);
-    const timer = setInterval(refresh, 30_000);
-    return () => { clearInterval(timer); window.removeEventListener('focus', refresh); };
-  }, []);
-  return useSyncExternalStore(listener => { listeners.add(listener); return () => { listeners.delete(listener); }; }, () => snapshot);
+  }
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size) {
+      clearInterval(poller); poller = undefined;
+      window.removeEventListener('focus', refreshVisible);
+    }
+  };
+}
+export function usePaperLibrary() {
+  return useSyncExternalStore(subscribe, () => snapshot);
 }
 export async function pinPaper(paper: Paper, pinned: boolean) {
   await paperRequest(`/${paper.id}/pin`, jsonBody({ pinned }));

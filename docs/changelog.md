@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-28
+- [refactor] Share typed JSON transport across core, paper, and SSH requests; retain caller cancellation and deadlines through body reads, normalize validation/proxy errors, and merge Headers correctly. Replace per-consumer paper timers with one subscription-owned poller.
+- [test] Seven transport/polling regressions plus fourteen paper/SSH tests pass.
+
+## 2026-09-28
 - [fix] Release closed paper readers after pending saves settle and load current server progress when reopened. Preserve local conflict recovery and coalesce simultaneous opens; four reading lifecycle regressions pass.
 
 ## 2026-09-28

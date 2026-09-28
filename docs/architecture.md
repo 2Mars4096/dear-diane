@@ -1,5 +1,9 @@
 # Architecture
 
+## JSON transport and library subscriptions
+- `lib/http.ts` owns JSON deadlines, caller abort propagation, header merging, and structured `ApiError` responses. API, papers, and SSH keep typed endpoint wrappers; ordinary requests default to 10 seconds, SSH inspection allows 45 seconds.
+- The paper store owns one focus listener and 30-second poller for all subscribers, released when the final consumer unsubscribes. Failed/deadline-expired catalogue requests release the shared pending promise.
+
 ## Reading-session ownership
 - Open document records own a synchronous close callback. Paper close flushes pending progress and releases clean sync state; dirty/blocked recovery survives. Reopening waits for an in-flight save and hydrates current server state, while an already active reader retains its position. Concurrent opens share one request.
 
