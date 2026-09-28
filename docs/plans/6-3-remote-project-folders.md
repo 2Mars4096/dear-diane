@@ -20,3 +20,8 @@
 - Live authenticated desktop and 390px browser chooser checks pass. Temporary project registration persisted on mini and was removed from DAN afterward; no project files modified.
 - At the user's request, opened `/home/adam/Dropbox/Projects/fig-to-markdown` as `fig-to-markdown`. Server registry and selected project after reload verified.
 - Screenshots: `output/playwright/mini-project-folders-{desktop,phone}.png` and `mini-dropbox-project.png`.
+
+## Remote execution acceptance, 2026-09-28
+- [x] Run a native Codex GPT-6-Astra/medium turn in Plan (read-only) mode through mini's background admission API. The submitting connection closed before completion; run `arun-a1858abfd4fc` completed successfully.
+- [x] Verify native command results: hostname `adam-mini`, cwd `/home/adam/Dropbox/Projects/fig-to-markdown`, and README read, all exit 0. No project edits requested; no new build/deployment performed.
+- [x] Save the exact completed response and task/run reference into `Remote execution check · Codex` (session `6d82c8f8aea5`) and confirm it by a fresh chat API read. This API-driven check writes the user/assistant transcript explicitly, as the frontend does; it does not claim a new browser-disconnect transcript acceptance test.

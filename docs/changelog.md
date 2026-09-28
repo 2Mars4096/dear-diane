@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-28
+- [test] Verify native Codex GPT-6-Astra/medium in read-only mode on mini's imported Dropbox project. Background run completes after the submitting connection closes; hostname, cwd, and README command results pass. Save the exact response in the remote project's execution-check chat; no deployment or project edits.
+
+## 2026-09-28
 - [feat] Open existing remote project folders through an inline, host-labelled chooser with subfolder browsing, path search, retry, and stale-response protection. Preserve the desktop picker/drop flow; remote project metadata persists on the execution host.
 - [test] Four project-dialog tests and production build/budgets pass. Live mini desktop/390px selection, server registry persistence, and reload checks pass; temporary test registration removed.
 - [infra] Update idle mini to the matching frontend/backend release through the existing installer; services healthy and boot-persistent, credentials retained. Open the user's requested example Dropbox project, fig-to-markdown, on mini.

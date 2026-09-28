@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Verify a read-only Codex turn on mini's imported Dropbox project and save the result in its DAN chat — [6-3](plans/6-3-remote-project-folders.md).
+
 - [x] Open existing mini folders as remote DAN projects with an inline folder chooser; deployed and opened a Dropbox project — [6-3](plans/6-3-remote-project-folders.md).
 
 - [x] Restore mini in the desktop Settings connection list and verify existing SSH/private-relay services — [private relay](plans/6-1-private-relay.md).
