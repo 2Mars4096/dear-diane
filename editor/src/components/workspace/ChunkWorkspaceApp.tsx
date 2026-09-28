@@ -15913,6 +15913,23 @@ export default function ChunkWorkspaceApp() {
     }
   }, [activeWorkspaceId, workspaces, threads, setActiveWorkspace, openSession, clearActiveSessionView]);
 
+  const openDroppedProject = useCallback((root: string) => {
+    const path = normalizeRootPath(root);
+    const existing = workspaces.find(item => normalizeRootPath(item.pinnedPaths[0] ?? "") === path);
+    if (existing) switchWorkbenchProject(existing.id);
+    else {
+      const id = createWorkspace(fileName(path) || path, "chat");
+      updateWorkspace(id, { pinnedPaths: [path] });
+      ++sessionSelectionSeqRef.current;
+      clearActiveSessionView("Ready");
+      setActiveFilePath(null);
+    }
+    setActivePane("work");
+    setPhonePage("chat");
+    setShowSessionRail(true);
+    setShowConversationChunks(true);
+  }, [workspaces, switchWorkbenchProject, createWorkspace, updateWorkspace, clearActiveSessionView]);
+
   const openSessionPromptLog = useCallback(async (thread: ChatV2ThreadSummary) => {
     if (thread.archived) {
       setStatus("Restore session to view its prompt log");
@@ -17425,7 +17442,7 @@ export default function ChunkWorkspaceApp() {
           onAllSessions={() => { setThreadQuery(""); setShowSessionRail(true); setPhonePage("sessions"); }}
         />
         <div className="wb-header-actions">
-          <Suspense fallback={null}><FileOpener onOpen={openDocument} /></Suspense>
+          <Suspense fallback={null}><FileOpener onOpen={openDocument} onFolder={openDroppedProject} /></Suspense>
           <button aria-label={sideTab ? "Hide side panel" : "Show side panel"} title={`${sideTab ? "Hide side panel" : "Show side panel"} (${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘⌥B" : "Ctrl+Alt+B"})`} aria-keyshortcuts="Meta+Alt+B Control+Alt+B" aria-pressed={Boolean(sideTab)} onClick={() => openSideTab(sideTab ? null : lastSideTab)}><PanelRight size={17} /></button>
           <button aria-label="Notes" title="Notes" onClick={() => { setActivePane("notes"); setPhonePage("note-preview"); }}><NotebookPen size={17} /></button>
           <button aria-label="Workspace settings" title="Workspace settings" aria-pressed={workbenchSettings} onClick={() => { setCreatingProject(false); setWorkbenchSettings(true); }}><MoreHorizontal size={18} /></button>
@@ -17450,7 +17467,7 @@ export default function ChunkWorkspaceApp() {
       {Boolean(activePane === "notes") && (
       <header className="dan-workspace-header relative z-40 flex h-14 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/95 px-4 shadow-[0_1px_0_rgba(15,23,42,0.03)] backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
         <div className="flex min-w-0 flex-1 items-center gap-3">
-          <Suspense fallback={null}><FileOpener onOpen={openDocument} /></Suspense>
+          <Suspense fallback={null}><FileOpener onOpen={openDocument} onFolder={openDroppedProject} /></Suspense>
           <div className="inline-flex shrink-0 rounded-lg border border-slate-200 bg-slate-100/70 p-0.5 shadow-inner dark:border-slate-800 dark:bg-slate-900">
             <button
               type="button"
@@ -18603,6 +18620,7 @@ export default function ChunkWorkspaceApp() {
           )}
           {renderWorkMain && (
           <div
+            data-main-drop-area
             className="dan-phone-page grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] md:order-3"
           >
             <div className="flex min-h-0 min-w-0 flex-col bg-white/90 dark:bg-slate-950">

@@ -14,3 +14,7 @@
 .dan-document-preview { padding:20px; overflow:auto; flex:1; }
 .dan-document-media { flex:1; min-height:0; overflow:auto; display:grid; place-items:center; padding:16px; }
 .dan-document-media img, .dan-document-media video { max-width:100%; max-height:100%; object-fit:contain; }
+
+.dan-file-drop > div { display:flex; flex-direction:column; align-items:center; gap:12px; padding:24px; text-align:center; }
+.dan-file-drop strong { font-size:18px; font-weight:600; }
+.dan-file-drop span { font-size:14px; color:var(--wb-muted); }

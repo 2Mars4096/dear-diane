@@ -133,3 +133,11 @@
 - [x] Verify composer follow-up rows and checkpoint claims preserve persisted enqueue order.
 - [x] Fix terminal continuation promotion: lane-local, reused position values must not reorder messages; iterate the durable enqueue list.
 - [x] Test partial drain, new arrivals, mixed lanes at terminal promotion, and store reload. Explicit live steering retains its separate checkpoint behavior.
+
+## September 28 — main workspace folder drops
+- [x] Create/select a project directly from a native folder drop, using the folder name and reusing an already listed project with the same path.
+- [x] Outline the main workspace during external drags with folder/project and file-opening instructions; clear on drop, leave, Escape, drag end, or blur.
+- [x] Preserve PDF/file opening and project-settings drop ownership; reject multi-folder drops, unavailable browser paths, and local folders on remote connections.
+- [x] Eight focused tests and production build/bundle budgets pass.
+- [x] Install the signed arm64 update with rollback; verify installed archive equality and desktop-proxy health with an app-owned backend.
+- [ ] User acceptance: verify a Finder folder drop in the installed desktop app.
