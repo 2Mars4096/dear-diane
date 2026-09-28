@@ -1,0 +1,22 @@
+# Code consolidation review — 2026-09-28
+
+Scope: recent desktop, document, paper-library, and SSH changes, plus frontend module reachability. This is a review; production code is unchanged.
+
+## Findings and follow-up
+
+- [ ] **P2 — Reconcile reading state when reopening a closed tab.** `papers/reading.ts:53–62` retains every opened session in a module map and copies only `last_opened` from a subsequent server response. `ChunkWorkspaceApp.tsx:14660` closes the document without releasing that session or `libraryReadings`. An isolated harness executing the transpiled source reproduced server revision 2/page 9 reopening as revision 1/page 3. Track active readers separately from cached/recoverable progress; adopt newer server state when clean, preserve unsynced changes on conflicts. Add a close → external update → reopen regression.
+- [ ] **P2 — Share request transport and bound stalled requests.** `lib/api.ts:30`, `papers/library.ts:16`, and `workbench/RemoteConnections.tsx:15` implement separate fetch/error handling. Only the shared API client supplies a default deadline. A pending paper fetch keeps `refreshLibrary`'s shared promise occupied and prevents later refresh attempts until it settles. Extract a small transport with cancellation, appropriate per-operation deadlines, structured errors, and non-JSON error handling; retain domain-specific endpoint wrappers. Verify timeout recovery and explicit abort behavior.
+- [ ] **Consolidate paper polling.** Each `usePaperLibrary` consumer installs its own 30-second timer and focus listener. Concurrent calls coalesce, but staggered consumers can repeat full catalogue requests. Own one subscription-aware poller in the library store. Verify multiple subscribers and final unsubscription.
+- [ ] **Delete the handwritten duplicate preload after fixing generation.** `electron/preload.ts` and `electron/preload.cjs` implement the same bridge. TypeScript emits `preload.js`, but `main.ts:374` loads the copied handwritten `.cjs`. Generate the runtime `.cjs` from the typed source, then delete its handwritten counterpart and exclude stale output. Verify the actual sandboxed Electron preload, not only TypeScript compilation.
+- [ ] **Extract workspace responsibilities incrementally.** `ChunkWorkspaceApp.tsx` has 19,050 lines. Start with document/tab lifecycle and project create/select actions (`openDroppedProject` and ProjectSettings submission), preserving dirty-file guards, selection sequencing, lazy imports, and panel identity. Keep existing bundle budgets and tab-persistence regressions.
+- [ ] **Share file-target construction.** `documents/documents.ts:12` and `workbench/MessageAttachment.tsx:10` duplicate path normalization/parent/preview construction. Introduce explicit local, remote, and browser-copy targets for common opening actions; keep path validation at Electron and server trust boundaries.
+- [ ] **Move reusable backend helpers below routers.** `server/paper_library.py:15–17` imports frontmatter helpers from the large `routers/misc.py` and a file writer from the SSH installer. Extract metadata parsing into a domain utility. Use a server-side atomic writer with explicit private-file permissions; ordinary workspace writes must retain their existing permission behavior. The SSH installer is sent as a dependency-free script, so its standalone writer may legitimately remain separate.
+
+## Deletion boundaries and evidence
+
+- TypeScript AST import/export/dynamic-import reachability from `editor/src/main.tsx` found no unreachable non-test frontend source modules, including type-only references. This does not prove every export or branch is live, or cover arbitrary runtime/Python entrypoints.
+- `nativeWatch` is still used by Notes; retain it. `ReadingChat` wraps the existing sidecar rather than duplicating its engine. Lazy paper/tab modules preserve measured bundle boundaries; small size alone is not grounds to merge them.
+- The old PDF font-preference helper and manual repair control were already removed in `b2806c43`.
+- Review checks: source and build-entry inspection, module graph, isolated mocked reading/request harnesses. No live user data, servers, credentials, or installed app were modified; no full test suite was rerun for this documentation-only review.
+
+Suggested implementation batches: preload generation; API transport and polling; reader lifecycle fix; workspace/file-target extraction; backend utility extraction. Keep each batch independently validated.

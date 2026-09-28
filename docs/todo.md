@@ -1,5 +1,7 @@
 # Todo
 
+- [ ] Address the [code consolidation review](code-consolidation-review.md): stale reading sessions, request deadlines/shared polling, duplicate preload, workspace/file-target extraction, and backend helper dependencies.
+
 - [x] Simplify SSH settings to compact rows and a host details panel — [6-2](plans/6-2-ssh-connection-setup.md).
 
 - [x] Make Codex/Claude conversation file paths openable with native context actions — [4-6](plans/4-6-document-workspace.md).

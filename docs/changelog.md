@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-28
+- [docs] Review recent frontend/Electron/paper-server changes for consolidation and deletion. Record duplicate preload/request paths, shared polling and workspace extraction opportunities; reproduce stale reading-session reopening in an isolated harness. Frontend import reachability found no orphan source modules; production code is unchanged.
+
+## 2026-09-28
 - [test] Revalidate the pending paper-library, folder-drop, file-link, and automatic PDF-font changes before committing in logical batches: 5 backend tests, 44 frontend tests, production build/bundle budgets, and Electron compilation pass.
 
 ## 2026-09-28
