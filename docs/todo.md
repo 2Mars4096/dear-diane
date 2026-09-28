@@ -1,6 +1,6 @@
 # Todo
 
-- [ ] Finish publication of [code consolidation](plans/4-9-code-consolidation.md): implementation and local regressions complete; isolated committed-tree validation and push pending.
+- [x] Complete [code consolidation](plans/4-9-code-consolidation.md): reading ownership, shared requests/polling, generated preload, workspace/file targets, and backend helpers; isolated validation passes and implementation batches pushed.
 
 - [x] Simplify SSH settings to compact rows and a host details panel — [6-2](plans/6-2-ssh-connection-setup.md).
 

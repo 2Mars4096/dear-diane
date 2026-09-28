@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-28
+- [test] Validate the committed consolidation independently of concurrent work: 349 frontend tests, production build/budgets, Electron compilation, and real sandboxed preload IPC pass. All 81 selected backend regressions also pass. Five implementation batches pushed to origin/main; unrelated checkout changes preserved.
+
+## 2026-09-28
 - [refactor] Extract workspace document/tab ownership and project registry actions; remove the redundant reader-file map. Share local/remote/browser file targets, preserving drafts, dirty-close guards, paper close callbacks, native path boundaries, and lazy loading.
 - [test] All 353 frontend tests and production build/bundle budgets pass, including new lifecycle/project/file-target regressions. The checkout also contains independent window-appearance work; this batch excludes it. Plan moved to 4-9 to avoid the concurrent literature plan's 4-8 number.
 
