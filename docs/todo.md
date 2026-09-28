@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Verify and install startup/closing flash fix — [4-1](plans/4-1-agent-workbench.md).
+
 - [x] Complete [code consolidation](plans/4-9-code-consolidation.md): reading ownership, shared requests/polling, generated preload, workspace/file targets, and backend helpers; isolated validation passes and implementation batches pushed.
 
 - [x] Simplify SSH settings to compact rows and a host details panel — [6-2](plans/6-2-ssh-connection-setup.md).

@@ -5,6 +5,9 @@
 - `workbench/projects.ts` shares registry creation, root reuse, edits, and selection; the workspace retains session sequencing and view changes. `lib/workspacePaths.ts` preserves existing normalization and legacy root aliases.
 - `lib/fileTargets.ts` constructs explicit local/remote/browser-copy targets and preview URLs for documents and attachments. Display names do not change URL filenames; remote targets never invoke the local shell. Electron/backend path validation remains in place.
 
+## Desktop window appearance
+- `electron/windowAppearance.ts` gates initial reveal on both first paint and themed document load; tray and second-instance requests share that gate. HTML paints an opaque palette background; preload synchronizes palette changes to the native window through validated, main-frame-only IPC. Local services stop at `will-quit`, after windows close, preserving cancelled unloads.
+
 ## Shared metadata and durable writes
 - `dan.notes_frontmatter` provides the existing lightweight Hugo parser to Notes routes and the paper catalogue without importing a router. It is not a general YAML parser.
 - `dan._atomic_file` serves tools, runtime mutations, document editing, profiles, paper state, and the remote project registry. Existing workspace permissions are preserved; private state explicitly uses mode 0600 from temporary-file creation through replacement. Unique sibling temporaries, fsync, and failure cleanup are shared. The standalone SSH installer keeps its dependency-free writer.

@@ -1,5 +1,19 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
+// Keep the native surface behind the page matched during theme changes and teardown.
+window.addEventListener("DOMContentLoaded", () => {
+  let previous = "";
+  const syncBackground = () => {
+    const color = getComputedStyle(document.documentElement).getPropertyValue("--dan-wb-background").trim();
+    if (color !== previous && /^#[\da-f]{6}$/i.test(color)) {
+      previous = color;
+      ipcRenderer.send("window:background", color);
+    }
+  };
+  new MutationObserver(syncBackground).observe(document.documentElement, { attributes: true, attributeFilter: ["style"] });
+  syncBackground();
+}, { once: true });
+
 contextBridge.exposeInMainWorld("electronAPI", {
   isElectron: true,
   updates: {

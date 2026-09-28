@@ -5,6 +5,8 @@
 **Goal:** Make conversation the primary surface, with spatial project/session navigation and inspectable agent activity.
 
 ## Tasks
+- [x] Prevent white startup/closing surfaces: gate native reveal on themed load and first paint, match native/page backgrounds, and stop services after windows close.
+- [x] Verify and install window appearance update: six focused tests, production build/budgets, Electron compilation, real Electron dark/light first-visible pixels, live background changes and cancelled-close checks; installed archive/signature/owned-backend health pass.
 - [x] Keep new/empty projects without auto-created chats; prevent last-session restore across an empty project selection.
 - [x] Resolve native and legacy placeholder session names from the first nonempty request in the shared store; preserve established titles.
 - [x] Expand Up next by default and recognize legacy checkpoint-append queue receipts without showing waiting pairs in the transcript.

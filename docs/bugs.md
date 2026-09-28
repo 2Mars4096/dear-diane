@@ -2,6 +2,9 @@
 
 - **Consolidation frontend validation (2026-09-28):** happy-dom lacks `window.confirm`; stubbed the browser dialog in the dirty-close regression. The old API timeout assertion expected a path without `/api`; the shared transport reports the actual full request URL, so the expectation now matches. All 353 frontend tests pass.
 
+- **Fixed in source 2026-09-28: white desktop startup surface.** BrowserWindow was visible immediately with Electron’s default white background; HTML/body had no background. Gate reveal on themed load/paint and keep native/page colors matched. Shutdown previously stopped services before windows closed; defer cleanup to `will-quit`. Tray `show() || createWindow()` also created duplicate windows because `show()` returns void; use explicit branching.
+- **Window appearance validation setup (2026-09-28):** npm was initially run at repository root, which has no package.json; reran from `editor/`. The isolated Electron harness initially required the package path (returns executable path) instead of the Electron builtin; corrected to `require("electron")`. Its beforeunload assignment returned a function that IPC could not clone; ending with `void 0` fixed the harness. Both dark/light checks then passed.
+
 - **Consolidation backend checks (2026-09-28):** the isolated relay test could not bind loopback under the sandbox; all other 80 selected tests passed. Rerunning that single case with network permission passed. No remote host was contacted.
 
 - **Transport extraction validation (2026-09-28):** TypeScript caught a preview-URL helper still using the API base constant after transport extraction. Restored that shared constant and reran compilation successfully before finalizing the unpublished batch.

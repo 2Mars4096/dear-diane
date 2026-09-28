@@ -8,6 +8,10 @@
 - [test] All 353 frontend tests and production build/bundle budgets pass, including new lifecycle/project/file-target regressions. The checkout also contains independent window-appearance work; this batch excludes it. Plan moved to 4-9 to avoid the concurrent literature plan's 4-8 number.
 
 ## 2026-09-28
+- [test] Six focused tests, production build/budgets, and Electron compilation pass. Isolated Electron checks confirm dark/light first-visible pixels, live native background updates, and cancelled closing. Signed build reinstalled with rollback; installed archive equality and owned backend/proxy health pass.
+- [fix] Prevent white desktop startup/closing surfaces with hidden-until-themed windows, matching page/native backgrounds, and service cleanup after windows close. Route tray/second-instance activation through the same reveal gate and avoid duplicate tray windows.
+
+## 2026-09-28
 - [refactor] Extract shared Hugo metadata parsing from the HTTP router and move atomic file replacement below tools/server. Reuse it for documents and private state, retaining workspace permissions and enforcing mode 0600 for private files. Keep the standalone SSH installer independent.
 - [test] All 81 selected backend regressions pass, including concurrent private writes, failure cleanup, workspace umask, documents, papers, remote profiles, and product APIs. The relay case passes with loopback permission after the sandbox blocked binding.
 

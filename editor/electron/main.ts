@@ -13,8 +13,10 @@ import {
 import { buildBackendLaunchEnv } from "./backendLaunch";
 import { registerFileLinks } from "./fileLinks";
 import { registerDesktopUpdates } from "./desktopUpdates";
+import { prepareWindowAppearance, WINDOW_BACKGROUND } from "./windowAppearance";
 
 let mainWindow: BrowserWindow | null = null;
+let revealMainWindow: (() => void) | null = null;
 registerFileLinks(() => mainWindow);
 let tray: Tray | null = null;
 
@@ -364,6 +366,8 @@ function startProductionServer(distDir: string): Promise<number> {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
+    show: false,
+    backgroundColor: WINDOW_BACKGROUND,
     width: 1400,
     height: 900,
     minWidth: 900,
@@ -378,6 +382,7 @@ function createWindow() {
       webviewTag: true,
     },
   });
+  revealMainWindow = prepareWindowAppearance(mainWindow);
 
   if (isDev) {
     mainWindow.loadURL(VITE_DEV_URL);
@@ -388,8 +393,20 @@ function createWindow() {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+    revealMainWindow = null;
   });
 }
+
+function showMainWindow() {
+  if (mainWindow) revealMainWindow?.();
+  else createWindow();
+}
+
+ipcMain.on("window:background", (event, color: unknown) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents
+      || event.senderFrame !== mainWindow.webContents.mainFrame) return;
+  if (typeof color === "string" && /^#[\da-f]{6}$/i.test(color)) mainWindow.setBackgroundColor(color);
+});
 
 function createTray() {
   const icon = nativeImage.createFromDataURL(
@@ -397,13 +414,13 @@ function createTray() {
   );
   tray = new Tray(icon);
   const contextMenu = Menu.buildFromTemplate([
-    { label: "Open DAN", click: () => mainWindow?.show() || createWindow() },
+    { label: "Open DAN", click: showMainWindow },
     { type: "separator" },
     { label: "Quit", click: () => app.quit() },
   ]);
   tray.setToolTip("DAN");
   tray.setContextMenu(contextMenu);
-  tray.on("click", () => mainWindow?.show() || createWindow());
+  tray.on("click", showMainWindow);
 }
 
 // --- IPC Handlers: file operations for the renderer ---
@@ -620,13 +637,7 @@ if (!hasSingleInstanceLock) {
 } else {
   app.on("second-instance", () => {
     if (!app.isReady()) return;
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-      return;
-    }
-    createWindow();
+    showMainWindow();
   });
 
   app.whenReady().then(async () => {
@@ -665,7 +676,7 @@ if (!hasSingleInstanceLock) {
   });
 }
 
-app.on("before-quit", () => {
+app.on("will-quit", () => {
   for (const [, watcher] of fileWatchers) watcher.close();
   fileWatchers.clear();
 
