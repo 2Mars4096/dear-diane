@@ -14629,7 +14629,7 @@ export default function ChunkWorkspaceApp() {
   const openDocument = (file: DocumentFile) => {
     const pdf = /\.pdf$/i.test(file.name);
     const id = `${pdf ? "pdf" : "file"}:${file.path}`;
-    setDocuments(current => current[id] ? current : { ...current, [id]: file });
+    setDocuments(current => ({ ...current, [id]: current[id] ? { ...current[id], onClose: file.onClose ?? current[id].onClose } : file }));
     if (pdf) setReaderFiles(current => current[id] ? current : { ...current, [id]: file });
     setMainTabs(tabs => tabs.some(tab => tab.id === id) ? tabs : [...tabs, { id, kind: pdf ? "pdf" : "file", label: file.name, title: file.path }]);
     setActiveMainTab(id); setActivePane("work"); setPhonePage("chat"); setShowConversationChunks(true);
@@ -14660,6 +14660,8 @@ export default function ChunkWorkspaceApp() {
   const closeTab = (id: string) => {
     if (mainTabs.length <= 1) return;
     if (dirtyDocuments[documents[id]?.path] && !window.confirm(`Discard unsaved edits to ${documents[id].name}?`)) return;
+    documents[id]?.onClose?.();
+    setLibraryReadings(current => { const next = { ...current }; delete next[id]; return next; });
     delete documentDrafts.current[documents[id]?.path];
     if (documents[id]?.ownedUrl) URL.revokeObjectURL(documents[id].url);
     setDirtyDocuments(current => { const next = { ...current }; delete next[documents[id]?.path]; return next; });

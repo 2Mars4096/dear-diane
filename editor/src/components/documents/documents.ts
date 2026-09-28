@@ -1,6 +1,6 @@
 import { workspaceFilePreviewUrl } from '../../lib/api';
 export type DocumentDraft = { text: string; saved: string; revision: string };
-export type DocumentFile = { name: string; path: string; url: string; root?: string; local?: File; ownedUrl?: boolean };
+export type DocumentFile = { name: string; path: string; url: string; root?: string; local?: File; ownedUrl?: boolean; onClose?: () => void };
 export function documentKind(name: string): 'pdf' | 'image' | 'audio' | 'video' | 'text' {
   const ext = name.split('.').pop()?.toLowerCase() ?? '';
   if (ext === 'pdf') return 'pdf';

@@ -35,3 +35,72 @@ it('hydrates durable progress before rendering, coalesces saves, and retains con
   expect(localStorage.getItem(`dan.papers.pending.v1:${paper.id}`)).toBeNull();
   vi.unstubAllGlobals(); vi.useRealTimers();
 });
+
+async function readingFixture(id: string) {
+  const paper = { id, path: `/fixture/${id}.pdf`, title: id } as Paper;
+  let session = { id, paper_id: id, title: id, revision: 1, position: { page: 3, zoom: 1, top: 0, left: 0 }, comments: [], references: normalizePaperReferenceTray(null, paper.path), link: { threadId: id }, workflow_id: '_dan_reading', last_opened: '2026-01-01', pinned: false } as ReadingSession;
+  const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/open')) return { ok: true, json: async () => ({ paper, session: structuredClone(session) }) };
+    const body = JSON.parse(init?.body as string);
+    if (body.revision !== session.revision) return { ok: false, status: 409, json: async () => ({ detail: 'Reading session changed elsewhere' }), text: async () => JSON.stringify({ detail: 'Reading session changed elsewhere' }) };
+    session = { ...session, ...body, revision: session.revision + 1 };
+    return { ok: true, json: async () => structuredClone(session) };
+  });
+  vi.stubGlobal('fetch', fetcher);
+  await openLibraryPaper(id);
+  return { paper, fetcher, advance: () => { session = { ...session, revision: session.revision + 1, position: { ...session.position!, page: 9 } }; }, saved: () => session };
+}
+
+it('reloads server progress after closing, while preserving an active reader', async () => {
+  const { closeLibraryPaper } = await import('../reading');
+  const fixture = await readingFixture('closed-reopen');
+  fixture.advance();
+  expect((await openLibraryPaper(fixture.paper.id)).session.position?.page).toBe(3);
+  await closeLibraryPaper(fixture.paper.id);
+  const reopened = await openLibraryPaper(fixture.paper.id);
+  expect(reopened.session.revision).toBe(2);
+  expect(readPaperPdfPosition(fixture.paper.path)?.page).toBe(9);
+  await closeLibraryPaper(fixture.paper.id);
+  vi.unstubAllGlobals();
+});
+
+it('waits for an in-flight save before reopening and coalesces simultaneous opens', async () => {
+  vi.useFakeTimers();
+  const { closeLibraryPaper } = await import('../reading');
+  const fixture = await readingFixture('pending-reopen');
+  const implementation = fixture.fetcher.getMockImplementation()!;
+  let finish!: () => void;
+  const gate = new Promise<void>(resolve => { finish = resolve; });
+  fixture.fetcher.mockImplementation(async (url, init) => {
+    if (url.endsWith('/progress')) await gate;
+    return implementation(url, init);
+  });
+  writePaperPdfPosition(fixture.paper.path, { page: 5, zoom: 1, top: 0, left: 0 });
+  await vi.advanceTimersByTimeAsync(500);
+  const closing = closeLibraryPaper(fixture.paper.id);
+  const first = openLibraryPaper(fixture.paper.id), second = openLibraryPaper(fixture.paper.id);
+  expect(first).toBe(second);
+  finish(); await closing;
+  expect((await first).session.position?.page).toBe(5);
+  expect(fixture.saved().revision).toBe(2);
+  await closeLibraryPaper(fixture.paper.id);
+  vi.unstubAllGlobals(); vi.useRealTimers();
+});
+
+it('preserves unsynced progress on conflict and reloads the saved revision after close', async () => {
+  vi.useFakeTimers();
+  const { closeLibraryPaper } = await import('../reading');
+  const fixture = await readingFixture('conflict-reopen');
+  fixture.advance();
+  writePaperPdfPosition(fixture.paper.path, { page: 5, zoom: 1, top: 0, left: 0 });
+  await closeLibraryPaper(fixture.paper.id);
+  const reopened = await openLibraryPaper(fixture.paper.id);
+  expect(reopened.session.position?.page).toBe(9);
+  const recovery = JSON.parse(localStorage.getItem(`dan.papers.pending.v1:${fixture.paper.id}`)!);
+  expect(recovery.revision).toBe(1);
+  expect(recovery.position.page).toBe(5);
+  await vi.advanceTimersByTimeAsync(600);
+  expect(fixture.saved().position?.page).toBe(9);
+  await closeLibraryPaper(fixture.paper.id);
+  vi.unstubAllGlobals(); vi.useRealTimers();
+});

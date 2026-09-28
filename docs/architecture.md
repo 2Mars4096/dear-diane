@@ -1,5 +1,8 @@
 # Architecture
 
+## Reading-session ownership
+- Open document records own a synchronous close callback. Paper close flushes pending progress and releases clean sync state; dirty/blocked recovery survives. Reopening waits for an in-flight save and hydrates current server state, while an already active reader retains its position. Concurrent opens share one request.
+
 ## Remote project folders
 - ProjectSettings detects the authenticated server's `dan-remote-machine` marker and replaces the desktop drop/picker with `RemoteProjectFolder`. The inline chooser uses the existing same-origin workspace-roots API, ignores stale responses, and returns a server-resolved path into the usual pinnedPaths/project registry flow. No SSH credentials or Mac paths enter this browser flow.
 

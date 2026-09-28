@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-28
+- [fix] Release closed paper readers after pending saves settle and load current server progress when reopened. Preserve local conflict recovery and coalesce simultaneous opens; four reading lifecycle regressions pass.
+
+## 2026-09-28
 - [docs] Review recent frontend/Electron/paper-server changes for consolidation and deletion. Record duplicate preload/request paths, shared polling and workspace extraction opportunities; reproduce stale reading-session reopening in an isolated harness. Frontend import reachability found no orphan source modules; production code is unchanged.
 
 ## 2026-09-28
