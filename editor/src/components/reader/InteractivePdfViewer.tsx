@@ -63,7 +63,6 @@ type InteractivePdfViewerProps = {
   onCommentSelection: (selection: SelectionAction) => void;
   onDocument?: (document: PDFDocumentProxy | null) => void; // DAN: lets the reader extract text / run OCR
   toolbarExtras?: ReactNode; // DAN: reader actions share the toolbar row with Refs
-  fontCompatibility?: boolean;
   onPageChange: (pageNumber: number) => void;
   ocrPages: MaterialPdfOcrPage[];
   pageNumber: number;
@@ -436,8 +435,7 @@ export function InteractivePdfViewer({
   pageNumber,
   sourceUrl,
   title,
-  toolbarExtras,
-  fontCompatibility = false
+  toolbarExtras
 }: InteractivePdfViewerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -589,8 +587,8 @@ export function InteractivePdfViewer({
         const assets = pdfAssetBase(import.meta.env.BASE_URL, window.location.href);
         const loadingTask = pdfjs.getDocument({ url: sourceUrl, cMapUrl: `${assets}cmaps/`, cMapPacked: true,
           standardFontDataUrl: `${assets}standard_fonts/`, wasmUrl: `${assets}wasm/`,
-          // Draw embedded glyph outlines when browser font substitution/conversion is unreliable.
-          ...(fontCompatibility ? { disableFontFace: true, useSystemFonts: false } : {}) });
+          // Always draw glyph outlines to avoid unreliable browser font conversion/substitution.
+          disableFontFace: true, useSystemFonts: false });
         loadingTaskRef.current = loadingTask;
         const pdfDocument = await loadingTask.promise;
         if (cancelled) {
@@ -622,7 +620,7 @@ export function InteractivePdfViewer({
       void loadingTask?.destroy();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- onDocument is a stable callback from the reader
-  }, [sourceUrl, fontCompatibility]);
+  }, [sourceUrl]);
 
   useEffect(() => {
     if (pageCount <= 0) return;

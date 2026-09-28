@@ -31,6 +31,10 @@
 
 - [x] 12. Signed desktop build installed/launched with rollback; verify packaged features, owned backend, desktop proxy, and unsaved-edit confirmation through the shortcut.
 
+- [x] 13. Enable compatible glyph rendering for every PDF automatically; remove Repair text and its stored preference helper.
+
+- [x] 14. Reinstall automatic font rendering build with rollback; verify installed reader options/button removal, signature, archive equality, and owned backend/proxy health.
+
 ## Decisions
 - Reader is a surface (like Work / Notes), not an autonomy mode. Plan/Auto/Full access still govern what the sidecar agent may do.
 - Ported later: OCR (in-browser instead of server), passage anchoring (client-side against page text), annotated-PDF export. Still not ported: teaching layers/modes and the tutor model picker; DAN answers through the configured lead. DAN reads PDFs directly from the project folder and answers through the configured lead.

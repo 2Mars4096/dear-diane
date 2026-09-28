@@ -8,7 +8,6 @@ import { fingerprintText, locateVisualSelection, resolveTextAnchor } from "./lib
 import type { MaterialPdfOcrPage } from "./lib/pdf-ocr";
 import { extractPageTexts, ocrPage, ocrPageText, sparsePages } from "./lib/ocr-runner";
 import { rectsForQuote } from "./lib/text-layer";
-import { readFontCompatibility, rememberFontCompatibility } from "./lib/font-compatibility";
 
 export type ReaderFile = { name: string; path: string; url: string };
 export type ReaderAsk = { quote: string; pageNumber: number; pageText: string; file: ReaderFile; anchor?: PaperCommentAnchor | null };
@@ -29,7 +28,6 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
   const [ocrPages, setOcrPages] = useState<MaterialPdfOcrPage[]>([]);
   const [ocr, setOcr] = useState<OcrState>({ status: "idle", done: 0, total: 0 });
   const [exporting, setExporting] = useState(false);
-  const [fontCompatibility, setFontCompatibility] = useState(() => readFontCompatibility(file.path));
   const documentRef = useRef<PDFDocumentProxy | null>(null);
 
   useEffect(() => {
@@ -175,14 +173,8 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
         ocrPages={ocrPages}
         pageNumber={pageNumber}
         sourceUrl={file.url}
-        fontCompatibility={fontCompatibility}
         title={file.name}
         toolbarExtras={<>
-          <button type="button" aria-pressed={fontCompatibility}
-            title="Try this if letters look garbled. Uses a different font renderer and remembers this PDF."
-            onClick={() => { const enabled = !fontCompatibility; rememberFontCompatibility(file.path, enabled); setFontCompatibility(enabled); }}>
-            {fontCompatibility ? "Text repair on" : "Repair text"}
-          </button>
           {ocr.status === "running" && <span title="Recognizing text on scanned pages"><ScanText size={12} />OCR {ocr.done}/{ocr.total}</span>}
           {ocr.status === "error" && <span data-error title={ocr.message}><ScanText size={12} />OCR failed</span>}
           <button type="button" onClick={onNotes}><MessageSquareQuote size={13} />Notes{comments.length ? ` ${comments.length}` : ""}</button>
