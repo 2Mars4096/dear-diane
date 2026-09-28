@@ -1,11 +1,48 @@
 # Changelog
 
 ## 2026-09-28
+- [test] Revalidate the pending paper-library, folder-drop, file-link, and automatic PDF-font changes before committing in logical batches: 5 backend tests, 44 frontend tests, production build/bundle budgets, and Electron compilation pass.
+
+## 2026-09-28
+- [infra] Reinstall the signed automatic-PDF-font build with idle/ownership checks and rollback retained. Installed archive equality, signature, app-owned backend/proxy health, automatic font options, and absence of the Repair text button verified.
+
+## 2026-09-28
+- [fix] Apply PDF font compatibility automatically for every document; remove the Repair text toolbar button and per-file opt-in storage helper. Existing saved preferences no longer affect rendering; original PDF bytes remain unchanged.
+- [test] All 12 reader tests, TypeScript compilation, production build, and bundle budgets pass. Installed desktop app has not been updated in this change.
+
+## 2026-09-28
 - [feat] Reduce SSH settings to compact host/status rows with details, project, and phone icons. Move addresses, keys, relay settings, and opt-in installation controls into a host details dialog. SSH connected is shown only after a successful explicit check.
 - [test] Five SSH UI tests and production build/budgets pass; real dark-theme desktop and 390px details/Escape checks pass. Existing remote profiles and services are unchanged. Signed desktop update installed with rollback; archive/signature and owned backend health pass.
 
 ## 2026-09-28
+- [infra] Install signed conversation file-link update with rollback after idle/ownership checks. Direct launch avoids the observed Launch Services startup failure; installed archive equality, signature and app-owned desktop health pass.
+
+## 2026-09-28
+- [feat] Preserve conversation file/folder links and explicit inline paths for Codex/Claude. Click opens the actual local target; native right-click offers Open, Reveal, installed Cursor, Copy path, text-content copying and Save as. Relative links use project context; remote paths cannot open on the local Mac.
+- [test] Twenty-three focused tests plus Electron compilation and frontend build/budgets pass. Shared Markdown rendering now lives in the content chunk.
+
+## 2026-09-28
+- [infra] Install the main workspace folder-drop update after idle-work and exact process-ownership checks; retain rollback. Installed signature and archive equality pass, and desktop-proxy health confirms the app-owned backend. Launch Services startup timed out; direct detached launch of the installed executable recovered normal operation. Finder-drop acceptance remains pending.
+
+## 2026-09-28
+- [feat] Main-area folder drops create/select a project named after the native folder; already listed paths reuse their project. Show a dashed main-workspace boundary and drop instructions, preserving document opening and project-settings handlers.
+- [test] Eight folder/document-drop tests and production build/bundle budgets pass. Installed Finder-drop acceptance remains pending.
+
+## 2026-09-28
+- [fix] Paper search preserves keyboard selection during small pointer movements within a result; regression covers focused input navigation and Enter. Production build and signature checks pass; installed update, and user confirmed it works.
+
+## 2026-09-28
+- [infra] Install the paper-library desktop update after idle-work and exact process-ownership checks, retaining rollback. Verify installed archive equality, signature, owned backend health, and desktop-proxy access to 304 available papers. Initial backend startup exited; a logged normal relaunch succeeded without source/config changes.
+
+## 2026-09-28
 - [test] Verify native Codex GPT-6-Astra/medium in read-only mode on mini's imported Dropbox project. Background run completes after the submitting connection closes; hostname, cwd, and README command results pass. Save the exact response in the remote project's execution-check chat; no deployment or project edits.
+
+## 2026-09-28
+- [feat] Add a host-wide paper library with Cmd/Ctrl+K search, typo tolerance, metadata/notes filters, list/table browsing, details, citations, pins, and staged chat references. Reuse Notes discovery and Hugo paperPDF/pageID/BibTeX conventions; originals stay in place.
+- [feat] Give each library paper a durable reading session with a stable conversation, position, annotations, and page references. Recent reading sessions appear in the sidebar; reopening works across projects and browser reloads.
+- [refactor] Load main-tab rendering and paper UI separately to keep the existing shell bundle budget.
+- [test] Nine backend and 29 frontend checks pass, plus production build/budgets and Electron compilation. Isolated browser checks cover 304 papers, keyboard search, saved page/annotations/conversation recovery, references, citations, settings, and 390px layout. Conversation recovery uses saved fixtures; no live model answer was generated.
+- [infra] Prepare a signed arm64 desktop update; verify signature, packaged paper modules, and automatic prepared-update detection. Installation is available in DAN settings; the running app was not restarted.
 
 ## 2026-09-28
 - [feat] Open existing remote project folders through an inline, host-labelled chooser with subfolder browsing, path search, retry, and stale-response protection. Preserve the desktop picker/drop flow; remote project metadata persists on the execution host.

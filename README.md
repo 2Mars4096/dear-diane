@@ -33,7 +33,7 @@ Use **Edit** below your latest message, then **Save & resend** to replace its an
 
 Choose **DAN settings → Appearance → Color scheme** for eight paired light/dark palettes. **Mode** selects Light, Dark, or System; changes apply immediately and save automatically.
 
-Work opens with a familiar project/chat sidebar: New chat, search, collapsible project folders, and archived chats. Use the + beside Projects to create an empty project, then choose **New chat** when ready; its menu edits the name and folder. In the desktop app, drop a folder onto the folder field to fill its path. Browsers that hide local paths require pasting the full path. One **side panel** (header toggle) holds Chat, Files, Preview, Activity, and Team as tabs. Chat is a separate saved conversation with the current lead, also opened from selected text. Select message text to stage a source-linked reference above the input. The input grows from one to six lines, then scrolls; expand tool and emitted thinking details when needed. Waiting messages stay out of the transcript and appear in an initially expanded **Up next** queue; a lone active run does not show a queue panel. Stop and steering use the existing Agent V2 controls. On new Codex lead runs, **Steer** sends into the active turn, and **Steer now** sends an existing Up next entry without duplicating it. Other waiting messages retain FIFO order; rejected steering remains queued. Live steering becomes available when the run connection is ready; older CLI runs require a new run after updating.
+Work opens with a familiar project/chat sidebar: New chat, search, collapsible project folders, and archived chats. Use the + beside Projects to create an empty project, then choose **New chat** when ready; its menu edits the name and folder. In the desktop app, drag a folder into the main workspace: a dashed boundary appears, and dropping creates and opens a project named after the folder. Dropping an already listed folder reopens its project. You can also drop a folder onto the project settings folder field to fill its path. Browsers that hide local paths require pasting the full path. One **side panel** (header toggle) holds Chat, Files, Preview, Activity, and Team as tabs. Chat is a separate saved conversation with the current lead, also opened from selected text. Select message text to stage a source-linked reference above the input. The input grows from one to six lines, then scrolls; expand tool and emitted thinking details when needed. Waiting messages stay out of the transcript and appear in an initially expanded **Up next** queue; a lone active run does not show a queue panel. Stop and steering use the existing Agent V2 controls. On new Codex lead runs, **Steer** sends into the active turn, and **Steer now** sends an existing Up next entry without duplicating it. Other waiting messages retain FIFO order; rejected steering remains queued. Live steering becomes available when the run connection is ready; older CLI runs require a new run after updating.
 
 - **Sidebar:** click the toggle left of the project name, or press `⌘/Ctrl + B`. The right side panel toggles with `⌘⌥B` / `Ctrl+Alt+B`.
 - **Projects:** `⌘/Ctrl + Shift + P` opens the carousel. Scroll or use left/right arrows, then Enter. Escape cancels.
@@ -49,9 +49,23 @@ Work opens with a familiar project/chat sidebar: New chat, search, collapsible p
 
 Codex events use the shared activity display. The [native worker design](docs/UI-plans/2-native-agent-workers.md) describes persistent Codex/Claude children; a Claude worker adapter is still pending.
 
-If PDF letters look garbled, try **Repair text** in the PDF toolbar. This switches to a local font renderer and preserves your reading position. The setting is remembered for project/desktop file paths; importing another browser copy creates a new document identity. It does not edit the original PDF.
+PDFs automatically use a local compatibility font renderer to avoid browser font conversion issues. No repair button or per-file setup is needed; the original PDF is unchanged.
+
+## Papers and reading sessions
+
+Use **⌘K / Ctrl+K** to find a paper by title, author, citation key, topic, or reading notes. Search accepts words in any order and small metadata typos. Arrow keys select, Enter opens, and Escape returns to your work. An empty search shows pinned and recent papers.
+
+**Papers** in the sidebar opens the full library: filter by tags/year/journal, switch list/table views, inspect abstracts and knowledge-base notes, copy citations/BibTeX, or select papers and **Add to chat**. References are staged for your next message; nothing sends automatically. Library filters and scroll survive switching tabs.
+
+Each library paper has one resumable reading session. **Continue reading** in the sidebar restores its PDF position, annotations, saved page references, and Reading conversation, independently of the current project. Closing the tab keeps the session. Reading state is saved on the DAN host, so another browser connected to that same host can resume it. Failed saves retain a local recovery copy with retry/download controls.
+
+The library discovers your existing `my-knowledge-base` through the Notes folder conventions. **Paper library settings** lets you add Hugo project roots or PDF folders and hide the sidebar entry. You can reopen it through **DAN settings → Open paper library**. Sources remain in place; the library does not edit knowledge-base Markdown or PDFs. Missing PDFs stay visible in search with unavailable-file feedback. Sources refresh when DAN regains focus, every 30 seconds while visible, or through **Refresh**.
+
+Search currently covers metadata, abstracts, knowledge-base notes, and saved annotation text. PDF full-text and semantic search are not included. Separate hosts have separate libraries; browser-only dropped PDFs continue using the existing local-copy workflow.
 
 ## Open files in DAN
+
+In desktop conversations, click file/folder links or inline code paths from Codex or Claude to open the actual local target. Relative links use the project folder. Right-click for Open, Reveal in Finder, Open in Cursor (when installed), Copy path, and file-only Save as / Copy file contents. Remote-host paths remain accessible through the project Files panel.
 
 Drop files into DAN or use **Open file** (⌘/Ctrl+O). PDFs open in the reader; text/code files open in editable tabs, Markdown supports Preview, and images/audio/video open in viewers. Project Files also open in tabs. Use **Save** or ⌘/Ctrl+S for original desktop/project files; changed files on disk require reopening, with **Download copy** available to preserve your draft. Unsaved edits survive tab/Notes switches and prompt before closing.
 

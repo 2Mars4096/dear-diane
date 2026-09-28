@@ -2,7 +2,16 @@
 
 - [x] Simplify SSH settings to compact rows and a host details panel — [6-2](plans/6-2-ssh-connection-setup.md).
 
+- [x] Make Codex/Claude conversation file paths openable with native context actions — [4-6](plans/4-6-document-workspace.md).
+- [x] Install and verify conversation file-link update — [4-6](plans/4-6-document-workspace.md).
+
+- [x] Main workspace folder drops create/select projects with a visible drag boundary — [4-1](plans/4-1-agent-workbench.md).
+- [x] Install the main workspace folder-drop update and verify signature/archive/backend health — [4-1](plans/4-1-agent-workbench.md).
+- [ ] User acceptance: drag a Finder folder into the updated main workspace — [4-1](plans/4-1-agent-workbench.md).
+
 - [x] Verify a read-only Codex turn on mini's imported Dropbox project and save the result in its DAN chat — [6-3](plans/6-3-remote-project-folders.md).
+
+- [x] [4-7-paper-library](plans/4-7-paper-library.md) — host-wide paper search, Hugo metadata/notes, and resumable reading sessions; browser verified, signed desktop update installed, and 304-paper catalogue healthy.
 
 - [x] Open existing mini folders as remote DAN projects with an inline folder chooser; deployed and opened a Dropbox project — [6-3](plans/6-3-remote-project-folders.md).
 
@@ -11,7 +20,9 @@
 - [x] Simplify adding SSH hosts to a Codex-style dialog; support manual hosts, optional ports/keys, and separate phone setup — [6-2](plans/6-2-ssh-connection-setup.md).
 
 - [x] Add local PDF font compatibility mode and verify an embedded-font fixture — [reader](UI-plans/3-reader-and-side-panel.md).
-- [ ] User verification: try Repair text on the private garbled PDF; no file access requested again.
+- [x] Apply PDF font compatibility automatically and remove the Repair text button and per-file preference — [reader](UI-plans/3-reader-and-side-panel.md).
+- [x] Reinstall and verify the automatic PDF font update — [reader](UI-plans/3-reader-and-side-panel.md).
+- [ ] Private PDF appearance remains unverified; no file access requested again.
 
 - [x] Preserve right-panel state and add a dedicated close-tab shortcut; verify desktop and phone switching — [reader and side panel](UI-plans/3-reader-and-side-panel.md).
 
@@ -148,3 +159,5 @@
 
 - [x] Keep queued messages out of the transcript; show them in Up next with Remove; no fake queued replies.
 - [ ] Live-verify Up next delivery (append and continue lanes) against a real run in the installed app.
+
+- [x] Paper search follow-up: verified and installed the pointer/keyboard selection fix; user confirmed working ([4-7](plans/4-7-paper-library.md)).

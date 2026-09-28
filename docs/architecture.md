@@ -4,7 +4,7 @@
 - ProjectSettings detects the authenticated server's `dan-remote-machine` marker and replaces the desktop drop/picker with `RemoteProjectFolder`. The inline chooser uses the existing same-origin workspace-roots API, ignores stale responses, and returns a server-resolved path into the usual pinnedPaths/project registry flow. No SSH credentials or Mac paths enter this browser flow.
 
 ## PDF font compatibility
-- ReaderView persists font compatibility per file identity through `reader/lib/font-compatibility.ts`; InteractivePdfViewer reloads with `disableFontFace` and system-font substitution disabled while preserving saved position. Repair remains local and does not change PDF bytes. Reader text/OCR callbacks ignore results from replaced documents.
+- InteractivePdfViewer always loads PDFs with `disableFontFace: true` and `useSystemFonts: false`, drawing glyph outlines locally without browser font conversion/substitution. No manual repair control or per-document preference remains; old stored preferences are ignored. PDF bytes are unchanged. Reader text/OCR callbacks ignore results from replaced documents.
 
 ## Persistent side tools
 - Work owns one side-panel frame/header. `workbench/PersistentPanel.tsx` mounts a tool on first visit, then hides it without unmounting; chat polling and drafts continue, and scroll/expanded logs survive. Files and Preview use the same frame on desktop and phone. Project/PDF/thread keys isolate context-specific state.
@@ -169,6 +169,7 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - Work layout uses `dan.chunkWorkspace.layout.v3`, migrating Notes preferences from v2/v1 while opening the project/chat sidebar and closing Files by default. Surface themes are scoped to Notes; Work follows light/dark appearance with neutral tokens.
 - The sidebar groups chats by project with collapsible folders, search, and an Archived view. `ProjectSettings.tsx` supplies project name/folder creation and editing without the legacy Work settings toolbar. Native worker lifecycle integration is specified in `docs/UI-plans/2-native-agent-workers.md` and is not implemented by the presentation layer.
 
+- `documents/FileOpener.tsx` routes external directory drops through the validated folder bridge into `ChunkWorkspaceApp.openDroppedProject`; file drops retain document opening. A `data-main-drop-area` element bounds the drag overlay. Remote connections reject local directory registration, and project-settings drop zones retain ownership.
 - Project folder drop uses `folderDrop.ts` → optional `nativeFs.droppedDirectory(File)` → Electron preload `webUtils.getPathForFile` → `fs:droppedDirectory` directory validation. Both TS and shipped CJS preloads expose the bridge. Browser-hidden paths are never reconstructed from folder names.
 - Wheel directions track held keys per dialog; arrows/WASD combine into a compass vector, while Q/E/Z/C choose diagonals directly. Key release retains the selection, and close/window blur clears held state.
 
@@ -222,3 +223,16 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - Lead readiness projects `live_steering` onto the run/task. The runtime claims append entries, acknowledges successful steering, and releases unacknowledged entries on failure. New runs clear stale capability metadata.
 - `POST /api/v2/agent-runs/{run_id}/queue/{item_id}/steer` moves an existing waiting entry to append delivery after active-run/capability checks. Persisted list order is unchanged; explicit steering can bypass continue-after-current entries.
 - Lazy `FollowupQueue.tsx` renders queue actions and errors; composer capability follows the active run, independent of the next selected lead. Older exec-based native runs cannot gain a live connection retrospectively.
+
+## Paper library and reading sessions
+
+- `server/paper_library.py` indexes configured Hugo projects (`content/papers` + `static/papers`) and PDF folders without modifying originals. Initial discovery reuses Notes candidates, skipping unavailable paper collections. Metadata parsing supports folded BibTeX and nested braces; Hugo identity uses source root + citation key. File metadata caches invalidate by mtime/size and PDF availability is rechecked.
+- `server/routers/papers.py` exposes `/api/papers`, `/settings`, `/{id}/open`, `/{id}/pin`, `/{id}/pdf`, and `/sessions/{id}` with `/progress` and `/link`. Sources and reading records use private atomic JSON files under `graphs/papers/`; PDF links must remain within their configured source.
+- One reading session per paper owns a durable ChatStore thread under `_dan_reading`. Coding-chat discovery excludes this namespace; Papers and the recent-reading sidebar own navigation. Progress writes use a revision check; conversation links validate thread/run ownership. Host records are shared across browsers, with no implicit transfer between hosts.
+- `editor/src/components/papers/` owns lazy search/library/settings UI, unordered token/one-edit metadata retrieval, metadata + knowledge-base/annotation note search, source refresh on focus/30-second polling, and reading hydration/sync. `reading.ts` hydrates the existing reader before mount and coalesces position/comment/reference events. Failed writes retain a device-local recovery record and expose retry/download/reload.
+- The existing PDF reader, Notes annotations, and SidecarChat remain the reading surfaces. Sidecar accepts a server-owned initial conversation link and persists run links before execution. Source library notes are shown read-only in Details; PDF annotations stay separate from Hugo Markdown.
+- Library query/filter/view preferences and scroll remain device-local. Main tabs use lazy `MainTabs.tsx` with pure types/close behavior in `mainTabState.ts`. Cmd/Ctrl+K is reserved for papers; the project switcher keeps Cmd+Shift+P.
+
+## Conversation file links
+- Shared `MarkdownRenderer` preserves targets in sanitized `data-file-link` anchors and reads project context from `data-workspace-root` or the sidecar prop. Inline code paths use the same action path. Markdown rendering is bundled with the shared content libraries.
+- `electron/fileLinks.ts` owns main-frame-only `shell:fileLink` IPC, local path/line-suffix resolution, stat validation, OS opening and native context actions. Both preloads expose the narrow bridge. File copying is explicit through Save as; text clipboard reads require UTF-8 and a 5 MB bound. Remote/browser-only sessions show a fallback instead of opening local paths.
