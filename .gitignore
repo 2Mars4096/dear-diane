@@ -5,6 +5,10 @@ Thumbs.db
 # Business documents
 docs/business/*.pdf
 
+# Local implementation and specialized plans
+/docs/plans/
+/docs/*-plans/
+
 # Python bytecode and caches
 __pycache__/
 *.py[cod]

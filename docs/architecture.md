@@ -170,6 +170,8 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 
 ## Repository hygiene
 
+- `docs/plans/` and `docs/*-plans/` are local, Git-ignored tracking documents. Existing working copies remain available; fresh clones will not include them after the untracking change is committed.
+
 - `graphs/chats/` and `graphs/chat_v2/` are the retained repo-local session/task state; `.dan-super/` is retained TUI/run state.
 - Dependencies and build products such as `editor/node_modules`, frontend bundles, Flutter tool state, APKs, and language caches are regenerated locally and are not part of the source tree.
 - Legacy examples, standalone generated websites/animations/reports, old Code/Research histories, root checkpoints, and prior engine memory are absent from the active workspace.

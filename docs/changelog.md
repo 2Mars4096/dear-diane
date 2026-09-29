@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-29
+- [infra] Keep implementation and specialized plan directories local: ignore `docs/plans/` and `docs/*-plans/`, and remove existing plan files from the Git index while preserving working copies. Historical commits retain their existing files.
+
+## 2026-09-29
 - [infra] Install verified Dear Diane.app in Applications, launch successfully, and verify its owned backend/proxy and existing profile. Move the inactive DAN.app to Trash after health checks; preserve chats and settings.
 
 ## 2026-09-29
