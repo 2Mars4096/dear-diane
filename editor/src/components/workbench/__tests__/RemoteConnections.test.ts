@@ -21,7 +21,7 @@ it("keeps credential provisioning opt-in and starts an explicit install", async 
   await act(async () => button("Connection details for Mini").click());
   const checkbox = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
   expect(checkbox.checked).toBe(false);
-  const install = [...host.querySelectorAll("button")].find(button => button.textContent === "Install DAN")!;
+  const install = [...host.querySelectorAll("button")].find(button => button.textContent === "Install Dear Diane")!;
   await act(async () => install.click());
   expect(fetcher).toHaveBeenLastCalledWith("/api/remote/connections/mini/install", expect.objectContaining({ method: "POST", body: JSON.stringify({ share_openrouter: false }) }));
   expect(host.textContent).toContain("Installed");

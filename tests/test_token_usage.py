@@ -130,7 +130,7 @@ def test_overview_combines_sessions_by_day_project_agent_and_stage(monkeypatch, 
     assert report["sessions"] == 2 and report["total"] == sum(row["total"] for row in report["top_sessions"])
     assert {row["key"]: row["count"] for row in report["by_agent"]} == {"claude": 1, "codex": 1}
     assert {row["key"] for row in report["by_project"]} == {"demo", "other"}
-    assert report["top_sessions"][-1]["title"] == "summarise the repo"  # DAN lead wrapper removed
+    assert report["top_sessions"][-1]["title"] == "summarise the repo"  # Diane lead wrapper removed
     assert sum(day["total"] for day in report["days"]) == report["total"]
     assert abs(sum(row["share"] for row in report["by_stage"]) - 1) < 0.01 and report["flags"][0]["flag"] == "oversized_output"
     assert any("over 10k" in tip["title"] for tip in report["advice"])

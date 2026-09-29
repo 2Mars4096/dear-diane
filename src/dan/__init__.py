@@ -1,4 +1,4 @@
-"""DAN — Universal Cell, Universal Organism, and Super DAN."""
+"""Dear Diane — a workspace for research, code, and ideas."""
 
 from __future__ import annotations
 

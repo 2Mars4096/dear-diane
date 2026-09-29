@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, Play, Square, Trash2 } from "lucide-react";
 
 export type ManagedProcess = { id: string; name: string; command: string; cwd: string; status: string; origin: string; pid: number; started_at: number; ended_at: number | null };
-const ORIGIN: Record<string, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor", antigravity: "Antigravity", dan: "DAN", user: "You" };
+const ORIGIN: Record<string, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor", antigravity: "Antigravity", dan: "Diane", user: "You" };
 
 export function uptime(from: number, to = Date.now() / 1000): string {
   const seconds = Math.max(0, to - from);
@@ -34,7 +34,7 @@ export function ProcessesPanel({ cwd, workspaceId, processes, error, onChanged, 
       <button type="submit" disabled={!command.trim() || busy === "start" || !cwd} aria-label="Start process"><Play size={12} /></button>
     </form>
     {(error || problem) && <p className="wb-team-error" role="alert">{problem || error}</p>}
-    {!processes.length && <p className="wb-activity-empty wb-side-empty">Nothing running. Processes started here, or by an agent through DAN, keep running after the chat ends.</p>}
+    {!processes.length && <p className="wb-activity-empty wb-side-empty">Nothing running. Processes started here, or by an agent through Diane, keep running after the chat ends.</p>}
     <div className="wb-team-lanes">{processes.map((item) => <ProcessLane key={item.id} item={item} busy={busy === item.id}
       onStop={() => void call(`/api/processes/${item.id}/stop`, { method: "POST" }, item.id)}
       onRemove={() => void call(`/api/processes/${item.id}`, { method: "DELETE" }, item.id)} />)}</div>

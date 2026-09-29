@@ -1,4 +1,4 @@
-"""Run a frozen flagship case through the local Super DAN control plane.
+"""Run a frozen flagship case through the local Diane control plane.
 
 This runner is dry-run by default. Live execution requires both ``--execute``
 and the explicit provider-disclosure acknowledgement because the local server
@@ -32,7 +32,7 @@ from tests.eval.super_dan_flagship_acceptance import (
 DISCLOSURE_ACK = (
     "I approve sending the premium-site and RTS prompts, relevant repository "
     "context, tool outputs, and generated artifact context to "
-    "https://api.moonshot.ai/v1 using the configured DAN credential."
+    "https://api.moonshot.ai/v1 using the configured Diane credential."
 )
 _TERMINAL_TYPES = {"completed", "failed", "blocked", "stopped"}
 _TERMINAL_SOURCE_EVENT_TYPES = {
@@ -55,7 +55,7 @@ def is_terminal_run_event(event: Mapping[str, Any]) -> bool:
     # Synthetic tests and older control-plane payloads may not name a source.
     # When a source is present, require an actual run/background-run terminal
     # event so model timeouts and contract-repair transitions do not detach the
-    # live runner while Super DAN is still recovering.
+    # live runner while Diane is still recovering.
     return not source_event_type or source_event_type in _TERMINAL_SOURCE_EVENT_TYPES
 
 
@@ -235,7 +235,7 @@ def run_live_case(
         time.sleep(poll_seconds)
     else:
         raise TimeoutError(
-            f"Super DAN flagship run {run_id} did not settle within "
+            f"Diane flagship run {run_id} did not settle within "
             f"{timeout_seconds:.0f}s"
         )
 
@@ -289,7 +289,7 @@ def _assert_loopback_server(server_url: str) -> None:
     if parsed.scheme not in {"http", "https"}:
         raise ValueError("server URL must use http or https")
     if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-        raise ValueError("flagship runner only talks to a loopback DAN server")
+        raise ValueError("flagship runner only talks to a loopback Dear Diane server")
 
 
 def _assert_empty_workspace(workspace: Path) -> None:

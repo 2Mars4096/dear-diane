@@ -2,7 +2,7 @@
 
 The public entry point is intentionally profile-based instead of project-based:
 new languages can be registered here without adding workflow-specific commands
-or objective routing to DAN surfaces.
+or objective routing to Diane surfaces.
 """
 
 from __future__ import annotations

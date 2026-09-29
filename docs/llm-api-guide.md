@@ -1,5 +1,7 @@
 # LLM-Facing API Guide
 
+Product naming: **Dear Diane**; assistant: **Diane**. Python imports, API identifiers, backend IDs, and `dan` CLI commands below remain compatibility contracts. `dear-diane` is an equivalent top-level command.
+
 Document editing: `GET /api/workspace-files/document?path=...&root_path=...` returns strict UTF-8 `content` and a SHA-256 `revision` (2 MB limit). `PUT` to the same endpoint accepts `{path, root_path, content, revision}` and returns the new revision; HTTP 409 retains externally changed content. Browser-selected local documents are not implicitly uploaded or available to agents beyond supplied excerpts.
 
 Use this guide when constructing DAN work programmatically. The old workflow graph builder, node taxonomy, edge types, and engine API no longer exist in the active tree.

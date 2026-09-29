@@ -199,7 +199,7 @@ class ChatStore:
     def initial_title(thread: ChatThread) -> str:
         """Name placeholder sessions from the first nonempty request, never the latest."""
         if thread.title.strip().casefold() not in {
-            "", "new super dan session", "new session", "new chat", "untitled",
+            "", "new diane session", "untitled diane session", "new super dan session", "new session", "new chat", "untitled",
             "untitled chat", "untitled session", "untitled dan super session", "workspace thread",
         }:
             return thread.title

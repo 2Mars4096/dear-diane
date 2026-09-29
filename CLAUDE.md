@@ -1,4 +1,4 @@
-# Deep Agent Network - Claude Code Instructions
+# Dear Diane - Claude Code Instructions
 
 This file mirrors the always-on rules in `.cursor/rules/project-tracking.mdc` so Claude Code follows the same project tracking workflow.
 
@@ -12,7 +12,7 @@ All tracking docs live in `docs/`. Standard implementation plans live in `docs/p
 |------|---------|--------------|----------------|
 | `docs/todo.md` | High-level task list grouped by phase, links to plan files | Start of session to pick up work | After completing or discovering tasks |
 | `docs/plans/N-name.md` | Detailed breakdown of a buildable unit with nested sub-tasks | When working on that plan | Check off sub-tasks as you complete them |
-| `docs/live-test-plans/N-name.md` | Dedicated live-test plans for DAN product capability batteries | When working on live/manual evaluation tracks | Check off sub-tasks as you complete them |
+| `docs/live-test-plans/N-name.md` | Dedicated live-test plans for Dear Diane product capability batteries | When working on live/manual evaluation tracks | Check off sub-tasks as you complete them |
 | `docs/search-infra-plans/N-name.md` | Dedicated plans for the separately named Beacon Search infrastructure track | When working on search-infrastructure extraction or rollout | Check off sub-tasks as you complete them |
 | `docs/changelog.md` | Log of completed work, **latest first** (descending order) | Before starting work (to avoid re-doing) | After every meaningful change — end of session at latest |
 | `docs/architecture.md` | Tech stack, directory layout, conventions, patterns | Before writing any code | When adding new modules, changing patterns, or introducing dependencies |

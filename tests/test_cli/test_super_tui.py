@@ -419,8 +419,8 @@ def test_super_tui_plain_renderer_does_not_auto_print_board(capsys) -> None:
         )
 
     stdout = capsys.readouterr().out
-    assert "DAN · Session:" not in stdout
-    assert "DAN · Board:" not in stdout
+    assert "Diane · Session:" not in stdout
+    assert "Diane · Board:" not in stdout
     assert "Board:" not in stdout
     assert "task-A" in "\n".join(super_tui._format_tui_board_lines(renderer.state))
 
@@ -774,7 +774,7 @@ def test_super_tui_chatbox_scheduler_refreshes_routing_in_box(tmp_path, capsys, 
     scheduler._watch_thread(fake_thread, 100.0)
 
     stdout = capsys.readouterr().out
-    assert "DAN · Chat -> Routing:" in stdout
+    assert "Diane · Chat -> Routing:" in stdout
     assert "Routing 1s..." in stdout
     assert "Narrator:" not in stdout
     assert "Still working on this turn." not in stdout
@@ -930,8 +930,8 @@ def test_super_tui_queue_prefix_stays_with_replaceable_status_lane(capsys, monke
 
         first_refresh = capsys.readouterr().out
         assert "\x1b[3F\x1b[J" in first_refresh
-        assert "DAN · Chat -> Queue:" in first_refresh
-        assert "DAN · Chat -> Working:" in first_refresh
+        assert "Diane · Chat -> Queue:" in first_refresh
+        assert "Diane · Chat -> Working:" in first_refresh
 
         super_tui._refresh_tui_chatbox_status_block(
             100.0,
@@ -942,8 +942,8 @@ def test_super_tui_queue_prefix_stays_with_replaceable_status_lane(capsys, monke
 
         second_refresh = capsys.readouterr().out
         assert "\x1b[6F\x1b[J" in second_refresh
-        assert "DAN · Chat -> Queue:" in second_refresh
-        assert "DAN · Chat -> Working:" in second_refresh
+        assert "Diane · Chat -> Queue:" in second_refresh
+        assert "Diane · Chat -> Working:" in second_refresh
     finally:
         super_tui._forget_tui_chatbox_thinking_block()
 
@@ -1016,7 +1016,7 @@ def test_super_tui_scheduler_refresh_preserves_working_detail(capsys, monkeypatc
     )
 
     stdout = capsys.readouterr().out
-    assert "DAN · Chat -> Working:" in stdout
+    assert "Diane · Chat -> Working:" in stdout
     assert "Working 10s..." in stdout
     assert "Running validation command." in stdout
     assert "Chat -> Routing" not in stdout
@@ -1033,10 +1033,10 @@ def test_super_tui_background_progress_notes_use_chatbox_thinking_lane(capsys) -
     renderer.note("Checking the relevant workspace context.")
 
     stdout = capsys.readouterr().out
-    assert "DAN · Chat -> Working:" in stdout
+    assert "Diane · Chat -> Working:" in stdout
     assert "Working 0s..." in stdout
     assert "Checking the relevant workspace context." in stdout
-    assert "DAN · Checking the relevant workspace context." not in stdout
+    assert "Diane · Checking the relevant workspace context." not in stdout
 
 
 def test_super_tui_background_progress_uses_elapsed_chatbox_time(capsys, monkeypatch) -> None:
@@ -1052,7 +1052,7 @@ def test_super_tui_background_progress_uses_elapsed_chatbox_time(capsys, monkeyp
     renderer.note("Checking the relevant workspace context.")
 
     stdout = capsys.readouterr().out
-    assert "DAN · Chat -> Working:" in stdout
+    assert "Diane · Chat -> Working:" in stdout
     assert "Working 5s..." in stdout
     assert "Thinking 0s..." not in stdout
 
@@ -1108,10 +1108,10 @@ def test_super_tui_background_stream_progress_uses_chatbox_lane(capsys, monkeypa
     super_tui._emit_tui_stream_line(args, "Source inspected: report.md")
 
     stdout = capsys.readouterr().out
-    assert "DAN · Chat -> Working:" in stdout
+    assert "Diane · Chat -> Working:" in stdout
     assert "Working 5s..." in stdout
     assert "Source inspected: report.md" in stdout
-    assert "DAN · Source inspected" not in stdout
+    assert "Diane · Source inspected" not in stdout
 
 
 def test_super_tui_background_dispatch_gate_requires_tty(tmp_path, monkeypatch) -> None:
@@ -1191,7 +1191,7 @@ def test_super_tui_transcript_history_payload_excludes_current_turn(tmp_path) ->
 def test_super_tui_queue_summary_hides_internal_counters_when_idle() -> None:
     raw = "\n".join(
         [
-            "Super DAN queues",
+            "Diane queues",
             "reactivity: balanced",
             "Inboxes:",
             "- validation: pending=0 active=0 enqueued=5 leased=5 coalesced=0 backpressured=0 dead=0",
@@ -1508,7 +1508,7 @@ def test_super_tui_interactive_async_turn_records_admission_without_dispatch(
     assert exit_code == 0
     assert captured_payloads[0]["background"] is True
     stdout = capsys.readouterr().out
-    assert "DAN · Answer:" in stdout
+    assert "Diane · Answer:" in stdout
     assert "Started background task `task-A` to work on: build script_a.py" in stdout
     assert "The requested files do not overlap visible active work" in stdout
     assert "The visible scope is `script_a.py`." in stdout
@@ -1721,7 +1721,7 @@ def test_super_tui_stop_shortcut_targets_visible_active_task(
         "forced_new": False,
         "background": False,
     }
-    assert "DAN · Command:" in capsys.readouterr().out
+    assert "Diane · Command:" in capsys.readouterr().out
 
 
 def test_super_tui_explicit_async_turn_uses_local_store_without_server(
@@ -1774,7 +1774,7 @@ def test_super_tui_explicit_async_turn_uses_local_store_without_server(
     assert exit_code == 0
     assert started_runs
     stdout = capsys.readouterr().out
-    assert "DAN · Answer:" in stdout
+    assert "Diane · Answer:" in stdout
     assert "Started background task" in stdout
     assert "Board:" not in stdout
     store = super_tui._open_tui_local_async_store(workspace)
@@ -1867,7 +1867,7 @@ def test_super_tui_plan_mode_renders_questions_without_dispatch(tmp_path, capsys
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "DAN · Plan:" in stdout
+    assert "Diane · Plan:" in stdout
     assert "Refine the Godot plan before implementation." in stdout
     assert "What should the first playable slice prove?" in stdout
     assert "Recommended: Validate movement, hit feedback, and one enemy loop." in stdout
@@ -2049,7 +2049,7 @@ def test_super_tui_plan_reply_renders_and_clears_pending_state(
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "DAN · Plan:" in stdout
+    assert "Diane · Plan:" in stdout
     assert "I will carry this direction forward." in stdout
     assert "No files changed." in stdout
     assert super_tui._load_tui_pending_plan_state(tmp_path) is None
@@ -2142,7 +2142,7 @@ def test_super_tui_interactive_plan_command_does_not_start_background(
     monkeypatch.setattr(
         super_tui,
         "_run_tui_plan_mode",
-        lambda run_args, objective: seen.append(objective) or print("DAN · Plan: questions") or 0,
+        lambda run_args, objective: seen.append(objective) or print("Diane · Plan: questions") or 0,
     )
     monkeypatch.setattr(
         super_tui,
@@ -2154,7 +2154,7 @@ def test_super_tui_interactive_plan_command_does_not_start_background(
 
     assert exit_code == 0
     assert seen == ["refine the Godot development plan"]
-    assert "DAN · Plan: questions" in capsys.readouterr().out
+    assert "Diane · Plan: questions" in capsys.readouterr().out
 
 
 def test_super_tui_one_shot_slash_help_bypasses_model_router(
@@ -2175,7 +2175,7 @@ def test_super_tui_one_shot_slash_help_bypasses_model_router(
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "DAN · Help:" in stdout
+    assert "Diane · Help:" in stdout
     assert "/stop or Esc" in stdout
 
 
@@ -2229,7 +2229,7 @@ def test_super_tui_one_shot_reset_bypasses_model_router(
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "DAN · System:" in stdout
+    assert "Diane · System:" in stdout
     assert "Visible TUI transcript preserved." in stdout
 
 
@@ -2445,7 +2445,7 @@ def test_super_tui_rich_render_contains_panel_titles_when_rich_is_available() ->
     console.print(state.rich_renderable())
     text = console.export_text()
 
-    assert "DAN · Session:" in text
+    assert "Diane · Session:" in text
     assert "Recent Events" in text
     assert "Context: workspace=/tmp/ws" in text
     assert "Changed: website/index.html" in text
@@ -2598,8 +2598,8 @@ def test_super_tui_stream_answer_plain_renders_single_block(capsys) -> None:
     super_tui._emit_tui_stream_answer(args, state)
 
     stdout = capsys.readouterr().out
-    assert stdout.count("DAN · Answer:") == 1
-    assert "DAN · Answer: This is the project overview." not in stdout
+    assert stdout.count("Diane · Answer:") == 1
+    assert "Diane · Answer: This is the project overview." not in stdout
     assert "  This is the project overview." in stdout
     assert "  - Pipeline: docs/plan.md" in stdout
 
@@ -2631,7 +2631,7 @@ def test_super_tui_transcript_history_keeps_useful_recent_answers_visible() -> N
 
     formatted = super_tui._format_transcript_line(entry)
 
-    assert formatted.startswith("DAN:")
+    assert formatted.startswith("Diane:")
     assert "I can control a browser" in formatted
     assert "handle downloads" in formatted
     assert "... more in transcript" not in formatted
@@ -2648,7 +2648,7 @@ def test_super_tui_transcript_history_still_bounds_massive_answers() -> None:
 
     formatted = super_tui._format_transcript_line(entry)
 
-    assert formatted.startswith("DAN:")
+    assert formatted.startswith("Diane:")
     assert len(formatted) < len(long_answer)
     assert "... more in transcript" in formatted
 
@@ -2676,7 +2676,7 @@ def test_super_tui_transcript_history_collapses_async_board_entries() -> None:
 
     formatted = super_tui._format_transcript_line(entry)
 
-    assert formatted.startswith("DAN:")
+    assert formatted.startswith("Diane:")
     assert "Background work started" in formatted
     assert "Board:" not in formatted
     assert "Intervene:" not in formatted
@@ -2693,9 +2693,9 @@ def test_super_tui_stream_narrator_blocks_render_as_compact_lines(capsys) -> Non
     )
 
     stdout = capsys.readouterr().out
-    assert "DAN · Narrator: The executor is checking README.md before making changes." in stdout
+    assert "Diane · Narrator: The executor is checking README.md before making changes." in stdout
     assert "  No files have changed yet." in stdout
-    assert "DAN · No files have changed yet." not in stdout
+    assert "Diane · No files have changed yet." not in stdout
     assert "╭" not in stdout
 
 
@@ -2731,7 +2731,7 @@ def test_super_tui_static_terminal_render_omits_redundant_header(capsys) -> None
 
     stdout = capsys.readouterr().out
     assert "This is the final answer." in stdout
-    assert "DAN · Session:" not in stdout
+    assert "Diane · Session:" not in stdout
 
 
 def test_super_tui_working_clock_refreshes_during_blocking_model_wait(capsys, monkeypatch) -> None:
@@ -3014,7 +3014,7 @@ def test_super_tui_executor_sidecar_prints_model_narration(tmp_path, capsys, mon
         renderer._sidecar_thread.join(timeout=2)
 
     stdout = capsys.readouterr().out
-    assert "DAN · Narrator:" in stdout
+    assert "Diane · Narrator:" in stdout
     assert "The executor has started from the project context" in stdout
     assert "You asked:" not in stdout
     assert "tools" not in provider.kwargs
@@ -3148,7 +3148,7 @@ def test_super_tui_renderer_quiet_clock_starts_narrator_sidecar(capsys, monkeypa
 
     stdout = capsys.readouterr().out
     assert calls == ["executor-heartbeat"]
-    assert "DAN · Narrator:" in stdout
+    assert "Diane · Narrator:" in stdout
     assert "still deciding how to inspect the data" in stdout
     assert "Working 12s" in stdout
     assert "dan: Working" not in stdout
@@ -3359,7 +3359,7 @@ def test_super_tui_transcript_history_renders_before_composer(tmp_path, capsys, 
     stdout = capsys.readouterr().out
     assert "Conversation" in stdout
     assert "You: first task" in stdout
-    assert "DAN: Run completed; trace .dan-super/runs/turn-01/events.jsonl." in stdout
+    assert "Diane: Run completed; trace .dan-super/runs/turn-01/events.jsonl." in stdout
     assert stdout.index("Conversation") < stdout.index("Message")
 
 
@@ -3472,7 +3472,7 @@ def test_super_tui_failed_turn_replays_latest_event_log_without_live_report(
 
     assert exit_code == 1
     stdout = capsys.readouterr().out
-    assert "DAN · Answer:" in stdout
+    assert "Diane · Answer:" in stdout
     assert "APIConnectionError: Connection error" in stdout
     assert "Trace:" in stdout
     assert str(event_log) in stdout
@@ -3765,7 +3765,7 @@ def test_super_tui_chatbox_prompt_has_inner_margin_only() -> None:
 
     assert "super-tui> " in text
     assert text == " super-tui> "
-    assert "DAN · Chat" not in text
+    assert "Diane · Chat" not in text
     assert "╭" not in text
     assert "╰" not in text
 
@@ -3773,7 +3773,7 @@ def test_super_tui_chatbox_prompt_has_inner_margin_only() -> None:
 def test_super_tui_panel_title_stays_in_border() -> None:
     title = super_tui._tui_panel_title("Answer")
 
-    assert title == "DAN · Answer:"
+    assert title == "Dear Diane · Answer:"
 
 
 def test_super_tui_vertical_ornament_matches_content_height() -> None:
@@ -3799,7 +3799,7 @@ def test_super_tui_prompt_rounded_frame_border_restores_prompt_toolkit_border() 
         assert (border.TOP_LEFT, border.TOP_RIGHT, border.BOTTOM_LEFT, border.BOTTOM_RIGHT) == ("╭", "╮", "╰", "╯")
         assert prompt_module.Frame is not original_frame
         frame = prompt_module.Frame(Window())
-        assert getattr(frame, "_dan_tui_frame_title") == "DAN · Chat:"
+        assert getattr(frame, "_dan_tui_frame_title") == "Dear Diane · Chat:"
         assert "|" not in getattr(frame, "_dan_tui_frame_title")
     assert (border.TOP_LEFT, border.TOP_RIGHT, border.BOTTOM_LEFT, border.BOTTOM_RIGHT) == original
     assert prompt_module.Frame is original_frame
@@ -3968,7 +3968,7 @@ def test_super_tui_run_command_parser_is_honest_for_direct_local_tui() -> None:
     cancel = super_tui._parse_tui_run_command("/cancel")
     assert cancel is not None
     assert cancel.command == "cancel"
-    assert "not wired into direct local Super DAN runs yet" in cancel.message
+    assert "not wired into direct local Diane runs yet" in cancel.message
 
     stop = super_tui._parse_tui_run_command("/stop task-A")
     assert stop is not None
@@ -4405,7 +4405,7 @@ def test_super_tui_direct_standalone_skill_mention_does_not_run(capsys, monkeypa
     assert exit_code == 0
     stdout = capsys.readouterr().out
     assert "Selected skill: $idea-cart" in stdout
-    assert "no Super DAN run" not in stdout
+    assert "no Diane run" not in stdout
 
 
 def test_super_tui_unknown_standalone_skill_mention_is_actionable(capsys, monkeypatch) -> None:
@@ -4512,12 +4512,12 @@ def test_super_tui_main_wraps_super_runner_with_plain_renderer(tmp_path, capsys,
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "DAN · Session:" not in stdout
+    assert "Diane · Session:" not in stdout
     assert "objective: build a dashboard" not in stdout
     assert "Got it. Starting with the relevant context." not in stdout
     assert "dan: You asked:" not in stdout
-    assert "DAN · Answer:" in stdout
-    assert "DAN · Outcome:" in stdout
+    assert "Diane · Answer:" in stdout
+    assert "Diane · Outcome:" in stdout
     assert "Run finished successfully" in stdout
     assert "Changed website/index.html" in stdout
     assert "Checks: passed" in stdout
@@ -6472,7 +6472,7 @@ def test_super_tui_simple_read_only_shows_matching_file_without_run_plans(
     )
 
     def fail_run(*args, **kwargs):
-        raise AssertionError("read-only request must not start Super DAN runner")
+        raise AssertionError("read-only request must not start Diane runner")
 
     _patch_tui_route(monkeypatch, permission="read-only", complexity="simple")
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
@@ -6507,7 +6507,7 @@ def test_super_tui_complex_read_only_summarizes_file_without_writes(
     )
 
     def fail_run(*args, **kwargs):
-        raise AssertionError("read-only summary must not start Super DAN runner")
+        raise AssertionError("read-only summary must not start Diane runner")
 
     _patch_tui_route(monkeypatch, permission="read-only", complexity="complex")
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
@@ -6542,7 +6542,7 @@ def test_super_tui_read_only_model_failure_falls_back_to_workspace_summary(
     )
 
     def fail_run(*args, **kwargs):
-        raise AssertionError("read-only fallback must not start Super DAN runner")
+        raise AssertionError("read-only fallback must not start Diane runner")
 
     _patch_tui_route(monkeypatch, permission="read-only", complexity="complex", routed_with_model=True)
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
@@ -6600,7 +6600,7 @@ def test_super_tui_read_only_followup_uses_prior_takeaway_context(
     )
 
     def fail_run(*args, **kwargs):
-        raise AssertionError("read-only follow-up must not start Super DAN runner")
+        raise AssertionError("read-only follow-up must not start Diane runner")
 
     _patch_tui_route(monkeypatch, permission="read-only", complexity="simple")
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
@@ -6634,7 +6634,7 @@ def test_super_tui_complex_read_only_searches_workspace_without_writes(
     (workspace / "docs" / "b.md").write_text("other needle value\n", encoding="utf-8")
 
     def fail_run(*args, **kwargs):
-        raise AssertionError("read-only search must not start Super DAN runner")
+        raise AssertionError("read-only search must not start Diane runner")
 
     _patch_tui_route(monkeypatch, permission="read-only", complexity="complex")
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
@@ -6710,7 +6710,7 @@ def test_super_tui_complex_read_only_live_uses_model_tool_loop(
     provider = FakeProvider()
 
     def fail_run(*args, **kwargs):
-        raise AssertionError("read-only live lane must not start Super DAN runner")
+        raise AssertionError("read-only live lane must not start Diane runner")
 
     _patch_tui_route(monkeypatch, permission="read-only", complexity="complex")
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
@@ -7177,7 +7177,7 @@ async def test_super_tui_live_browser_manipulation_smoke() -> None:
 
     html = """
     <html>
-      <head><title>DAN Browser Smoke</title></head>
+      <head><title>Diane Browser Smoke</title></head>
       <body>
         <input id="name" oninput="document.querySelector('#status').textContent = 'typed ' + this.value" />
         <button id="go" onclick="document.querySelector('#status').textContent += ' clicked'">Go</button>
@@ -7189,7 +7189,7 @@ async def test_super_tui_live_browser_manipulation_smoke() -> None:
     try:
         opened = await controller.open("data:text/html," + quote(html))
         assert opened["status"] == "ok"
-        assert opened["title"] == "DAN Browser Smoke"
+        assert opened["title"] == "Diane Browser Smoke"
 
         await controller.fill("#name", "Ada")
         await controller.click("#go")
@@ -7259,7 +7259,7 @@ def test_super_tui_complex_read_only_streams_answer_when_model_returns_empty_tex
     provider = FakeProvider()
 
     def fail_run(*args, **kwargs):
-        raise AssertionError("read-only live lane must not start Super DAN runner")
+        raise AssertionError("read-only live lane must not start Diane runner")
 
     _patch_tui_route(monkeypatch, permission="read-only", complexity="complex")
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
@@ -7289,7 +7289,7 @@ def test_super_tui_complex_read_only_streams_answer_when_model_returns_empty_tex
     assert "Source: docs/info.md" not in stdout
     assert "Headings: # Info" not in stdout
     assert "Recent Events" not in stdout
-    assert "DAN · Session:\nStatus:" not in stdout
+    assert "Diane · Session:\nStatus:" not in stdout
     assert not list(workspace.glob(".dan-super/runs/**/plans"))
 
 
@@ -7466,7 +7466,7 @@ def test_super_tui_simple_write_copies_file_without_live_runner(
     (workspace / "docs" / "source.md").write_text("# Source\n", encoding="utf-8")
 
     def fail_run(*args, **kwargs):
-        raise AssertionError("simple write must not start Super DAN runner")
+        raise AssertionError("simple write must not start Diane runner")
 
     _patch_tui_route(monkeypatch, permission="write", complexity="simple")
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
@@ -7499,7 +7499,7 @@ def test_super_tui_simple_write_blocks_outside_workspace(
     source.write_text("# Source\n", encoding="utf-8")
 
     def fail_run(*args, **kwargs):
-        raise AssertionError("blocked simple write must not start Super DAN runner")
+        raise AssertionError("blocked simple write must not start Diane runner")
 
     _patch_tui_route(monkeypatch, permission="write", complexity="simple")
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
@@ -7555,7 +7555,7 @@ def test_super_tui_ambiguous_input_asks_clarification(capsys, monkeypatch) -> No
         monkeypatch,
         permission="",
         complexity="",
-        clarification="Should this be a read-only answer, or should Super DAN change the workspace?",
+        clarification="Should this be a read-only answer, or should Diane change the workspace?",
     )
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
 

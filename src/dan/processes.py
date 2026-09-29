@@ -1,4 +1,4 @@
-"""Long-running processes owned by DAN, not by a chat turn.
+"""Long-running processes owned by Diane, not by a chat turn.
 
 Dev servers, watchers and similar commands are started in their own session with
 output going to a log file, so they survive the end of an agent run, Stop, and a
@@ -120,7 +120,7 @@ class ProcessManager:
             except ProcessLookupError:
                 break
             except PermissionError as exc:
-                raise ValueError("DAN is not allowed to stop this process") from exc
+                raise ValueError("Diane is not allowed to stop this process") from exc
             deadline = time.monotonic() + wait
             while time.monotonic() < deadline and _alive(pid):
                 time.sleep(0.1)

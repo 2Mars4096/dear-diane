@@ -136,8 +136,8 @@ def catalog() -> dict:
                        "fast": runtime == "codex" or (runtime == "claude" and claude_fast),
                        "setup": "" if executable else {"antigravity": "Install agy and sign in with agy.",
                                                         "cursor": "Install the Cursor CLI (curl https://cursor.com/install -fsS | bash), then run agent login."}.get(runtime, "")})
-    result.insert(0, {"id": "dan", "label": "DAN", "available": True, "version": "",
-                      "accounts": [{"id": "default", "label": "DAN configuration"}],
+    result.insert(0, {"id": "dan", "label": "Diane", "available": True, "version": "",
+                      "accounts": [{"id": "default", "label": "Diane configuration"}],
                       "models": [],
                       "efforts": [], "fast": False, "setup": ""})
     for runtime in result:
@@ -145,7 +145,7 @@ def catalog() -> dict:
     return {"runtimes": result, "openrouter_configured": bool(openrouter_key())}
 
 
-# DAN mode -> native setting. Plan reads and proposes; Auto edits/runs inside the
+# Diane mode -> native setting. Plan reads and proposes; Auto edits/runs inside the
 # project sandbox; Full removes sandbox and approvals. Antigravity keeps its CLI default.
 PERMISSIONS = {"plan", "auto", "full"}
 
@@ -238,7 +238,7 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
                 # Headless runs cannot prompt; let Bash run inside Claude's workspace sandbox instead.
                 settings["sandbox"] = {"enabled": True, "autoAllowBashIfSandboxed": True}
             cmd += ["--settings", json.dumps(settings)]
-            # Skills installed for other CLIs, exposed through DAN's symlink pool (never ~/.claude or the project).
+            # Skills installed for other CLIs, exposed through Diane's symlink pool (never ~/.claude or the project).
             try:
                 from dan.server.paths import resolve_graphs_dir
                 from .skills import build_pool

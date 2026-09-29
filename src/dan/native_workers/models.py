@@ -1,4 +1,4 @@
-"""Model sources shared by DAN and native harnesses; credentials stay server-side."""
+"""Model sources shared by Diane and native harnesses; credentials stay server-side."""
 from __future__ import annotations
 
 import os
@@ -46,13 +46,13 @@ def validate_model_source(runtime: str, profile: dict) -> str:
         if runtime == "claude" and effort and not model.startswith("anthropic/"):
             raise ValueError("Claude Code does not expose reasoning control for this OpenRouter model")
         if not openrouter_key():
-            raise ValueError("Set OPENROUTER_API_KEY on the DAN server to use OpenRouter models")
+            raise ValueError("Set OPENROUTER_API_KEY on the Dear Diane server to use OpenRouter models")
     return source
 
 
 def source_catalog(runtime: str) -> list[dict]:
     return [
-        {"id": "native", "label": "DAN configuration" if runtime == "dan" else "Native / CLI configuration", "supported": True},
+        {"id": "native", "label": "Diane configuration" if runtime == "dan" else "Native / CLI configuration", "supported": True},
         {"id": "openrouter", "label": "OpenRouter", "supported": runtime in OPENROUTER_HARNESSES,
          "configured": bool(openrouter_key()), "models": list(OPENROUTER_MODELS),
          "model_labels": OPENROUTER_MODELS, "efforts": OPENROUTER_EFFORTS, "fast": False,

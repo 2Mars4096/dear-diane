@@ -153,7 +153,7 @@ def _workspace_wireguard_status() -> dict[str, Any]:
         )
         if mode == "alias-nywg"
         else (
-            "Read-only DAN WireGuard status; mutating service actions are not "
+            "Read-only Diane WireGuard status; mutating service actions are not "
             "enabled from this workspace surface."
         ),
     }
@@ -1142,7 +1142,7 @@ async def list_workspace_file_tree(
     requested_depth = max(1, min(int(max_depth), 12))
     entries: list[dict[str, Any]] = []
     def _inside(candidate: Path) -> Path | None:
-        # Symlinks may point outside the project (e.g. DAN's skill pool); never list or follow those.
+        # Symlinks may point outside the project (e.g. Diane's skill pool); never list or follow those.
         resolved = candidate.resolve()
         return resolved if resolved == root or root in resolved.parents else None
 

@@ -12,7 +12,7 @@ from dan.server.paths import resolve_graphs_dir, resolve_workspace_root
 
 
 def build_uvicorn_log_config(level: str | None = None) -> dict[str, Any]:
-    """Configure uvicorn so DAN app logs are emitted at INFO by default."""
+    """Configure uvicorn so Dear Diane app logs are emitted at INFO by default."""
     resolved_level = (level or os.environ.get("DAN_LOG_LEVEL", "INFO")).upper()
     config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
     config["disable_existing_loggers"] = False
@@ -30,7 +30,7 @@ def build_uvicorn_log_config(level: str | None = None) -> dict[str, Any]:
 def main() -> None:
     from dan.cli import load_env
     load_env()
-    parser = argparse.ArgumentParser(description="DAN visual editor server")
+    parser = argparse.ArgumentParser(description="Diane visual editor server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(

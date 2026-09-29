@@ -34,7 +34,7 @@ def test_retained_product_api_supports_work_notes_sessions_and_agent_runs(
             f"/api/chats/_scratch/{thread_id}",
             json={
                 "messages": [
-                    {"role": "user", "content": "Build through Super DAN"},
+                    {"role": "user", "content": "Build through Diane"},
                     {"role": "assistant", "content": "Ready"},
                 ]
             },

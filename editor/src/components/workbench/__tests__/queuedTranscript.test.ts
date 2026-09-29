@@ -6,7 +6,7 @@ const messages = [
   { id: "u1", role: "user", content: "First" },
   { id: "a1", role: "assistant", content: "Working on it" },
   { id: "u2", role: "user", content: "Next" },
-  { id: "a2", role: "assistant", content: "Queued after the current Super DAN run." },
+  { id: "a2", role: "assistant", content: "Queued after the current Diane run." },
 ] as ChatMessage[];
 const base = {task_id:"t",thread_id:"s",status:"running",phase:"running",latest_progress:"",latest_artifact_refs:[],blocker:"",trace_refs:[]};
 const tasks = (status: string): ChatV2TaskSnapshot[] => [{...base, metadata:{queue_items:[{id:"q",task_id:"t",lane:"continue_after_current",position:1,text:"Next",status, metadata:{command_payload:{client_message_id:"u2",client_assistant_id:"a2"}}}]}}] as ChatV2TaskSnapshot[];

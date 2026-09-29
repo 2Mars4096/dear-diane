@@ -1,9 +1,9 @@
 {
-  "name": "dan",
+  "name": "dear-diane",
   "private": true,
   "version": "0.1.0",
-  "description": "DAN Work and Notes desktop client for Universal Organism and Super DAN",
-  "author": "DAN",
+  "description": "Dear Diane — A workspace for research, code, and ideas.",
+  "author": "Dear Diane",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -18,14 +18,14 @@
     "electron:dev": "npm run electron:compile && concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:build": "npm run build && npm run electron:compile",
     "dist": "npm run build && npm run electron:compile && electron-builder",
-    "dist:mac": "npm run build && npm run electron:compile && CXXFLAGS=\"-isystem $(xcrun --show-sdk-path)/usr/include/c++/v1\" electron-builder --mac --publish never && codesign --force --deep --sign - release/mac-arm64/DAN.app",
+    "dist:mac": "npm run build && npm run electron:compile && CXXFLAGS=\"-isystem $(xcrun --show-sdk-path)/usr/include/c++/v1\" electron-builder --mac --publish never && codesign --force --deep --sign - \"release/mac-arm64/Dear Diane.app\"",
     "dist:win": "npm run build && npm run electron:compile && electron-builder --win",
     "dist:linux": "npm run build && npm run electron:compile && electron-builder --linux",
     "ocr:assets": "node scripts/copy-ocr-assets.mjs"
   },
   "build": {
     "appId": "com.dan.desktop",
-    "productName": "DAN",
+    "productName": "Dear Diane",
     "directories": {
       "output": "release",
       "buildResources": "build"

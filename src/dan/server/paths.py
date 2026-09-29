@@ -1,4 +1,4 @@
-"""Shared filesystem paths for the DAN server (graphs, chats, runs)."""
+"""Shared filesystem paths for the Dear Diane server (graphs, chats, runs)."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def resolve_graphs_dir() -> str:
 
     1. ``DAN_GRAPHS_DIR`` environment variable (after ``load_dotenv()`` in callers).
     2. First line of ``~/.dan/graphs_dir`` if that file exists (absolute path to your
-       repo ``graphs`` folder). Keeps **terminal** ``dan-up`` / **DAN Desktop** on the
+       repo ``graphs`` folder). Keeps **terminal** ``dan-up`` / **Dear Diane Desktop** on the
        same data without rebuilding the app.
     3. ``./graphs`` while the process working directory is valid.
     4. If the working directory is unavailable, anchor the relative fallback to the

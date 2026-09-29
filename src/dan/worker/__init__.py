@@ -1,7 +1,7 @@
 """Universal Cell and Organism public API.
 
 Imports stay lazy so loading one worker submodule does not initialize the full
-Super DAN runtime.
+Diane runtime.
 """
 
 from __future__ import annotations

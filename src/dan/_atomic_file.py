@@ -66,7 +66,7 @@ def _open_sibling_temporary(target: Path, *, mode: int | None = None) -> tuple[i
     """Create a private-name sibling while honoring the process umask.
 
     ``tempfile.mkstemp`` always creates mode ``0600``. That is appropriate for
-    generic temporary data but would silently change DAN's newly created
+    generic temporary data but would silently change Diane's newly created
     workspace files from normal ``open(..., "w")`` permissions (typically
     ``0644``) to ``0600`` after the atomic-write migration.
     """

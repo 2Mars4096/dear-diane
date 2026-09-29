@@ -15,6 +15,10 @@ import { registerFileLinks } from "./fileLinks";
 import { registerDesktopUpdates } from "./desktopUpdates";
 import { prepareWindowAppearance, WINDOW_BACKGROUND } from "./windowAppearance";
 
+// Keep the existing profile when the package/display name changes.
+app.setPath("userData", path.join(app.getPath("appData"), "dan"));
+app.setName("Dear Diane");
+
 let mainWindow: BrowserWindow | null = null;
 let revealMainWindow: (() => void) | null = null;
 registerFileLinks(() => mainWindow);
@@ -140,11 +144,11 @@ async function startBackend(): Promise<void> {
     }
     if (portResolution === "timeout") {
       throw new Error(
-        `Port ${BACKEND_PORT} stayed in use, but no healthy DAN backend responded at /api/health.`,
+        `Port ${BACKEND_PORT} stayed in use, but no healthy Dear Diane backend responded at /api/health.`,
       );
     }
     console.warn(
-      `Port ${BACKEND_PORT} was briefly occupied by an unhealthy listener, then cleared. Starting a fresh DAN backend.`,
+      `Port ${BACKEND_PORT} was briefly occupied by an unhealthy listener, then cleared. Starting a fresh Dear Diane backend.`,
     );
   }
 
@@ -208,7 +212,7 @@ async function startBackend(): Promise<void> {
     healthy
       ? null
       : new Error(
-          `Timed out waiting for DAN backend health on http://127.0.0.1:${BACKEND_PORT}/api/health.`,
+          `Timed out waiting for Dear Diane backend health on http://127.0.0.1:${BACKEND_PORT}/api/health.`,
         ),
   );
 
@@ -372,7 +376,7 @@ function createWindow() {
     height: 900,
     minWidth: 900,
     minHeight: 600,
-    title: "DAN",
+    title: "Dear Diane",
     titleBarStyle: "hiddenInset",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -414,11 +418,11 @@ function createTray() {
   );
   tray = new Tray(icon);
   const contextMenu = Menu.buildFromTemplate([
-    { label: "Open DAN", click: showMainWindow },
+    { label: "Open Dear Diane", click: showMainWindow },
     { type: "separator" },
     { label: "Quit", click: () => app.quit() },
   ]);
-  tray.setToolTip("DAN");
+  tray.setToolTip("Dear Diane");
   tray.setContextMenu(contextMenu);
   tray.on("click", showMainWindow);
 }
@@ -648,17 +652,17 @@ if (!hasSingleInstanceLock) {
     });
     if (!isDev) {
       const distDir = path.join(__dirname, "../dist");
-      console.log("Starting DAN backend server...");
+      console.log("Starting Dear Diane backend server...");
       try {
         await startBackend();
         console.log("Backend server started.");
         await startProductionServer(distDir);
         console.log(`Production UI server started on http://127.0.0.1:${prodServerPort}`);
       } catch (err) {
-        console.error("DAN local services failed to start:", err);
+        console.error("Dear Diane local services failed to start:", err);
         dialog.showErrorBox(
-          "DAN Startup Failed",
-          `DAN could not start its local services.\n\n${String(err)}`,
+          "Dear Diane Startup Failed",
+          `Dear Diane could not start its local services.\n\n${String(err)}`,
         );
         app.quit();
         return;

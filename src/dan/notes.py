@@ -1,4 +1,4 @@
-"""Shared Hugo notes workspace conventions for DAN surfaces."""
+"""Shared Hugo notes workspace conventions for Diane surfaces."""
 
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ def content_bootstrap_root_candidates(
 
 
 def notes_root_from_content_project(project_root: Path) -> Path:
-    """Resolve a Hugo project into the content tree DAN should expose as notes."""
+    """Resolve a Hugo project into the content tree Diane should expose as notes."""
 
     content_root = project_root / "content"
     if content_root.exists() and content_root.is_dir():

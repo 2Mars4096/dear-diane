@@ -14,7 +14,7 @@ export function DesktopUpdates() {
     const timer = window.setInterval(refresh, 1500);
     return () => { disposed = true; window.clearInterval(timer); };
   }, [api]);
-  if (!api) return <section aria-label="Desktop updates"><h3>Updates</h3><p>{window.electronAPI ? "Install the first update-enabled build to manage future upgrades here." : "Desktop updates are available in the DAN app."}</p></section>;
+  if (!api) return <section aria-label="Desktop updates"><h3>Updates</h3><p>{window.electronAPI ? "Install the first update-enabled build to manage future upgrades here." : "Desktop updates are available in the Dear Diane app."}</p></section>;
   const busy = pending || ["checking", "staging", "downloading", "installing"].includes(state?.phase || "");
   async function action(name: "check" | "choose" | "install-local" | "download" | "install" | "github-sign-in" | "github-cancel" | "github-status") {
     if (!api) return;
@@ -46,7 +46,7 @@ export function DesktopUpdates() {
     </div>
     {state?.localSupported && <details><summary>Other update options</summary><button disabled={busy} onClick={() => void action("choose")}>Choose a different build…</button></details>}
     {state?.localSupported && !state.localBuildAvailable && state.phase !== "ready" && <p>No prepared local update was found. Local updates do not require GitHub sign-in.</p>}
-    {state?.localBuildAvailable && state.phase !== "ready" && <p>A prepared local update is available. Installing restarts DAN after checking for active work.</p>}
-    {state?.phase === "ready" && <p>Finish active work first. DAN will close, install {state.version}, and reopen. Chats and settings stay on this Mac.</p>}
+    {state?.localBuildAvailable && state.phase !== "ready" && <p>A prepared local update is available. Installing restarts Diane after checking for active work.</p>}
+    {state?.phase === "ready" && <p>Finish active work first. Diane will close, install {state.version}, and reopen. Chats and settings stay on this Mac.</p>}
   </section>;
 }

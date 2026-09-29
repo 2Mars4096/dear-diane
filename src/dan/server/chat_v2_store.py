@@ -70,7 +70,7 @@ def _now() -> str:
 def _blueprint_event_projection(event: AgentRunEvent) -> dict[str, Any]:
     """Extract durable blueprint state from an additive runtime event.
 
-    Super DAN rows are sometimes emitted with their domain payload at the row
+    Diane rows are sometimes emitted with their domain payload at the row
     root and sometimes under ``payload``.  Chat V2 keeps that transport detail
     out of task snapshots by promoting only the canonical blueprint and attempt
     objects into run/task metadata.

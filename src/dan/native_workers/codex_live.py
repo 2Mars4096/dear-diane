@@ -45,7 +45,7 @@ class CodexLive:
                     continue
                 if "id" in row:
                     # No implicit approval escalation or fabricated user answers.
-                    await self.send({"id": row["id"], "error": {"code": -32601, "message": "This request needs interactive approval; unavailable in DAN's headless transport."}})
+                    await self.send({"id": row["id"], "error": {"code": -32601, "message": "This request needs interactive approval; unavailable in Dear Diane's headless transport."}})
                     continue
                 method, params = row.get("method", ""), row.get("params", {})
                 if params.get("threadId") and self.thread_id and params["threadId"] != self.thread_id:

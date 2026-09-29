@@ -10,7 +10,7 @@ const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "dan-update-")); roots.push(root);
-  const target = path.join(root, "DAN's app.app"), staged = path.join(root, "new.app"), backup = path.join(root, "old.app");
+  const target = path.join(root, "Diane's app.app"), staged = path.join(root, "new.app"), backup = path.join(root, "old.app");
   await fs.mkdir(target); await fs.mkdir(staged);
   await fs.writeFile(path.join(target, "version"), "old"); await fs.writeFile(path.join(staged, "version"), "new");
   await fs.writeFile(path.join(root, "chats"), "preserve");

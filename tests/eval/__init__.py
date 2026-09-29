@@ -1,6 +1,6 @@
 """Workflow generation quality evaluation harness (Phase 33).
 
-Measures how well DAN generates and executes workflows from natural language.
+Measures how well Diane generates and executes workflows from natural language.
 Produces JSONL logs and summary reports — not pytest pass/fail verdicts.
 """
 

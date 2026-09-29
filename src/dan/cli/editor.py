@@ -1,4 +1,4 @@
-"""dan-editor — start DAN server + visual editor in one terminal."""
+"""dan-editor — start Dear Diane server + visual editor in one terminal."""
 from __future__ import annotations
 
 import argparse
@@ -37,7 +37,7 @@ def _find_editor_dir() -> Path | None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="dan-editor",
-        description="Start DAN server and visual editor together.",
+        description="Start Dear Diane server and visual editor together.",
     )
     parser.add_argument(
         "--port", type=int, default=8000, help="Server port (default: 8000)",
@@ -64,16 +64,16 @@ def main() -> None:
     if running_server is not None:
         running_pid, resolved_port, managed = running_server
         if managed and running_pid is not None:
-            print(f"DAN server already running (PID {running_pid}, port {resolved_port})")
+            print(f"Dear Diane server already running (PID {running_pid}, port {resolved_port})")
         elif running_pid is not None:
             print(
-                f"DAN server already running on port {resolved_port} "
+                f"Dear Diane server already running on port {resolved_port} "
                 f"(PID {running_pid}, reusing existing server)"
             )
         else:
-            print(f"DAN server already running on port {resolved_port} (reusing existing server)")
+            print(f"Dear Diane server already running on port {resolved_port} (reusing existing server)")
     else:
-        print(f"Starting DAN server on port {port}...")
+        print(f"Starting Dear Diane server on port {port}...")
         new_pid = start_server(port)
         write_pid_file(new_pid, port)
         we_started_server = True
@@ -116,7 +116,7 @@ def main() -> None:
         if we_started_server:
             server_pid, _ = read_pid_file()
             if server_pid and is_process_alive(server_pid):
-                print(f"Stopping DAN server (PID {server_pid})...")
+                print(f"Stopping Dear Diane server (PID {server_pid})...")
                 try:
                     os.kill(server_pid, signal.SIGTERM)
                     for _ in range(20):

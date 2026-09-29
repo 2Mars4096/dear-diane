@@ -92,7 +92,7 @@ def install(config):
         variables = {"DAN_REMOTE_CONFIG": str(root / "access.json"), "DAN_GRAPHS_DIR": str(state), "DAN_WORKSPACE_ROOT": str(workspace), "DAN_STATIC_DIR": str(release / "web")}
         environment = "".join("Environment=" + quote(k + "=" + v) + "\n" for k, v in variables.items())
         environment += "EnvironmentFile=-" + str(root / "provider.env").replace("%", "%%") + "\n"
-    unit_text = ("[Unit]\nDescription=DAN " + role + " " + config["id"] + "\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\n"
+    unit_text = ("[Unit]\nDescription=Diane " + role + " " + config["id"] + "\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\n"
                  + "WorkingDirectory=" + str(root).replace("%", "%%") + "\nEnvironment=" + quote("PATH=" + service_path) + "\n" + environment
                  + "ExecStart=" + " ".join(quote(arg) for arg in command) + "\nRestart=always\nRestartSec=5\nUMask=0077\n\n[Install]\nWantedBy=default.target\n")
     private_write(units / unit, unit_text)
@@ -117,7 +117,7 @@ def install(config):
                             break
                 except OSError:
                     if attempt == 14:
-                        raise RuntimeError("DAN did not become healthy; inspect journalctl --user -u " + unit)
+                        raise RuntimeError("Diane did not become healthy; inspect journalctl --user -u " + unit)
                     time.sleep(1)
     except Exception:
         if old_unit:

@@ -1561,7 +1561,7 @@ def test_v2_thread_prompt_log_renders_model_prompt_and_response(tmp_path) -> Non
                 "round": 1,
                 "tool_ids": ["file_read"],
                 "prompt_messages": [
-                    {"role": "system", "content": "You are DAN."},
+                    {"role": "system", "content": "You are Diane."},
                     {"role": "user", "content": "Explain the project."},
                 ],
             },
@@ -1579,7 +1579,7 @@ def test_v2_thread_prompt_log_renders_model_prompt_and_response(tmp_path) -> Non
                 "model_call_id": "model-call:0001",
                 "model": "kimi-k2.6",
                 "finish_reason": "stop",
-                "response_text": "This project is a DAN workspace.",
+                "response_text": "This project is a Diane workspace.",
             },
         )
     )
@@ -1589,10 +1589,10 @@ def test_v2_thread_prompt_log_renders_model_prompt_and_response(tmp_path) -> Non
     assert Path(log["path"]).exists()
     assert log["entry_count"] == 1
     assert accepted.run_id in log["run_ids"]
-    assert "You are DAN." in log["content"]
+    assert "You are Diane." in log["content"]
     assert "Explain the project." in log["content"]
     assert "`file_read`" in log["content"]
-    assert "This project is a DAN workspace." in log["content"]
+    assert "This project is a Diane workspace." in log["content"]
 
 
 def test_v2_store_recovers_running_agent_runs_after_restart(tmp_path) -> None:

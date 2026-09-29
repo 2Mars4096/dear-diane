@@ -73,7 +73,7 @@ class RemoteAccess:
             error = ""
             if request.method == "POST":
                 if origin != self.origin:
-                    return await reject(403, "Sign in from this DAN address")
+                    return await reject(403, "Sign in from this Dear Diane address")
                 address = scope.get("client", ("unknown",))[0]
                 attempts = [t for t in self.failures.get(address, []) if t > time.time() - 60]
                 if len(attempts) >= 10:
@@ -95,15 +95,15 @@ class RemoteAccess:
                 error = "That access key was not accepted."
             elif request.method != "GET":
                 return await reject(405, "Method not allowed")
-            page = f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>DAN · {html.escape(self.machine)}</title>
+            page = f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Dear Diane · {html.escape(self.machine)}</title>
             <style>body{{font:16px system-ui;background:#f5f2ea;color:#302d28;margin:12vh auto;padding:24px;max-width:400px}}input,button{{font:inherit;padding:12px;box-sizing:border-box;width:100%;margin:12px 0}}button{{cursor:pointer}}p{{line-height:1.5}}</style></head>
-            <body><h1>DAN · {html.escape(self.machine)}</h1><p>Use the access key from DAN settings on the computer that set up this connection.</p>
+            <body><h1>Dear Diane · {html.escape(self.machine)}</h1><p>Use the access key from Dear Diane settings on the computer that set up this connection.</p>
             <form method="post" action="/remote/login"><label for="key">Access key</label><input id="key" name="key" type="password" autocomplete="current-password" required><button>Connect</button><p role="alert">{error}</p></form></body></html>'''
             return await HTMLResponse(page, headers={"Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'", "Referrer-Policy": "no-referrer"})(scope, receive, send)
         if not authorized:
             if scope["type"] == "http" and scope["method"] == "GET" and path == "/":
                 return await RedirectResponse("/remote/login")(scope, receive, send)
-            return await reject(401, "Sign in to this remote DAN")
+            return await reject(401, "Sign in to this remote Dear Diane")
         if path == "/remote/logout" and scope["type"] == "http" and scope["method"] == "POST":
             response = RedirectResponse("/remote/login", status_code=303)
             response.delete_cookie(self.cookie)

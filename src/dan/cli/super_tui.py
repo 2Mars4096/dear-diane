@@ -1,7 +1,7 @@
-"""Terminal UI for Super DAN live runs.
+"""Terminal UI for Diane live runs.
 
 This module is intentionally a sibling surface to ``dan super-organism``.
-It reuses the Super DAN runner and event log, but owns terminal rendering.
+It reuses the Diane runner and event log, but owns terminal rendering.
 """
 
 from __future__ import annotations
@@ -141,10 +141,10 @@ _RICH_STATUS_STYLES = (
     (r"\b(?:running|started|starting|planning|model|validation|builder|workspace|read-only|write)\b", "bold cyan"),
     (r"\b(?:waiting|queued|queue|repair|retry|pending|fallback|still)\b", "bold yellow"),
 )
-_TUI_BRAND = "DAN"
+_TUI_BRAND = "Dear Diane"
 _TUI_SEPARATOR = "·"
-_TUI_STREAM_PREFIX = _TUI_BRAND
-_TUI_STREAM_PREFIX_RE = re.compile(r"^(?:\[tui\]|dan:|DAN(?:\s*[·:])?)\s*")
+_TUI_STREAM_PREFIX = "Diane"
+_TUI_STREAM_PREFIX_RE = re.compile(r"^(?:\[tui\]|dan:|(?:DAN|Dear Diane|Diane)(?:\s*[·:])?)\s*")
 _ANSWER_LINE_LIMIT = 4000
 _ANSWER_LINE_COUNT_LIMIT = 80
 _ANSWER_BUDGET_LINE_LIMITS = {
@@ -1212,9 +1212,9 @@ def _read_tui_transcript(workspace_root: Path, *, limit: int = 24) -> list[TuiTr
 def _transcript_role_label(role: str) -> str:
     return {
         "user": "You",
-        "assistant_progress": "DAN",
-        "assistant_final": "DAN",
-        "assistant_narrator": "DAN",
+        "assistant_progress": "Diane",
+        "assistant_final": "Diane",
+        "assistant_narrator": "Diane",
         "system_notice": "System",
         "debug_ref": "Trace",
     }.get(role, role or "System")
@@ -1469,7 +1469,7 @@ def _rich_semantic_text(line: str, *, base_style: str | None = None) -> Any:
     if tui_prefix:
         text.stylize("cyan" if is_low_importance else "bold cyan", tui_prefix.start(), tui_prefix.end())
     label = re.match(
-        r"^(\s*(?:(?:\[tui\]|dan:|DAN(?:\s*[·:])?)\s*)?(?:-\s*)?)([A-Z][A-Za-z /_-]*)(:)",
+        r"^(\s*(?:(?:\[tui\]|dan:|(?:DAN|Dear Diane|Diane)(?:\s*[·:])?)\s*)?(?:-\s*)?)([A-Z][A-Za-z /_-]*)(:)",
         plain,
     )
     if label:
@@ -1494,7 +1494,7 @@ def _rich_semantic_text(line: str, *, base_style: str | None = None) -> Any:
             "Trace": "bold cyan",
             "You asked": "bold cyan",
             "You": "bold blue",
-            "DAN": "bold cyan",
+            "Diane": "bold cyan",
             "Working": "bold yellow",
             "Elapsed": "bold green",
             "Validation": "bold green",
@@ -2620,7 +2620,7 @@ def _classify_tui_intent(
             complexity="",
             confidence=0.0,
             rationale="empty input",
-            clarification="What should Super DAN do?",
+            clarification="What should Diane do?",
         )
     return TuiIntentDecision(
         permission="",
@@ -3165,7 +3165,7 @@ def _resolve_simple_write_path(workspace_root: Path, raw_path: str) -> Path:
     except ValueError:
         relative_parts = ()
     if ".dan-super" in relative_parts:
-        raise ValueError(f"path is reserved for Super DAN state: {raw_path}")
+        raise ValueError(f"path is reserved for Diane state: {raw_path}")
     return resolved
 
 
@@ -3217,7 +3217,7 @@ def _run_simple_write_plan(
 
 def _tui_surface_capability_contract_text() -> str:
     return (
-        "Super DAN TUI supports ordinary workspace file/git/shell work, plus optional UI-control capability packs. "
+        "Diane TUI supports ordinary workspace file/git/shell work, plus optional UI-control capability packs. "
         "browser_control provides browser tabs, URL/title/DOM/HTML/interactive-element inspection, page text, screenshots, selector clicks/fills/typing/selects, waits, and downloads. "
         "Transient browser interaction permits requested research/navigation; it does not authorize posting, sending, purchasing, or changing external accounts. Ground selectors in inspection, and report login/CAPTCHA blocks instead of bypassing them. "
         "desktop_control provides local desktop observe/focus/click/type/hotkey; desktop mutation is call-time gated by DAN_COMPUTER_CONTROL=1 and should be grounded by observe metadata or screenshots. "
@@ -3343,7 +3343,7 @@ def _tui_read_only_system_prompt(tool_ids: Sequence[str]) -> str:
             "surface policy allows them, but it must not create or edit workspace files unless the user explicitly asks for an artifact. "
         )
     return (
-        "You are the read-only answer lane for Super DAN TUI. "
+        "You are the read-only answer lane for Diane TUI. "
         "Answer the user's question using only the provided workspace, current conversation, and allowed tools. "
         "Do not mutate files, durable state, queues, git state, dependencies, networked services, or .dan-super. "
         f"Capability contract: {_tui_surface_capability_contract_text()} "
@@ -3640,7 +3640,7 @@ def _tui_read_only_followup_messages(
         {
             "role": "system",
             "content": (
-                "You are the read-only answer lane for Super DAN TUI. "
+                "You are the read-only answer lane for Diane TUI. "
                 "Write the final answer from the provided tool evidence only. "
                 "Do not claim to read more files or call tools. Do not paste raw source code, imports, docstrings, markdown tables, or long excerpts. "
                 f"Capability contract: {_tui_surface_capability_contract_text()} "
@@ -3959,7 +3959,7 @@ def _parse_tui_run_command(text: str) -> TuiRunCommand | None:
                 )
             else:
                 message = (
-                    "Stop/cancel is not wired into direct local Super DAN runs yet. "
+                    "Stop/cancel is not wired into direct local Diane runs yet. "
                     "Use Ctrl-C to interrupt this shell, or run through V2 once checkpoint cancellation lands."
                 )
             return TuiRunCommand(command=normalized_command, payload=payload, message=message)
@@ -4710,12 +4710,12 @@ def _task_status_sentence(label: str, row: TuiBoardRow, primary: str) -> str:
         action = _clean_tui_task_text(row.action, limit=150)
         phase = _clean_tui_task_text(row.phase, limit=80).lower()
         if action and action.lower() not in {"run completed", "completed", "done", "run failed", "failed"}:
-            return f"DAN is currently {action.rstrip('.')}."
+            return f"Diane is currently {action.rstrip('.')}."
         if "model" in phase:
-            return "DAN is deciding the next concrete step from the current workspace context."
+            return "Diane is deciding the next concrete step from the current workspace context."
         if primary:
-            return f"DAN is actively working on this request and will report concrete findings for: {primary}"
-        return "DAN is actively working and will report concrete findings as soon as executor evidence is available."
+            return f"Diane is actively working on this request and will report concrete findings for: {primary}"
+        return "Diane is actively working and will report concrete findings as soon as executor evidence is available."
     if label == "Queued":
         return "This is waiting until active work reaches a safe handoff."
     if label == "Failed":
@@ -4976,7 +4976,7 @@ def _format_tui_board_status(
 
 @dataclass
 class SuperTuiState:
-    """Small projection of Super DAN events for terminal rendering."""
+    """Small projection of Diane events for terminal rendering."""
 
     objective: str = ""
     workspace: str = ""
@@ -5500,7 +5500,7 @@ class SuperTuiState:
             self.objective = str(event.get("objective") or self.objective)
             self.workspace = str(event.get("workspace_root") or self.workspace)
             self.task_id = str(event.get("task_id") or self.task_id)
-            self.current_step = "Starting Super DAN run"
+            self.current_step = "Starting Diane run"
             objective = _clip(self.objective or "the requested task", limit=120)
             line = f"You asked: {objective}"
             self._record_progress(line)
@@ -5998,7 +5998,7 @@ class SuperTuiState:
         narrator_mode = self.is_narrator_mode()
         if narrator_mode and not self.debug_events:
             lines = [
-                "Super DAN TUI",
+                "Diane TUI",
                 f"Status: {self.status}",
             ]
             if self.mode_line:
@@ -6017,7 +6017,7 @@ class SuperTuiState:
                 lines.append(footer)
             return "\n".join(lines)
         lines = [
-            "Super DAN TUI",
+            "Diane TUI",
             f"Status: {self.status}",
             f"Phase: {self.phase}",
         ]
@@ -6205,7 +6205,7 @@ class SuperTuiState:
 
 
 class SuperTuiProgressRenderer:
-    """Render Super DAN events as a terminal UI."""
+    """Render Diane events as a terminal UI."""
 
     def __init__(
         self,
@@ -6623,7 +6623,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = super_cli.build_parser()
     parser.prog = "dan-super-tui"
     parser.description = (
-        "Run Super DAN through a terminal UI. This is a sibling surface to "
+        "Run Diane through a terminal UI. This is a sibling surface to "
         "dan-super-organism and reuses the same live runner and event logs."
     )
     parser.epilog = (
@@ -6632,7 +6632,7 @@ def build_parser() -> argparse.ArgumentParser:
         "Typing / opens command suggestions, $ opens skill suggestions, and @ opens workspace path suggestions when prompt_toolkit is available. "
         "Explicit slash commands route locally; natural-language input is model-routed as narrator read-only, executor read-only, executor write, or clarification. "
         "Progress/status questions about visible runs use the snapshot-only narrator lane; fresh build/test/check questions use a transient validation gate; workspace inspection stays read-only; "
-        "write requests use direct simple writes or the normal Super DAN execution path. "
+        "write requests use direct simple writes or the normal Diane execution path. "
         "The interactive shell keeps the composer live while a submitted turn is running, similar to "
         "a chat box. Additional ordinary turns queue behind the current one; explicit --async-agent "
         "or --server sessions use V2 async admission for true background Agent runs."
@@ -6650,7 +6650,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--event-log",
-        help="Render a static TUI projection from an existing Super DAN events.jsonl file.",
+        help="Render a static TUI projection from an existing Diane events.jsonl file.",
     )
     parser.add_argument(
         "--raw-events",
@@ -6661,7 +6661,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--server",
         dest="server_url",
         default="",
-        help="Optional DAN server URL for shared server-backed async Agent admission.",
+        help="Optional Dear Diane server URL for shared server-backed async Agent admission.",
     )
     parser.add_argument(
         "--async-agent",
@@ -7254,7 +7254,7 @@ def _render_tui_text_command(args: argparse.Namespace, title: str, text: str) ->
 
 def _tui_help_lines() -> list[str]:
     return [
-        "Chat normally. DAN will decide whether the request is progress, read-only inspection, or workspace work.",
+        "Chat normally. Diane will decide whether the request is progress, read-only inspection, or workspace work.",
         "Most useful commands:",
         "- /tasks - see active, queued, and recent work",
         "- /status <id> - open one task",
@@ -7264,7 +7264,7 @@ def _tui_help_lines() -> list[str]:
         "- /new <objective> - start separate work",
         "- /stop or Esc - request stop for the visible active work",
         "- /skills [filter] - browse skill mentions",
-        "- /reset [state|all] - clear Super DAN state",
+        "- /reset [state|all] - clear Diane state",
         "While background work runs, keep typing to steer it; use /new when you mean a separate task.",
         "Autocomplete: / for commands, $ for skills, @ for files. Ctrl-V attaches a clipboard screenshot when the terminal exposes the key.",
         "Enter accepts the visible suggestion before sending.",
@@ -7406,7 +7406,7 @@ def _tui_plan_model_messages(objective: str, transcript_tail: Sequence[TuiTransc
         {
             "role": "system",
             "content": (
-                "You are DAN TUI plan mode. Do not execute work and do not claim files were changed. "
+                "You are Diane TUI plan mode. Do not execute work and do not claim files were changed. "
                 "Help the user refine direction before execution, like a planning dialogue. "
                 "Return exactly one JSON object with keys summary, questions, next_step. "
                 "questions must be an array of 2 to 4 objects. Each object has question, recommended, choices, custom_label. "
@@ -7546,7 +7546,7 @@ def _tui_plan_reply_model_messages(
         {
             "role": "system",
             "content": (
-                "You are continuing DAN TUI plan mode. The user is answering previously asked planning questions. "
+                "You are continuing Diane TUI plan mode. The user is answering previously asked planning questions. "
                 "Interpret their selections and preferences, then decide whether this reply only records planning direction "
                 "or clearly authorizes starting execution now. Do not use fixed phrases or keyword matching; infer intent "
                 "from the whole reply, the original objective, and the visible plan questions. Do not claim files changed. "
@@ -9144,7 +9144,7 @@ def _tui_narrator_model_messages(
         {
             "role": "system",
             "content": (
-                "You are the narrator voice for Super DAN TUI. Use only the sanitized run snapshot below. "
+                "You are the narrator voice for Diane TUI. Use only the sanitized run snapshot below. "
                 "Do not call tools, do not claim to inspect files now, do not steer the executor, and do not invent hidden state. "
                 "Write like a Codex-style assistant: direct, natural, and grounded. Do not echo the user's question. "
                 f"Capability contract for capability questions: {_tui_surface_capability_contract_text()} "
@@ -9330,7 +9330,7 @@ def _tui_final_answer_messages(state: SuperTuiState) -> list[dict[str, str]]:
         {
             "role": "system",
             "content": (
-                "You are the final answer writer for Super DAN TUI. "
+                "You are the final answer writer for Diane TUI. "
                 "Use only the sanitized run summary below. Do not call tools, do not claim to inspect files now, and do not invent work. "
                 "Write naturally to the user. Avoid formulaic wording like 'Completed <original request>'. "
                 f"Capability contract for capability questions: {_tui_surface_capability_contract_text()} "
@@ -10201,7 +10201,7 @@ def _render_transcript_history(
                     label = _transcript_role_label(entry.role)
                     role_style = {
                         "You": "bold blue",
-                        "DAN": "bold cyan",
+                        "Diane": "bold cyan",
                         "System": "dim white",
                         "Trace": "dim cyan",
                     }.get(label, "bold white")
@@ -10227,8 +10227,8 @@ def _reset_tui_context(workspace_root: Path, scope: str = "") -> str:
     result = super_cli._reset_super_context(workspace_root, normalized_scope)
     if normalized_scope in {"state", "queues", "queue"}:
         return result + "\nVisible TUI transcript preserved."
-    if result.startswith("Archived Super DAN context:"):
-        return result + "\nVisible TUI transcript archived with the Super DAN context."
+    if result.startswith("Archived Diane context:"):
+        return result + "\nVisible TUI transcript archived with the Diane context."
     return result
 
 

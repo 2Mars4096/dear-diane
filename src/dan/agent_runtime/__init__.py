@@ -1,1 +1,1 @@
-"""Super DAN surface communication contracts."""
+"""Diane surface communication contracts."""

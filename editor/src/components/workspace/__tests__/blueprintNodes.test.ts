@@ -106,7 +106,7 @@ function task(overrides: Partial<ChatV2TaskSnapshot>): ChatV2TaskSnapshot {
 function thread(overrides: Partial<ChatV2ThreadSummary>): ChatV2ThreadSummary {
   return {
     id: "thread-1",
-    title: "New Super DAN Session",
+    title: "New Diane Session",
     workflow_id: "_scratch",
     message_count: 0,
     created_at: "2026-06-25T12:00:00.000Z",
@@ -131,7 +131,7 @@ function workspaceFile(relativePath: string, overrides: Partial<WorkspaceFileEnt
 }
 
 describe("workspace blueprint nodes", () => {
-  it("routes DeepSeek to OpenRouter without changing the DAN manager", () => {
+  it("routes DeepSeek to OpenRouter without changing the Diane manager", () => {
     const payload = workspaceAgentExecutePayloadForTest("native", "openrouter_deepseek_v41_flash");
     expect(payload.backend).toBe("super_dan");
     expect(payload.profile_policy).toMatchObject({ model: "deepseek/deepseek-v4.1-flash", base_url: "https://openrouter.ai/api/v1" });
@@ -147,7 +147,7 @@ describe("workspace blueprint nodes", () => {
       expect.objectContaining({ id: "claude", backend: "claude" }),
       expect.objectContaining({ id: "antigravity", backend: "antigravity" }),
       expect.objectContaining({ id: "cursor", backend: "cursor" }),
-      expect.objectContaining({ id: "native", label: "Super DAN", backend: "super_dan" }),
+      expect.objectContaining({ id: "native", label: "Diane", backend: "super_dan" }),
     ]);
     expect(modelOptions.map((option) => option.id)).toEqual(["openrouter_deepseek_v41_flash", "openrouter_kimi_k26", "native_default", "native_kimi_k26"]);
     expect(payload.backend).toBe("super_dan");
@@ -163,7 +163,7 @@ describe("workspace blueprint nodes", () => {
     });
   });
 
-  it("routes the Kimi option through the existing Super DAN backend", () => {
+  it("routes the Kimi option through the existing Dear Diane backend", () => {
     const payload = workspaceAgentExecutePayloadForTest("native", "native_kimi_k26");
 
     expect(payload.backend).toBe("super_dan");
@@ -223,7 +223,7 @@ describe("workspace blueprint nodes", () => {
     });
   });
 
-  it("preserves a native lead selection and keeps DAN model preferences separately", () => {
+  it("preserves a native lead selection and keeps Diane model preferences separately", () => {
     const selection = workspaceSelectionFromStorageForTest({
       storedAgent: "codex",
       storedModel: "native_default",
@@ -298,7 +298,7 @@ describe("workspace blueprint nodes", () => {
         placement: "steer",
         selectedBlueprintTitle: "Final response",
       }),
-    ).toBe("Ask Super DAN about Final response");
+    ).toBe("Ask Diane about Final response");
   });
 
   it("labels the composer as a new send when no run is active", () => {
@@ -476,7 +476,7 @@ describe("workspace blueprint nodes", () => {
     const activeTask = task({
       task_id: "active-task",
       status: "running",
-      latest_progress: "DAN is working",
+      latest_progress: "Diane is working",
       metadata: { active_run_id: "run-1" },
     });
     const events: ChatV2AgentRunEvent[] = [
@@ -564,7 +564,7 @@ describe("workspace blueprint nodes", () => {
     expect(content).toContain("`Codex` thread started.");
   });
 
-  it("shows native active Work card agent as DAN", () => {
+  it("shows native active Work card agent as Diane", () => {
     const activeTask = task({
       task_id: "native-task",
       status: "running",
@@ -592,7 +592,7 @@ describe("workspace blueprint nodes", () => {
     });
     const build = nodes.find((node) => node.kind === "build")!;
 
-    expect(blueprintCardContentForTest(build, [activeTask], [], activeTask)).toContain("`DAN` is working");
+    expect(blueprintCardContentForTest(build, [activeTask], [], activeTask)).toContain("`Diane` is working");
   });
 
   it("renders done and future Work card content as state-specific summaries", () => {
@@ -647,7 +647,7 @@ describe("workspace blueprint nodes", () => {
         selectedBlueprintTitle: "Final response",
         activeNoteTitle: "Knowledge Graph",
       }),
-    ).toBe("Ask Super DAN about Knowledge Graph");
+    ).toBe("Ask Diane about Knowledge Graph");
   });
 
   it("detects workspace composer shortcut tokens without treating prices or env vars as skills", () => {
@@ -1409,7 +1409,7 @@ describe("workspace blueprint nodes", () => {
   it("does not turn a blank new session title into a fake blueprint", () => {
     const nodes = buildBlueprintNodesForTest({
       ...baseArgs,
-      activeThreadTitle: "New Super DAN Session",
+      activeThreadTitle: "New Diane Session",
     });
 
     expect(nodes).toEqual([]);
@@ -1430,7 +1430,7 @@ describe("workspace blueprint nodes", () => {
         {
           id: "message:assistant-1",
           kind: "chat",
-          title: "DAN · Answer",
+          title: "Diane · Answer",
           body: "Answer",
           status: "clean",
           meta: "assistant",
@@ -1545,9 +1545,9 @@ describe("workspace blueprint nodes", () => {
     );
   });
 
-  it("labels blank Super DAN sessions as having no request yet", () => {
+  it("labels blank Diane sessions as having no request yet", () => {
     expect(sessionCardDisplayForTest(thread({}), [])).toMatchObject({
-      title: "New Super DAN Session",
+      title: "New Diane Session",
       detail: expect.stringContaining("No request yet"),
     });
   });
@@ -1567,13 +1567,13 @@ describe("workspace blueprint nodes", () => {
     expect(
       sessionCardDisplayForTest(
         thread({
-          title: "New Super DAN Session",
+          title: "New Diane Session",
           message_count: 0,
         }),
         [recoveredTask],
       ),
     ).toMatchObject({
-      title: "New Super DAN Session",
+      title: "New Diane Session",
       detail: expect.stringContaining("1 run · done"),
     });
   });
@@ -1751,7 +1751,7 @@ describe("workspace blueprint nodes", () => {
     expect(sessionHasNewReadyResponseForTest([completed])).toBe(true);
   });
 
-  it("does not use the session response dot for running work or generic completion receipts", () => {
+  it.each(["Super DAN completed.", "Diane completed."])("does not use the session response dot for generic receipt %s", (receipt) => {
     const running = task({
       thread_id: "thread-1",
       status: "running",
@@ -1763,7 +1763,7 @@ describe("workspace blueprint nodes", () => {
     const receiptOnly = task({
       thread_id: "thread-1",
       status: "completed",
-      latest_progress: "Super DAN completed.",
+      latest_progress: receipt,
       metadata: {
         run_updated_at: "2026-06-25T12:05:00.000Z",
       },
@@ -1852,7 +1852,7 @@ describe("workspace blueprint nodes", () => {
     expect(workPlanHeaderSubtitleForTest(planning)).toBe("Planning next steps");
   });
 
-  it("keeps the future workflow tail visible without forcing a planning card while DAN is still understanding the request", () => {
+  it("keeps the future workflow tail visible without forcing a planning card while Diane is still understanding the request", () => {
     const activeTask = task({
       task_id: "understanding-first-task",
       status: "running",
@@ -1896,7 +1896,7 @@ describe("workspace blueprint nodes", () => {
 
     expect(nodes.find((node) => node.id === "blueprint:understanding")).toMatchObject({
       status: "active",
-      detail: "Rule-generation brief sent to DAN",
+      detail: "Rule-generation brief sent to Diane",
     });
     expect(nodes.find((node) => node.id === "blueprint:planning")).toBeUndefined();
     expect(nodes.find((node) => node.kind === "build")).toMatchObject({
@@ -2823,7 +2823,7 @@ describe("workspace blueprint nodes", () => {
 
     const nodes = buildBlueprintNodesForTest({
       ...baseArgs,
-      activeThreadTitle: "New Super DAN Session",
+      activeThreadTitle: "New Diane Session",
       tasks: [],
       activeRunId: "",
       activeRunningTask: null,
@@ -3329,7 +3329,7 @@ describe("workspace blueprint nodes", () => {
               version_id: "plan.r2",
               source: "planner",
               update_scope: "plan_execution",
-              update_reason: "DAN started the current plan item.",
+              update_reason: "Diane started the current plan item.",
               changed_task_ids: ["plan-item-1"],
               changed_branch_ids: ["b1"],
               tasks: [
@@ -3407,7 +3407,7 @@ describe("workspace blueprint nodes", () => {
       task_id: "plan-task",
       thread_id: "thread-1",
       status: "running",
-      latest_progress: "DAN is still marked as running by the task snapshot.",
+      latest_progress: "Diane is still marked as running by the task snapshot.",
       metadata: { active_run_id: "plan-run" },
     });
     const nodes = buildBlueprintNodesForTest({
@@ -3441,7 +3441,7 @@ describe("workspace blueprint nodes", () => {
               version_id: "plan.r3",
               source: "planner",
               update_scope: "plan_execution",
-              update_reason: "DAN started locating old commits.",
+              update_reason: "Diane started locating old commits.",
               tasks: [
                 {
                   task_id: "b1",
@@ -3577,7 +3577,7 @@ describe("workspace blueprint nodes", () => {
           id: "message:user-plan-dag",
           kind: "chat",
           title: "You · Request",
-          body: "Run the DAN Super plan graph",
+          body: "Run the Diane plan graph",
           status: "clean",
           meta: "user",
           role: "user",
@@ -3981,9 +3981,9 @@ describe("workspace blueprint nodes", () => {
       status: "done",
       meta: "general",
       detail: "Scope, constraints, targets, and acceptance gates tailored",
-      body: "DAN tailored the request-understanding rules for this run.",
+      body: "Diane tailored the request-understanding rules for this run.",
     });
-    expect(understanding?.previewBody).toContain("Request kind: general · tailored by DAN");
+    expect(understanding?.previewBody).toContain("Request kind: general · tailored by Diane");
     expect(understanding?.previewBody).toContain("### Aspect Review");
     expect(understanding?.previewBody).toContain("who: No explicit audience was named.");
     expect(understanding?.previewBody).toContain("### Acceptance Criteria");
@@ -4041,8 +4041,8 @@ describe("workspace blueprint nodes", () => {
     expect(understanding).toMatchObject({
       title: "Understand request",
       status: "active",
-      detail: "Rule-generation brief sent to DAN",
-      body: "DAN is asking the model to generate request-specific rules for this run.",
+      detail: "Rule-generation brief sent to Diane",
+      body: "Diane is asking the model to generate request-specific rules for this run.",
     });
     expect(understanding?.previewBody).toContain("Request kind: general · generating rules");
     expect(understanding?.previewBody).toContain("### Rules Brief");
@@ -4051,10 +4051,10 @@ describe("workspace blueprint nodes", () => {
     expect(understanding?.previewBody).not.toContain("Verify the file was written successfully");
   });
 
-  it("does not treat untitled backend fallback titles as operator requests", () => {
+  it.each(["Untitled DAN Super session", "Untitled Diane session"])("does not treat fallback title %s as an operator request", (placeholder) => {
     const nodes = buildBlueprintNodesForTest({
       ...baseArgs,
-      activeThreadTitle: "Untitled DAN Super session",
+      activeThreadTitle: placeholder,
       tasks: [task({ status: "queued", latest_progress: "model.requested" })],
     });
 
@@ -4089,7 +4089,7 @@ describe("workspace blueprint nodes", () => {
 
   it("never substitutes the latest request for a saved session title", () => {
     const latest = task({ metadata: { request_text: "A changing follow-up" } });
-    expect(sessionCardDisplayForTest(thread({ title: "New Super DAN Session" }), [latest]).title).toBe("New Super DAN Session");
+    expect(sessionCardDisplayForTest(thread({ title: "New Diane Session" }), [latest]).title).toBe("New Diane Session");
     expect(sessionCardDisplayForTest(thread({ title: "My project" }), [latest]).title).toBe("My project");
   });
 
@@ -4357,7 +4357,7 @@ describe("workspace blueprint nodes", () => {
       {
         id: "agent-answer:old-run",
         kind: "agent" as const,
-        title: "DAN · Answer",
+        title: "Diane · Answer",
         body: "Old run done.",
         status: "clean" as const,
         meta: "run.log.completed",
@@ -4440,7 +4440,7 @@ describe("workspace blueprint nodes", () => {
       {
         id: "agent-answer:base-run",
         kind: "agent" as const,
-        title: "DAN · Answer",
+        title: "Diane · Answer",
         body: "This project is a tactical command game.",
         status: "clean" as const,
         meta: "run.log.completed",
@@ -4772,7 +4772,7 @@ describe("workspace blueprint nodes", () => {
     const blockedTask = task({
       task_id: "blocked-task",
       status: "blocked",
-      latest_progress: "Super DAN needs attention.",
+      latest_progress: "Diane needs attention.",
       metadata: {
         active_run_id: "blocked-run",
         last_surface_turn: {
@@ -4783,7 +4783,7 @@ describe("workspace blueprint nodes", () => {
     const blockedEvent: ChatV2AgentRunEvent = {
       type: "blocked",
       source_event_type: "run.log.blocked",
-      summary: "Super DAN needs attention.",
+      summary: "Diane needs attention.",
       task_id: "blocked-task",
       run_id: "blocked-run",
     };
@@ -4802,8 +4802,8 @@ describe("workspace blueprint nodes", () => {
         {
           id: "agent-terminal:blocked-run",
           kind: "agent",
-          title: "Super DAN · needs attention",
-          body: "Super DAN needs attention.",
+          title: "Diane · needs attention",
+          body: "Diane needs attention.",
           status: "error",
           meta: "run.log.blocked",
           runId: "blocked-run",
@@ -4818,8 +4818,8 @@ describe("workspace blueprint nodes", () => {
     expect(build).toMatchObject({
       title: "Execution needs attention",
       status: "blocked",
-      detail: "DAN blocked this step but did not emit a specific reason.",
-      body: "DAN blocked this step but did not emit a specific reason.",
+      detail: "Diane blocked this step but did not emit a specific reason.",
+      body: "Diane blocked this step but did not emit a specific reason.",
     });
     expect(build?.body).not.toContain("is it fully implemented?");
 
@@ -4827,15 +4827,15 @@ describe("workspace blueprint nodes", () => {
     expect(answer).toMatchObject({
       title: "Final response",
       status: "blocked",
-      body: "DAN blocked this step but did not emit a specific reason.",
+      body: "Diane blocked this step but did not emit a specific reason.",
     });
-    expect(answer?.body).not.toContain("Super DAN needs attention");
-    expect(answer?.previewBody).toContain("DAN blocked this step but did not emit a specific reason.");
+    expect(answer?.body).not.toContain("Diane needs attention");
+    expect(answer?.previewBody).toContain("Diane blocked this step but did not emit a specific reason.");
     expect(answer?.previewBody).not.toContain("is it fully implemented?");
 
     const liveStatus = blueprintLiveStatusForTest(build!, [blockedTask], [blockedEvent], null);
     expect(liveStatus.latestUpdate).toBe(
-      "DAN needs attention, but did not emit a specific reason.",
+      "Diane needs attention, but did not emit a specific reason.",
     );
   });
 
@@ -4843,7 +4843,7 @@ describe("workspace blueprint nodes", () => {
     const blockedTask = task({
       task_id: "workspace-check-task",
       status: "failed",
-      latest_progress: "Super DAN needs attention.",
+      latest_progress: "Diane needs attention.",
       metadata: {
         active_run_id: "workspace-check-run",
         last_surface_turn: {
@@ -4856,7 +4856,7 @@ describe("workspace blueprint nodes", () => {
     const blockedEvent: ChatV2AgentRunEvent = {
       type: "failed",
       source_event_type: "worker.context.capsule",
-      summary: "Super DAN needs attention.",
+      summary: "Diane needs attention.",
       task_id: "workspace-check-task",
       run_id: "workspace-check-run",
       payload: {
@@ -4927,7 +4927,7 @@ describe("workspace blueprint nodes", () => {
         {
           id: "agent-answer:parser-final-run",
           kind: "agent",
-          title: "DAN · Answer",
+          title: "Diane · Answer",
           body: "Separator is not found, and chunk exceed the limit",
           status: "clean",
           meta: "run.log.completed",
@@ -5083,7 +5083,7 @@ describe("workspace blueprint nodes", () => {
         {
           id: "agent-answer:button-run",
           kind: "agent",
-          title: "DAN · Answer",
+          title: "Diane · Answer",
           body:
             "### Remaining Attention\n\n" +
             "- I found the website files and fixed the button inconsistency. " +
@@ -5176,7 +5176,7 @@ describe("workspace blueprint nodes", () => {
         {
           id: "agent-answer:review-run",
           kind: "agent",
-          title: "DAN · Answer",
+          title: "Diane · Answer",
           body: "I reviewed the project and updated the README with the current status.",
           status: "clean",
           meta: "run.log.completed",
@@ -5185,7 +5185,7 @@ describe("workspace blueprint nodes", () => {
         {
           id: "agent-outcome:review-run",
           kind: "agent",
-          title: "DAN · Outcome",
+          title: "Diane · Outcome",
           body: "- Changed: `README.md`",
           status: "clean",
           meta: "workspace changes",
@@ -5245,7 +5245,7 @@ describe("workspace blueprint nodes", () => {
       taskId: "review-task",
     });
     expect(answer?.body).toContain("Reviewed the project");
-    expect(answer?.body).not.toBe("Super DAN completed.");
+    expect(answer?.body).not.toBe("Diane completed.");
     expect(answer?.previewBody).toContain("### Summary");
     expect(answer?.previewBody).toContain("### Files");
   });
@@ -5575,17 +5575,17 @@ describe("workspace blueprint nodes", () => {
       title: "Final response",
       status: "blocked",
       detail: "Final answer missing",
-      body: "The run finished, but DAN did not return the in-session answer this request asked for.",
+      body: "The run finished, but Diane did not return the in-session answer this request asked for.",
       runId: "summary-run",
       taskId: "summary-task",
       compact: false,
     });
-    expect(answer?.body).not.toContain("Super DAN completed");
+    expect(answer?.body).not.toContain("Diane completed");
     expect(answer?.previewBody).toContain("### Remaining Attention");
-    expect(answer?.previewBody).toContain("Ask DAN to answer in this session");
+    expect(answer?.previewBody).toContain("Ask Diane to answer in this session");
   });
 
-  it("uses a structured Super DAN model response before a generic completed event", () => {
+  it("uses a structured Diane model response before a generic completed event", () => {
     const nodes = buildBlueprintNodesForTest({
       ...baseArgs,
       chunks: [
@@ -5645,9 +5645,9 @@ describe("workspace blueprint nodes", () => {
     expect(answer?.body).not.toContain("did not return");
   });
 
-  it("ignores truncated structured Super DAN answer payloads and uses complete task progress", () => {
+  it("ignores truncated structured Diane answer payloads and uses complete task progress", () => {
     const completeAnswer =
-      "This is the Super DAN Website Artifact, a static dependency-free product site with a landing page, organism visualization, and eight app demos.";
+      "This is the Diane Website Artifact, a static dependency-free product site with a landing page, organism visualization, and eight app demos.";
     const nodes = buildBlueprintNodesForTest({
       ...baseArgs,
       chunks: [
@@ -5723,7 +5723,7 @@ describe("workspace blueprint nodes", () => {
         {
           id: "agent-terminal:project-about-run",
           kind: "agent",
-          title: "Super DAN · completed",
+          title: "Diane · completed",
           body: "Run finished.",
           status: "clean",
           meta: "run.log.completed",
@@ -5756,11 +5756,11 @@ describe("workspace blueprint nodes", () => {
       status: "blocked",
       detail: "Final answer missing",
       meta: "missing answer",
-      body: "The run finished, but DAN did not return the in-session answer this request asked for.",
+      body: "The run finished, but Diane did not return the in-session answer this request asked for.",
       compact: false,
     });
     expect(answer?.body).not.toBe("Run finished.");
-    expect(answer?.previewBody).toContain("Ask DAN to answer in this session");
+    expect(answer?.previewBody).toContain("Ask Diane to answer in this session");
   });
 
   it("does not treat project-summary file receipts as the requested session answer", () => {
@@ -5780,7 +5780,7 @@ describe("workspace blueprint nodes", () => {
         {
           id: "agent-outcome:summary-run",
           kind: "agent",
-          title: "DAN · Outcome",
+          title: "Diane · Outcome",
           body: "- Changed: `PROJECT_SUMMARY.md`",
           status: "clean",
           meta: "workspace changes",
@@ -5810,12 +5810,12 @@ describe("workspace blueprint nodes", () => {
       status: "blocked",
       detail: "Final answer missing",
       body:
-        "The run produced workspace or file evidence, but DAN did not return the in-session answer this request asked for.",
+        "The run produced workspace or file evidence, but Diane did not return the in-session answer this request asked for.",
     });
     expect(answer?.body).not.toContain("PROJECT_SUMMARY.md");
     expect(answer?.previewBody).toContain("### Workspace Changes");
     expect(answer?.previewBody).toContain("Changed: `PROJECT_SUMMARY.md`");
-    expect(answer?.previewBody).toContain("Ask DAN to answer in this session");
+    expect(answer?.previewBody).toContain("Ask Diane to answer in this session");
   });
 
   it("does not reuse an old completed answer while a newer run is active", () => {
@@ -5843,7 +5843,7 @@ describe("workspace blueprint nodes", () => {
         {
           id: "agent-answer:old-run",
           kind: "agent",
-          title: "DAN · Answer",
+          title: "Diane · Answer",
           body: "blueprint smoke test ok",
           status: "clean",
           meta: "run.log.completed",

@@ -46,7 +46,7 @@ export function ProjectSettings({ name, root, creating, onSave, onClose, onBrows
         <input id="project-folder-path" value={path} onChange={(event) => { setPath(event.target.value); setDropError(""); }} placeholder="Or paste the folder path" aria-describedby="project-folder-hint" aria-invalid={Boolean(dropError)} />
       </div>}
       <p id="project-folder-hint" role={dropError ? "alert" : undefined}>{dropError}</p>
-      <p>{machine ? `Files and agents stay on ${machine}. Opening a folder adds it to DAN without copying files.` : "Chats in this project share this working folder."}</p>
+      <p>{machine ? `Files and agents stay on ${machine}. Opening a folder adds it to Dear Diane without copying files.` : "Chats in this project share this working folder."}</p>
       <footer><button type="button" onClick={onClose}>Cancel</button><button type="submit" disabled={!projectName.trim()}>{creating ? "Create project" : "Save"}</button></footer>
     </form>
   </dialog>;

@@ -1,4 +1,4 @@
-"""Start the minimal DAN Work/Notes + Super DAN server."""
+"""Start the minimal Diane Work/Notes + Dear Diane server."""
 
 from __future__ import annotations
 
@@ -160,7 +160,7 @@ def wait_for_health(port: int, *, host: str = "127.0.0.1", max_wait: float = 60.
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Start the DAN Work/Notes and Super DAN server")
+    parser = argparse.ArgumentParser(description="Start the Diane Work/Notes and Dear Diane server")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", default=None)
     args = parser.parse_args()
@@ -172,16 +172,16 @@ def main() -> None:
         running = find_running_server(args.port, host=host)
         if running is not None:
             pid, port, _managed = running
-            print(f"DAN server already running on {_server_url(host, port)}" + (f" (PID {pid})" if pid else ""))
+            print(f"Dear Diane server already running on {_server_url(host, port)}" + (f" (PID {pid})" if pid else ""))
             return
-        print(f"Starting DAN server on {host}:{args.port} ({host_source})...")
+        print(f"Starting Dear Diane server on {host}:{args.port} ({host_source})...")
         pid = start_server(args.port, host=host)
         write_pid_file(pid, args.port)
         if not wait_for_health(args.port, host=host):
             if not is_process_alive(pid):
                 remove_pid_file()
             raise SystemExit(f"Server did not become healthy; see {LOGS_DIR / 'server.log'}")
-        print(f"DAN server ready at {_server_url(host, args.port)} (PID {pid})")
+        print(f"Dear Diane server ready at {_server_url(host, args.port)} (PID {pid})")
     finally:
         release_start_lock(lock)
 

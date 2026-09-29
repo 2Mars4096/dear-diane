@@ -35,4 +35,4 @@ def test_down_reports_healthy_unmanaged_server_when_pid_missing(monkeypatch, cap
     down_module.main()
 
     captured = capsys.readouterr()
-    assert "owned by DAN Desktop or dan-service" in captured.out
+    assert "owned by Dear Diane Desktop or dan-service" in captured.out

@@ -76,7 +76,7 @@ def skill_cache_key(workspace_root: str | Path) -> str:
 
 
 def load_skill_catalog(workspace_root: str | Path) -> list[dict[str, Any]]:
-    """Load DAN, Codex, Claude, and Cursor skills as shared invocation packets."""
+    """Load Diane, Codex, Claude, and Cursor skills as shared invocation packets."""
 
     cache_key = skill_cache_key(workspace_root)
     if cache_key in _SKILL_CACHE:
@@ -183,7 +183,7 @@ def parse_skill_invocation_text(
                     should_run=False,
                     message=(
                         f"Ambiguous skill mention: ${token}. Matches: {rendered}{suffix}. "
-                        f"{browse_hint}; no Super DAN run was started."
+                        f"{browse_hint}; no Diane run was started."
                     ),
                 )
             unknown.append(token)
@@ -202,7 +202,7 @@ def parse_skill_invocation_text(
             selected_tokens=tuple(selected),
             unknown_tokens=tuple(unknown),
             should_run=False,
-            message=f"Unknown skill mention: {bad}. {browse_hint}; no Super DAN run was started.",
+            message=f"Unknown skill mention: {bad}. {browse_hint}; no Diane run was started.",
         )
     if not remaining:
         return SkillInvocationParse(
@@ -410,7 +410,7 @@ def render_skill_packet(
     import json
 
     return (
-        "Active DAN skill packet:\n"
+        "Active Diane skill packet:\n"
         + json.dumps(meta, ensure_ascii=False, sort_keys=True)
         + "\nInstructions:\n"
         + content
@@ -437,7 +437,7 @@ def explicit_skill_constraints(selected: Sequence[Mapping[str, Any]]) -> list[st
     )
     return [
         (
-            f"The operator explicitly selected these DAN skills: {labels}. "
+            f"The operator explicitly selected these Diane skills: {labels}. "
             "Treat their skill-packet instructions as required execution guidance for this run, "
             "not optional background."
         ),

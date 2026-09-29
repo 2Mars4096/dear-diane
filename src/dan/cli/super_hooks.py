@@ -1,4 +1,4 @@
-"""Internal hook/inbox state for Super DAN live runs."""
+"""Internal hook/inbox state for Diane live runs."""
 
 from __future__ import annotations
 
@@ -289,7 +289,7 @@ def default_super_hook_rules() -> list[SuperHookRule]:
 
 
 class SuperHookRuntime:
-    """Replayable internal hook and organ-inbox projection for Super DAN."""
+    """Replayable internal hook and organ-inbox projection for Diane."""
 
     def __init__(
         self,
@@ -1601,7 +1601,7 @@ def replay_super_hook_events(
     reactivity_profile: str = "balanced",
     worktree_parallelism: int = 0,
 ) -> dict[str, Any]:
-    """Rebuild Super DAN hook state from one append-only event log."""
+    """Rebuild Diane hook state from one append-only event log."""
 
     path = event_log_path.resolve()
     rows: list[dict[str, Any]] = []
@@ -1659,9 +1659,9 @@ def format_super_queue_status(workspace_root: Path) -> str:
     state = read_super_hook_state(root)
     state_root = root / ".dan-super" / "state"
     if not state:
-        return f"Super DAN queues\nstate: {state_root}\nstatus: no hook state found"
+        return f"Diane queues\nstate: {state_root}\nstatus: no hook state found"
     lines = [
-        "Super DAN queues",
+        "Diane queues",
         f"state: {state.get('state_root') or state_root}",
         f"reactivity: {state.get('reactivity_profile') or 'balanced'}",
         f"worktree parallelism: {int(state.get('worktree_parallelism') or 0)}",

@@ -67,7 +67,7 @@ it("keeps unsupported sources visible but disabled", () => {
   } finally { act(() => root.unmount()); }
 });
 
-it("uses the same selected source for DAN/native lead payloads and recorded metadata", () => {
+it("uses the same selected source for Diane/native lead payloads and recorded metadata", () => {
   const profile = { ...switchModelSource(EMPTY_PROFILE, "openrouter"), effort: "medium" };
   for (const agent of ["native", "codex", "claude"]) {
     const payload = withLeadSelection({ profile_policy: { backend: agent }, metadata: { selected_agent: agent } }, agent, { dan: profile, codex: profile, claude: profile });

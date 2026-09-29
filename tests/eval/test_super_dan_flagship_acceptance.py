@@ -302,7 +302,7 @@ def test_visual_rubric_requires_independent_reviewer_two_viewports_and_floor(
     weak = acceptance.validate_rubric(
         case,
         {
-            "reviewer": "Super DAN",
+            "reviewer": "Diane",
             "evidence_refs": ["site-desktop.png"],
             "scores": {
                 **{dimension: 4.2 for dimension in case.rubric_dimensions},

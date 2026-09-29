@@ -1,1 +1,1 @@
-"""DAN server — FastAPI backend for the visual editor."""
+"""Dear Diane server — FastAPI backend for the visual editor."""

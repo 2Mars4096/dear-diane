@@ -1,9 +1,9 @@
-"""Control a native child of the current DAN manager."""
+"""Control a native child of the current Diane manager."""
 from dan.native_workers.service import current_team
 
 TOOL_METADATA = {
     "tool_id": "native_worker", "category": "agent",
-    "description": "Delegate an independent task to an enabled DAN, Codex, Claude Code, or Antigravity worker. Start returns immediately; start multiple workers to run in parallel. Poll status to read results. Use resume for a follow-up to a settled worker. Inspect all results before ending the manager run; running children stop when the manager exits.",
+    "description": "Delegate an independent task to an enabled Diane, Codex, Claude Code, or Antigravity worker. Start returns immediately; start multiple workers to run in parallel. Poll status to read results. Use resume for a follow-up to a settled worker. Inspect all results before ending the manager run; running children stop when the manager exits.",
     "parameters": {"type": "object", "properties": {
         "action": {"type": "string", "enum": ["start", "status", "stop", "resume"]},
         "backend": {"type": "string", "enum": ["dan", "codex", "claude", "antigravity", "cursor"]},

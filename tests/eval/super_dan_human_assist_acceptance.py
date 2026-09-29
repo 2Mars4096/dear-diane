@@ -1,4 +1,4 @@
-"""Deterministic handoff gates for Super DAN academic and market workflows.
+"""Deterministic handoff gates for Diane academic and market workflows.
 
 These checks do not claim that a paper is publishable or a strategy is
 profitable. They verify that the generated package is complete enough for a

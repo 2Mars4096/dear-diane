@@ -1,5 +1,9 @@
 # Development Plan
 
+## Product naming
+
+**Dear Diane** is the product; **Diane** is the assistant. Subtitle: “A workspace for research, code, and ideas.” Existing technical IDs remain compatible. See [rename](plans/4-10-dear-diane.md).
+
 ## Vision
 
 Make difficult agent work durable, steerable, verifiable, and understandable without multiplying product modes or task-specific runtimes.

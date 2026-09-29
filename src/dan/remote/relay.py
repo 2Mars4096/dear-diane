@@ -1,7 +1,7 @@
 """Transparent TCP relay over an existing private network, including WebSockets.
 
 No laptop tunnel or SSH credentials are needed by the running relay. Authentication
-is enforced by the destination DAN service. Never bind this plaintext relay publicly.
+is enforced by the destination Dear Diane service. Never bind this plaintext relay publicly.
 """
 import argparse
 import asyncio

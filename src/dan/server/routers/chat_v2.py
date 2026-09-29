@@ -839,7 +839,7 @@ def _task_record_session_payload(store: ChatV2Store, task: Any) -> dict[str, Any
         payload["title"] = _compact_session_text(command_text, limit=96)
     else:
         latest = str(payload.get("latest_progress") or "").strip()
-        payload["title"] = _compact_session_text(latest, limit=96) if latest else "Untitled DAN Super session"
+        payload["title"] = _compact_session_text(latest, limit=96) if latest else "Untitled Diane session"
     return payload
 
 

@@ -1,4 +1,4 @@
-"""Canonical Task Blueprint bridge for legacy Super DAN live task graphs.
+"""Canonical Task Blueprint bridge for legacy Diane live task graphs.
 
 The live executor still accepts ``super_dan_task_graph_v1`` planner output during
 the migration.  This bridge admits that output into the canonical blueprint at
@@ -250,7 +250,7 @@ def _phase_for_event(event_name: str, source: str = "") -> str | None:
 
 @dataclass
 class SuperBlueprintEventBridge:
-    """Stateful admission and projection bridge for one Super DAN live run."""
+    """Stateful admission and projection bridge for one Diane live run."""
 
     task_id: str
     objective: str
@@ -451,7 +451,7 @@ class SuperBlueprintEventBridge:
             request_understanding=self._request_understanding,
             tasks=list(self._legacy_specs.values()),
             node_states=self._node_states,
-            update_reason=f"Accepted Super DAN topology from {source}.",
+            update_reason=f"Accepted Diane topology from {source}.",
         )
         self._pending_blueprint_snapshots.append(self._blueprint)
         return True
@@ -475,7 +475,7 @@ class SuperBlueprintEventBridge:
                 tasks=tasks,
                 request_understanding=self._request_understanding,
                 author="super_dan",
-                reason=f"Accepted Super DAN semantic topology update from {source}.",
+                reason=f"Accepted Diane semantic topology update from {source}.",
                 node_states=self._node_states,
             )
             self._pending_blueprint_snapshots.append(self._blueprint)
@@ -1029,7 +1029,7 @@ def _create_initial_blueprint(**kwargs: Any) -> Any:
             nodes=nodes,
             edges=edges,
             update_reason=str(
-                kwargs.get("update_reason") or "Initial Super DAN task blueprint."
+                kwargs.get("update_reason") or "Initial Diane task blueprint."
             ),
             author="super_dan",
             node_states=_blueprint_node_states(tasks, node_states),
@@ -1039,7 +1039,7 @@ def _create_initial_blueprint(**kwargs: Any) -> Any:
         contract=contract,
         family=family,
         update_reason=str(
-            kwargs.get("update_reason") or "Initial Super DAN task blueprint."
+            kwargs.get("update_reason") or "Initial Diane task blueprint."
         ),
         author="super_dan",
     )
@@ -1061,7 +1061,7 @@ def _sync_legacy_graph(current: Any, **kwargs: Any) -> Any:
         edges,
         author=str(kwargs.get("author") or "super_dan"),
         reason=str(
-            kwargs.get("reason") or "Accepted Super DAN semantic topology update."
+            kwargs.get("reason") or "Accepted Diane semantic topology update."
         ),
         node_states=_blueprint_node_states(tasks, _mapping(kwargs.get("node_states"))),
     )

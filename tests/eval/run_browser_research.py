@@ -1,6 +1,6 @@
 """Opt-in real-browser acceptance: python -m tests.eval.run_browser_research [--scholar].
 
-Uses DAN's actual tool/controller path. Add --native codex to exercise a live
+Uses Diane's actual tool/controller path. Add --native codex to exercise a live
 lead; combining it with --scholar gives that lead the real Scholar request.
 The deterministic local fixture exercises
 search, citation navigation, tab selection, extraction, and downloads. Scholar is
@@ -236,6 +236,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--scholar", action="store_true")
     parser.add_argument("--native", choices=["codex", "claude"], help="Also test an authenticated native lead (uses its configured model)")
-    parser.add_argument("--api-base", default="", help="Run the native test through a running local DAN app's API")
+    parser.add_argument("--api-base", default="", help="Run the native test through a running local Dear Diane app's API")
     parser.add_argument("--output", default="output/playwright/browser-research")
     raise SystemExit(asyncio.run(run(parser.parse_args())))

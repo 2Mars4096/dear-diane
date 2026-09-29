@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 TOOL_METADATA = {
     "tool_id": "notify",
     "description": (
-        "Send a desktop or webhook notification. Uses the DAN notification "
+        "Send a desktop or webhook notification. Uses the Diane notification "
         "infrastructure (macOS Notification Center, webhook, or terminal bell). "
         "Useful for alerting the user when a long-running task completes."
     ),
@@ -26,7 +26,7 @@ TOOL_METADATA = {
             "title": {
                 "type": "string",
                 "description": "Optional notification title.",
-                "default": "DAN",
+                "default": "Diane",
             },
             "channel": {
                 "type": "string",
@@ -39,7 +39,7 @@ TOOL_METADATA = {
     },
     "examples": [
         {
-            "input": {"message": "Your workflow has completed!", "title": "DAN"},
+            "input": {"message": "Your workflow has completed!", "title": "Diane"},
             "output": {"delivered": True, "channel": "macos"},
         },
     ],
@@ -56,7 +56,7 @@ def _applescript_string(s: str) -> str:
 
 async def notify(
     message: str,
-    title: str = "DAN",
+    title: str = "Diane",
     channel: str = "auto",
     **_kwargs,
 ) -> dict:

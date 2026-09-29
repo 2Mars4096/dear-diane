@@ -1,4 +1,4 @@
-"""Small allowlist helpers shared by Super DAN computer-control tools."""
+"""Small allowlist helpers shared by Diane computer-control tools."""
 
 from __future__ import annotations
 

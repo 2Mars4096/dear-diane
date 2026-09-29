@@ -1,4 +1,4 @@
-"""Paper sources, metadata, and resumable reading sessions on this DAN host."""
+"""Paper sources, metadata, and resumable reading sessions on this Dear Diane host."""
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal

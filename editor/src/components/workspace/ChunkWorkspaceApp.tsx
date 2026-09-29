@@ -236,13 +236,13 @@ type StoredWorkspaceSelection = {
 };
 const DEFAULT_AGENT_SELECTION_ID: WorkspaceAgentSelectionId = "native";
 const DEFAULT_AUTONOMY_MODE: WorkspaceAutonomyMode = "auto";
-// One DAN mode per intent; each maps to the closest Codex sandbox / Claude permission mode.
+// One Diane mode per intent; each maps to the closest Codex sandbox / Claude permission mode.
 const WORKSPACE_AUTONOMY_OPTIONS: WorkspaceAutonomyOption[] = [
   { id: "plan", label: "Plan", shortLabel: "Plan", description: "Read and propose. Nothing changes until you decide." },
   { id: "auto", label: "Auto", shortLabel: "Auto", description: "Edit files and run commands inside this project." },
   { id: "full", label: "Full access", shortLabel: "Full", description: "No sandbox or approvals. Use only in trusted projects." },
 ];
-/** DAN's own runtime only distinguishes pausing for decisions from acting on its own. */
+/** Diane's own runtime only distinguishes pausing for decisions from acting on its own. */
 function danAutonomyMode(mode: WorkspaceAutonomyMode): "auto" | "review" {
   return mode === "plan" ? "review" : "auto";
 }
@@ -253,8 +253,8 @@ const WORKSPACE_AGENT_OPTIONS: WorkspaceAgentOption[] = [
   { id: "cursor", label: "Cursor", shortLabel: "Cursor", backend: "cursor" },
   {
     id: "native",
-    label: "Super DAN",
-    shortLabel: "DAN",
+    label: "Diane",
+    shortLabel: "Diane",
     backend: SUPER_DAN_BACKEND,
   },
 ];
@@ -2125,7 +2125,7 @@ function noteWorkingTargetAndSnippet(
       target: "agent run",
       snippet:
         compactNoteSnippet(activeTask.latest_progress || activeTask.phase || "") ||
-        "Super DAN is working in the Notes workspace.",
+        "Diane is working in the Notes workspace.",
     };
   }
   const page = extractHugoPage(note.content || "", note.title);
@@ -3054,7 +3054,7 @@ function noteFromServerSummary(summary: WorkspaceNoteSummary): WorkspaceNote {
 }
 
 function eventSummary(event: ChatV2AgentRunEvent) {
-  return event.summary || event.source_event_type || event.type || "Super DAN event";
+  return event.summary || event.source_event_type || event.type || "Diane event";
 }
 
 function runEventPayloadFromAgentEvent(event: ChatV2AgentRunEvent): RunEventPayload {
@@ -3347,7 +3347,7 @@ function sessionCardDisplay(thread: ChatV2ThreadSummary, tasks: ChatV2TaskSnapsh
   const latestTask = newestSessionTask(tasks);
   const title = thread.title?.trim() || "Untitled";
   const displayTitle = title;
-  const kind = thread.mode === "agent" ? "Super DAN" : "Chat";
+  const kind = thread.mode === "agent" ? "Diane" : "Chat";
   const updated = compactThreadTime(thread.updated_at);
   const timeSuffix = updated ? ` · ${updated}` : "";
   if (tasks.length > 0) {
@@ -3877,7 +3877,7 @@ function splitFlattenedMarkdownHeading(line: string) {
     body.search(/\s+(?=[-*]\s+(?:\*\*)?(?:[A-Z]|`))/),
     body.search(/\s+(?=\d+\.\s+(?:\*\*)?(?:[A-Z]|`))/),
     body.search(
-      /\s+(?=(?:This|That|The|It|They|There|DAN|Super DAN|Project|User|You|We|I)\b(?:\s+[a-z][a-z0-9-]*){0,3}\s+(?:is|are|was|were|has|have|will|can|should|needs|uses|includes|contains|remains|currently|now)\b)/,
+      /\s+(?=(?:This|That|The|It|They|There|DAN|Super DAN|Diane|Project|User|You|We|I)\b(?:\s+[a-z][a-z0-9-]*){0,3}\s+(?:is|are|was|were|has|have|will|can|should|needs|uses|includes|contains|remains|currently|now)\b)/,
     ),
   ].filter((index) => index > 8 && index < 96);
 
@@ -3934,13 +3934,13 @@ function previewMarkdownContent(content: string) {
 }
 
 function isGenericCompletionText(value: string) {
-  return /^(completed|finished|run completed|run finished|(?:super\s+dan|codex) completed|(?:super\s+dan|codex) run completed)\.?$/i.test(
+  return /^(completed|finished|run completed|run finished|(?:super\s+dan|diane|codex) completed|(?:super\s+dan|diane|codex) run completed)\.?$/i.test(
     value.trim(),
   );
 }
 
 function isGenericNeedsAttentionText(value: string) {
-  return /^(?:super\s+)?dan\s+needs attention\.?$|^(?:work|execution|run|this step)\s+needs attention\.?$|^needs attention\.?$/i.test(
+  return /^(?:(?:super\s+)?dan|diane)\s+needs attention\.?$|^(?:work|execution|run|this step)\s+needs attention\.?$|^needs attention\.?$/i.test(
     value.trim(),
   );
 }
@@ -4294,12 +4294,12 @@ function isUsableFinalResponseSource(
 function missingFinalResponseMessage(hasWorkspaceEvidence: boolean, requireDirectAnswer = false) {
   if (requireDirectAnswer) {
     return hasWorkspaceEvidence
-      ? "The run produced workspace or file evidence, but DAN did not return the in-session answer this request asked for."
-      : "The run finished, but DAN did not return the in-session answer this request asked for.";
+      ? "The run produced workspace or file evidence, but Diane did not return the in-session answer this request asked for."
+      : "The run finished, but Diane did not return the in-session answer this request asked for.";
   }
   return hasWorkspaceEvidence
-    ? "The run finished and workspace evidence was recorded, but DAN did not return the final answer for this request."
-    : "The run finished, but DAN did not return the final answer for this request.";
+    ? "The run finished and workspace evidence was recorded, but Diane did not return the final answer for this request."
+    : "The run finished, but Diane did not return the final answer for this request.";
 }
 
 function timestampValue(value: unknown, fallback: number) {
@@ -4400,6 +4400,7 @@ function isMachineSummary(summary: string, event: ChatV2AgentRunEvent) {
       "run completed",
       "run finished",
       "super dan completed",
+      "diane completed",
       "acknowledged",
       "released",
       "model.requested",
@@ -4641,7 +4642,7 @@ function eventActivityLine(event: ChatV2AgentRunEvent) {
     const resolvedReason = reason || evidenceReason;
     return resolvedReason
       ? `Needs attention: ${resolvedReason}${/[.!?]$/.test(resolvedReason) ? "" : "."}`
-      : "DAN needs attention, but did not emit a specific reason.";
+      : "Diane needs attention, but did not emit a specific reason.";
   }
   const human = humanEventSummary(event);
   if (human && event.type !== "token_usage_recorded") return human;
@@ -4713,7 +4714,7 @@ function compactAgentRunChunks(events: ChatV2AgentRunEvent[]) {
         chunks.push({
           id: `agent-answer:${key}`,
           kind: "agent",
-          title: terminal.type === "completed" ? "DAN · Answer" : `DAN · ${terminal.type}`,
+          title: terminal.type === "completed" ? "Diane · Answer" : `Diane · ${terminal.type}`,
           body: answer,
           status: eventChunkStatus(terminal),
           meta: latestAgentMessageText && !terminalAnswer && latestAgentMessage
@@ -4727,7 +4728,7 @@ function compactAgentRunChunks(events: ChatV2AgentRunEvent[]) {
         chunks.push({
           id: `agent-outcome:${key}`,
           kind: "agent",
-          title: "DAN · Outcome",
+          title: "Diane · Outcome",
           body: outcome.join("\n"),
           status: eventChunkStatus(terminal),
           meta: "workspace changes",
@@ -4739,7 +4740,7 @@ function compactAgentRunChunks(events: ChatV2AgentRunEvent[]) {
         chunks.push({
           id: `agent-terminal:${key}`,
           kind: "agent",
-          title: `Super DAN · ${terminal.type}`,
+          title: `Diane · ${terminal.type}`,
           body: eventActivityLine(terminal) || "Run finished.",
           status: eventChunkStatus(terminal),
           meta: eventSource(terminal),
@@ -4756,7 +4757,7 @@ function compactAgentRunChunks(events: ChatV2AgentRunEvent[]) {
     chunks.push({
       id: `agent-working:${key}`,
       kind: "agent",
-      title: "Super DAN · Working",
+      title: "Diane · Working",
       body,
       status: "running",
       meta: eventSource(latest),
@@ -6146,8 +6147,8 @@ function threadTitleLooksPlaceholder(title: string) {
   const normalized = title.trim().toLowerCase();
   return Boolean(
     !normalized ||
-      /^new\s+(super\s+dan\s+)?session$/.test(normalized) ||
-      /^untitled(?:\s+(?:dan\s+super\s+)?session|\s+chat)?$/.test(normalized) ||
+      /^new\s+(?:(?:super\s+dan|diane)\s+)?session$/.test(normalized) ||
+      /^untitled(?:\s+(?:(?:dan\s+super|diane)\s+)?session|\s+chat)?$/.test(normalized) ||
       normalized === "workspace thread",
   );
 }
@@ -6377,7 +6378,7 @@ function understandingPreviewBody(args: {
   const source = scalarDetailText(args.understanding?.source);
   const sourceLabel =
     source === "model_authored"
-      ? "tailored by DAN"
+      ? "tailored by Diane"
       : source === "rule_generation_brief"
         ? "generating rules"
         : source === "deterministic_scaffold"
@@ -6386,7 +6387,7 @@ function understandingPreviewBody(args: {
   const requestKind = scalarDetailText(args.understanding?.request_kind);
   const summary = requestKind
     ? `Request kind: ${requestKind}${sourceLabel ? ` · ${sourceLabel}` : ""}`
-    : "DAN is establishing the request scope, target, constraints, and evidence gates.";
+    : "Diane is establishing the request scope, target, constraints, and evidence gates.";
   return detailMarkdown(summary, [
     {
       title: "Rules Brief",
@@ -6475,7 +6476,7 @@ function parallelGroupSummaryItems(
 function planPreviewBody(planContext: BlueprintPlanContext | null) {
   if (!planContext) return "Waiting for the planner to emit a task graph or frontier metadata.";
   if (!isSemanticPlanContext(planContext)) {
-    return "Execution activity is being tracked as live status. The semantic plan graph appears here when DAN emits plans, subplans, or plan items.";
+    return "Execution activity is being tracked as live status. The semantic plan graph appears here when Diane emits plans, subplans, or plan items.";
   }
   const graphLabel =
     planContext.graphVersionId ||
@@ -7036,19 +7037,19 @@ function buildBlueprintNodesForRunScope(args: {
         ? understandingModelAuthored
           ? "Scope, constraints, targets, and acceptance gates tailored"
           : understandingRuleBrief
-            ? "Rule-generation brief sent to DAN"
+            ? "Rule-generation brief sent to Diane"
             : "Scope, constraints, targets, and acceptance gates scaffolded"
         : "Extracting scope, constraints, targets, and evidence gates",
       meta: scalarDetailText(requestUnderstanding?.request_kind) || "request contract",
       body: understandingSettled && !understandingModelAuthored
-        ? "DAN moved from request understanding into planning or execution."
+        ? "Diane moved from request understanding into planning or execution."
         : understandingDone
         ? understandingModelAuthored
-          ? "DAN tailored the request-understanding rules for this run."
+          ? "Diane tailored the request-understanding rules for this run."
           : understandingRuleBrief
-            ? "DAN is asking the model to generate request-specific rules for this run."
-            : "DAN started from a request-understanding scaffold for this run."
-        : "DAN is identifying the work contract before treating execution as complete.",
+            ? "Diane is asking the model to generate request-specific rules for this run."
+            : "Diane started from a request-understanding scaffold for this run."
+        : "Diane is identifying the work contract before treating execution as complete.",
       previewBody: understandingPreviewBody({
         requestBody,
         understanding: requestUnderstanding,
@@ -7197,7 +7198,7 @@ function buildBlueprintNodesForRunScope(args: {
       buildProgressBody ||
       buildHandoffBody ||
       buildDoneBody ||
-      (displayReadOnlyRun ? directResponseDetail : "Execution details will appear as Super DAN emits events.");
+      (displayReadOnlyRun ? directResponseDetail : "Execution details will appear as Diane emits events.");
     nodes.push({
       id: "blueprint:build",
       title: attentionTask
@@ -7254,7 +7255,7 @@ function buildBlueprintNodesForRunScope(args: {
       body:
         latestValidation && humanEventSummary(latestValidation)
           ? humanEventSummary(latestValidation)
-          : "Super DAN validates the current frontier before claiming the full future graph is done.",
+          : "Diane validates the current frontier before claiming the full future graph is done.",
       previewBody: validationPreviewBody({
         latestValidation,
         understanding: requestUnderstanding,
@@ -7279,7 +7280,7 @@ function buildBlueprintNodesForRunScope(args: {
       title: "Repair or retry",
       detail: "Validation requested a bounded correction",
       meta: latestSource,
-      body: latestWorkingChunk?.body || "Super DAN is repairing a rejected or incomplete slice.",
+      body: latestWorkingChunk?.body || "Diane is repairing a rejected or incomplete slice.",
       status: hasActiveRun ? "active" : "done",
       kind: "repair",
       sourceChunkId: latestWorkingChunk?.id,
@@ -7302,11 +7303,11 @@ function buildBlueprintNodesForRunScope(args: {
     );
     const finalSourceBody =
       attentionTask
-        ? attentionDetail || "Super DAN needs attention before it can answer."
+        ? attentionDetail || "Diane needs attention before it can answer."
         : finalAnswerSource ||
           (finalMissing
             ? missingFinalResponseMessage(latestOutcomeItems.length > 0, directAnswerRequired)
-            : "This will become solid when Super DAN emits the final answer.");
+            : "This will become solid when Diane emits the final answer.");
     const finalDisplay = userFacingAgentDisplay(finalSourceBody);
     nodes.push({
       id: latestAnswerChunk?.id ? `blueprint:${latestAnswerChunk.id}` : "blueprint:answer",
@@ -7339,8 +7340,8 @@ function buildBlueprintNodesForRunScope(args: {
             ...(finalMissing
               ? [
                   directAnswerRequired
-                    ? "Ask DAN to answer in this session, or rerun the request without creating files."
-                    : "Ask DAN to summarize this session or rerun the request.",
+                    ? "Ask Diane to answer in this session, or rerun the request without creating files."
+                    : "Ask Diane to summarize this session or rerun the request.",
                 ]
               : []),
             ...(attentionTask ? [attentionDetail || taskAttentionDetail(attentionTask)] : []),
@@ -7643,14 +7644,14 @@ function workspaceComposerPlaceholder(args: {
       : "Type to steer the active run. Leave empty to stop.";
   }
   if (args.workspaceMode === "notes") {
-    if (args.activeNoteTitle) return `Ask Super DAN about ${args.activeNoteTitle}`;
-    if (args.activeNotePath) return `Ask Super DAN about ${args.activeNotePath}`;
-    return "Ask Super DAN about this Hugo note";
+    if (args.activeNoteTitle) return `Ask Diane about ${args.activeNoteTitle}`;
+    if (args.activeNotePath) return `Ask Diane about ${args.activeNotePath}`;
+    return "Ask Diane about this Hugo note";
   }
-  if (args.selectedBlueprintTitle) return `Ask Super DAN about ${args.selectedBlueprintTitle}`;
-  if (args.selectedChunkTitle) return `Ask Super DAN about ${args.selectedChunkTitle}`;
-  if (args.activeFilePath) return `Ask Super DAN about ${args.activeFilePath}`;
-  return "Ask Super DAN to work in this workspace";
+  if (args.selectedBlueprintTitle) return `Ask Diane about ${args.selectedBlueprintTitle}`;
+  if (args.selectedChunkTitle) return `Ask Diane about ${args.selectedChunkTitle}`;
+  if (args.activeFilePath) return `Ask Diane about ${args.activeFilePath}`;
+  return "Ask Diane to work in this workspace";
 }
 
 function workspaceComposerPrimaryActionLabel(args: {
@@ -8709,7 +8710,7 @@ function isMachineProgressText(text: string) {
 }
 
 function isGenericAgentStatusText(text: string) {
-  return /^(?:(?:Super\s+)?DAN|Codex) (?:(?:is )?(?:working|queued|waiting|paused)|needs (?:input|attention)|completed|task)\b/i.test(
+  return /^(?:(?:(?:Super\s+)?DAN|Diane)|Codex) (?:(?:is )?(?:working|queued|waiting|paused)|needs (?:input|attention)|completed|task)\b/i.test(
     text.trim(),
   );
 }
@@ -8739,13 +8740,13 @@ function taskAgentDisplayLabel(task?: ChatV2TaskSnapshot | null) {
   ) {
     return "Codex";
   }
-  return "DAN";
+  return "Diane";
 }
 
 function wrapWorkAgentToken(
   text: string,
   pattern: RegExp,
-  label: "Codex" | "DAN",
+  label: "Codex" | "Diane",
 ) {
   return text.replace(pattern, (match, offset: number, fullText: string) => {
     const previous = fullText[offset - 1] ?? "";
@@ -8760,7 +8761,7 @@ function highlightWorkAgentText(text: string, task?: ChatV2TaskSnapshot | null) 
   if (agentLabel === "Codex") {
     return wrapWorkAgentToken(text, /\bCodex\b/g, "Codex");
   }
-  return wrapWorkAgentToken(text, /\b(?:Super\s+)?DAN\b/g, "DAN");
+  return wrapWorkAgentToken(text, /\b(?:(?:Super\s+)?DAN|Diane)\b/g, "Diane");
 }
 
 function taskProgressFallbackLabel(task: ChatV2TaskSnapshot) {
@@ -8804,7 +8805,7 @@ function taskMessageLabel(task: ChatV2TaskSnapshot) {
 }
 
 function taskMessageLooksOperational(text: string) {
-  return /^(?:(?:super\s+)?dan|codex|native)\s+(?:is\s+|completed|needs attention)/i.test(
+  return /^(?:(?:super\s+)?dan|diane|codex|native)\s+(?:is\s+|completed|needs attention)/i.test(
     text.trim(),
   );
 }
@@ -8924,13 +8925,13 @@ function taskAttentionDetail(
     return reason || "Stop was requested for this run.";
   }
   if (task.status === "failed") {
-    return reason || "DAN failed this step but did not emit an error reason.";
+    return reason || "Diane failed this step but did not emit an error reason.";
   }
   if (task.status === "blocked") {
-    return reason || "DAN blocked this step but did not emit a specific reason.";
+    return reason || "Diane blocked this step but did not emit a specific reason.";
   }
   if (task.status === "stopped") {
-    return reason || "DAN stopped before this step completed.";
+    return reason || "Diane stopped before this step completed.";
   }
   return reason || taskMessageLabel(task);
 }
@@ -9063,8 +9064,8 @@ function followUpBlueprintNodes(row: QueueRow, _index: number): BlueprintNode[] 
       meta: row.status,
       body:
         status.action === "active"
-          ? "Super DAN is working on this follow-up."
-          : "This becomes solid when Super DAN reaches the follow-up.",
+          ? "Diane is working on this follow-up."
+          : "This becomes solid when Diane reaches the follow-up.",
       previewBody: followUpPlanBody(row),
       status: status.action,
       kind: "build",
@@ -9078,7 +9079,7 @@ function followUpBlueprintNodes(row: QueueRow, _index: number): BlueprintNode[] 
       title: "Follow-up response",
       detail: "Answer after the follow-up is handled",
       meta: "answer",
-      body: "This becomes solid when Super DAN responds to the follow-up.",
+      body: "This becomes solid when Diane responds to the follow-up.",
       previewBody: followUpPlanBody(row),
       status: status.response,
       kind: "answer",
@@ -9299,7 +9300,7 @@ function buildSurfaceContext(args: {
       }
     : null;
   return {
-    identity: { name: "DAN Workspace", role: "chunk_workspace" },
+    identity: { name: "Diane Workspace", role: "chunk_workspace" },
     workspace_root: workspaceRoot,
     workspace_id: workspaceId || workspaceRoot,
     notes_root: notesRoot,
@@ -11626,7 +11627,7 @@ function BlueprintTreeOverview({
           </div>
         ) : (
           <div className="min-w-[360px] rounded border border-dashed border-slate-200/80 bg-white/45 p-3 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950/30 dark:text-slate-400">
-            Waiting for DAN to emit task nodes or branches. The execution attempt below shows live activity meanwhile.
+            Waiting for Diane to emit task nodes or branches. The execution attempt below shows live activity meanwhile.
           </div>
         )}
       </div>
@@ -11839,13 +11840,13 @@ function blueprintCardContent(
     return fallbackCardContent(node) || `${strippedStepTitle(node.title)} is complete.`;
   }
   if (node.status === "blocked") {
-    return fallbackCardContent(node) || "This step needs attention before DAN can continue.";
+    return fallbackCardContent(node) || "This step needs attention before Diane can continue.";
   }
   if (node.status === "future") {
     return fallbackCardContent(node) || "This planned step will run after earlier work is complete.";
   }
   if (node.status === "ready") {
-    return fallbackCardContent(node) || "This step is ready to run when DAN reaches it.";
+    return fallbackCardContent(node) || "This step is ready to run when Diane reaches it.";
   }
   if (node.status === "queued") {
     return fallbackCardContent(node) || "This step is waiting in the queue.";
@@ -12305,7 +12306,7 @@ function PlanChecklistPreview({
         </ul>
       ) : (
         <div className="rounded border border-dashed border-slate-200 bg-white/50 p-3 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950/40 dark:text-slate-400">
-          DAN has not emitted task details inside this plan yet.
+          Diane has not emitted task details inside this plan yet.
         </div>
       )}
       {(history.length > 0 || validation.length > 0) && (
@@ -13916,7 +13917,7 @@ export default function ChunkWorkspaceApp() {
   }, [developmentRoot, rootEditing]);
 
   useEffect(() => {
-    if (allWorkspaces.length === 0) createWorkspace("DAN Workspace", "chat");
+    if (allWorkspaces.length === 0) createWorkspace("Diane Workspace", "chat");
   }, [createWorkspace, allWorkspaces.length]);
 
   useEffect(() => {
@@ -14534,10 +14535,10 @@ export default function ChunkWorkspaceApp() {
           message.role === "user"
             ? "You · Request"
             : pendingAssistantIds[message.id]
-              ? "Super DAN · Working"
+              ? "Diane · Working"
               : message.taskRunRef?.runId
-                ? "DAN · Answer"
-                : "DAN · Chat",
+                ? "Diane · Answer"
+                : "Diane · Chat",
         body:
           (message.content ? displayChatContent(message.content) : "") ||
           (pendingAssistantIds[message.id] ? "Waiting for output..." : "_No response captured._"),
@@ -15615,7 +15616,7 @@ export default function ChunkWorkspaceApp() {
         (workspace?.id === targetWorkspaceId && workspace.activeThreadId === activeThread?.id),
     );
     const activeBlankSession =
-      activeThread?.title === "New Super DAN Session" &&
+      ["New Diane Session", "New Super DAN Session"].includes(activeThread?.title ?? "") &&
       messages.length === 0 &&
       tasks.length === 0 &&
       agentEvents.length === 0 &&
@@ -15660,13 +15661,13 @@ export default function ChunkWorkspaceApp() {
     try {
       const workflowId = targetWorkspaceId || "_unassigned";
       const created = await createChatV2Thread(workflowId, {
-        title: "New Super DAN Session",
+        title: "New Diane Session",
         mode: "agent",
       });
       const next = {
         id: created.id,
         workflowId: created.workflow_id || workflowId,
-        title: created.title || "New Super DAN Session",
+        title: created.title || "New Diane Session",
       };
       if (sessionSelectionSeqRef.current !== selectionSeq) return;
       setActiveThread(next);
@@ -16023,7 +16024,7 @@ export default function ChunkWorkspaceApp() {
   const deleteAllArchivedSessions = async () => {
     if (deletingArchived) return;
     const archived = threads.filter((thread) => thread.archived);
-    if (!archived.length || !window.confirm(`Permanently delete all ${archived.length} archived DAN chats across all projects, including any hidden by search? Active chats, project files, and original Codex/Claude/Antigravity sessions will stay untouched. This cannot be undone.`)) return;
+    if (!archived.length || !window.confirm(`Permanently delete all ${archived.length} archived Dear Diane chats across all projects, including any hidden by search? Active chats, project files, and original Codex/Claude/Antigravity sessions will stay untouched. This cannot be undone.`)) return;
     setDeletingArchived(true);
     let deleted = 0;
     let failed = 0;
@@ -16250,7 +16251,7 @@ export default function ChunkWorkspaceApp() {
         undefined,
         () => {
           if (activeThreadRef.current?.id === thread.id) {
-            setStatus("Super DAN event stream interrupted");
+            setStatus("Diane event stream interrupted");
           }
         },
       );
@@ -18481,7 +18482,7 @@ export default function ChunkWorkspaceApp() {
             </CollapsedPaneRail>
           )}
           {renderSessionRail && <aside id="wb-project-sidebar" className="dan-phone-page dan-session-page wb-session-shelf wb-project-sidebar">
-            <div className="wb-panel-heading"><span>DAN</span></div>
+            <div className="wb-panel-heading"><span>Diane</span></div>
             <button className="wb-sidebar-new" onClick={() => { void startNewSession(); setShowConversationChunks(true); setPhonePage("chat"); }}><Plus size={16} />New chat</button>
             <Suspense fallback={null}><PaperSidebar onOpen={openLibraryReading} onBrowse={openPaperLibrary} /></Suspense>
             <label className="wb-shelf-search"><Search size={15} /><input aria-label="Search sessions" placeholder="Search chats or session ID" value={threadQuery} onChange={(event) => setThreadQuery(event.target.value)} /></label>
@@ -18516,7 +18517,7 @@ export default function ChunkWorkspaceApp() {
                         for (const thread of group.threads) clearStoredThreadSelection(thread);
                         if (id === activeWorkspaceId || group.threads.some((thread) => thread.id === activeThread?.id)) {
                           sessionSelectionSeqRef.current += 1;
-                          clearActiveSessionView("Project removed from DAN");
+                          clearActiveSessionView("Project removed from Dear Diane");
                         }
                         hideWorkspace(id);
                       }} />}
@@ -18528,7 +18529,7 @@ export default function ChunkWorkspaceApp() {
               })}
               {sessionGroups.every((group) => sessionShelfScope === "archived" ? !group.archived : group.archived) && <p className="wb-shelf-empty">{threadQuery.trim() ? "No matching chats" : sessionShelfScope === "archived" ? "No archived chats" : "Create a project to get started"}</p>}
             </div>
-            <div className="wb-sidebar-footer"><Suspense fallback={null}><UsagePanel /></Suspense>{sessionShelfScope === "archived" && <><button className="wb-delete-archived" disabled={deletingArchived || !threads.some((thread) => thread.archived)} onClick={() => void deleteAllArchivedSessions()}><Trash2 size={15} />{deletingArchived ? "Deleting archived chats…" : "Delete all archived chats"}</button>{archiveDeleteProgress && <p role="status" className="wb-archive-delete-progress">{archiveDeleteProgress}</p>}</>}<button onClick={() => { setSessionShelfScope(sessionShelfScope === "archived" ? "all" : "archived"); }}><Archive size={15} />{sessionShelfScope === "archived" ? "Back to projects" : "Archived chats"}</button><button onClick={openSettingsTab}><MoreHorizontal size={15} />DAN settings</button></div>
+            <div className="wb-sidebar-footer"><Suspense fallback={null}><UsagePanel /></Suspense>{sessionShelfScope === "archived" && <><button className="wb-delete-archived" disabled={deletingArchived || !threads.some((thread) => thread.archived)} onClick={() => void deleteAllArchivedSessions()}><Trash2 size={15} />{deletingArchived ? "Deleting archived chats…" : "Delete all archived chats"}</button>{archiveDeleteProgress && <p role="status" className="wb-archive-delete-progress">{archiveDeleteProgress}</p>}</>}<button onClick={() => { setSessionShelfScope(sessionShelfScope === "archived" ? "all" : "archived"); }}><Archive size={15} />{sessionShelfScope === "archived" ? "Back to projects" : "Archived chats"}</button><button onClick={openSettingsTab}><MoreHorizontal size={15} />Dear Diane settings</button></div>
           </aside>}
           {!isPhoneViewport && !renderFileExplorer && (
             <CollapsedPaneRail

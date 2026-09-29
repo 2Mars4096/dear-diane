@@ -108,7 +108,7 @@ def extract_preview(path: Path) -> dict:
         try:
             from pypdf import PdfReader
         except ImportError as exc:
-            raise ValueError("PDF extraction is not installed on this DAN host. Install the dan[pdf] extra, then retry.") from exc
+            raise ValueError("PDF extraction is not installed on this Dear Diane host. Install the dan[pdf] extra, then retry.") from exc
         doc = PdfReader(path)
         if doc.is_encrypted:
             raise ValueError("Unlock this password-protected PDF before importing")
@@ -136,7 +136,7 @@ async def lookup(item: dict, supplied: str) -> tuple[list[dict], str]:
     query = item.get("query", "").strip() or item.get("title_hint", "")
     warning = ""
     try:
-        async with httpx.AsyncClient(timeout=25, headers={"User-Agent": "DAN-Literature/0.2 (bibliographic lookup)"}) as client:
+        async with httpx.AsyncClient(timeout=25, headers={"User-Agent": "Dear-Diane-Literature/0.2 (bibliographic lookup)"}) as client:
             if doi:
                 response = await client.get("https://api.crossref.org/works/" + quote(doi.group().rstrip(".,);]"), safe=""))
                 works = [response.json()["message"]] if response.status_code == 200 else []
@@ -262,7 +262,7 @@ class ImportRunner:
             for batch in batches():
                 for item in batch["items"]:
                     if item["status"] in {"matching", "reading", "stopping"}:
-                        item.update(status="interrupted", error="DAN restarted during preparation. Retry this document.")
+                        item.update(status="interrupted", error="Diane restarted during preparation. Retry this document.")
                     if item["status"] == "importing":
                         item.update(status="needs_review", error="Import was interrupted. Retry to check destination files before writing.")
                 save(batch)

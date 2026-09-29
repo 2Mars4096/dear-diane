@@ -143,7 +143,7 @@ def update_token_usage_settings(body: TokenUsageSettings):
 
 @router.get("/api/skills")
 def skill_pool():
-    """Skills installed for any agent CLI and which runtimes DAN shares them with."""
+    """Skills installed for any agent CLI and which runtimes Diane shares them with."""
     from dan.native_workers.skills import report
     return report(Path(resolve_graphs_dir()))
 
@@ -180,7 +180,7 @@ def _process_call(action):
 
 @router.get("/api/processes")
 def list_processes(workspace_id: str = "", cwd: str = ""):
-    """Long-running processes DAN owns; they outlive agent runs and backend restarts."""
+    """Long-running processes Diane owns; they outlive agent runs and backend restarts."""
     from dan.processes import manager
     return {"processes": manager().list(workspace_id=workspace_id, cwd=cwd)}
 

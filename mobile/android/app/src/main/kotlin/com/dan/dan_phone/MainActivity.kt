@@ -88,7 +88,7 @@ class MainActivity : FlutterActivity() {
 
     private fun startWireGuard(configText: String, result: MethodChannel.Result) {
         if (configText.trim().isEmpty()) {
-            result.error("missing_config", "DAN phone WireGuard config is required.", null)
+            result.error("missing_config", "Dear Diane phone WireGuard config is required.", null)
             return
         }
         val prepareIntent = VpnService.prepare(this)
@@ -126,7 +126,7 @@ class MainActivity : FlutterActivity() {
                 }
             } catch (error: Exception) {
                 runOnUiThread {
-                    val message = error.message ?: "Could not start DAN phone WireGuard."
+                    val message = error.message ?: "Could not start Dear Diane phone WireGuard."
                     if (result != null) {
                         result.error("wireguard_start_failed", message, null)
                     } else {
@@ -174,7 +174,7 @@ class MainActivity : FlutterActivity() {
                 runOnUiThread {
                     result.error(
                         "wireguard_stop_failed",
-                        error.message ?: "Could not stop DAN phone WireGuard.",
+                        error.message ?: "Could not stop Dear Diane phone WireGuard.",
                         null,
                     )
                 }

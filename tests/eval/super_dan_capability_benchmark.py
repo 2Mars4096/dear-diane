@@ -1,7 +1,7 @@
-"""Capability benchmark matrix and scoring helpers for Super DAN.
+"""Capability benchmark matrix and scoring helpers for Diane.
 
 This module is intentionally deterministic and CI-safe. It freezes the task
-families Super DAN should be evaluated on, and it can score real
+families Diane should be evaluated on, and it can score real
 ``.dan-super/.../events.jsonl`` traces produced by live operator runs.
 
 Usage:
@@ -86,7 +86,7 @@ class SuperDanCapabilityScore:
 
 
 def _benchmark_cases() -> list[SuperDanCapabilityCase]:
-    """Frozen Super DAN capability matrix from short to long operator tasks."""
+    """Frozen Diane capability matrix from short to long operator tasks."""
     cases = [
         SuperDanCapabilityCase(
             case_id="short-note-create",

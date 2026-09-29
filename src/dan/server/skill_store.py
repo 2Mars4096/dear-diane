@@ -9,7 +9,7 @@ directories on startup:
 3. **External read-through** — existing Codex, Claude Code, Cursor, and legacy skill/rule directories
 
 The frontmatter schema is a superset of the Cursor / Claude Code / Codex
-convention (``name`` + ``description``) so skills authored for DAN remain
+convention (``name`` + ``description``) so skills authored for Diane remain
 usable by other IDE agents, and vice versa.
 """
 
@@ -50,7 +50,7 @@ class SkillDescriptor(BaseModel):
     name: str
     description: str = ""
 
-    # DAN extensions (optional — skills imported from other IDEs won't have these)
+    # Diane extensions (optional — skills imported from other IDEs won't have these)
     tags: list[str] = Field(default_factory=list)
     hyperedge_type: str = "skill"
     hook: str = "pre_prompt"
@@ -99,7 +99,7 @@ def parse_skill_md(text: str, fallback_name: str = "") -> SkillDescriptor | None
     """Parse a ``SKILL.md`` (or any skill ``.md``) into a descriptor.
 
     Accepts both the IDE-standard minimal frontmatter (``name`` +
-    ``description``) and DAN's extended fields.  Returns ``None`` when
+    ``description``) and Diane's extended fields.  Returns ``None`` when
     no valid frontmatter block is found.
     """
     match = _FM_RE.match(text)
@@ -332,7 +332,7 @@ class SkillStore:
         source: Path,
         target_scope: str = "user",
     ) -> SkillDescriptor | None:
-        """Import a skill from an external path into DAN's store.
+        """Import a skill from an external path into Dear Diane's store.
 
         Supports:
         - Directory with SKILL.md (e.g. ``~/.cursor/skills/scientific-writer/``)

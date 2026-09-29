@@ -4,7 +4,7 @@ type Skill = { name: string; description: string; source: string; shared_with: s
 type Report = { enabled: boolean; excluded: string[]; receivers: string[]; skills: Skill[] };
 const NAMES: Record<string, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor" };
 
-/** DAN settings: share skills installed for one agent CLI with the others, without touching their own folders. */
+/** Dear Diane settings: share skills installed for one agent CLI with the others, without touching their own folders. */
 export function SkillPool() {
   const [data, setData] = useState<Report | null>(null);
   const [error, setError] = useState("");
@@ -27,7 +27,7 @@ export function SkillPool() {
   const sharedCount = data?.skills.filter((skill) => skill.shared_with.length).length ?? 0;
   return <section className="wb-skill-pool">
     <h3>Skills</h3>
-    <p>Let {receivers || "agents"} use skills installed for your other agent CLIs. DAN links them at launch; your Codex, Claude, and Cursor folders are never changed.</p>
+    <p>Let {receivers || "agents"} use skills installed for your other agent CLIs. Diane links them at launch; your Codex, Claude, and Cursor folders are never changed.</p>
     {error && <p role="alert">{error}</p>}
     {data && <>
       <label className="wb-native-enabled"><input type="checkbox" checked={data.enabled} disabled={saving} onChange={(event) => void save(event.target.checked, data.excluded)} />Share skills across agents{data.enabled && sharedCount ? ` · ${sharedCount} shared` : ""}</label>

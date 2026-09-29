@@ -1,6 +1,6 @@
-"""Run-scoped file RPC so CLI leads can use DAN's enabled team via shell tools.
+"""Run-scoped file RPC so CLI leads can use Diane's enabled team via shell tools.
 
-The client is standalone stdlib Python: no installed DAN package is required in
+The client is standalone stdlib Python: no installed Diane package is required in
 an agent's shell. The server executes only the four fixed worker actions.
 """
 from __future__ import annotations
@@ -46,7 +46,7 @@ async def serve(directory: Path, team):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Control the enabled team for this DAN lead run")
+    parser = argparse.ArgumentParser(description="Control the enabled team for this Dear Diane lead run")
     parser.add_argument("--queue", required=True)
     parser.add_argument("action", choices=["start", "status", "stop", "resume"])
     parser.add_argument("--backend", default="")

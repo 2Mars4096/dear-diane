@@ -1,4 +1,4 @@
-"""dan.cli — command-line interface for DAN workflows."""
+"""dan.cli — command-line interface for Diane workflows."""
 
 from __future__ import annotations
 

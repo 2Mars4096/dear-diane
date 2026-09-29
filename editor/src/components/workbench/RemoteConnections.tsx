@@ -47,7 +47,7 @@ function ConnectionEditor({ initial, editing, phone, hosts, busy, error, onSave,
             <label>Remote private address<input autoFocus required value={draft.address} placeholder="10.77.77.3" onChange={e => field("address", e.target.value)} /></label>
             <label>Relay SSH host<input required value={draft.relay_ssh_alias} onChange={e => field("relay_ssh_alias", e.target.value)} /></label>
             <label>Relay private address<input required value={draft.relay_address} onChange={e => field("relay_address", e.target.value)} /></label>
-            <div className="wb-ssh-pair"><label>DAN service port<input required type="number" min="1024" max="65535" value={draft.port} onChange={e => field("port", Number(e.target.value))} /></label><label>Relay port<input required type="number" min="1024" max="65535" value={draft.relay_port} onChange={e => field("relay_port", Number(e.target.value))} /></label></div>
+            <div className="wb-ssh-pair"><label>Dear Diane service port<input required type="number" min="1024" max="65535" value={draft.port} onChange={e => field("port", Number(e.target.value))} /></label><label>Relay port<input required type="number" min="1024" max="65535" value={draft.relay_port} onChange={e => field("relay_port", Number(e.target.value))} /></label></div>
             <p>Use an unused relay port for each machine. Your phone needs access to this private network. Saving does not install or restart services.</p>
           </>}
         </> : <>
@@ -169,8 +169,8 @@ export function RemoteConnections() {
       {accessKey?.id === detail.id && <label>Access key<input readOnly value={accessKey.key} onFocus={event => event.target.select()} /><button onClick={() => setAccessKey(null)}>Hide key</button></label>}
       {detail.relay_enabled !== false && <details className="wb-ssh-advanced"><summary>Installation</summary>
         <label className="wb-ssh-check"><input type="checkbox" checked={shareKey} disabled={busy} onChange={event => setShareKey(event.target.checked)} />Copy this Mac’s OpenRouter key</label>
-        <p>Restarts remote DAN. Finish active work first.</p>
-        <button className="wb-ssh-install" disabled={busy} onClick={() => void action(async () => { setJob(await api<Job>(`/connections/${detail.id}/install`, { method: "POST", body: JSON.stringify({ share_openrouter: shareKey }) })); })}>{detail.installed ? "Update installation" : "Install DAN"}</button>
+        <p>Restarts remote Dear Diane. Finish active work first.</p>
+        <button className="wb-ssh-install" disabled={busy} onClick={() => void action(async () => { setJob(await api<Job>(`/connections/${detail.id}/install`, { method: "POST", body: JSON.stringify({ share_openrouter: shareKey }) })); })}>{detail.installed ? "Update installation" : "Install Dear Diane"}</button>
       </details>}
       {detail.connection_error && <p role="alert" className="wb-ssh-error">{detail.connection_error}</p>}
       {job && <p role={job.status === "failed" ? "alert" : "status"}>{job.message}</p>}

@@ -5,7 +5,13 @@ describe("shared native agent presentation", () => {
   it("uses recorded backend identity without claiming an unknown Claude worker", () => {
     expect(eventAgentName({ type: "worker_started", payload: { backend: "codex" } })).toBe("Codex");
     expect(eventAgentName({ type: "worker_started", payload: { backend: "claude_code" } })).toBe("Claude Code");
-    expect(eventAgentName({ type: "worker_started" })).toBe("DAN");
+    expect(eventAgentName({ type: "worker_started" })).toBe("Diane");
+  });
+  it("presents legacy assistant names while retaining native worker identity", () => {
+    for (const name of ["DAN", "Super DAN", "Diane"]) {
+      expect(eventAgentName({ type: "message", payload: { agent_name: name } })).toBe("Diane");
+    }
+    expect(eventAgentName({ type: "message", payload: { worker_name: "Claude Code" } })).toBe("Claude Code");
   });
   it("separates emitted reasoning from the assistant answer", () => {
     const event = { type: "model_text_delta", payload: { backend: "codex", text: "Planning", codex_event: { item: { type: "reasoning", text: "Planning" } } } };

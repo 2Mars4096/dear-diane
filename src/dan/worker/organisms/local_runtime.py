@@ -2928,7 +2928,7 @@ def _unsafe_direct_shell_mutation_error(
             for argument in arguments
         ):
             return (
-                "unsafe direct shell mutation: in-place sed is disabled for Super DAN "
+                "unsafe direct shell mutation: in-place sed is disabled for Diane "
                 "workspace files; use file_edit or file_write so the replacement is atomic"
             )
         if executable == "perl" and any(
@@ -2936,11 +2936,11 @@ def _unsafe_direct_shell_mutation_error(
         ):
             return (
                 "unsafe direct shell mutation: in-place perl editing is disabled for Super "
-                "DAN workspace files; use file_edit or file_write"
+                "Diane workspace files; use file_edit or file_write"
             )
         if executable == "truncate":
             return (
-                "unsafe direct shell mutation: truncate is disabled for Super DAN workspace "
+                "unsafe direct shell mutation: truncate is disabled for Diane workspace "
                 "files; use an atomic structured file tool"
             )
         if executable in {"rm", "rmdir", "unlink"} or (
@@ -2952,18 +2952,18 @@ def _unsafe_direct_shell_mutation_error(
         ):
             return (
                 "unsafe direct shell mutation: direct shell deletion is disabled for Super "
-                "DAN workspace files; use a structured, reviewable file operation"
+                "Diane workspace files; use a structured, reviewable file operation"
             )
         if executable == "find" and "-delete" in arguments:
             return (
-                "unsafe direct shell mutation: find -delete is disabled for Super DAN "
+                "unsafe direct shell mutation: find -delete is disabled for Diane "
                 "workspace files; use a structured, reviewable file operation"
             )
     destructive_git = _destructive_git_shell_invocation(command)
     if destructive_git:
         return (
             "unsafe direct shell mutation: destructive git restoration/cleanup is "
-            f"disabled in the Super DAN shell lane ({destructive_git})"
+            f"disabled in the Diane shell lane ({destructive_git})"
         )
     redirection_targets = _existing_shell_redirection_targets(
         command,
@@ -4490,7 +4490,7 @@ def _budget_audit_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
         {
             "role": "system",
             "content": (
-                "You are a no-tool budget auditor for a local DAN worker. Decide whether "
+                "You are a no-tool budget auditor for a local Diane worker. Decide whether "
                 "a small extra budget lease is justified. Approve only when the evidence "
                 "shows concrete progress toward the original task and a small lease is "
                 "likely to finish or validate the work. Deny if the worker is looping, "
@@ -5440,7 +5440,7 @@ class LocalOrganismToolRuntime:
             }
             if exit_code == 0:
                 settled_result["exit_code"] = 126 if failed else 125
-            message = f"Super DAN workspace transaction rolled back: {rollback_reason}."
+            message = f"Diane workspace transaction rolled back: {rollback_reason}."
             if failed:
                 message += " Some protected paths could not be restored."
             stderr = str(settled_result.get("stderr") or "")

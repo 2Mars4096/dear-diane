@@ -23,8 +23,8 @@ export function DanSettings({ onClose, profiles, onProfilesChange, onPapers, pag
   // As a main-column tab the same content renders in a page frame instead of a modal dialog.
   const Frame = (page ? "section" : "dialog") as "dialog";
   return <Frame onClick={(event) => { const box = event.currentTarget.getBoundingClientRect(); if (event.target === event.currentTarget && (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom)) onClose(); }} ref={dialog} className={page ? "wb-dan-settings wb-settings-page" : "wb-project-settings wb-dan-settings"} onCancel={onClose} aria-labelledby="dan-settings-title">
-    <header><h2 id="dan-settings-title">DAN settings</h2>{!page && <button aria-label="Close DAN settings" onClick={onClose}><X size={18} /></button>}</header>
-    <p>Preferences for this DAN app profile. Changes save automatically.</p>
+    <header><h2 id="dan-settings-title">Dear Diane settings</h2>{!page && <button aria-label="Close Dear Diane settings" onClick={onClose}><X size={18} /></button>}</header>
+    <p>Preferences for this Dear Diane app profile. Changes save automatically.</p>
     <h3>Appearance</h3>
     <label className="wb-appearance-field">Mode<select value={settings.theme} onChange={(event) => settings.updateSetting("theme", event.target.value as typeof settings.theme)}>
       <option value="system">System</option><option value="vs">Light</option><option value="vs-dark">Dark</option>

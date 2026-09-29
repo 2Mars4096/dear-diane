@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from types import SimpleNamespace
 
 from dan.server.chat_store import ChatStore
@@ -20,10 +21,11 @@ def test_lookup_by_id_or_title_preserves_workflow(tmp_path):
     assert second.id != first.id
 
 
-def test_session_gets_first_request_title_once_and_keeps_manual_rename(tmp_path):
+@pytest.mark.parametrize("placeholder", ["New Super DAN Session", "Untitled DAN Super session", "New Diane Session", "Untitled Diane session"])
+def test_session_gets_first_request_title_once_and_keeps_manual_rename(tmp_path, placeholder):
     from dan.server.routers.sessions import update_chat_thread
     store = ChatStore(tmp_path)
-    thread = store.create_thread("project", title="New Super DAN Session")
+    thread = store.create_thread("project", title=placeholder)
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(chat_store=store)))
     messages = [{"role":"user", "content":"Build the\n  report"}]
     asyncio.run(update_chat_thread("project", thread.id, request, {"messages":messages}))
@@ -39,14 +41,14 @@ def test_session_gets_first_request_title_once_and_keeps_manual_rename(tmp_path)
 def test_native_store_writes_name_sessions_and_replay_stays_stable(tmp_path):
     from dan.server.chat_store import ChatMessage
     store = ChatStore(tmp_path)
-    thread = store.create_thread("project", title="New Super DAN Session")
+    thread = store.create_thread("project", title="New Diane Session")
     store.append_message("project", thread.id, ChatMessage(role="user", content="  "))
     store.append_message("project", thread.id, ChatMessage(role="user", content="Fix the\n native titles"))
     store.append_message("project", thread.id, ChatMessage(role="user", content="Later request"))
     reloaded = ChatStore(tmp_path)
     assert reloaded.get_thread("project", thread.id).title == "Fix the native titles"
     assert reloaded.list_threads("project")[0]["title"] == "Fix the native titles"
-    direct = store.create_thread("project", title="New Super DAN Session")
+    direct = store.create_thread("project", title="New Diane Session")
     direct.messages = [ChatMessage(role="user", content="Saved by native runtime")]
     store.save_thread(direct)
     assert ChatStore(tmp_path).get_thread("project", direct.id).title == "Saved by native runtime"
@@ -55,7 +57,7 @@ def test_native_store_writes_name_sessions_and_replay_stays_stable(tmp_path):
 def test_legacy_placeholder_titles_resolve_without_rewriting_history(tmp_path):
     from dan.server.chat_store import ChatMessage
     store = ChatStore(tmp_path)
-    thread = store.create_thread("project", title="New Super DAN Session")
+    thread = store.create_thread("project", title="New Diane Session")
     thread.messages = [ChatMessage(role="user", content="First request"),
                        ChatMessage(role="user", content="Later request")]
     path = tmp_path / "chats" / "project" / f"{thread.id}.json"

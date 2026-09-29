@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronRight, FolderOpen } from "lucide-react";
 import { listWorkspaceRootSuggestions, type WorkspaceRootSuggestion } from "../../lib/api";
 
-/** Lists folders on the connected DAN host, never on the browser's computer. */
+/** Lists folders on the connected Dear Diane host, never on the browser's computer. */
 export function RemoteProjectFolder({ machine, initialPath, onSelect }: {
   machine: string; initialPath: string; onSelect: (path: string) => void;
 }) {

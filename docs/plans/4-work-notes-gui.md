@@ -19,6 +19,7 @@
 - The GUI consumes the same Super DAN control-plane contracts as the terminal UI.
 
 ## Workbench refresh
+- [x] [4-10-dear-diane](4-10-dear-diane.md): product Dear Diane, assistant Diane, and compatible saved-state/build identities.
 - [x] [4-6-document-workspace](4-6-document-workspace.md): drop/open document tabs, text editing, Markdown preview, media viewing, and revision-checked saves.
 - [x] [4-4-agent-model-selection](4-4-agent-model-selection.md): independent agent/model-source/model settings for Lead and Team with direct OpenRouter harness routing.
 - [x] [4-1-agent-workbench](4-1-agent-workbench.md): conversation-first shell and spatial project/session navigation.

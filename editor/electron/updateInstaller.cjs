@@ -1,4 +1,4 @@
-// Detached handoff: only runs a previously staged, verified bundle after DAN exits.
+// Detached handoff: only runs a previously staged, verified bundle after Dear Diane exits.
 const fs = require('node:fs/promises');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
@@ -19,7 +19,7 @@ async function install(job, deps = {}) {
   try {
     await status('waiting');
     for (let i = 0; running(job.appPid) || running(job.backendPid); i++) {
-      if (i >= 240) throw new Error('DAN did not finish closing. The installed app was not changed.');
+      if (i >= 240) throw new Error('Dear Diane did not finish closing. The installed app was not changed.');
       await sleep(500);
     }
     await verify(job.staged);

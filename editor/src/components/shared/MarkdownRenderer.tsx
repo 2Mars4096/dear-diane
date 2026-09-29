@@ -473,7 +473,7 @@ export default function MarkdownRenderer({
     if (currentFileHost() === "remote") {
       setFileError("This path is on the remote host. Open it through the project Files panel.");
     } else if (!window.electronAPI?.shell.fileLink) {
-      setFileError("Open file and folder links in the updated DAN desktop app.");
+      setFileError("Open file and folder links in the updated Dear Diane desktop app.");
     } else {
       void window.electronAPI.shell.fileLink({ href, root, menu }).then(result => {
         if (!result.ok) setFileError(result.error || "Could not open this path.");

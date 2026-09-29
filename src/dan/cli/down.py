@@ -1,4 +1,4 @@
-"""dan-down — stop the background DAN server."""
+"""dan-down — stop the background Dear Diane server."""
 from __future__ import annotations
 
 import os
@@ -18,12 +18,12 @@ def main() -> None:
     if not PID_FILE.exists():
         if check_health(8000):
             print(
-                "No DAN server PID file found. "
-                "A healthy DAN server is still responding on port 8000; "
-                "it may be owned by DAN Desktop or dan-service."
+                "No Dear Diane server PID file found. "
+                "A healthy Dear Diane server is still responding on port 8000; "
+                "it may be owned by Dear Diane Desktop or dan-service."
             )
             return
-        print("No DAN server PID file found.")
+        print("No Dear Diane server PID file found.")
         return
 
     try:
@@ -39,7 +39,7 @@ def main() -> None:
         PID_FILE.unlink(missing_ok=True)
         return
 
-    print(f"Stopping DAN server (PID {pid})...")
+    print(f"Stopping Dear Diane server (PID {pid})...")
     os.kill(pid, signal.SIGTERM)
 
     for _ in range(20):

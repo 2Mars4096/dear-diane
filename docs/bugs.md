@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **Dear Diane rename checks (2026-09-29):** package renaming would change Electron's default profile path; explicitly retain `appData/dan`. Existing placeholder/status recognizers used literal DAN names; support both generations. Initial frontend run found two missing recognizers, now corrected. Root npm invocation and the repository venv (no pytest installed) were unsuitable; run npm in editor and pytest through the existing Anaconda environment. Relay socket binding, Flutter SDK cache writes, and Electron runtime downloads needed sandbox escalation; their permitted retries passed. Terminal chrome assertions now distinguish Dear Diane from the Diane message prefix.
+
 - **Literature reinstall check (2026-09-28):** the first idle-check command referenced `./editor/dist-electron` while already in `editor/`; reran from the repository root before installation. The app was closed, so no process termination was needed. The manual idle gate also checks literature batches, including metadata preparation before an Agent V2 run exists.
 
 - **Literature import validation (2026-09-28):** Crossref can return a successful DOI record/export with no title or authors (observed for `10.3982/ECTA9623`). Skip incomplete records and fall back to title search; do not treat an HTTP 200 as a usable citation. DOI lookup for `10.1038/nature14539` and title fallback both pass live.

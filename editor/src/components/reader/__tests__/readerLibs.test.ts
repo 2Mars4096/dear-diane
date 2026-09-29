@@ -10,7 +10,7 @@ const memory = () => {
 };
 
 describe("ported reader libraries", () => {
-  it("round-trips comments per PDF under DAN keys", () => {
+  it("round-trips comments per PDF under Diane keys", () => {
     const storage = memory();
     const material = { material_id: "/project/paper.pdf" };
     const comment: PaperComment = { commentId: "c1", createdAt: "2026-09-19T00:00:00Z", updatedAt: "2026-09-19T00:00:00Z", materialId: material.material_id,

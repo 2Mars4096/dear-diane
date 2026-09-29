@@ -7,7 +7,7 @@ export type TeamWorker = {
 };
 export type WorkerPhase = "attention" | "active" | "settled";
 
-const agentNames: Record<string, string> = { codex: "Codex", claude: "Claude", antigravity: "Antigravity", cursor: "Cursor", dan: "DAN" };
+const agentNames: Record<string, string> = { codex: "Codex", claude: "Claude", antigravity: "Antigravity", cursor: "Cursor", dan: "Diane" };
 export function agentLabel(backend: string): string {
   return agentNames[backend] ?? (backend ? backend[0].toUpperCase() + backend.slice(1) : "Agent");
 }

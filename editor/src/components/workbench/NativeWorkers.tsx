@@ -22,9 +22,9 @@ export function NativeWorkerSettings({ profiles, onChange, lead, inline = false,
   async function refresh() {
     try {
       const response = await fetch("/api/native-workers/catalog");
-      if (!response.ok) throw new Error("Unable to load worker accounts. Check the DAN server.");
+      if (!response.ok) throw new Error("Unable to load worker accounts. Check the Dear Diane server.");
       const data = await response.json();
-      if (!Array.isArray(data.runtimes)) throw new Error("Restart the DAN server to load worker settings.");
+      if (!Array.isArray(data.runtimes)) throw new Error("Restart the Dear Diane server to load worker settings.");
       setRuntimes(data.runtimes); setError("");
     } catch (error) { setError(String(error)); }
   }

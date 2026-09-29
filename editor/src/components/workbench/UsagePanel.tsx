@@ -4,7 +4,7 @@ import { useDismissDetails } from "./useDismissDetails";
 
 export type UsageWindow = { label: string; used_percent: number; resets_at: number | null };
 export type UsageAccount = { backend: string; account: string; label: string; windows: UsageWindow[]; plan?: string; error?: string; observed_at?: number };
-const NAMES: Record<string, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor", antigravity: "Antigravity", dan: "DAN" };
+const NAMES: Record<string, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor", antigravity: "Antigravity", dan: "Diane" };
 const POLL_MS = 5 * 60_000; // refreshed on every hover-open, then every 5 minutes while it stays open
 
 /** Colour by what is left: under 25% warns, under 10% is critical. */

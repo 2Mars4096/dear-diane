@@ -1,8 +1,8 @@
-"""Executable acceptance contracts for Super DAN's two flagship MVP cases.
+"""Executable acceptance contracts for Diane's two flagship MVP cases.
 
 The contracts deliberately separate three questions:
 
-1. Did Super DAN produce the required artifact shape?
+1. Did Diane produce the required artifact shape?
 2. Does the artifact work in a real browser at desktop and phone sizes?
 3. Does an independent reviewer consider the visible result genuinely polished?
 
@@ -10,7 +10,7 @@ The first two questions are deterministic.  The third uses a small, explicit
 rubric and screenshot evidence instead of treating a model's own completion
 claim as proof.
 
-Usage after a live Super DAN run::
+Usage after a live Diane run::
 
     PYTHONPATH=src:. python -m tests.eval.super_dan_flagship_acceptance \
         --case-id flagship-premium-site \

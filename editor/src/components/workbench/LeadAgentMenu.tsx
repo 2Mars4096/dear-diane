@@ -4,7 +4,7 @@ import { ChevronDown } from "lucide-react";
 
 import { NativeWorkerSettings, type WorkerProfiles, type Runtime } from "./NativeWorkers";
 
-const choices = [{ id: "native", label: "DAN" }, { id: "codex", label: "Codex" }, { id: "claude", label: "Claude Code" }, { id: "antigravity", label: "Antigravity" }, { id: "cursor", label: "Cursor" }] as const;
+const choices = [{ id: "native", label: "Diane" }, { id: "codex", label: "Codex" }, { id: "claude", label: "Claude Code" }, { id: "antigravity", label: "Antigravity" }, { id: "cursor", label: "Cursor" }] as const;
 export type LeadAgentId = typeof choices[number]["id"];
 export function LeadAgentMenu({ selected, onChange, disabled = false, profiles, onProfilesChange }: {
   selected: LeadAgentId; onChange: (id: LeadAgentId) => void; disabled?: boolean;
@@ -19,7 +19,7 @@ export function LeadAgentMenu({ selected, onChange, disabled = false, profiles, 
       const response = await fetch("/api/native-workers/catalog");
       if (!response.ok) throw new Error("Agent availability could not be checked.");
       const data = await response.json();
-      if (!Array.isArray(data.runtimes)) throw new Error("Restart the DAN server to load agent settings.");
+      if (!Array.isArray(data.runtimes)) throw new Error("Restart the Dear Diane server to load agent settings.");
       setCatalog(data.runtimes);
       setAvailable(["native", ...data.runtimes.filter((item: { available: boolean }) => item.available).map((item: { id: string }) => item.id)]);
       setError("");

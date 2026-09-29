@@ -88,7 +88,7 @@ def instructions(command: str, permission: str) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Use this DAN run's browser")
+    parser = argparse.ArgumentParser(description="Use this Dear Diane run's browser")
     parser.add_argument("--queue", required=True)
     parser.add_argument("action", choices=["help", *ACTIONS])
     parser.add_argument("--args", default="{}", help="JSON object; see the help action for tool schemas")

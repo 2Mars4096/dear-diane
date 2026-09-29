@@ -1,11 +1,11 @@
 [project]
 name = "dan"
 version = "0.2.0"
-description = "DAN — Universal Cell, Universal Organism, Super DAN, and its Work/Notes GUI"
+description = "Dear Diane — A workspace for research, code, and ideas."
 requires-python = ">=3.11"
 license = {text = "MIT"}
 readme = "README.md"
-authors = [{name = "DAN Contributors"}]
+authors = [{name = "Dear Diane Contributors"}]
 keywords = ["agents", "llm", "orchestration", "universal-cell", "multi-agent"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -36,6 +36,7 @@ Changelog = "https://github.com/dan-project/dan/blob/main/docs/changelog.md"
 Issues = "https://github.com/dan-project/dan/issues"
 
 [project.scripts]
+dear-diane = "dan.cli.main:main"
 dan = "dan.cli.main:main"
 dan-serve = "dan.server.__main__:main"
 dan-up = "dan.cli.up:main"

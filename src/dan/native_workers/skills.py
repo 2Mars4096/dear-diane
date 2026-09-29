@@ -1,7 +1,7 @@
 """DAN-managed skill pool: let one agent CLI use skills installed for another.
 
 Codex, Claude Code and Cursor all use the Agent Skills format (a folder with SKILL.md).
-DAN never copies or edits skills and never writes into a CLI's own skill directory or the
+Diane never copies or edits skills and never writes into a CLI's own skill directory or the
 project: it keeps a pool of symlinks under graphs/skill_pool/<runtime>/ and hands that
 directory to the CLI at launch (Claude Code loads .claude/skills from --add-dir paths).
 """
@@ -14,7 +14,7 @@ from pathlib import Path
 from .catalog import user_home
 
 SETTINGS_FILE = "skill_pool.json"
-# Runtimes DAN can currently hand a pool to at launch.
+# Runtimes Diane can currently hand a pool to at launch.
 RECEIVERS = {"claude": ".claude/skills"}
 
 

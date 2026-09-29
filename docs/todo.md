@@ -1,5 +1,7 @@
 # Todo
 
+- [x] [4-10-dear-diane](plans/4-10-dear-diane.md) — Dear Diane product/Diane assistant rename; compatibility tests and signed local desktop build verified; installed Dear Diane and moved old DAN.app to Trash.
+
 - [x] Reinstall and verify the Literature desktop update — [4-8](plans/4-8-literature-import.md).
 
 - [x] Verify and install startup/closing flash fix — [4-1](plans/4-1-agent-workbench.md).

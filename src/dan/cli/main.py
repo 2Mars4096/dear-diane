@@ -1,4 +1,4 @@
-"""Unified CLI for the retained DAN product."""
+"""Unified CLI for the retained Diane product."""
 
 from __future__ import annotations
 
@@ -32,7 +32,9 @@ def main() -> int:
 
 
 def _print_help() -> None:
-    print("Usage: dan <serve|up|down|editor|super-organism|super-tui> [args...]")
+    print("Dear Diane — A workspace for research, code, and ideas.")
+    print("Usage: dear-diane <serve|up|down|editor|super-organism|super-tui> [args...]")
+    print("The dan command remains available for compatibility.")
 
 
 if __name__ == "__main__":

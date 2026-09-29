@@ -103,7 +103,7 @@ class NativeTeam:
         inherited = {key: getattr(self.parent_request, key, {}) for key in ("mutation_policy", "approval_policy", "tool_policy")}
         request = AgentBackendRunRequest(**inherited, task_id=record["worker_id"], run_id=record["worker_id"],
             objective=record["prompt"], workspace_root=self.workspace, history=history, profile_policy=policy)
-        # Team members are leaves: a DAN child must not inherit its parent's team.
+        # Team members are leaves: a Diane child must not inherit its parent's team.
         token = current_team.set(None)
         try:
             from dan.tools._browser_session import browser_scope
@@ -286,7 +286,7 @@ def describe(row: dict) -> str:
     step = row.get("step_update")  # Antigravity
     if isinstance(step, dict) and step.get("step_type"):
         return "Writing response" if step["step_type"] == "agent_response" else _short(str(step["step_type"]).replace("_", " ").capitalize())
-    if kind == "tool_used" and row.get("summary"):  # DAN child
+    if kind == "tool_used" and row.get("summary"):  # Diane child
         return _short(row["summary"])
     if kind == "model_text_delta":
         return "Writing response"

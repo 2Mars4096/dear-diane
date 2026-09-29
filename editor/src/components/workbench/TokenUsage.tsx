@@ -11,7 +11,7 @@ async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
   return response.json();
 }
 
-/** DAN settings: which agent sessions use the most tokens, and why. */
+/** Dear Diane settings: which agent sessions use the most tokens, and why. */
 export function TokenUsage() {
   const [listing, setListing] = useState<Listing | null>(null);
   const [error, setError] = useState("");
@@ -56,7 +56,7 @@ function Analyzer({ listing, onListing, onClose }: { listing: Listing; onListing
     <header><h2 id="token-usage-title">Token usage</h2><button aria-label="Close token usage" onClick={onClose}><X size={18} /></button></header>
     <div className="wb-token-bar">
       <span className="wb-token-toggle" role="tablist" aria-label="Token usage view"><button role="tab" aria-selected={tab === "overview"} aria-pressed={tab === "overview"} onClick={() => setTab("overview")}>All sessions</button><button role="tab" aria-selected={tab === "sessions"} aria-pressed={tab === "sessions"} onClick={() => setTab("sessions")}>By session</button></span>
-      {tab === "sessions" && <><select aria-label="Show sessions from" value={filter} onChange={(event) => setFilter(event.target.value as SessionFilter)}><option value="all">All sessions</option><option value="claude">Claude Code</option><option value="codex">Codex</option><option value="dan">Started by DAN</option></select>
+      {tab === "sessions" && <><select aria-label="Show sessions from" value={filter} onChange={(event) => setFilter(event.target.value as SessionFilter)}><option value="all">All sessions</option><option value="claude">Claude Code</option><option value="codex">Codex</option><option value="dan">Started by Diane</option></select>
       <select aria-label="Sort sessions" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}><option value="tokens">Most tokens</option><option value="recent">Most recent</option></select></>}
       <button onClick={() => void refresh()} disabled={Boolean(busy)}>Refresh</button>
       <span role="status">{busy}</span>
@@ -66,7 +66,7 @@ function Analyzer({ listing, onListing, onClose }: { listing: Listing; onListing
     {tab === "sessions" && <div className="wb-token-columns">
       <ul className="wb-token-sessions" aria-label="Sessions">{rows.map((row) => <li key={row.id}><button aria-pressed={row.id === selected} onClick={() => choose(row.id)}>
         <span className="wb-token-title">{row.title}</span>
-        <small>{BACKENDS[row.backend] ?? row.backend}{folderName(row.cwd) ? ` · ${folderName(row.cwd)}` : ""} · {new Date(row.updated_at * 1000).toLocaleDateString()}{row.dan ? ` · DAN ${row.dan.role}` : ""}</small>
+        <small>{BACKENDS[row.backend] ?? row.backend}{folderName(row.cwd) ? ` · ${folderName(row.cwd)}` : ""} · {new Date(row.updated_at * 1000).toLocaleDateString()}{row.dan ? ` · Diane ${row.dan.role}` : ""}</small>
         <span className="wb-token-meter"><i style={{ width: `${Math.max(1, (row.total / peak) * 100)}%` }} /></span>
         <small><b>{formatTokens(row.total)}</b> tokens · {row.totals.calls} calls · {row.totals.rounds} rounds{row.subagents ? ` · ${row.subagents} subagents` : ""}</small>
       </button></li>)}{!rows.length && <li><p>No sessions match.</p></li>}</ul>
@@ -148,7 +148,7 @@ function Detail({ report, names, classifier, busy, onClassify, onModel }: { repo
     <div className="wb-token-classify">
       <label>Classifier model<input value={model} onChange={(event) => setModel(event.target.value)} onBlur={() => model.trim() && model !== classifier?.model && onModel(model)} spellCheck={false} /></label>
       <button onClick={onClassify} disabled={busy || !classifier?.configured}>Label stages with model</button>
-      <p>{classifier?.configured ? "Sends each step's tool name, command or path, and size to OpenRouter. File contents and command output are never sent." : "Add an OpenRouter key to DAN's .env to use the classifier."}</p>
+      <p>{classifier?.configured ? "Sends each step's tool name, command or path, and size to OpenRouter. File contents and command output are never sent." : "Add an OpenRouter key to Diane's .env to use the classifier."}</p>
     </div>
 
     <h4>Chat rounds</h4>

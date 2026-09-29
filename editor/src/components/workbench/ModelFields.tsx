@@ -6,7 +6,7 @@ export function ModelFields({ runtime, profile, onChange, disabled = false }: {
 }) {
   const [custom, setCustom] = useState(false);
   const sourceId = modelSource(profile);
-  const sources = runtime.sources ?? [{ id: "native" as const, label: runtime.id === "dan" ? "DAN configuration" : "Native / CLI configuration", supported: true }];
+  const sources = runtime.sources ?? [{ id: "native" as const, label: runtime.id === "dan" ? "Diane configuration" : "Native / CLI configuration", supported: true }];
   const source = sources.find(item => item.id === sourceId);
   const models = sourceId === "native" ? runtime.models : source?.models ?? [];
   const labels = sourceId === "native" ? runtime.model_labels : source?.model_labels;
@@ -27,7 +27,7 @@ export function ModelFields({ runtime, profile, onChange, disabled = false }: {
     {editModel && models.length > 0 && <button type="button" disabled={disabled} onClick={() => { setCustom(false); onChange(withModel(runtime, profile, sourceId === "native" ? "" : models[0])); }}>Choose a listed model</button>}
     <label>Reasoning<select aria-label="Reasoning" disabled={disabled || !efforts.length} value={profile.effort} onChange={event => onChange({ ...profile, effort: event.target.value })}><option value="">{efforts.length ? "Default" : "Managed by agent / model"}</option>{efforts.map(effort => <option key={effort} value={effort}>{effort[0].toUpperCase() + effort.slice(1)}</option>)}</select></label>
     <label className="wb-native-enabled"><input type="checkbox" disabled={disabled || !supportsFast(runtime, profile)} checked={profile.fast && supportsFast(runtime, profile)} onChange={event => onChange({ ...profile, fast: event.target.checked })} />Fast mode</label>
-    {sourceId === "openrouter" && <p>{source?.configured === false ? "Set OPENROUTER_API_KEY on the DAN server to run this model." : "Uses the server’s OpenRouter credentials and billing."}</p>}
+    {sourceId === "openrouter" && <p>{source?.configured === false ? "Set OPENROUTER_API_KEY on the Dear Diane server to run this model." : "Uses the server’s OpenRouter credentials and billing."}</p>}
     {sourceId === "openrouter" && runtime.id === "claude" && !profile.model.startsWith("anthropic/") && <p>Experimental with Claude Code. This model controls its own reasoning; Anthropic models have the strongest compatibility.</p>}
     {sourceId === "native" && sources.some(item => !item.supported) && <p>{sources.find(item => !item.supported)?.reason}</p>}
   </>;

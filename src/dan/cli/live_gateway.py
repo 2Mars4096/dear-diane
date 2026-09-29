@@ -1,4 +1,4 @@
-"""Provider resolution for Super DAN live execution."""
+"""Provider resolution for Diane live execution."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def build_gateway_backed_live_provider(
     api_key: str | None,
     base_url: str | None,
 ) -> LLMProvider:
-    """Resolve the configured provider for a Super DAN model."""
+    """Resolve the configured provider for a Diane model."""
 
     if base_url and base_url.rstrip("/") == "https://openrouter.ai/api/v1":
         api_key = api_key or os.environ.get("DAN_OPENROUTER_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
@@ -42,7 +42,7 @@ def build_gateway_backed_live_provider(
             if str(configured.get("base_url") or "").rstrip("/") == "https://openrouter.ai/api/v1":
                 api_key = configured.get("api_key")
         if not api_key:
-            raise ValueError("Set OPENROUTER_API_KEY on the DAN server to use OpenRouter models")
+            raise ValueError("Set OPENROUTER_API_KEY on the Dear Diane server to use OpenRouter models")
     resolved = resolve_config(api_key=api_key, base_url=base_url)
     providers: dict[str, ProviderConfig] = {}
     anthropic_key = os.environ.get("DAN_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")

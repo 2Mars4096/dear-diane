@@ -10,7 +10,7 @@ function metadata(workspaces: Workspace[]): Projects {
 export async function startRemoteProjects() {
   const machine = document.querySelector<HTMLMetaElement>('meta[name="dan-remote-machine"]')?.content;
   if (!machine) return;
-  document.title = `DAN · ${machine}`;
+  document.title = `Dear Diane · ${machine}`;
   document.documentElement.style.setProperty("--dan-remote-label", JSON.stringify(machine));
   let initial;
   try {
@@ -18,7 +18,7 @@ export async function startRemoteProjects() {
     if (!response.ok) throw new Error("Sign in again to connect to this machine.");
     initial = await response.json();
   } catch { throw new Error(`Could not load projects from ${machine}. Reconnect and reload this page.`); }
-  if (!initial.enabled) throw new Error("This address is no longer a remote DAN service.");
+  if (!initial.enabled) throw new Error("This address is no longer a remote Dear Diane service.");
   let applying = false;
   let pending: Projects = {};
   let sending = false;

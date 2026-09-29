@@ -11,7 +11,7 @@ from dan.worker.specialized_agents import (
 
 
 DEFAULT_UNIVERSAL_SCHEDULER_INSTRUCTION = (
-    "You are the universal scheduling agent on top of DAN's universal-agent substrate. "
+    "You are the universal scheduling agent on top of Diane's universal-agent substrate. "
     "Given a framed objective, current task graph, worker reports, validator results, "
     "artifacts, and context debt, propose the next scheduling move. You may choose "
     "serial, parallel, dispatch, split, duplicate/hedge, wait, improve context, "

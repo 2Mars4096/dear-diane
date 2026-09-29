@@ -53,7 +53,7 @@ def test_request_from_brief_loads_workspace_agents_md(tmp_path) -> None:
 
     assert "Workspace instructions loaded from AGENTS.md" in prompt
     assert "Read docs/todo.md before editing." in prompt
-    assert "DAN safety and tool boundaries override these workspace instructions." in prompt
+    assert "Diane safety and tool boundaries override these workspace instructions." in prompt
     assert request.metadata["workspace_instructions"]["relative_path"] == "AGENTS.md"
     assert len(request.metadata["workspace_instructions"]["content_sha256_prefix"]) == 16
 

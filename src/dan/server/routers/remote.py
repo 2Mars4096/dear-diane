@@ -15,7 +15,7 @@ tasks: set[asyncio.Task] = set()
 def local(request):
     from urllib.parse import urlsplit
     if os.environ.get("DAN_REMOTE_CONFIG") or not request.client or request.client.host not in ("127.0.0.1", "::1", "testclient"):
-        raise HTTPException(403, "SSH setup is available on the local DAN app")
+        raise HTTPException(403, "SSH setup is available on the local Dear Diane app")
     origin = request.headers.get("origin")
     if origin and urlsplit(origin).hostname not in ("localhost", "127.0.0.1", "::1"):
         raise HTTPException(403, "SSH setup requires a local app origin")

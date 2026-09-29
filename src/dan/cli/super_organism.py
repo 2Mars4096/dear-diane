@@ -1,4 +1,4 @@
-"""dan-super-organism — Super DAN organism showcase and live executor."""
+"""dan-super-organism — Diane organism showcase and live executor."""
 
 from __future__ import annotations
 
@@ -466,7 +466,7 @@ def _skill_tokenize(text: str) -> set[str]:
 
 
 def _load_super_dan_skill_catalog(workspace_root: str) -> list[dict[str, Any]]:
-    """Load DAN, Codex, Claude, and Cursor skills as advisory Super DAN packets."""
+    """Load Diane, Codex, Claude, and Cursor skills as advisory Diane packets."""
 
     return skill_invocation.load_skill_catalog(workspace_root)
 
@@ -486,7 +486,7 @@ def _parse_super_dan_skill_invocation_text(
     *,
     workspace_root: str,
 ) -> skill_invocation.SkillInvocationParse:
-    """Parse leading ``$skill-name`` invocations for all Super DAN surfaces."""
+    """Parse leading ``$skill-name`` invocations for all Diane surfaces."""
 
     return skill_invocation.parse_skill_invocation_text(
         text,
@@ -1829,7 +1829,7 @@ def _super_plan_file_contract(plan_root_relative: str) -> str:
         "- For broad tasks, predict a compact dependency task graph: each executable task should have a stable digit "
         "task id, optional `parent_id`, optional `branch_id`, `depends_on`, `owned_paths`, deliverables, validation "
         "checks, and whether it is parallel-safe.\n"
-        "- For DAN Super plan-level orchestration, use the same graph shape: top-level plan cards may be emitted as "
+        "- For Diane plan-level orchestration, use the same graph shape: top-level plan cards may be emitted as "
         "`node_type: plan` nodes with execution `depends_on` edges; tasks inside a plan should use `plan_id` or "
         "nest under that plan. Plan generation itself should not require dependency edges unless the operator says so; "
         "the default plan-generation, plan-execution, and task-execution queue lengths are all 4.\n"
@@ -2230,7 +2230,7 @@ def _super_is_targeted_source_repair_objective(text: str) -> bool:
 
 
 class SuperRunEventLogger:
-    """Persist timestamped Super DAN live events to one JSONL file."""
+    """Persist timestamped Diane live events to one JSONL file."""
 
     def __init__(
         self,
@@ -2373,7 +2373,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dan-super-organism",
         description=(
-            "Run Super DAN from the command line. With an objective and configured "
+            "Run Diane from the command line. With an objective and configured "
             "model, the CLI runs the native live execution lane; use --plan-only for "
             "the coordination contract/showcase."
         ),
@@ -2383,7 +2383,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default=None,
         help=(
-            "Operator objective. Omit in a terminal to start an interactive Super DAN session; "
+            "Operator objective. Omit in a terminal to start an interactive Diane session; "
             "non-interactive live work requires an explicit objective. Explicit report flags can "
             f"still render the default universal-agent showcase ({DEFAULT_SUPER_ORGANISM_TARGET!r})."
         ),
@@ -2414,7 +2414,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--live",
         action="store_true",
         help=(
-            "Force Super DAN's native live execution lane with local tools. "
+            "Force Diane's native live execution lane with local tools. "
             "Objectives auto-enter this lane when a live model is configured."
         ),
     )
@@ -2468,7 +2468,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workspace",
         default=".",
-        help="Workspace root for Super DAN artifacts. Defaults to the current directory.",
+        help="Workspace root for Diane artifacts. Defaults to the current directory.",
     )
     parser.add_argument(
         "--artifact-dir",
@@ -2498,14 +2498,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("immediate", "balanced", "batch"),
         default="balanced",
         help=(
-            "Super DAN hook/inbox reactivity profile for live runs. "
+            "Diane hook/inbox reactivity profile for live runs. "
             "Immediate wakes organs quickly, balanced coalesces short bursts, batch waits longer."
         ),
     )
     parser.add_argument(
         "--queue-status",
         action="store_true",
-        help="Print Super DAN hook/inbox queue state. With no objective, only prints status.",
+        help="Print Diane hook/inbox queue state. With no objective, only prints status.",
     )
     parser.add_argument(
         "--worktree-parallelism",
@@ -2916,7 +2916,7 @@ def _tool_result_summary(tool_id: str, payload: Mapping[str, Any]) -> str:
 
 
 class SuperProgressRenderer:
-    """Render concise live Super DAN progress in the terminal."""
+    """Render concise live Diane progress in the terminal."""
 
     def __init__(self, *, enabled: bool) -> None:
         self._enabled = bool(enabled)
@@ -3473,7 +3473,7 @@ def _super_live_choice(
                 "confidence": 0.9,
                 "source": "super-dan-live-context",
                 "rationale": (
-                    "explicit live or interactive Super DAN context targets an existing single-file HTML artifact"
+                    "explicit live or interactive Diane context targets an existing single-file HTML artifact"
                 ),
                 "evidence": [
                     "live_context:mutation_permission",
@@ -3504,7 +3504,7 @@ def _super_live_choice(
             "confidence": 0.9,
             "source": "super-dan-live-context",
             "rationale": (
-                "explicit live or interactive Super DAN context grants workspace mutation permission"
+                "explicit live or interactive Diane context grants workspace mutation permission"
             ),
             "evidence": evidence,
         }
@@ -3825,7 +3825,7 @@ def _resolve_live_model(requested_model: str | None) -> str:
     if fallback and fallback != "stub-model":
         return fallback
     raise ValueError(
-        "Super DAN live mode requires --model or a configured DAN_MODEL/DAN_LLM_MODEL"
+        "Diane live mode requires --model or a configured DAN_MODEL/DAN_LLM_MODEL"
     )
 
 
@@ -4377,7 +4377,7 @@ _REQUEST_UNDERSTANDING_ASPECTS: tuple[tuple[str, str], ...] = (
     ("who", "Who is affected or served by the request?"),
     ("what", "What concrete deliverable or change is being requested?"),
     ("where", "Where should the work happen or be saved?"),
-    ("how", "How should DAN proceed, including constraints and allowed tools?"),
+    ("how", "How should Diane proceed, including constraints and allowed tools?"),
     ("quality", "What hidden quality criteria matter beyond artifact shape?"),
     ("evidence", "What evidence should prove the work is actually done?"),
 )
@@ -5130,7 +5130,7 @@ def _live_website_task(
         "a focused single-file patch is acceptable when it fully satisfies the objective. "
         "Do not create extra scratch files outside the required artifact set. "
         "Make the website's actual product or subject clear. Preserve the existing site subject when patching an existing site. "
-        "Do not pivot to a generic Super DAN execution-contract/demo site unless the operator explicitly asks for Super DAN. "
+        "Do not pivot to a generic Diane execution-contract/demo site unless the operator explicitly asks for Diane. "
         "Actually create the files, then return the requested compact JSON-like completion summary."
     )
 
@@ -5161,7 +5161,7 @@ def _live_website_validation_task(
         f"Artifact root: {artifact_root}. "
         f"Required relative files: {files}. "
         "Inspect the generated files and decide whether the result is a real product website aligned with the objective, "
-        "not just a generic Super DAN execution-contract demo shell. "
+        "not just a generic Diane execution-contract demo shell. "
         "Allow a focused single-file patch when it materially satisfies the objective; require broader coverage only when "
         "the request or evidence truly spans multiple files."
     )
@@ -5408,7 +5408,7 @@ def _live_artifact_builder_retry_task(
         context.get("effective_objective") or report.target
     ).strip()
     return (
-        "Run a focused Super DAN builder retry now. The prior builder returned without changing any required "
+        "Run a focused Diane builder retry now. The prior builder returned without changing any required "
         "artifact file, so this is not a validation repair. "
         f"Operator objective: {effective_objective}. "
         f"Artifact root: {artifact_root}. "
@@ -5708,7 +5708,7 @@ def _live_generic_answer_recovery_task(
         previous_rendered = str(previous_output)
     previous_rendered = _truncate_text(previous_rendered, limit=1600)
     return (
-        "Recover the missing final answer for this Super DAN run now. "
+        "Recover the missing final answer for this Dear Diane run now. "
         f"Operator objective: {report.target}. "
         f"Workspace root: {workspace_root}. "
         f"Recovery attempt: {attempt}. "
@@ -6240,7 +6240,7 @@ def _resolve_work_contract_for_objective(
     forbid_workspace_mutation: bool = False,
     assessment_only: bool = False,
 ) -> tuple[str, str, str]:
-    """Resolve work mode, mutation policy, and evidence policy for Super DAN."""
+    """Resolve work mode, mutation policy, and evidence policy for Diane."""
 
     external_facts = _objective_needs_external_facts(objective)
     if forbid_workspace_mutation or assessment_only:
@@ -6494,7 +6494,7 @@ def _operator_intent_policy_from_request(
 
 def _operator_intent_policy_prompt(policy: OperatorIntentPolicy) -> str:
     lines = [
-        "Resolved Super DAN work contract:",
+        "Resolved Diane work contract:",
         f"- work_mode: {policy.work_mode}.",
         f"- mutation_policy: {policy.mutation_policy}.",
         f"- evidence_policy: {policy.evidence_policy}.",
@@ -8038,7 +8038,7 @@ def _website_static_validation_failures(
     template_hits = _website_template_phrase_hits(html, template_phrases)
     if len(template_hits) >= 2:
         failures.append(
-            "The generated website still looks like the generic Super DAN contract/demo template. "
+            "The generated website still looks like the generic Diane contract/demo template. "
             f"Template phrase hits in index.html: {_display_template_phrase_hits(template_hits)}. "
             "Remove or rename enough exact hits so fewer than 2 remain."
         )
@@ -8363,7 +8363,7 @@ async def _run_live_website_build(
     worker_brief = coding_brief(
         role=RoleSpec(
             role_label="workspace_worker",
-            responsibility="Build the requested Super DAN static website artifact.",
+            responsibility="Build the requested Diane static website artifact.",
             success_criteria=[
                 "All required website files exist.",
                 "Existing websites receive material required-file changes; multi-file coordination is preferred for broad patches.",
@@ -8378,7 +8378,7 @@ async def _run_live_website_build(
             relative_files=relative_files,
             objective_context=objective_context,
         ),
-        scope=f"workspace={workspace_root}; artifact_root={artifact_root}; native Super DAN live website build",
+        scope=f"workspace={workspace_root}; artifact_root={artifact_root}; native Diane live website build",
         hard_constraints=[
             "Actually create or update all required website files with file_write or file_edit.",
             "Keep writes inside the requested workspace/artifact paths.",
@@ -8528,11 +8528,11 @@ async def _run_live_website_build(
         validator_brief = review_brief(
             role=RoleSpec(
                 role_label="validator_website",
-                responsibility="Validate the Super DAN website artifact in read-only mode.",
+                responsibility="Validate the Diane website artifact in read-only mode.",
                 success_criteria=[
                     "Required files were read directly.",
                     "The artifact materially satisfies the operator objective.",
-                    "The result is not a generic Super DAN execution-contract demo.",
+                    "The result is not a generic Diane execution-contract demo.",
                 ],
                 artifact_targets=list(relative_files),
                 trace_role="super-dan.live.website.validator",
@@ -8543,7 +8543,7 @@ async def _run_live_website_build(
                 relative_files=relative_files,
                 objective_context=objective_context,
             ),
-            scope=f"workspace={workspace_root}; artifact_root={artifact_root}; native Super DAN website validation",
+            scope=f"workspace={workspace_root}; artifact_root={artifact_root}; native Diane website validation",
             hard_constraints=[
                 "Read-only validation only; do not write or edit files.",
                 "Inspect the required website files directly before deciding.",
@@ -8668,7 +8668,7 @@ async def _run_live_website_build(
         recovery_brief = coding_brief(
             role=RoleSpec(
                 role_label="coding_worker",
-                responsibility="Run a focused Super DAN builder retry after a no-mutation attempt.",
+                responsibility="Run a focused Diane builder retry after a no-mutation attempt.",
                 success_criteria=[
                     "At least one required artifact file is concretely edited.",
                     "The retry directly advances the operator objective.",
@@ -8685,7 +8685,7 @@ async def _run_live_website_build(
                 deterministic_failures=static_validation_failures,
                 objective_context=objective_context,
             ),
-            scope=f"workspace={workspace_root}; artifact_root={artifact_root}; Super DAN artifact builder retry",
+            scope=f"workspace={workspace_root}; artifact_root={artifact_root}; Diane artifact builder retry",
             hard_constraints=[
                 "Actually edit at least one required artifact file; do not return a summary-only response.",
                 "Keep writes inside the requested workspace/artifact paths.",
@@ -8862,7 +8862,7 @@ async def _run_live_website_build(
         repair_brief = coding_brief(
             role=RoleSpec(
                 role_label="coding_worker",
-                responsibility="Repair the Super DAN website artifact after validation failure.",
+                responsibility="Repair the Diane website artifact after validation failure.",
                 success_criteria=[
                     "Validation feedback is addressed with concrete file edits.",
                     "The repair changes required website files that directly address the failed validation.",
@@ -8880,7 +8880,7 @@ async def _run_live_website_build(
                 changed_required_paths=changed_required_paths,
                 objective_context=objective_context,
             ),
-            scope=f"workspace={workspace_root}; artifact_root={artifact_root}; Super DAN website validation repair",
+            scope=f"workspace={workspace_root}; artifact_root={artifact_root}; Diane website validation repair",
             hard_constraints=[
                 "Actually edit required website files; do not return a summary-only response.",
                 "Keep writes inside the requested workspace/artifact paths.",
@@ -9319,7 +9319,7 @@ async def _run_live_generic_execution(
                     trace_role="super-dan.live.general.request-understanding",
                 ),
                 task=task,
-                scope=f"workspace={workspace_root}; Super DAN request understanding preflight",
+                scope=f"workspace={workspace_root}; Diane request understanding preflight",
                 hard_constraints=[
                     "Do not create, edit, delete, or otherwise mutate workspace files.",
                     "Do not write plan files or execute the deliverable.",
@@ -9637,7 +9637,7 @@ async def _run_live_generic_execution(
         planner_brief = role_brief(
             role=RoleSpec(
                 role_label="workspace_planner",
-                responsibility="Create a coherent run-local execution plan for broad Super DAN workspace work.",
+                responsibility="Create a coherent run-local execution plan for broad Diane workspace work.",
                 success_criteria=[
                     "Temporary numeric plan files are written under the run-local plan root.",
                     "Top-level phases are coherent large feature chunks, not unrelated buckets.",
@@ -9654,7 +9654,7 @@ async def _run_live_generic_execution(
                 operator_intent_policy=operator_intent_policy,
                 request_understanding=request_understanding,
             ),
-            scope=f"workspace={workspace_root}; Super DAN run-local temporary planning",
+            scope=f"workspace={workspace_root}; Diane run-local temporary planning",
             hard_constraints=[
                 "Do not implement the final deliverable during the planner stage.",
                 "Write plan markdown only under the supplied run-local plan root.",
@@ -9901,7 +9901,7 @@ async def _run_live_generic_execution(
                 operator_intent_policy=operator_intent_policy,
                 request_understanding=request_understanding,
             ),
-            scope=f"workspace={workspace_root}; Super DAN run-local plan validation",
+            scope=f"workspace={workspace_root}; Diane run-local plan validation",
             hard_constraints=[
                 "Read-only validation only; do not write or edit files.",
                 "Reject alphabetic plan ids, `N-M` placeholders, and third-level plan file names.",
@@ -10271,7 +10271,7 @@ async def _run_live_generic_execution(
             worktree_brief = role_brief(
                 role=RoleSpec(
                     role_label="workspace_worker",
-                    responsibility="Execute one dependency-ready Super DAN task in an isolated worktree.",
+                    responsibility="Execute one dependency-ready Diane task in an isolated worktree.",
                     success_criteria=[
                         "Only task-owned files are created or edited.",
                         "The isolated patch materially completes the assigned ready task.",
@@ -10289,7 +10289,7 @@ async def _run_live_generic_execution(
                     operator_intent_policy=operator_intent_policy,
                     request_understanding=request_understanding,
                 ),
-                scope=f"workspace={worktree_root}; isolated Super DAN ready-frontier task {plan_task_id}",
+                scope=f"workspace={worktree_root}; isolated Diane ready-frontier task {plan_task_id}",
                 hard_constraints=[
                     "Only create or edit files under the task-owned paths.",
                     "Do not edit the authoritative main workspace directly from this worker.",
@@ -10621,7 +10621,7 @@ async def _run_live_generic_execution(
     worker_brief = role_brief(
         role=RoleSpec(
             role_label="workspace_worker",
-            responsibility="Execute the requested Super DAN deliverable directly in the workspace.",
+            responsibility="Execute the requested Diane deliverable directly in the workspace.",
             success_criteria=worker_success_criteria,
             trace_role="super-dan.live.general-builder",
         ),
@@ -10633,7 +10633,7 @@ async def _run_live_generic_execution(
             plan_context=plan_context,
             request_understanding=request_understanding,
         ),
-        scope=f"workspace={workspace_root}; native Super DAN live general workspace execution",
+        scope=f"workspace={workspace_root}; native Diane live general workspace execution",
         hard_constraints=[
             *(
                 [
@@ -11020,7 +11020,7 @@ async def _run_live_generic_execution(
                     operator_intent_policy=operator_intent_policy,
                     request_understanding=request_understanding,
                 ),
-                scope=f"workspace={workspace_root}; native Super DAN final-answer recovery",
+                scope=f"workspace={workspace_root}; native Diane final-answer recovery",
                 hard_constraints=[
                     "Do not create, edit, delete, or otherwise mutate workspace files.",
                     "Do not return another operational receipt such as completed, finished, or Run finished.",
@@ -11155,7 +11155,7 @@ async def _run_live_generic_execution(
         validator_brief = review_brief(
             role=RoleSpec(
                 role_label="validator_workspace",
-                responsibility="Validate the Super DAN workspace deliverable in read-only mode.",
+                responsibility="Validate the Diane workspace deliverable in read-only mode.",
                 success_criteria=[
                     "Mutated files and relevant git evidence were inspected.",
                     "Each active branch/frontier task has an explicit branch_result with evidence, status, and gap.",
@@ -11176,7 +11176,7 @@ async def _run_live_generic_execution(
                 plan_context=validator_plan_context,
                 request_understanding=request_understanding,
             ),
-            scope=f"workspace={workspace_root}; native Super DAN general workspace validation",
+            scope=f"workspace={workspace_root}; native Diane general workspace validation",
             hard_constraints=[
                 "Read-only validation only; do not write or edit files.",
                 "Inspect the mutated files and relevant read-only git evidence before deciding.",
@@ -11367,7 +11367,7 @@ async def _run_live_generic_execution(
             recovery_brief = role_brief(
                 role=RoleSpec(
                     role_label="workspace_worker",
-                    responsibility="Run a focused Super DAN builder retry after a no-mutation attempt.",
+                    responsibility="Run a focused Diane builder retry after a no-mutation attempt.",
                     success_criteria=[
                         "At least one workspace file is created or edited.",
                         "The retry materially advances the original operator objective.",
@@ -11387,7 +11387,7 @@ async def _run_live_generic_execution(
                     plan_context=plan_context,
                     request_understanding=request_understanding,
                 ),
-                scope=f"workspace={workspace_root}; native Super DAN generic builder retry",
+                scope=f"workspace={workspace_root}; native Diane generic builder retry",
                 hard_constraints=[
                     "Actually create or edit at least one workspace file with file_write or file_edit before finalizing.",
                     "Default to the current workspace root; only use explicit external paths when the operator asks and runtime policy allows.",
@@ -11630,7 +11630,7 @@ async def _run_live_generic_execution(
         repair_brief = role_brief(
             role=RoleSpec(
                 role_label="workspace_worker",
-                responsibility="Repair the Super DAN workspace deliverable after validation failure.",
+                responsibility="Repair the Diane workspace deliverable after validation failure.",
                 success_criteria=[
                     "Validation feedback is addressed with concrete workspace edits.",
                     "The repair materially advances the original operator objective.",
@@ -11651,7 +11651,7 @@ async def _run_live_generic_execution(
                 plan_context=plan_context,
                 request_understanding=request_understanding,
             ),
-            scope=f"workspace={workspace_root}; native Super DAN general workspace validation repair",
+            scope=f"workspace={workspace_root}; native Diane general workspace validation repair",
             hard_constraints=[
                 "Actually edit workspace files; do not return a summary-only response.",
                 "Treat validator-named files and missing source markers as required repair targets; do not stop after changing only an adjacent helper or validator file.",
@@ -12113,7 +12113,7 @@ def _render_website_html(report: SuperOrganismReport) -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Super DAN Organism</title>
+  <title>Diane Organism</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
@@ -12121,7 +12121,7 @@ def _render_website_html(report: SuperOrganismReport) -> str:
     <section class="hero">
       <div class="hero-copy">
         <p class="eyebrow">{cell_count}-cell universal agent organism</p>
-        <h1>Super DAN turns one objective into coordinated execution.</h1>
+        <h1>Diane turns one objective into coordinated execution.</h1>
         <p class="lede">{objective}</p>
         <div class="metrics">
           <span>{cell_count} logical cells</span>
@@ -12131,7 +12131,7 @@ def _render_website_html(report: SuperOrganismReport) -> str:
       </div>
       <div class="organism-stage" aria-label="Animated {cell_count}-cell organism">
         <div class="cell-field"></div>
-        <div class="core">DAN</div>
+        <div class="core">Diane</div>
       </div>
     </section>
 
@@ -12254,7 +12254,7 @@ if (field) {{
 
 
 def _render_website_readme(report: SuperOrganismReport) -> str:
-    return f"""# Super DAN Website Artifact
+    return f"""# Diane Website Artifact
 
 Generated by `dan super-organism` from this objective:
 
@@ -12308,7 +12308,7 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
     if bool(getattr(args, "live", False)):
         if not _supports_live_execution(report, args):
             parser.error(
-                "--live could not resolve a generic Super DAN workspace-deliverable lane"
+                "--live could not resolve a generic Diane workspace-deliverable lane"
             )
         live_workspace_root = normalize_workspace_root(str(args.workspace))
         live_workdir, live_turn_number = _build_super_run_workdir(live_workspace_root)
@@ -12494,7 +12494,7 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
                 )
                 if not bool(getattr(args, "_suppress_live_failed_stderr", False)):
                     print(
-                        f"Live Super DAN failed: {type(exc).__name__}: {exc}",
+                        f"Live Diane failed: {type(exc).__name__}: {exc}",
                         file=sys.stderr,
                     )
                 return 1
@@ -12583,13 +12583,13 @@ def _timestamped_backup_path(path: Path) -> Path:
 
 def _archive_reset_path(path: Path, label: str) -> str:
     if not path.exists():
-        return f"No Super DAN {label} exists at {path}"
+        return f"No Diane {label} exists at {path}"
     try:
         backup_path = _timestamped_backup_path(path)
         path.rename(backup_path)
     except (OSError, RuntimeError) as exc:
         return f"Reset failed for {path}: {exc}"
-    return f"Archived Super DAN {label}: {path} -> {backup_path}"
+    return f"Archived Diane {label}: {path} -> {backup_path}"
 
 
 def _reset_super_context(workspace_root: Path, scope: str = "") -> str:
@@ -12603,7 +12603,7 @@ def _reset_super_context(workspace_root: Path, scope: str = "") -> str:
 
 def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     workspace_root = normalize_workspace_root(str(args.workspace))
-    print("Super DAN interactive")
+    print("Diane interactive")
     print(f"workspace: {workspace_root}")
     print(
         "Type an objective, /plan <objective> for a dry contract, "

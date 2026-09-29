@@ -3,7 +3,7 @@ import os
 
 TOOL_METADATA = {
     "tool_id": "managed_process", "category": "system",
-    "description": "Run a long-lived command (dev server, watcher, tunnel) under DAN's process manager so it keeps running after this run ends or is stopped. Use shell_command for anything that finishes; use this for anything that must stay up. Read logs to confirm it started.",
+    "description": "Run a long-lived command (dev server, watcher, tunnel) under Diane's process manager so it keeps running after this run ends or is stopped. Use shell_command for anything that finishes; use this for anything that must stay up. Read logs to confirm it started.",
     "parameters": {"type": "object", "properties": {
         "action": {"type": "string", "enum": ["start", "list", "stop", "logs"]},
         "command": {"type": "string", "description": "Shell command for start"},

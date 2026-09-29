@@ -60,8 +60,8 @@ export function registerDesktopUpdates(options: {
     state = { ...state, phase: "ready", source: "local", version: local.version, message: "Local update ready. Your chats, settings, and icon will be kept." };
   };
   const idle = async () => {
-    if (!app.isPackaged) throw new Error("Install updates from the packaged DAN app.");
-    if (!options.backend().owned) throw new Error("DAN is using an externally started backend. Stop it and reopen DAN before updating.");
+    if (!app.isPackaged) throw new Error("Install updates from the packaged Dear Diane app.");
+    if (!options.backend().owned) throw new Error("Dear Diane is using an externally started backend. Stop it and reopen Dear Diane before updating.");
     await assertNoActiveWork(options.graphs());
   };
   ipcMain.handle("updates:status", async event => {
@@ -97,7 +97,7 @@ export function registerDesktopUpdates(options: {
         if (github.state.status !== "signing_in") await github.refresh();
       } else if (action === "choose") {
         if (!state.localSupported) throw new Error("Local app installation is available in the packaged Mac app.");
-        const selected = await dialog.showOpenDialog(options.window()!, { title: "Choose the new DAN.app build", properties: ["openFile"], filters: [{ name: "DAN application", extensions: ["app"] }] });
+        const selected = await dialog.showOpenDialog(options.window()!, { title: "Choose the new Dear Diane.app build", properties: ["openFile"], filters: [{ name: "Dear Diane application", extensions: ["app"] }] });
         if (selected.canceled || !selected.filePaths[0]) return state;
         await prepare(selected.filePaths[0]);
       } else if (action === "check") {
@@ -129,10 +129,10 @@ export function registerDesktopUpdates(options: {
             await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
             child.unref();
           } finally { await log.close(); }
-          state = { ...state, phase: "installing", message: "DAN will close and reopen with the update." };
+          state = { ...state, phase: "installing", message: "Dear Diane will close and reopen with the update." };
           setTimeout(() => app.quit(), 300);
         } else {
-          state = { ...state, phase: "installing", message: "DAN will restart to install the update." };
+          state = { ...state, phase: "installing", message: "Dear Diane will restart to install the update." };
           setTimeout(() => autoUpdater.quitAndInstall(false, true), 300);
         }
       } else throw new Error("Unknown update action.");

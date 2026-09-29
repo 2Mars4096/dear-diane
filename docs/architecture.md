@@ -1,5 +1,10 @@
 # Architecture
 
+## Product identity
+- Public product: Dear Diane; assistant: Diane. Desktop packaging and browser/phone titles use the product name; agent messages and runtime labels use Diane.
+- Electron pins `userData` to the existing `appData/dan` before setting its display name. Bundle ID, Python package, protocol IDs, environment variables, remote services, and saved keys retain their original identities. New bundles are `Dear Diane.app`; local update discovery uses that path.
+- Session placeholder and status recognition supports old DAN records alongside new Diane output. `dear-diane` is an additional CLI entry point. See [naming plan](plans/4-10-dear-diane.md).
+
 ## Workspace lifecycle and file targets
 - `documents/useDocumentTabs.ts` owns tabs, drafts, dirty/unload guards, document close callbacks, and browser URL cleanup. PDF files derive from the document registry, removing the second reader-file map. Library/paper modules remain lazy; switching tools does not release a tab.
 - `workbench/projects.ts` shares registry creation, root reuse, edits, and selection; the workspace retains session sequencing and view changes. `lib/workspacePaths.ts` preserves existing normalization and legacy root aliases.

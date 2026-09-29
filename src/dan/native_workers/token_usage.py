@@ -1,7 +1,7 @@
 """Per-session token profiler for Claude Code and Codex transcripts.
 
 Reads the transcripts the CLIs already keep on disk and rebuilds each session as
-rounds -> model calls and steps, so DAN can show which sessions are expensive,
+rounds -> model calls and steps, so Diane can show which sessions are expensive,
 which activities caused it, and what to change. Model-call tokens are exact;
 tokens added by tool results and prompts are estimated as chars/4.
 
@@ -167,7 +167,7 @@ def _detail(tool: str, args) -> str:
 
 
 def _title(text: str) -> str:
-    """The person's request; DAN leads wrap it after the conversation context."""
+    """The person's request; Diane leads wrap it after the conversation context."""
     if "\nCurrent request:\n" in text:
         text = text.split("\nCurrent request:\n", 1)[1].split("\n\nYou are the lead agent", 1)[0]
     return " ".join(text.split())[:160]
@@ -535,7 +535,7 @@ def _children(row: dict) -> list[tuple[Path, dict]]:
 
 
 def dan_links(base: Path) -> dict[str, dict]:
-    """native CLI session id -> the DAN run that launched it."""
+    """native CLI session id -> the Diane run that launched it."""
     links = {}
     for folder, role in (("native_leads", "lead"), ("native_workers", "team")):
         for path in (base / folder).glob("*.json"):
@@ -870,7 +870,7 @@ def _decide(model: str, state: dict, questions: dict) -> dict:
     """One Decisions request: {question: {"choice", "confidence"}}."""
     body = json.dumps({"model": model, "state": state, "questions": questions}).encode()
     request = Request(_base_url().removesuffix("/v1") + "/alpha/decisions", data=body,
-                      headers={"Authorization": f"Bearer {_api_key()}", "Content-Type": "application/json", "X-Title": "DAN"})
+                      headers={"Authorization": f"Bearer {_api_key()}", "Content-Type": "application/json", "X-Title": "Dear Diane"})
     with urlopen(request, timeout=90) as response:
         return json.loads(response.read()).get("answers") or {}
 

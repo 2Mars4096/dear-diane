@@ -20,7 +20,7 @@ _TRACKING_PARAM_NAMES = {
 SEARCH_RESULT_CONTRACT_VERSION = "search_result_v1"
 SEARCH_RESULT_SET_CONTRACT_VERSION = "search_result_set_v1"
 
-# Fields Beacon must preserve for existing DAN callers even as internal search
+# Fields Beacon must preserve for existing Diane callers even as internal search
 # backends change.
 SEARCH_RESULT_HARD_COMPATIBILITY_FIELDS = (
     "index",

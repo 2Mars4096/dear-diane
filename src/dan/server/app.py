@@ -1,4 +1,4 @@
-"""Minimal FastAPI composition root for Work/Notes and Super DAN."""
+"""Minimal FastAPI composition root for Work/Notes and Diane."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def create_app() -> FastAPI:
             with suppress(asyncio.CancelledError):
                 await recovery
 
-    app = FastAPI(title="DAN Work and Notes", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="Dear Diane Work and Notes", version="0.2.0", lifespan=lifespan)
     from dan.remote.access import access_config, RemoteAccess
     remote = access_config()
     app.add_middleware(

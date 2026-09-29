@@ -1,6 +1,6 @@
-# DAN Phone
+# Dear Diane Phone
 
-Flutter Android shell for the DAN workspace phone UI.
+Flutter Android shell for the Dear Diane workspace phone UI.
 
 Build the debug APK:
 
@@ -8,7 +8,7 @@ Build the debug APK:
 flutter build apk --debug --dart-define=DAN_API_BASE=http://10.77.77.2:8000
 ```
 
-Optional DAN phone WireGuard config can be baked in without using codexx keys:
+Optional Dear Diane phone WireGuard config can be baked in without using codexx keys:
 
 ```sh
 flutter build apk --debug \

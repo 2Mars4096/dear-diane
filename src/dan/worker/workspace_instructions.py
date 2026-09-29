@@ -108,7 +108,7 @@ def render_workspace_instruction_snippet(instructions: WorkspaceInstructions) ->
         f"- sha256: {meta['content_sha256_prefix']}\n"
         f"- truncated: {str(meta['truncated']).lower()}\n\n"
         "Precedence:\n"
-        "- DAN safety and tool boundaries override these workspace instructions.\n"
+        "- Diane safety and tool boundaries override these workspace instructions.\n"
         "- Direct operator instructions override these workspace instructions when both are safe.\n"
         "- Otherwise, follow these workspace instructions for project tracking, coding style, and run hygiene.\n\n"
         "Instructions:\n"

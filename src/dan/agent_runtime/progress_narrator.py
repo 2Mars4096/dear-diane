@@ -426,7 +426,7 @@ def classify_agent_turn_intent(text: str) -> AgentTurnIntentDecision:
             lane=CLARIFICATION,
             confidence=0.0,
             rationale="empty input",
-            clarification="What should Super DAN do?",
+            clarification="What should Diane do?",
         )
     command = _intent_command(stripped)
     if command in {"/progress", "/last", "/narrate"}:
@@ -619,7 +619,7 @@ class AgentAdmissionPolicy:
 
 @dataclass(frozen=True)
 class AgentSurfacePolicy:
-    """Canonical orthogonal policy for Super DAN-style agent surfaces.
+    """Canonical orthogonal policy for Diane-style agent surfaces.
 
     Legacy lane, communication_policy, and execution_policy are still carried
     as compatibility projections, but this object is the complete policy the
@@ -1656,7 +1656,7 @@ def _agent_turn_router_messages(
         {
             "role": "system",
             "content": (
-                "Route the user's Super DAN turn by meaning and recent context, not by keywords. "
+                "Route the user's Diane turn by meaning and recent context, not by keywords. "
                 "Return exactly one JSON object with keys controller_lane, permission_scope, evidence_policy, phase_shape, autonomy, latency_policy, response_policy, progress_policy, admission_policy, capability_packs, confidence, rationale, clarification, lane, complexity, communication_policy, execution_policy. "
                 "The canonical policy fields are orthogonal and complete: controller_lane chooses the owner; permission_scope chooses allowed side effects; evidence_policy chooses freshness/scope/sources; phase_shape chooses workflow shape; autonomy chooses continuation authority; latency_policy chooses time budget; response_policy chooses final answer shape; progress_policy chooses live narration; admission_policy chooses relation to active work; capability_packs chooses optional UI-control tool families. "
                 "The compatibility lane and rationale must agree with the canonical policy; if they conflict, fix the policy and derive the lane from it. "
@@ -1673,7 +1673,7 @@ def _agent_turn_router_messages(
                 "Use browser_control only when the current turn needs browser UI state, DOM/HTML evidence, screenshots, direct element interaction, or downloads. "
                 "Use desktop_control only when the current turn needs local desktop screenshot, mouse, keyboard, app focus, or window interaction. "
                 "Use computer_control only when both browser and desktop control are needed or the user explicitly asks for general computer-use control. "
-                "For capability questions, if the user asks whether Super DAN has browser, desktop, or computer-control capabilities, answer from this capability-pack contract; do not claim those capabilities are unavailable merely because the current turn has not activated a pack. "
+                "For capability questions, if the user asks whether Diane has browser, desktop, or computer-control capabilities, answer from this capability-pack contract; do not claim those capabilities are unavailable merely because the current turn has not activated a pack. "
                 "Also include compatibility projections: lane is narrator_read_only for current/recent run status only, executor_read_only for workspace inspection with no file changes, "
                 "executor_write for edits/execution/generated artifacts/validation commands, plan_mode for refinement/planning before execution, "
                 "or clarification when choosing would be unsafe; complexity is simple or complex. "
@@ -1729,7 +1729,7 @@ def _agent_turn_router_repair_messages(
         {
             "role": "system",
             "content": (
-                "Repair a Super DAN routing response. Decide by meaning and recent context, not by keyword matching. "
+                "Repair a Diane routing response. Decide by meaning and recent context, not by keyword matching. "
                 "Return only one JSON object with this exact shape: "
                 '{"controller_lane":"respond|narrate_run|inspect|execute|plan|clarify",'
                 '"permission_scope":"none|read_only|transient_execute|workspace_write|external_write",'
@@ -2421,7 +2421,7 @@ def deterministic_narrator_response(request: NarratorRequest) -> NarratorRespons
 
 def narrator_system_prompt() -> str:
     return (
-        "You are the progress narrator for DAN. Answer only from the provided run snapshot. "
+        "You are the progress narrator for Diane. Answer only from the provided run snapshot. "
         "Do not claim to inspect files, run commands, mutate state, steer execution, or access hidden context. "
         "If the snapshot is missing information, say what is unknown. Answer the user's exact question first. "
         "For next-step questions, start with a short Next line. For progress/status questions, start with a short Status line. "

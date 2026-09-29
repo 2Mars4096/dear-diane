@@ -41,7 +41,7 @@ describe("backendHealth", () => {
     vi.restoreAllMocks();
   });
 
-  it("accepts the DAN health payload", async () => {
+  it("accepts the Diane health payload", async () => {
     vi.spyOn(http, "request").mockImplementation((_options: any, callback: any) => {
       const req = new FakeRequest();
       queueMicrotask(() => {

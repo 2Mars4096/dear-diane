@@ -20,7 +20,7 @@ void main() {
 
     await tester.tap(find.byIcon(Icons.settings_outlined));
     await tester.pumpAndSettle();
-    expect(find.text('DAN API base'), findsOneWidget);
+    expect(find.text('Dear Diane API base'), findsOneWidget);
     expect(find.text('Access token'), findsOneWidget);
     expect(find.text('Workspace root'), findsOneWidget);
     expect(find.textContaining('WG:'), findsOneWidget);

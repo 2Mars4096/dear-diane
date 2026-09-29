@@ -59,7 +59,7 @@ export async function addPaperCommentsToPdf(source: Uint8Array, comments: PaperC
       QuadPoints: quadPoints,
       Rect: bounds,
       Subtype: "Highlight",
-      T: PDFHexString.fromText("DAN"),
+      T: PDFHexString.fromText("Diane"),
       Type: "Annot"
     });
     const annotationRef = document.context.register(annotation);

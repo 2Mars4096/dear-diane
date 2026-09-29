@@ -1,1 +1,1 @@
-"""FastAPI APIRouter modules for the DAN server."""
+"""FastAPI APIRouter modules for the Dear Diane server."""

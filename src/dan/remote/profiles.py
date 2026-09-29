@@ -176,7 +176,7 @@ def build_bundle():
     root = Path(os.environ.get("DAN_SOURCE_ROOT", str(Path(__file__).resolve().parents[3])))
     web = root / "editor/dist"
     if not (root / "pyproject.toml").is_file() or not (web / "index.html").is_file():
-        raise RuntimeError("Remote install needs a DAN source checkout and built editor. Run npm run build:verify in editor; set DAN_SOURCE_ROOT if needed.")
+        raise RuntimeError("Remote install needs a Diane source checkout and built editor. Run npm run build:verify in editor; set DAN_SOURCE_ROOT if needed.")
     handle, filename = tempfile.mkstemp(suffix=".tar.gz", prefix="dan-release-")
     os.close(handle)
     def filtered(info):
@@ -199,7 +199,7 @@ async def deploy(value, *, share_openrouter=False, progress=lambda message: None
     release = time.strftime("%Y%m%d%H%M%S") + "-" + secrets.token_hex(3)
     config = {**profile.model_dump(), "url": profile.url, "access_key": value["access_key"], "release": release, "archive": f".dan-release-{release}.tar.gz"}
     installer = Path(__file__).with_name("install.py").read_text()
-    progress("Packaging DAN and its browser app")
+    progress("Packaging Diane and its browser app")
     archive = await asyncio.to_thread(build_bundle)
     try:
         progress("Uploading the release to " + profile.ssh_alias)

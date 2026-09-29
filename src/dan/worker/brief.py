@@ -247,7 +247,7 @@ def _compact_context_summary(brief: WorkerBrief) -> str:
 
 
 def _render_compact_run_prompt(brief: WorkerBrief) -> str:
-    """Render a concise operator-facing run contract for live Super DAN calls."""
+    """Render a concise operator-facing run contract for live Diane calls."""
 
     role = brief.role
     contract = _compact_work_contract(brief.input_payload, brief.metadata)

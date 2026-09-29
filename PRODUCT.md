@@ -1,4 +1,8 @@
-# Product
+# Dear Diane
+
+**Assistant:** Diane
+
+**Subtitle:** A workspace for research, code, and ideas.
 
 ## Register
 
@@ -6,11 +10,11 @@ product
 
 ## Users
 
-Researchers, developers, and operators doing long-running, high-trust work that needs planning, tool use, checkpoint steering, provenance, and recovery. They use DAN as a lightweight workbench: conversation stays central, while Notes, execution state, evidence, and previews are available on demand. Projects contain sessions; child agents belong to their parent session.
+Researchers, developers, and operators doing long-running, high-trust work that needs planning, tool use, checkpoint steering, provenance, and recovery. They use Dear Diane as a lightweight workbench: conversation stays central, while Notes, execution state, evidence, and previews are available on demand. Projects contain sessions; child agents belong to their parent session.
 
 ## Product Purpose
 
-DAN makes rare, difficult agentic tasks tractable, steerable, and repeatable. The desktop workspace keeps the protected task blueprint separate from execution attempts, exposes durable progress and evidence, and lets the operator work with research notes and artifacts without leaving the execution surface.
+Dear Diane makes rare, difficult agentic tasks tractable, steerable, and repeatable. The desktop workspace keeps the protected task blueprint separate from execution attempts, exposes durable progress and evidence, and lets the operator work with research notes and artifacts without leaving the execution surface.
 
 ## Brand Personality
 

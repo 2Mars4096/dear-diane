@@ -1,23 +1,25 @@
-# Deep Agent Network (DAN)
+# Dear Diane
 
-DAN is a focused agent product built as one stack:
+A workspace for research, code, and ideas. **Diane** is your assistant.
+
+Dear Diane is a focused agent product built as one stack:
 
 1. **Universal Cell** — one bounded worker primitive driven by typed briefs.
 2. **Universal Organism** — a dependency-aware plan of Universal Cells.
-3. **Super DAN** — the general-purpose live agent runtime and terminal UI.
+3. **Diane** — the general-purpose live agent runtime and terminal UI.
 4. **Work/Notes** — the desktop and phone workspace for sessions, progress, artifacts, previews, and Markdown notes.
 
 The pre-Universal graph builder, visual graph editor, Code/Research/Content modes, concierge, messaging adapters, publishing, RAG, and product-specific organism families were removed on 2026-08-02. They remain recoverable from Git history.
 
 ## Browser research
 
-Ask DAN to use the browser to search for a paper, retrieve its actual BibTeX, and save `references.bib`. Built-in DAN chats and native leads have a lazy browser connection. On desktop hosts it opens visibly; without a display it runs headless. Set `DAN_BROWSER_HEADLESS=0` or `1` to override. The browser runs on the backend machine, uses a fresh isolated session, and closes when the run finishes or stops. It does not attach to your existing Chrome profile.
+Ask Dear Diane to use the browser to search for a paper, retrieve its actual BibTeX, and save `references.bib`. Built-in Dear Diane chats and native leads have a lazy browser connection. On desktop hosts it opens visibly; without a display it runs headless. Set `DAN_BROWSER_HEADLESS=0` or `1` to override. The browser runs on the backend machine, uses a fresh isolated session, and closes when the run finishes or stops. It does not attach to your existing Chrome profile.
 
-Install browser support in the backend Python environment with `pip install -e '.[browser]'`; DAN uses installed Chrome when managed Chromium is unavailable, or install it with `python -m playwright install chromium`. Native leads use DAN’s browser bridge, so their shell does not need its own Playwright installation. Use a project chat in Auto mode and describe the browser task normally; no manual browser command is needed. Native agents still require their usual account sign-in. Plan mode permits observation/navigation only. CAPTCHA/login challenges may require human help; no citation is fabricated when access fails.
+Install browser support in the backend Python environment with `pip install -e '.[browser]'`; Dear Diane uses installed Chrome when managed Chromium is unavailable, or install it with `python -m playwright install chromium`. Native leads use Dear Diane’s browser bridge, so their shell does not need its own Playwright installation. Use a project chat in Auto mode and describe the browser task normally; no manual browser command is needed. Native agents still require their usual account sign-in. Plan mode permits observation/navigation only. CAPTCHA/login challenges may require human help; no citation is fabricated when access fails.
 
 ## Workbench
 
-DAN's icon uses an ivory impressionist network of cooperating agents, shared by new desktop packages and the browser favicon.
+Dear Diane's icon uses an ivory impressionist network of cooperating agents, shared by new desktop packages and the browser favicon.
 
 Activity shows a short current-action label while working; expand **Work details** for the recorded steps afterward.
 
@@ -25,13 +27,13 @@ Waiting follow-ups appear only in **Up next**, keeping the active reply in view.
 
 Session titles are set from the first request and stay stable across follow-ups.
 
-Click **Session · ID** above the conversation to copy its permanent ID. Paste it into **Search chats or session ID** to find that chat, or give it to a native agent to look up the other session when needed. Agents receive their own DAN session identity and lookup instructions; this does not send messages between sessions.
+Click **Session · ID** above the conversation to copy its permanent ID. Paste it into **Search chats or session ID** to find that chat, or give it to a native agent to look up the other session when needed. Agents receive their own Dear Diane session identity and lookup instructions; this does not send messages between sessions.
 
 Click a filename in a past message to open its saved attachment in the default desktop app (images, videos, PDFs, Word documents, text, and other supported files). Browser users get a preview or download.
 
 Use **Edit** below your latest message, then **Save & resend** to replace its answer while keeping attachments. Finish or stop an active reply before editing; **Cancel** leaves the conversation unchanged.
 
-Choose **DAN settings → Appearance → Color scheme** for eight paired light/dark palettes. **Mode** selects Light, Dark, or System; changes apply immediately and save automatically.
+Choose **Dear Diane settings → Appearance → Color scheme** for eight paired light/dark palettes. **Mode** selects Light, Dark, or System; changes apply immediately and save automatically.
 
 Work opens with a familiar project/chat sidebar: New chat, search, collapsible project folders, and archived chats. Use the + beside Projects to create an empty project, then choose **New chat** when ready; its menu edits the name and folder. In the desktop app, drag a folder into the main workspace: a dashed boundary appears, and dropping creates and opens a project named after the folder. Dropping an already listed folder reopens its project. You can also drop a folder onto the project settings folder field to fill its path. Browsers that hide local paths require pasting the full path. One **side panel** (header toggle) holds Chat, Files, Preview, Activity, and Team as tabs. Chat is a separate saved conversation with the current lead, also opened from selected text. Select message text to stage a source-linked reference above the input. The input grows from one to six lines, then scrolls; expand tool and emitted thinking details when needed. Waiting messages stay out of the transcript and appear in an initially expanded **Up next** queue; a lone active run does not show a queue panel. Stop and steering use the existing Agent V2 controls. On new Codex lead runs, **Steer** sends into the active turn, and **Steer now** sends an existing Up next entry without duplicating it. Other waiting messages retain FIFO order; rejected steering remains queued. Live steering becomes available when the run connection is ready; older CLI runs require a new run after updating.
 
@@ -41,11 +43,11 @@ Work opens with a familiar project/chat sidebar: New chat, search, collapsible p
 - **All sessions:** use the project sidebar or the wheel's “All sessions” button. Drafts survive switching.
 - **Side tabs:** switching Reading, Notes, Files, Processes, and other right-side tools preserves drafts, scroll, and expanded logs, including after closing/reopening the panel.
 - **Close tab:** `⌃⌘W` (Control–Command–W) on Mac; `Ctrl+Alt+W` on Windows/Linux. Unsaved edits prompt before closing. Hover a tab’s × to see the shortcut; macOS window shortcuts stay unchanged.
-- **Processes:** the side panel's Processes tab runs commands that must stay up (dev servers, watchers). They keep running after a chat or agent run ends; agents start them through DAN for the same reason.
-- **Skills:** DAN settings → Skills lets Claude Code use skills installed for Codex or Cursor, without changing any CLI's own folders.
+- **Processes:** the side panel's Processes tab runs commands that must stay up (dev servers, watchers). They keep running after a chat or agent run ends; agents start them through Dear Diane for the same reason.
+- **Skills:** Dear Diane settings → Skills lets Claude Code use skills installed for Codex or Cursor, without changing any CLI's own folders.
 - **Usage:** hover the sidebar's Usage button for remaining quota (5h/week/model windows) on the accounts you used most recently.
-- **Token usage:** DAN settings → Token usage → **Open analyzer**. *All sessions* combines your recent Claude Code and Codex sessions (tokens per day, by project, agent, model, and activity, plus the changes that would save the most). *By session* shows one session's chat rounds, most expensive steps, and avoidable patterns. It reads the transcripts already on your computer. **Label stages with model** optionally refines the activity labels with Jev (`jev-latest`) through your OpenRouter key; it sends step summaries, never file contents or command output.
-- **Literature:** open the right side panel → **Literature**. Browse your library or drop a batch of PDFs into **Import**. Choose a configured Hugo KB, optionally supply BibTeX, then **Prepare PDFs** using the selected lead. DAN retrieves Crossref citation candidates, checks each match, and drafts notes with source anchors. Review uncertain matches, retry individual documents, or stop preparation. **Import ready items** saves verified PDF copies and `index.md` pages; originals and existing notes are preserved. Imports survive panel closure and reload; queued work resumes after a backend restart, while interrupted documents offer Retry. Books support an explicitly labelled overview. No Zotero installation is needed.
+- **Token usage:** Dear Diane settings → Token usage → **Open analyzer**. *All sessions* combines your recent Claude Code and Codex sessions (tokens per day, by project, agent, model, and activity, plus the changes that would save the most). *By session* shows one session's chat rounds, most expensive steps, and avoidable patterns. It reads the transcripts already on your computer. **Label stages with model** optionally refines the activity labels with Jev (`jev-latest`) through your OpenRouter key; it sends step summaries, never file contents or command output.
+- **Literature:** open the right side panel → **Literature**. Browse your library or drop a batch of PDFs into **Import**. Choose a configured Hugo KB, optionally supply BibTeX, then **Prepare PDFs** using the selected lead. Dear Diane retrieves Crossref citation candidates, checks each match, and drafts notes with source anchors. Review uncertain matches, retry individual documents, or stop preparation. **Import ready items** saves verified PDF copies and `index.md` pages; originals and existing notes are preserved. Imports survive panel closure and reload; queued work resumes after a backend restart, while interrupted documents offer Retry. Books support an explicitly labelled overview. No Zotero installation is needed.
 
 - **Reader:** click a PDF in Files (or **Read** in Preview); it opens as a tab beside the conversation. The side panel's **Reading** and **Notes** tabs follow the active PDF. Select text → **Ask** stages it in the side chat with the page's text; **Comment** saves a highlight with an optional note. Scanned pages are OCR'd in-app so they become selectable; highlights are text-anchored so they survive PDF changes; **Export** saves a copy with comments as PDF highlights. Zoom, page references (**Refs**), comments, and your position are remembered per PDF.
 
@@ -59,35 +61,35 @@ Use **⌘K / Ctrl+K** to find a paper by title, author, citation key, topic, or 
 
 **Papers** in the sidebar opens the full library: filter by tags/year/journal, switch list/table views, inspect abstracts and knowledge-base notes, copy citations/BibTeX, or select papers and **Add to chat**. References are staged for your next message; nothing sends automatically. Library filters and scroll survive switching tabs.
 
-Each library paper has one resumable reading session. **Continue reading** in the sidebar restores its PDF position, annotations, saved page references, and Reading conversation, independently of the current project. Closing the tab keeps the session. Reading state is saved on the DAN host, so another browser connected to that same host can resume it. Failed saves retain a local recovery copy with retry/download controls.
+Each library paper has one resumable reading session. **Continue reading** in the sidebar restores its PDF position, annotations, saved page references, and Reading conversation, independently of the current project. Closing the tab keeps the session. Reading state is saved on the Dear Diane host, so another browser connected to that same host can resume it. Failed saves retain a local recovery copy with retry/download controls.
 
-The library discovers your existing `my-knowledge-base` through the Notes folder conventions. **Paper library settings** lets you add Hugo project roots or PDF folders and hide the sidebar entry. You can reopen it through **DAN settings → Open paper library**. Sources remain in place; the library does not edit knowledge-base Markdown or PDFs. Missing PDFs stay visible in search with unavailable-file feedback. Sources refresh when DAN regains focus, every 30 seconds while visible, or through **Refresh**.
+The library discovers your existing `my-knowledge-base` through the Notes folder conventions. **Paper library settings** lets you add Hugo project roots or PDF folders and hide the sidebar entry. You can reopen it through **Dear Diane settings → Open paper library**. Sources remain in place; the library does not edit knowledge-base Markdown or PDFs. Missing PDFs stay visible in search with unavailable-file feedback. Sources refresh when Dear Diane regains focus, every 30 seconds while visible, or through **Refresh**.
 
 Search currently covers metadata, abstracts, knowledge-base notes, and saved annotation text. PDF full-text and semantic search are not included. Separate hosts have separate libraries; browser-only dropped PDFs continue using the existing local-copy workflow.
 
-## Open files in DAN
+## Open files in Dear Diane
 
 In desktop conversations, click file/folder links or inline code paths from Codex or Claude to open the actual local target. Relative links use the project folder. Right-click for Open, Reveal in Finder, Open in Cursor (when installed), Copy path, and file-only Save as / Copy file contents. Remote-host paths remain accessible through the project Files panel.
 
-Drop files into DAN or use **Open file** (⌘/Ctrl+O). PDFs open in the reader; text/code files open in editable tabs, Markdown supports Preview, and images/audio/video open in viewers. Project Files also open in tabs. Use **Save** or ⌘/Ctrl+S for original desktop/project files; changed files on disk require reopening, with **Download copy** available to preserve your draft. Unsaved edits survive tab/Notes switches and prompt before closing.
+Drop files into Dear Diane or use **Open file** (⌘/Ctrl+O). PDFs open in the reader; text/code files open in editable tabs, Markdown supports Preview, and images/audio/video open in viewers. Project Files also open in tabs. Use **Save** or ⌘/Ctrl+S for original desktop/project files; changed files on disk require reopening, with **Download copy** available to preserve your draft. Unsaved edits survive tab/Notes switches and prompt before closing.
 
 Browser-selected files stay in your browser and offer **Download edits**, leaving the original unchanged. Text editing supports UTF-8 files up to 2 MB. Office documents and other binary formats offer download rather than in-app editing.
 
 ## Remote machines and phone access
 
-In **DAN settings → SSH connections → Add SSH connection**, enter a display name and hostname (`server.example`, `user@host`, or an existing alias such as `mini`). SSH port and identity file are optional; the default uses your SSH config/agent. Save, then use **⋯** for connection details and **Check SSH**. The folder icon opens remote projects; the phone icon opens access details. No manual SSH config edit or VPN details are needed to save a host. Workspace and package-source options are under Advanced.
+In **Dear Diane settings → SSH connections → Add SSH connection**, enter a display name and hostname (`server.example`, `user@host`, or an existing alias such as `mini`). SSH port and identity file are optional; the default uses your SSH config/agent. Save, then use **⋯** for connection details and **Check SSH**. The folder icon opens remote projects; the phone icon opens access details. No manual SSH config edit or VPN details are needed to save a host. Workspace and package-source options are under Advanced.
 
-For persistent remote DAN and phone access, open the host details, choose **Phone access → Set up** (or **Configure**), enter the private/VPN and relay details, and save. Open **Installation** in the details panel to choose **Install DAN**. SSH-only profiles do not yet provide a direct SSH tunnel to DAN. The local installer needs this source checkout and `cd editor && npm run build:verify`; set `DAN_SOURCE_ROOT` when the backend runs outside the checkout. Linux targets need Python 3.11+, systemd user services, and trusted SSH host keys. Install native agent CLIs and log in on the execution host.
+For persistent remote Dear Diane and phone access, open the host details, choose **Phone access → Set up** (or **Configure**), enter the private/VPN and relay details, and save. Open **Installation** in the details panel to choose **Install Dear Diane**. SSH-only profiles do not yet provide a direct SSH tunnel to Dear Diane. The local installer needs this source checkout and `cd editor && npm run build:verify`; set `DAN_SOURCE_ROOT` when the backend runs outside the checkout. Linux targets need Python 3.11+, systemd user services, and trusted SSH host keys. Install native agent CLIs and log in on the execution host.
 
 Each machine gets its own browser address on the relay. **Show access key** supplies its sign-in credential. Open that address from your phone while connected to the existing VPN. Execution and saved chats stay on the remote machine when the Mac/browser disconnects. Projects synchronize across browsers; local tabs and preferences remain separate. Backend restarts can interrupt active agent work.
 
-To work on an existing remote project, choose **Open Mini** (or your saved host), then **New project**. Browse the folders on that machine, select one, and choose **Create project**. Use the arrow beside a folder to see its subfolders, or enter a remote path/prefix and choose **Go**. This registers the folder in DAN without moving or uploading files. Chats and agents use that remote working folder. Project settings also lets you change it later.
+To work on an existing remote project, choose **Open Mini** (or your saved host), then **New project**. Browse the folders on that machine, select one, and choose **Create project**. Use the arrow beside a folder to see its subfolders, or enter a remote path/prefix and choose **Go**. This registers the folder in Dear Diane without moving or uploading files. Chats and agents use that remote working folder. Project settings also lets you change it later.
 
 The Mac manages setup. OpenRouter provisioning is an explicit installation checkbox; native account directories are never copied. Keys are kept in private files on the Mac/execution host. The initial relay is private-network HTTP over your VPN, not a public website. Change relay fields to use another relay; retire the previous service after verifying the replacement. Each remote needs a distinct relay port.
 
 For slow package networks, the connection form offers the Tsinghua PyPI mirror. Prepared deployments can set `DAN_REMOTE_WHEELHOUSE` to a folder of compatible Linux/Python wheels, including build dependencies; those wheels are bundled and installed without reaching a package index.
 
-If the relay firewall blocks its selected port, allow that port only from your VPN peers. DAN reports installation and connection failures separately; it does not change existing firewall or VPN rules.
+If the relay firewall blocks its selected port, allow that port only from your VPN peers. Dear Diane reports installation and connection failures separately; it does not change existing firewall or VPN rules.
 
 Services are `dan-execution-<machine>.service` on the execution host and `dan-relay-<machine>.service` on the relay, managed with `systemctl --user`. Releases/state are under `~/.local/share/dan-remote/<machine>/`. Check logs with `journalctl --user -u <service>`; install reports whether boot persistence is enabled. Updates restart the service, so finish active work first. See [remote control](docs/plans/6-remote-control.md) for remaining public login, approval, and recovery work.
 
@@ -151,7 +153,7 @@ cd editor
 npm run electron:dev
 ```
 
-Run Super DAN directly:
+Run Dear Diane directly:
 
 ```bash
 dan super-organism --model "$DAN_LLM_MODEL" "Inspect this workspace and implement the requested change"
@@ -178,7 +180,7 @@ Notes provides:
 - recent and collection views;
 - rendered preview and knowledge navigation;
 - learning-course/progress metadata;
-- the same Super DAN composer and durable session model as Work.
+- the same Dear Diane composer and durable session model as Work.
 
 The mobile app consumes the same loopback/WireGuard-safe HTTP API. `/api/workspace-wireguard` is read-only and never starts or reconfigures a host VPN service.
 
@@ -210,11 +212,11 @@ Focused Python tests live under `tests/test_worker`, `tests/test_cli`, `tests/te
 
 ```text
 src/dan/worker/          Universal Cell, briefs, contracts, scheduler, organism
-src/dan/worker/organisms Universal Organism, Super DAN, local tool runtime
-src/dan/cli/             Retained server, Super DAN, and TUI commands
+src/dan/worker/organisms Universal Organism, Dear Diane, local tool runtime
+src/dan/cli/             Retained server, Dear Diane, and TUI commands
 src/dan/server/          Work/Notes, sessions, and Agent V2 control plane
 src/dan/providers/       OpenAI, Anthropic, and Google provider adapters
-src/dan/tools/           Selectively loaded Super DAN capabilities
+src/dan/tools/           Selectively loaded Dear Diane capabilities
 src/dan/skills/          Skill discovery and loading
 editor/                  Work/Notes React + Electron app
 mobile/                  Optional Flutter phone app
@@ -227,28 +229,34 @@ Git is the archive. Do not add an in-tree legacy archive or reintroduce old prod
 
 ### Agents and models
 
-**Lead** and **Team** separate the agent harness from its model. Choose DAN, Codex, Claude Code, Cursor, or Antigravity, then choose **Model source**, **Model**, **Reasoning**, and supported **Fast mode**. Native model suggestions come from the runtime catalog; OpenRouter offers DeepSeek V4.1 Flash, Kimi K2.6, and a custom model ID. Each source remembers its settings when you switch back.
+**Lead** and **Team** separate the agent harness from its model. Choose Dear Diane, Codex, Claude Code, Cursor, or Antigravity, then choose **Model source**, **Model**, **Reasoning**, and supported **Fast mode**. Native model suggestions come from the runtime catalog; OpenRouter offers DeepSeek V4.1 Flash, Kimi K2.6, and a custom model ID. Each source remembers its settings when you switch back.
 
-Codex and Claude Code can run **directly on OpenRouter models**, independently of their teammates. DAN also supports OpenRouter. Cursor and Antigravity currently support their native model sources only. Claude Code with non-Anthropic gateway models is experimental, with reasoning managed by the model; fast mode is disabled for OpenRouter selections. DAN's native configuration uses API credentials, not a Codex or Claude subscription.
+Codex and Claude Code can run **directly on OpenRouter models**, independently of their teammates. Dear Diane also supports OpenRouter. Cursor and Antigravity currently support their native model sources only. Claude Code with non-Anthropic gateway models is experimental, with reasoning managed by the model; fast mode is disabled for OpenRouter selections. Dear Diane's native configuration uses API credentials, not a Codex or Claude subscription.
 
 The server loads project `.env` at startup. Set `OPENROUTER_API_KEY` (or `DAN_OPENROUTER_API_KEY`), or reuse `DAN_LLM_API_KEY` with `DAN_LLM_BASE_URL=https://openrouter.ai/api/v1`. Restart the backend after changing credentials. Keys stay server-side; selecting OpenRouter does not rewrite your CLI configuration or log out native accounts.
 
 Open **Team** to enable delegates and configure each harness/model combination. Codex accounts come from local codexx configuration (`DAN_CODEXX_CONFIG` can override its path). Native Claude uses its current configuration or profiles under `DAN_CLAUDE_ACCOUNTS_DIR` (default `~/.claude-accounts`). Install each CLI separately and authenticate it when using native models; Antigravity uses `agy`. Unsupported controls stay disabled.
 
-**Import native session** in the project sidebar finds conversations matching the project's folder. Select one and choose **Import as fork**, or Cancel. JSONL transcript imports support up to 256 MB. Imports preserve original history; Codex/Claude native continuation forks before use. Antigravity import is currently unavailable because its headless fork path is unverified. Workers run concurrently under a DAN manager; remaining workers stop when the manager finishes. Authenticated live acceptance and restart-resume/approval UI remain pending.
+**Import native session** in the project sidebar finds conversations matching the project's folder. Select one and choose **Import as fork**, or Cancel. JSONL transcript imports support up to 256 MB. Imports preserve original history; Codex/Claude native continuation forks before use. Antigravity import is currently unavailable because its headless fork path is unverified. Workers run concurrently under a Dear Diane manager; remaining workers stop when the manager finishes. Authenticated live acceptance and restart-resume/approval UI remain pending.
 
-Project **⋯** menus offer New chat, Edit project, and **Remove from DAN**. Removal requires confirmation and hides the project in the current DAN profile; folders, files, native sessions, and saved DAN chat history remain intact.
+Project **⋯** menus offer New chat, Edit project, and **Remove from Dear Diane**. Removal requires confirmation and hides the project in the current Dear Diane profile; folders, files, native sessions, and saved Dear Diane chat history remain intact.
 
-Project menus (•••) include **Import native sessions**, with multi-select and **Select all**. Imports create forks and preserve native originals. The sidebar footer opens **DAN settings** for profile-wide preferences.
+Project menus (•••) include **Import native sessions**, with multi-select and **Select all**. Imports create forks and preserve native originals. The sidebar footer opens **Dear Diane settings** for profile-wide preferences.
 
-Native leads retain their sessions and can delegate through a run-scoped bridge. Switching model sources keeps DAN history while using separate native continuations for each source. Native follow-ups queue after the current turn; saved follow-ups resume automatically after a backend restart using their recorded account and settings. Stop closes the lead and its team.
+Native leads retain their sessions and can delegate through a run-scoped bridge. Switching model sources keeps Dear Diane history while using separate native continuations for each source. Native follow-ups queue after the current turn; saved follow-ups resume automatically after a backend restart using their recorded account and settings. Stop closes the lead and its team.
 
-In **Archived chats**, **Delete all archived chats** removes archived DAN copies after confirmation. Active chats, native originals, and project files are preserved.
+In **Archived chats**, **Delete all archived chats** removes archived Dear Diane copies after confirmation. Active chats, native originals, and project files are preserved.
 
-Codex’s built-in subagents also appear automatically in **Team**, with recorded command activity and final replies. This does not require enabling a DAN delegate. These children are controlled by their Codex lead, so their cards do not offer individual Stop buttons.
+Codex’s built-in subagents also appear automatically in **Team**, with recorded command activity and final replies. This does not require enabling a Dear Diane delegate. These children are controlled by their Codex lead, so their cards do not offer individual Stop buttons.
 
 ### Desktop updates
 
-Open **DAN settings → Updates → Install local update** to install an automatically detected prepared build without selecting a file. Finish active runs and queued messages first. DAN verifies the build, closes its owned backend, replaces the app, and reopens it; chats/settings stay in Application Support. A rollback copy and your icon are retained. **Check for updates** tries a prepared local build before GitHub. Manual selection is under **Other update options**; `DAN_LOCAL_UPDATE_PATH` can specify another `.app`.
+Open **Dear Diane settings → Updates → Install local update** to install an automatically detected prepared build without selecting a file. Finish active runs and queued messages first. Dear Diane verifies the build, closes its owned backend, replaces the app, and reopens it; chats/settings stay in Application Support. A rollback copy and your icon are retained. **Check for updates** tries a prepared local build before GitHub. Manual selection is under **Other update options**; `DAN_LOCAL_UPDATE_PATH` can specify another `.app`.
 
 Published releases use `electron-updater`; **Check for updates** and **Download** become available when the packaged release channel is configured. The channel points to private GitHub Releases for this repository. Use **Sign in to GitHub** in Updates to authorize in your browser; the personal build uses the installed GitHub CLI behind the scenes. A production signing identity and published releases are still needed. See [release setup](docs/desktop-updates.md). The Python backend is currently separately installed; a desktop update does not upgrade that environment.
+
+## Naming and compatibility
+
+The product is **Dear Diane** and the assistant is **Diane**. After installing the Python package, use `dear-diane --help`; existing `dan` commands still work. New desktop builds are named `Dear Diane.app`.
+
+Existing Python imports/package name (`dan`), `DAN_*` environment variables, backend IDs, browser storage keys, bundle ID (`com.dan.desktop`), remote services, and the desktop `Application Support/dan` profile remain stable so existing installations retain their chats, accounts, settings, and update identity. The repository remains `deep-agent-network`. Historical plans and logs retain their original names.

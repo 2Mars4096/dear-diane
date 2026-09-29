@@ -1,4 +1,4 @@
-// Ported from learning-assistant lib/material-pdf-extractor.ts (OCR parts). DAN runs
+// Ported from learning-assistant lib/material-pdf-extractor.ts (OCR parts). Diane runs
 // tesseract.js in the browser against the page pdf.js already rendered, so scanned
 // pages get a selectable text layer without any system dependency.
 import type { PdfOcrTextSpan } from "./pdf-ocr";

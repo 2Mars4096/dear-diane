@@ -59,7 +59,7 @@ export default function App() {
       <Suspense
         fallback={
           <div className="grid h-screen w-screen place-items-center bg-white text-sm text-gray-500 dark:bg-gray-950 dark:text-gray-400">
-            Loading DAN
+            Loading Dear Diane
           </div>
         }
       >

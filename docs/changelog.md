@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-29
+- [infra] Install verified Dear Diane.app in Applications, launch successfully, and verify its owned backend/proxy and existing profile. Move the inactive DAN.app to Trash after health checks; preserve chats and settings.
+
+## 2026-09-29
+- [feat] Rename the product Dear Diane and the assistant Diane across desktop/web/phone, backend messages, terminal UI, and build metadata; add the `dear-diane` command alias. Recover the earlier naming discussion and retain the selected icon.
+- [fix] Pin the existing desktop profile and retain bundle/protocol/storage identities; recognize legacy session placeholders and agent receipts alongside Diane output.
+- [test] 365 frontend, 702 backend, and one Flutter widget test pass; production build/budgets and Electron compilation pass. Isolated real Electron confirms profile preservation. Renamed local macOS bundle passes signature, plist, archive, and update-marker checks; installed app and remote deployments remain unchanged.
+
 ## 2026-09-28
 - [infra] Reinstall the signed Literature desktop build with rollback retained after idle-work checks. Installed archive/signature, owned backend and desktop-proxy health, Literature endpoints, and the 305-paper catalogue pass; user state is preserved.
 - [test] Revalidate 19 backend and 27 frontend tests, production build/bundle budgets, and Electron compilation before packaging.

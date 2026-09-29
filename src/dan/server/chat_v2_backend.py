@@ -797,7 +797,7 @@ class CodexAgentBackendAdapter:
 
 
 class SuperDanBackendAdapter:
-    """Direct callable wrapper around Super DAN's live execution lane."""
+    """Direct callable wrapper around Diane's live execution lane."""
 
     backend_name = "super_dan"
 
@@ -886,7 +886,7 @@ class SuperDanBackendAdapter:
                 type="blocked",
                 run_id=request.run_id,
                 task_id=request.task_id,
-                summary="No Super DAN live backend matched this Agent objective.",
+                summary="No Diane live backend matched this Agent objective.",
                 source_event_type="chat_v2.backend.super_dan.unsupported",
                 payload={"backend": self.backend_name, "objective": request.objective},
             )
@@ -1603,7 +1603,7 @@ def _codex_sandbox(request: AgentBackendRunRequest) -> str:
     )
     if requested in {"read-only", "workspace-write", "danger-full-access"}:
         return requested
-    # DAN workbench modes: Plan / Auto / Full access.
+    # Diane workbench modes: Plan / Auto / Full access.
     permission = str(request.profile_policy.get("permission_mode") or "").strip().lower()
     if permission in {"plan", "full"}:
         return "read-only" if permission == "plan" else "danger-full-access"
@@ -2304,7 +2304,7 @@ def _backend_auto_continuation_payload(
     previous_summary = _first_compact_text(
         result.summary,
         dict(result.raw_result or {}).get("stderr"),
-        "Codex ended before DAN could confirm a complete response.",
+        "Codex ended before Diane could confirm a complete response.",
         limit=1600,
     )
     previous_result_payload = result.model_dump(mode="json")
@@ -2384,7 +2384,7 @@ def _backend_auto_continuation_payload(
 
 def _backend_selection_reason(backend_name: str) -> str:
     if backend_name == "super_dan":
-        return "Super DAN is the first V2 Agent backend for workspace build/operator tasks."
+        return "Diane is the first V2 Agent backend for workspace build/operator tasks."
     if backend_name == "deterministic":
         return "Deterministic backend selected for provider-free test execution."
     return "Selected by V2 Agent backend policy."

@@ -35,12 +35,12 @@ export function ProjectMenu({ name, onNewChat, onEdit, onImport, onRemove }: {
       <button role="menuitem" onClick={() => { close(); onEdit(); }}><Pencil size={15} />Edit project</button>
       {onImport && <button role="menuitem" onClick={() => { close(); onImport(); }}><Download size={15} />Import native sessions</button>}
       <div className="wb-menu-separator" />
-      <button role="menuitem" className="wb-remove-action" onClick={() => { close(); confirmation.current?.showModal(); cancel.current?.focus(); }}><Trash2 size={15} />Remove from DAN</button>
+      <button role="menuitem" className="wb-remove-action" onClick={() => { close(); confirmation.current?.showModal(); cancel.current?.focus(); }}><Trash2 size={15} />Remove from Dear Diane</button>
     </div>
     <dialog ref={confirmation} className="wb-project-settings wb-remove-confirmation" aria-labelledby={headingId} onCancel={(event) => { event.preventDefault(); dismiss(); }}>
-      <h2 id={headingId}>Remove “{name}” from DAN?</h2>
-      <p>This removes the project and its chats from this DAN project list. Your folder, files, and original Codex, Claude Code, and Antigravity sessions will not be deleted. DAN chat history is kept too.</p>
-      <footer><button ref={cancel} onClick={dismiss}>Cancel</button><button className="wb-remove-action" onClick={() => { confirmation.current?.close(); onRemove(); }}>Remove from DAN</button></footer>
+      <h2 id={headingId}>Remove “{name}” from Dear Diane?</h2>
+      <p>This removes the project and its chats from this Dear Diane project list. Your folder, files, and original Codex, Claude Code, and Antigravity sessions will not be deleted. Dear Diane chat history is kept too.</p>
+      <footer><button ref={cancel} onClick={dismiss}>Cancel</button><button className="wb-remove-action" onClick={() => { confirmation.current?.close(); onRemove(); }}>Remove from Dear Diane</button></footer>
     </dialog>
   </>;
 }

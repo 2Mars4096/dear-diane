@@ -25,10 +25,10 @@ export async function assertNoActiveWork(graphs: string): Promise<void> {
 
 export async function inspectBundle(bundle: string): Promise<{ version: string; path: string }> {
   const resolved = await fs.realpath(bundle);
-  if (path.extname(resolved) !== ".app") throw new Error("Choose a DAN.app build.");
+  if (path.extname(resolved) !== ".app") throw new Error("Choose a Dear Diane.app build.");
   const plist = path.join(resolved, "Contents/Info.plist");
   const read = async (key: string) => (await exec("/usr/libexec/PlistBuddy", ["-c", `Print :${key}`, plist])).stdout.trim();
-  if (await read("CFBundleIdentifier") !== "com.dan.desktop") throw new Error("This build is not DAN.");
+  if (await read("CFBundleIdentifier") !== "com.dan.desktop") throw new Error("This build is not Dear Diane.");
   const executable = await read("CFBundleExecutable");
   if (path.basename(executable) !== executable) throw new Error("Invalid application executable.");
   const architectures = (await exec("/usr/bin/lipo", ["-archs", path.join(resolved, "Contents/MacOS", executable)])).stdout.trim().split(/\s+/);

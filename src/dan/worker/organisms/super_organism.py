@@ -1,4 +1,4 @@
-"""Deterministic Super DAN organism showcase.
+"""Deterministic Diane organism showcase.
 
 This module is intentionally not a live many-agent runner yet. It builds the
 coordination substrate first: cells, organs, board signals, claim graph updates,
@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 DEFAULT_SUPER_ORGANISM_TARGET = (
-    "use the 20-cell Super DAN organism to turn an operator objective into a live execution contract"
+    "use the 20-cell Diane organism to turn an operator objective into a live execution contract"
 )
 DEFAULT_SUPER_ORGANISM_TRUTH_TARGET = "a new AI agent product"
 DEFAULT_SUPER_ORGANISM_ID = "super-dan-20"
@@ -89,7 +89,7 @@ _ROLE_CATALOG: dict[str, list[str]] = {
 
 
 class SuperOrgan(str, Enum):
-    """Organs used by the first Super DAN showcase organism."""
+    """Organs used by the first Diane showcase organism."""
 
     BRAIN = "brain"
     SCOUT = "scout"
@@ -453,7 +453,7 @@ def resolve_super_organism_scenario(
 ) -> SuperOrganismScenario:
     """Return the current public run contract.
 
-    Kept as a compatibility shim for older callers; public Super DAN runs are
+    Kept as a compatibility shim for older callers; public Diane runs are
     objective-first and no longer expose scenario selection.
     """
 
@@ -783,7 +783,7 @@ def _run_universal_agent_demo(
             source_cell_id="synthesis-001",
             organ=SuperOrgan.SYNTHESIS,
             phase="synthesis",
-            summary=f"Super DAN {cell_count}-cell universal-agent deterministic showcase completed.",
+            summary=f"Diane {cell_count}-cell universal-agent deterministic showcase completed.",
             confidence=readiness_score,
             payload={
                 "delivery_node_count": len(delivery_plan),
@@ -826,7 +826,7 @@ def _run_universal_agent_demo(
         caveat=(
             "This is still a deterministic coordination demo. It accepts the objective "
             "and produces a universal-agent execution contract, but it does not call the "
-            "separate DAN Code or DAN Research products or fetch live evidence."
+            "separate Diane Code or Diane Research products or fetch live evidence."
         ),
         cells=completed_cells,
         evidence_refs=evidence_refs,
@@ -1081,7 +1081,7 @@ def _run_truth_audit_demo(
             source_cell_id="synthesis-001",
             organ=SuperOrgan.SYNTHESIS,
             phase="synthesis",
-            summary=f"Super DAN {cell_count}-cell deterministic showcase completed.",
+            summary=f"Diane {cell_count}-cell deterministic showcase completed.",
             confidence=credibility_score,
             payload={
                 "claim_count": len(claims),
@@ -1372,7 +1372,7 @@ def _run_website_build_demo(
             source_cell_id="synthesis-001",
             organ=SuperOrgan.SYNTHESIS,
             phase="implementation_packaging",
-            summary=f"Super DAN {cell_count}-cell website-build deterministic showcase completed.",
+            summary=f"Diane {cell_count}-cell website-build deterministic showcase completed.",
             confidence=readiness_score,
             payload={
                 "delivery_node_count": len(delivery_plan),
@@ -1414,7 +1414,7 @@ def _run_website_build_demo(
         final_memo=final_memo,
         caveat=(
             "This is a deterministic coordination demo. It produces a website-build blueprint "
-            "and organism trace for Super DAN's own materialization path."
+            "and organism trace for Diane's own materialization path."
         ),
         cells=completed_cells,
         evidence_refs=evidence_refs,
@@ -1545,7 +1545,7 @@ def _build_website_evidence_refs(target: str) -> list[EvidenceRef]:
             ref_id="brief:implementation-scope",
             label="Implementation scope",
             source_family="engineering",
-            summary="Separates deterministic blueprint output from Super DAN's later live file-writing pass.",
+            summary="Separates deterministic blueprint output from Diane's later live file-writing pass.",
             trust_hint="synthetic",
         ),
     ]
@@ -1970,7 +1970,7 @@ def _build_universal_delivery_plan(
             outputs=["execution lane", "allowed authority", "approval boundary"],
             notes=[
                 f"Selected execution family: {execution_family}.",
-                "Live mode should execute inside Super DAN or an operator-approved lane according to this contract.",
+                "Live mode should execute inside Diane or an operator-approved lane according to this contract.",
             ],
         ),
         DeliveryNode(
@@ -2019,9 +2019,9 @@ def _build_universal_delivery_plan(
             status="live_build_required",
             assigned_cell_count=_scale_total_cell_count(cell_count, 10),
             dependencies=["node-002", "node-003", "node-004", "node-005"],
-            outputs=["Super DAN execution packet", "tool budget", "first bounded run objective"],
+            outputs=["Diane execution packet", "tool budget", "first bounded run objective"],
             notes=[
-                "This is where a live Super DAN implementation should do the selected work, not just print a plan.",
+                "This is where a live Diane implementation should do the selected work, not just print a plan.",
                 "Current deterministic mode prepares native execution artifacts and supported materializers.",
             ],
         ),
@@ -2048,7 +2048,7 @@ def _build_universal_delivery_plan(
             outputs=["final artifact", "verification summary", "residual risks", "operator next step"],
             notes=[
                 "Synthesis cells decide whether the objective is done, needs another bounded pass, or needs clarification.",
-                "The review loop belongs to Super DAN for this command, not to a separate product shell.",
+                "The review loop belongs to Diane for this command, not to a separate product shell.",
             ],
         ),
     ]
@@ -2071,7 +2071,7 @@ def _build_universal_final_memo(
     blockers = [node.node_id for node in delivery_plan if node.status == "needs_input"]
     reserve_cells = ", ".join(shared_board.reserve_cell_ids) or "none"
     return (
-        f"Super DAN's {cell_count}-cell deterministic universal-agent organism accepts the objective "
+        f"Diane's {cell_count}-cell deterministic universal-agent organism accepts the objective "
         f"'{target}' and treats it as {verdict}. Execution family: {execution_family}. "
         f"Execution readiness score: {readiness_score:.2f}. Delivery nodes: {len(delivery_plan)}. "
         f"Board tickets: {len(coordination_tickets)}. Handoff packets: {len(handoff_packets)}. "
@@ -2192,7 +2192,7 @@ def _build_website_delivery_plan(target: str, *, cell_count: int) -> list[Delive
             ],
             notes=[
                 "Good first live slice: one static page with CSS/JS animation, then wire product data later.",
-                "Super DAN can materialize this through its own deterministic artifact path before a later live mode exists.",
+                "Diane can materialize this through its own deterministic artifact path before a later live mode exists.",
             ],
         ),
         DeliveryNode(
@@ -2244,7 +2244,7 @@ def _build_website_final_memo(
     live_nodes = [node.node_id for node in delivery_plan if node.status == "live_build_required"]
     input_nodes = [node.node_id for node in delivery_plan if node.status == "needs_input"]
     return (
-        f"Super DAN's {cell_count}-cell deterministic website organism treats {target} as {verdict}. "
+        f"Diane's {cell_count}-cell deterministic website organism treats {target} as {verdict}. "
         f"Build readiness score: {readiness_score:.2f}. Delivery nodes: {len(delivery_plan)}. "
         f"Live-build nodes: {', '.join(live_nodes) or 'none'}. Nodes needing user/product input: "
         f"{', '.join(input_nodes) or 'none'}. The organized behavior is the point: brain cells lock "
@@ -2398,7 +2398,7 @@ def _build_final_memo(
     unsupported = [claim.claim_id for claim in claims if claim.status == ClaimStatus.UNSUPPORTED]
     live_check = [claim.claim_id for claim in claims if claim.status == ClaimStatus.NEEDS_LIVE_CHECK]
     return (
-        f"Super DAN's {cell_count}-cell deterministic organism treats {target} as {verdict}. "
+        f"Diane's {cell_count}-cell deterministic organism treats {target} as {verdict}. "
         f"Credibility score: {credibility_score:.2f}. Verified claims: {', '.join(verified) or 'none'}. "
         f"Disputed claims: {', '.join(disputed) or 'none'}. Unsupported claims: {', '.join(unsupported) or 'none'}. "
         f"Claims requiring live checks: {', '.join(live_check) or 'none'}. The organized behavior is the point: "

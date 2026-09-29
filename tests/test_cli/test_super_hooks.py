@@ -386,7 +386,7 @@ def test_super_hook_runtime_suppresses_repair_after_attempt_exhausted(
             7,
             changed_required_files=["/tmp/site/index.html"],
             deterministic_failures=[
-                "The generated website still looks like the generic Super DAN contract/demo template."
+                "The generated website still looks like the generic Diane contract/demo template."
             ],
             repair_attempted=True,
             repair_exhausted=True,
@@ -694,7 +694,7 @@ def test_super_hook_status_formats_persisted_inbox_state(tmp_path: Path) -> None
 
     status = format_super_queue_status(tmp_path)
 
-    assert "Super DAN queues" in status
+    assert "Diane queues" in status
     assert "reactivity: immediate" in status
     assert "worktree parallelism: 2" in status
     assert "- validation:" in status

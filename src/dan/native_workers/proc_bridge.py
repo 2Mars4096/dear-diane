@@ -1,7 +1,7 @@
-"""File RPC so sandboxed CLI leads can ask DAN to run long-lived processes.
+"""File RPC so sandboxed CLI leads can ask Diane to run long-lived processes.
 
 Anything an agent starts from its own shell dies with its run. Commands sent through
-this bridge are started by DAN's process manager instead, so they keep running after
+this bridge are started by Diane's process manager instead, so they keep running after
 the agent stops. The client is standalone stdlib Python (copied into the workspace).
 """
 from __future__ import annotations
@@ -48,7 +48,7 @@ async def serve(directory: Path, workspace: str, workspace_id: str = "", thread_
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run long-lived processes through DAN so they outlive this agent run")
+    parser = argparse.ArgumentParser(description="Run long-lived processes through Diane so they outlive this agent run")
     parser.add_argument("--queue", required=True)
     parser.add_argument("action", choices=["start", "list", "stop", "logs"])
     parser.add_argument("--name", default="")

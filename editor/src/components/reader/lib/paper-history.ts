@@ -1,4 +1,4 @@
-// Ported from learning-assistant lib/paper-history.ts. DAN has no material records,
+// Ported from learning-assistant lib/paper-history.ts. Diane has no material records,
 // so a PDF's identity is its project path unless a content digest is supplied.
 export type PaperHistoryMaterial = {
   material_id: string;

@@ -1,4 +1,4 @@
-"""Surface request contract shared by the Super DAN control plane."""
+"""Surface request contract shared by the Diane control plane."""
 
 from __future__ import annotations
 

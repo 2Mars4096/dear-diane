@@ -47,7 +47,7 @@ extension WorkRunModeLabel on WorkRunMode {
 
   String get description => this == WorkRunMode.review
       ? 'Pause on ambiguous attention choices.'
-      : 'Let DAN choose the next action.';
+      : 'Let Diane choose the next action.';
 }
 
 class WireGuardStatus {
@@ -372,14 +372,14 @@ class PhoneSessionSummary {
 
   String get displayTitle {
     final cleaned = title.trim();
-    return cleaned.isEmpty ? 'New Super DAN Session' : cleaned;
+    return cleaned.isEmpty ? 'New Diane Session' : cleaned;
   }
 
   factory PhoneSessionSummary.fromJson(Map<String, dynamic> json) {
     return PhoneSessionSummary(
       id: _asString(json['id'], ''),
       workflowId: _asString(json['workflow_id'], '_scratch'),
-      title: _asString(json['title'], 'New Super DAN Session'),
+      title: _asString(json['title'], 'New Diane Session'),
       messageCount: _asInt(json['message_count']),
       updatedAt: _asString(json['updated_at'], ''),
       archived: json['archived'] == true,
@@ -617,6 +617,7 @@ bool _isGenericAgentReceipt(String value) {
     'run finished',
     'finished',
     'super dan accepted the request.',
+    'diane accepted the request.',
   }.contains(normalized);
 }
 
@@ -859,7 +860,7 @@ class DanPhoneApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'DAN Phone',
+      title: 'Dear Diane Phone',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xff176b5b),
@@ -892,8 +893,8 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
   String accessToken = '';
   String phoneWireGuardConfig = decodedDefaultPhoneWireGuardConfig();
   String phoneWireGuardDetail = decodedDefaultPhoneWireGuardConfig().isEmpty
-      ? 'No DAN phone VPN config loaded'
-      : 'DAN phone VPN config loaded';
+      ? 'No Dear Diane phone VPN config loaded'
+      : 'Dear Diane phone VPN config loaded';
   List<WorkspaceNoteSummary> workspaceNotes = const [];
   WorkspaceNoteSummary? activeNote;
   final Map<String, WorkspaceNotePreview> notePreviewCache = {};
@@ -930,7 +931,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       id: 'welcome',
       role: PhoneChatRole.status,
       text:
-          'Set a workspace, then send a Work request. Super DAN will run through the same Agent-run backend as the desktop GUI.',
+          'Set a workspace, then send a Work request. Diane will run through the same Agent-run backend as the desktop GUI.',
     ),
   ];
   String activeWorkflowId = '_scratch';
@@ -1334,7 +1335,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
               role: PhoneChatRole.assistant,
               text: latestTask.latestProgress.isNotEmpty
                   ? latestTask.latestProgress
-                  : 'Super DAN is working in this session.',
+                  : 'Diane is working in this session.',
               status: latestTask.status,
             ),
           ]
@@ -1391,7 +1392,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       unawaited(_refreshWorkspaceFiles(root: targetRoot));
     }
     final payload = await _postJson(activeApiBase, '/api/chats/_scratch', {
-      'title': 'New Super DAN Session',
+      'title': 'New Diane Session',
       'mode': 'agent',
     });
     if (!mounted) return;
@@ -1620,8 +1621,8 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         if (savedWireGuardConfig.isNotEmpty) {
           phoneWireGuardConfig = savedWireGuardConfig;
           wireGuardConfigController.text = savedWireGuardConfig;
-          if (phoneWireGuardDetail == 'No DAN phone VPN config loaded') {
-            phoneWireGuardDetail = 'DAN phone VPN config loaded';
+          if (phoneWireGuardDetail == 'No Dear Diane phone VPN config loaded') {
+            phoneWireGuardDetail = 'Dear Diane phone VPN config loaded';
           }
         }
         if (savedRunMode == 'review') {
@@ -1719,7 +1720,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         health = backendReady ? 'ready' : 'offline';
         statusDetail = health == 'ready'
             ? 'Connected to $selectedBase'
-            : 'No DAN backend at ${candidates.join(', ')}';
+            : 'No Dear Diane backend at ${candidates.join(', ')}';
         if (phoneWireGuardConfig.trim().isEmpty && backendReady) {
           phoneWireGuardDetail = parsedWireGuard?.status == 'active'
               ? 'Phone VPN not required; backend is reachable and host WG is active'
@@ -2163,7 +2164,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     List<PhoneAttachmentDraft> attachments = const [],
   }) {
     return {
-      'identity': {'name': 'DAN Phone', 'role': 'chunk_workspace_phone'},
+      'identity': {'name': 'Dear Diane Phone', 'role': 'chunk_workspace_phone'},
       'workspace_root': workspaceRoot,
       'workspace_id': workspaceRoot,
       'notes_root': notesRoot,
@@ -2301,15 +2302,15 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       id: assistantId,
       role: PhoneChatRole.assistant,
       text: activeRunLive
-          ? 'Steering the active Super DAN run...'
-          : 'Starting Super DAN...',
+          ? 'Steering the active Diane run...'
+          : 'Starting Diane...',
       status: 'working',
     );
     final nextMessages = [...chatMessages, user, assistant];
     final historyForBackend = _chatHistoryForBackend([...chatMessages, user]);
     setState(() {
       chatBusy = true;
-      chatStatus = activeRunLive ? 'Steering Super DAN' : 'Starting Super DAN';
+      chatStatus = activeRunLive ? 'Steering Diane' : 'Starting Diane';
       chatMessages = nextMessages;
       composerAttachments = const [];
     });
@@ -2389,7 +2390,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         _asString(taskRef['task_id'], activeTaskId),
       );
       if (runId.isEmpty) {
-        _replaceChatMessage(assistantId, 'Super DAN queued this request.');
+        _replaceChatMessage(assistantId, 'Diane queued this request.');
         setState(() => chatStatus = 'Queued');
         return;
       }
@@ -2397,7 +2398,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       activeRunLive = true;
       _replaceChatMessage(
         assistantId,
-        'Super DAN accepted the request.',
+        'Diane accepted the request.',
         status: 'running',
       );
       setState(() {
@@ -2408,7 +2409,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
               taskId: activeTaskId,
               threadId: activeThreadId,
               status: 'running',
-              latestProgress: 'Super DAN accepted the request.',
+              latestProgress: 'Diane accepted the request.',
               workspaceRoot: workspaceRoot,
               workspaceId: workspaceRoot,
               activeRunId: runId,
@@ -2422,7 +2423,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         '/api/v2/agent-runs/$runId/execute',
         _phoneExecutePayload(),
       );
-      setState(() => chatStatus = 'Super DAN running');
+      setState(() => chatStatus = 'Diane running');
       _startAgentPolling(runId, assistantId);
     } finally {
       if (mounted) setState(() => chatBusy = false);
@@ -2488,7 +2489,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         'task_id': activeTaskId,
         'idempotency_key': _newId('phone-stop'),
         'payload': {
-          'text': 'Stop requested from DAN Phone.',
+          'text': 'Stop requested from Dear Diane Phone.',
           'surface_context': _phoneSurfaceContext(),
         },
       },
@@ -2515,7 +2516,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
 
   bool _ensureWorkspaceUsableForChat(String assistantId) {
     if (health != 'ready') {
-      _replaceChatMessage(assistantId, 'DAN API is offline. Check Settings.');
+      _replaceChatMessage(assistantId, 'Dear Diane API is offline. Check Settings.');
       return false;
     }
     return true;
@@ -2709,14 +2710,14 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     if (phoneWireGuardConfig.trim().isEmpty) {
       if (!mounted) return;
       setState(() {
-        phoneWireGuardDetail = 'Add a DAN phone VPN config in Settings';
+        phoneWireGuardDetail = 'Add a Dear Diane phone VPN config in Settings';
       });
       return;
     }
     if (!compiledPhoneWireGuardAutoStart) {
       if (!mounted) return;
       setState(() {
-        phoneWireGuardDetail = 'Connect DAN Phone VPN from Settings';
+        phoneWireGuardDetail = 'Connect Dear Diane Phone VPN from Settings';
       });
       return;
     }
@@ -2738,7 +2739,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         setState(() {
           phoneWireGuardDetail = health == 'ready'
               ? 'Phone VPN is optional while the API is connected'
-              : 'Add a DAN phone VPN config to start app-managed VPN';
+              : 'Add a Dear Diane phone VPN config to start app-managed VPN';
         });
       }
       return null;
@@ -2758,7 +2759,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       if (mounted) {
         setState(() {
           phoneWireGuardDetail =
-              'Paste a DAN phone VPN config before forcing the tunnel on';
+              'Paste a Dear Diane phone VPN config before forcing the tunnel on';
         });
       }
       return null;
@@ -2766,7 +2767,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     if (showBusy && mounted) {
       setState(() {
         phoneWireGuardBusy = true;
-        phoneWireGuardDetail = 'Force starting DAN Phone VPN tunnel';
+        phoneWireGuardDetail = 'Force starting Dear Diane Phone VPN tunnel';
       });
     }
     try {
@@ -2804,7 +2805,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     await _savePhoneSettings();
     if (mounted) {
       setState(() {
-        phoneWireGuardDetail = 'DAN phone VPN config saved';
+        phoneWireGuardDetail = 'Dear Diane phone VPN config saved';
       });
     }
   }
@@ -2815,7 +2816,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     if (showBusy && mounted) {
       setState(() {
         phoneWireGuardBusy = true;
-        phoneWireGuardDetail = 'Force off requested for DAN Phone VPN';
+        phoneWireGuardDetail = 'Force off requested for Dear Diane Phone VPN';
       });
     }
     try {
@@ -2823,7 +2824,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       if (mounted) {
         setState(() {
           phoneWireGuardDetail =
-              'DAN Phone VPN forced off (${status?.name ?? 'dan-phone'})';
+              'Dear Diane Phone VPN forced off (${status?.name ?? 'dan-phone'})';
         });
       }
       unawaited(_refreshStatus());
@@ -2952,7 +2953,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
                         controller: apiBaseController,
                         keyboardType: TextInputType.url,
                         decoration: const InputDecoration(
-                          labelText: 'DAN API base',
+                          labelText: 'Dear Diane API base',
                           hintText: 'http://10.77.77.2:8000',
                         ),
                       ),
@@ -3111,7 +3112,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
                       const SizedBox(height: 10),
                       if (phoneWireGuardConfig.trim().isEmpty) ...[
                         Text(
-                          'No phone VPN config saved. Force start needs a DAN phone WireGuard peer config first.',
+                          'No phone VPN config saved. Force start needs a Dear Diane phone WireGuard peer config first.',
                           style: Theme.of(context).textTheme.bodySmall
                               ?.copyWith(
                                 color: Theme.of(context).colorScheme.error,
@@ -3260,7 +3261,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
                       minLines: 6,
                       maxLines: 10,
                       decoration: const InputDecoration(
-                        labelText: 'DAN phone WireGuard config',
+                        labelText: 'Dear Diane phone WireGuard config',
                         hintText: '[Interface]\nPrivateKey = ...',
                         border: OutlineInputBorder(),
                       ),
@@ -3268,7 +3269,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
                     const SizedBox(height: 12),
                     if (phoneWireGuardConfig.trim().isEmpty) ...[
                       Text(
-                        'No phone VPN config saved. Paste a DAN phone peer config before using Force start.',
+                        'No phone VPN config saved. Paste a Dear Diane phone peer config before using Force start.',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: Theme.of(context).colorScheme.error,
                         ),
@@ -4366,7 +4367,7 @@ class _ChatPage extends StatelessWidget {
                     _MessageBubble(
                       title: switch (message.role) {
                         PhoneChatRole.user => 'You',
-                        PhoneChatRole.assistant => 'Super DAN',
+                        PhoneChatRole.assistant => 'Diane',
                         PhoneChatRole.status => 'Status',
                       },
                       text: message.text,
@@ -4427,7 +4428,7 @@ class _ChatPage extends StatelessWidget {
                 decoration: InputDecoration(
                   hintText: activeRunLive
                       ? 'Steer or queue the active run'
-                      : 'Ask Super DAN to work in this workspace',
+                      : 'Ask Diane to work in this workspace',
                   filled: true,
                   fillColor: Colors.white,
                   suffixIcon: IconButton(

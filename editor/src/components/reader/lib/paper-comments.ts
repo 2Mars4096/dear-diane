@@ -19,7 +19,7 @@ export type PdfSelectionAnchor = {
   rotation: 0 | 90 | 180 | 270;
 };
 
-/** DAN: text anchor so a highlight can be re-found when the PDF or its layout changes. */
+/** Diane: text anchor so a highlight can be re-found when the PDF or its layout changes. */
 export type PaperCommentAnchor = {
   end: number;
   fingerprint: string;

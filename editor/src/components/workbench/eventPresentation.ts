@@ -9,12 +9,12 @@ export function eventAgentName(event: ChatV2AgentRunEvent): string {
   const payload = event.payload ?? {};
   const backend = text(payload.backend ?? payload.agent_backend ?? payload.worker_backend).toLowerCase();
   const name = text(payload.worker_name ?? payload.agent_name);
-  if (name.trim()) return name;
+  if (name.trim()) return /^(?:Super\s+)?DAN$/i.test(name.trim()) ? "Diane" : name;
   if (backend.includes("claude")) return "Claude Code";
   if (backend.includes("codex")) return "Codex";
   if (backend.includes("antigravity")) return "Antigravity";
   if (backend.includes("cursor")) return "Cursor";
-  return "DAN";
+  return "Diane";
 }
 
 /** Read only emitted reasoning/tool data; never manufacture hidden thinking. */

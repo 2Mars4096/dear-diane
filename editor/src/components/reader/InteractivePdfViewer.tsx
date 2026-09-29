@@ -61,8 +61,8 @@ type InteractivePdfViewerProps = {
   positionIdentity: string;
   onAskSelection: (selection: SelectionAction) => string | null;
   onCommentSelection: (selection: SelectionAction) => void;
-  onDocument?: (document: PDFDocumentProxy | null) => void; // DAN: lets the reader extract text / run OCR
-  toolbarExtras?: ReactNode; // DAN: reader actions share the toolbar row with Refs
+  onDocument?: (document: PDFDocumentProxy | null) => void; // Diane: lets the reader extract text / run OCR
+  toolbarExtras?: ReactNode; // Diane: reader actions share the toolbar row with Refs
   onPageChange: (pageNumber: number) => void;
   ocrPages: MaterialPdfOcrPage[];
   pageNumber: number;

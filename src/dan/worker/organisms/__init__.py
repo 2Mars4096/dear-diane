@@ -1,4 +1,4 @@
-"""Universal Organism and Super DAN implementations."""
+"""Universal Organism and Diane implementations."""
 
 from __future__ import annotations
 

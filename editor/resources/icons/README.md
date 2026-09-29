@@ -1,4 +1,4 @@
-# DAN app icon
+# Dear Diane app icon
 
 Selected artwork: warm ivory impressionist v7, approved by the user.
 Source: `source-v7.png` (original generated resolution); generation prompt in `prompt-v7.md`. Unselected variants were deleted at the user's request.

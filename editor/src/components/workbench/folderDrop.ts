@@ -14,5 +14,5 @@ export async function droppedFolderPath(
     const path = await resolve(files[0]);
     if (path) return { path };
   } catch { /* Preserve the existing field and explain the fallback. */ }
-  return { error: "The folder path is unavailable here. Paste its full path, or drop it in the DAN desktop app." };
+  return { error: "The folder path is unavailable here. Paste its full path, or drop it in the Dear Diane desktop app." };
 }

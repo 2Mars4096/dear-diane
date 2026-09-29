@@ -1,5 +1,5 @@
 /**
- * API client for the DAN backend server.
+ * API client for the Dear Diane backend server.
  */
 
 import { requestJson, type RequestOptions } from "./http";

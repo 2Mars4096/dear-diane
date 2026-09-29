@@ -1,4 +1,4 @@
-"""Near-real-time quota/usage for the accounts DAN runs agents with.
+"""Near-real-time quota/usage for the accounts Diane runs agents with.
 
 Codex writes its rate limits into every session rollout; Claude Code reports
 usage through Anthropic's OAuth usage endpoint using the CLI's own login.
@@ -203,7 +203,7 @@ def usage_report(base: Path, limit: int = 2) -> dict:
                 continue
             seen_stores.add(store)
             usage = codex_usage(home)
-            # The latest session may belong to a different account than DAN last used.
+            # The latest session may belong to a different account than Diane last used.
             account = usage.pop("active_account", "") or account
         elif backend == "claude":
             usage = claude_usage(account, env)

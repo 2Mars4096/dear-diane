@@ -1,1 +1,1 @@
-"""SSH bootstrap and private-network remote DAN services."""
+"""SSH bootstrap and private-network remote Dear Diane services."""
