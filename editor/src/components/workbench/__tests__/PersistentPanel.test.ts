@@ -35,7 +35,7 @@ it("keeps process drafts, expanded logs, and DOM scroll across hide/show, but re
   const logs = host.querySelector("pre")!;
   logs.scrollTop = 75;
   await render(false);
-  expect(host.querySelector<HTMLElement>("[role=tabpanel]")!.hidden).toBe(true);
+  expect(host.querySelector<HTMLElement>("[role=region]")!.hidden).toBe(true);
   await render(true);
   expect(host.querySelector("input")).toBe(input);
   expect(input.value).toBe("echo draft");

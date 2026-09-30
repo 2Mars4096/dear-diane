@@ -14,6 +14,7 @@ import { buildBackendLaunchEnv } from "./backendLaunch";
 import { registerFileLinks } from "./fileLinks";
 import { registerDesktopUpdates } from "./desktopUpdates";
 import { prepareWindowAppearance, WINDOW_BACKGROUND } from "./windowAppearance";
+import { registerWindowControls } from "./windowControls";
 
 // Keep the existing profile when the package/display name changes.
 app.setPath("userData", path.join(app.getPath("appData"), "dan"));
@@ -22,6 +23,7 @@ app.setName("Dear Diane");
 let mainWindow: BrowserWindow | null = null;
 let revealMainWindow: (() => void) | null = null;
 registerFileLinks(() => mainWindow);
+registerWindowControls(() => mainWindow);
 let tray: Tray | null = null;
 
 const isDev = !app.isPackaged;
@@ -378,6 +380,7 @@ function createWindow() {
     minHeight: 600,
     title: "Dear Diane",
     titleBarStyle: "hiddenInset",
+    ...(process.platform === "darwin" ? { trafficLightPosition: { x: 14, y: 24 } } : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,

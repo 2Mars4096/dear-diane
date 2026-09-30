@@ -8,7 +8,7 @@ export function PersistentPanel({ active, name, children }: {
 }) {
   const [visited, setVisited] = useState(active);
   useEffect(() => { if (active) setVisited(true); }, [active]);
-  return <div className="wb-side-body" role="tabpanel" aria-label={name} hidden={!active}>
+  return <div className="wb-side-body" role="region" aria-label={name} hidden={!active}>
     {(active || visited) && children}
   </div>;
 }
