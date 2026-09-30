@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Make voice transcription more frequent, allow longer thinking pauses and coalesce slow recognition to the newest audio — [7-6](plans/7-6-live-voice.md).
+
 - [x] Settle personal AI usage against actual provider receipts, release unused holds and reconcile voice billing — [7-8](plans/7-8-provider-billing.md).
 - [ ] Historical calls without generation IDs require provider billing records to resolve; never label their holds as actual spend.
 

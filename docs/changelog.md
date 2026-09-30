@@ -1,6 +1,11 @@
 # Changelog
 
 ## 2026-09-30
+- [fix] Separate fast transcript updates from patient turn-taking: target one-second previews, early phrase-break previews and four seconds of silence before submitting. Preserve the existing recording bound.
+- [fix] Coalesce slow recognition to the newest pending snapshot with one request in flight. Drop queued previews on final submission/interruption/end and avoid retranscribing silence without new words.
+- [test] Ten voice regression checks cover finer previews, longer pauses, coalescing, resumed audio and cleanup. Synthetic Chromium checks three previews across a three-second pause, zero premature actions and cleanup at 390px. Production build/bundle budgets, lint and signed Mac package pass.
+
+## 2026-09-30
 - [fix] Settle Personal chat, extraction and voice against provider-reported USD costs. Persist per-attempt intent, generation ID and billing receipts; release unused holds, including between research/repair calls, without treating unknown charges as zero.
 - [feat] Reconcile pending generation IDs through read-only billing lookups; retain receipts through restart and attribute costs to the request-start UTC day. Show confirmed spend, active holds and unverified historical usage separately.
 - [fix] Cap new admission holds by remaining daily/per-task headroom instead of requiring a fixed $0.305152 minimum. Per-call cost ceilings prevent dispatch beyond the held amount.

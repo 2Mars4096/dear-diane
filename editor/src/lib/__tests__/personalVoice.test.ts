@@ -35,7 +35,7 @@ it('ignores silence, preserves initial speech, and automatically finishes a turn
   for (let i = 0; i < 50; i++) detector.feed(new Float32Array(2048));
   expect(begin).not.toHaveBeenCalled();
   for (let i = 0; i < 12; i++) detector.feed(new Float32Array(2048).fill(0.2));
-  for (let i = 0; i < 58; i++) detector.feed(new Float32Array(2048));
+  for (let i = 0; i < 96; i++) detector.feed(new Float32Array(2048));
   expect(begin).toHaveBeenCalledTimes(1); expect(end).toHaveBeenCalledTimes(1);
   const blob = end.mock.calls[0][0] as Blob;
   const view = new DataView(await blob.arrayBuffer());
@@ -59,10 +59,10 @@ it('keeps listening across two turns and interrupts playback with context', asyn
     return {turns: [{id: current, state: 'completed', reply: 'Here is an idea.'}]};
   });
   session = new PersonalVoiceSession('composed', callbacks); await session.start();
-  frames(0.2, 12); frames(0, 58); await flush();
+  frames(0.2, 12); frames(0, 96); await flush();
   await vi.advanceTimersByTimeAsync(1100); await flush();
   expect(callbacks.status).toHaveBeenCalledWith('Speaking…');
-  current = 'turn-2'; frames(0.2, 12); frames(0, 58); await flush();
+  current = 'turn-2'; frames(0.2, 12); frames(0, 96); await flush();
   expect(stopPlayer).toHaveBeenCalledTimes(1);
   await vi.advanceTimersByTimeAsync(1100); await flush();
   const posts = request.mock.calls.filter(([url, options]) => url === '/api/personal/conversation' && options?.method === 'POST');
@@ -81,7 +81,7 @@ it('stops a superseded pending action before admitting the next voice turn', asy
     return {turns: [{id: 'turn-1', state: stopped ? 'stopped' : 'running'}]};
   });
   session = new PersonalVoiceSession('warm', callbacks); await session.start();
-  frames(0.2, 12); frames(0, 58); await flush();
+  frames(0.2, 12); frames(0, 96); await flush();
   frames(0.2, 8); await flush();
   expect(request).toHaveBeenCalledWith('/api/personal/conversation/turn-1/stop', {method: 'POST'});
   expect(callbacks.error).not.toHaveBeenCalled();
@@ -102,8 +102,10 @@ it('previews speech, keeps short pauses in one utterance, and waits for a longer
   const feed=(volume:number,count:number)=>{for(let i=0;i<count;i++) detector.feed(new Float32Array(100).fill(volume));};
   feed(0.2,20); feed(0,18);
   expect(end).not.toHaveBeenCalled();
-  expect(preview).toHaveBeenCalledTimes(1);
-  feed(0.2,10); feed(0,25);
+  expect(preview.mock.calls.length).toBeGreaterThanOrEqual(2);
+  feed(0.2,10); feed(0,30);
+  expect(end).not.toHaveBeenCalled();
+  feed(0,11);
   expect(begin).toHaveBeenCalledTimes(1); expect(end).toHaveBeenCalledTimes(1);
 });
 
@@ -122,6 +124,7 @@ it('preserves earlier audio when the user resumes during final transcription', a
   let firstSize=0, secondSize=0, transcriptions=0;
   request.mockImplementation(async(url,options)=>{
     if(url.includes('/transcribe')) {
+      if ((options!.body as Blob).size < 100000) return {text:'Find a cozy place'};
       transcriptions++;
       if(transcriptions===1) {firstSize=(options!.body as Blob).size; return new Promise(resolve=>{resolveFirst=resolve;});}
       secondSize=(options!.body as Blob).size;
@@ -132,11 +135,42 @@ it('preserves earlier audio when the user resumes during final transcription', a
     return {turns:[{id:'combined',state:'completed',reply:'Okay'}]};
   });
   session=new PersonalVoiceSession('warm',callbacks); await session.start();
-  frames(0.2,12); frames(0,58); await flush();
-  frames(0.2,12); frames(0,58);
+  frames(0.2,12); frames(0,96); await flush();
+  frames(0.2,12); frames(0,96);
   resolveFirst({text:'Find a cozy place'}); await flush();
   expect(secondSize).toBeGreaterThan(firstSize);
   const posts=request.mock.calls.filter(([url,options])=>url==='/api/personal/conversation' && options?.method==='POST');
   expect(posts).toHaveLength(1);
   expect(JSON.parse(posts[0][1]!.body as string).text).toBe('Find a cozy place in Central');
+});
+
+it('coalesces slow previews to the newest audio without overlapping requests',async()=>{
+  let resolveFirst!: (value:{text:string})=>void;
+  let calls=0; const sizes:number[]=[];
+  request.mockImplementation(async(url,options)=>{
+    if(!url.includes('/transcribe')) throw new Error('No conversation should be submitted');
+    sizes.push((options!.body as Blob).size);
+    if(++calls===1) return new Promise(resolve=>{resolveFirst=resolve;});
+    return {text:'The latest complete phrase'};
+  });
+  session=new PersonalVoiceSession('warm',callbacks); await session.start();
+  frames(.2,30); await flush();
+  expect(calls).toBe(1);
+  frames(.2,100); await flush();
+  expect(calls).toBe(1);
+  resolveFirst({text:'The first words'}); await flush();
+  expect(calls).toBe(2);
+  expect(sizes[1]).toBeGreaterThan(sizes[0]*3);
+  expect(callbacks.transcript).toHaveBeenLastCalledWith('The latest complete phrase');
+});
+
+it('previews a brief phrase during a pause without repeatedly transcribing silence',()=>{
+  const end=vi.fn(), preview=vi.fn();
+  const detector=new VoiceActivity(1000,vi.fn(),end,preview);
+  for(let i=0;i<6;i++) detector.feed(new Float32Array(100).fill(.2));
+  for(let i=0;i<6;i++) detector.feed(new Float32Array(100));
+  expect(preview).toHaveBeenCalledTimes(1);
+  for(let i=0;i<25;i++) detector.feed(new Float32Array(100));
+  expect(preview).toHaveBeenCalledTimes(1);
+  expect(end).not.toHaveBeenCalled();
 });

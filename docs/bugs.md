@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **Transcript cadence (2026-09-30):** three-second snapshots and dropping snapshots during recognition made updates sparse. Use one-second/phrase-break snapshots with one latest pending snapshot; keep final turn detection separate at four seconds. Provider latency still limits visible update speed.
+
 - **Fixed reservation exhaustion (2026-09-30):** completed calls retained $0.305152 chat, $0.05 speech and $0.005 transcription reservations instead of settling reported cost. The provider wrapper also dropped dollar cost/generation ID. Preserve those receipts and reconcile audio metadata; a live three-call sample cost $0.0013454675 rather than the $0.360152 hold. Do not erase or guess older charges whose IDs were never stored. New admission now uses available headroom instead of rejecting every balance below the old fixed hold.
 
 - **Voice transcript/reconnect (2026-09-30):** final transcripts were screen-reader-only and the 1.1-second silence threshold split ordinary pauses. Expose progressive ASR text, wait 2.4 seconds and preserve audio when speaking resumes before admission. Polling errors also stayed visible after recovery; separate transient connection state from action errors. The local host process had exited, so restart it detached. TypeScript rejects parameter properties under erasableSyntaxOnly; use explicit fields for the preview callback.
