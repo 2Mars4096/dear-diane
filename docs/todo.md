@@ -1,5 +1,25 @@
 # Todo
 
+- [x] [7-5 conversation](plans/7-5-conversational-personal-agent.md): simple chat entry, durable turns, natural follow-ups, local service receipts and shared AI limits.
+
+- [x] Clarify the first-use reminder flow, manual entry and main-chat navigation; remove empty review panels.
+
+- [x] Simplify Personal UI copy/actions and confirmed summaries; verify direct reminder changes, editing, status updates and calendar downloads.
+
+- [x] Add saved extraction limits/pause controls, schema-v5 backup migration and per-call authorization checks.
+- [x] Strengthen connector receipt identity checks and add a repeatable full mock calendar workflow.
+
+- [x] Add durable extraction spending reservations, provider price ceilings and visible budget status; verify synthetic live extraction.
+- [x] Build mock-only approved calendar action/reconciliation contracts; real broker and provider integration remain open in [7-4](plans/7-4-approved-actions.md).
+
+- [x] Wrap up local Mac/browser startup with a separate persistent launcher and operating guide.
+- [ ] Physical-phone acceptance deferred at the user’s request; resume later with the Plan 7 release gates.
+
+- [x] Align new Personal features with existing workbench typography, controls, palettes and phone navigation; protect reminder drafts and clarify completed records.
+
+- [x] Plan 7 capture follow-up: bilingual image OCR, original deletion, Home lifecycle groups and reconnect recovery; shared Mac/phone UI.
+- [ ] Plan 7 remaining implementation and external acceptance — [acceptance ledger](personal/acceptance.md), [user setup](personal/setup.md).
+
 - [x] Keep `docs/plans/` and specialized `docs/*-plans/` local and excluded from future commits; plan links refer to local working copies.
 
 - [x] [4-10-dear-diane](plans/4-10-dear-diane.md) — Dear Diane product/Diane assistant rename; compatibility tests and signed local desktop build verified; installed Dear Diane and moved old DAN.app to Trash.
@@ -57,6 +77,12 @@
 - [x] [DAN icon concept](UI-plans/1-work-notes-gui.md) — generated retro-futuristic artwork and saved its prompt in `output/imagegen/`.
 
 ## Universal product stack
+
+- [ ] [7-phone-personal-agent](plans/7-phone-personal-agent.md) — Mac + phone shared personal interface, capture/review/ICS, bounded extraction and durable inbox reminders implemented; live acceptance, broker/providers, privacy controls and phone release remain.
+  - [ ] [7-3 durable reminders](plans/7-3-durable-reminders.md) — deterministic inbox foundation tested; Mac/browser reminder and lifecycle flows pass; broader operational acceptance remains.
+  - [x] Browser installation foundation — [7-1](plans/7-1-phone-app-foundation.md); manifest/icons, standalone launch, offline fallback and authentication checks pass.
+  - [ ] Stage 0 — [contracts](personal/contracts.md), [provider decisions](personal/providers.md) and 30 fixtures prepared; durable admission tested and Mac hosting selected; conservative monetary reservations implemented; actual-cost accounting, broker isolation and HTTPS remain.
+  - [x] [7-2-capture-review](plans/7-2-capture-review.md) — transactional records, retry-safe paste/review and calendar download pass; worker extraction plus bounded PDF/EML/TXT intake implemented; bilingual image OCR and local Stage 1 checks pass; device acceptance remains.
 
 - [ ] [6-remote-control](plans/6-remote-control.md) — Settings profiles, SSH installer, authenticated `ny` relay, and shared projects deployed/tested on mini; direct VPN verified; physical-phone acceptance pending, s600 reserved for user testing.
   - [ ] [6-1-private-relay](plans/6-1-private-relay.md) — mini/ny services and native/OpenRouter live tests pass; direct VPN verified; physical-phone acceptance pending.

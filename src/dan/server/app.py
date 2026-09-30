@@ -23,7 +23,9 @@ from dan.server.routers.remote import router as remote_router
 from dan.server.routers.documents import router as documents_router
 from dan.server.routers.papers import router as papers_router
 from dan.server.routers.literature import router as literature_router
+from dan.server.routers.personal import router as personal_router
 from dan.server.literature import ImportRunner
+from dan.personal.runner import PersonalRunner
 from dan.server.routers.remote_registry import router as remote_registry_router
 
 
@@ -37,9 +39,12 @@ def create_app() -> FastAPI:
         recovery = asyncio.create_task(resume_recovered_queues(store))
         app.state.literature_runner = ImportRunner(app)
         app.state.literature_runner.recover()
+        app.state.personal_runner = PersonalRunner(app)
+        app.state.personal_runner.start()
         try:
             yield
         finally:
+            await app.state.personal_runner.close()
             await app.state.literature_runner.close()
             recovery.cancel()
             with suppress(asyncio.CancelledError):
@@ -71,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(documents_router)
     app.include_router(papers_router)
     app.include_router(literature_router)
+    app.include_router(personal_router)
     if remote:
         app.add_middleware(RemoteAccess, config=remote)
     import os

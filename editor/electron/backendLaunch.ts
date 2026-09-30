@@ -42,5 +42,7 @@ export function buildBackendLaunchEnv(
     ...env,
     DAN_GRAPHS_DIR: graphsDir,
     DAN_WORKSPACE_ROOT: workspaceRoot,
+    // Local personal records are available in the Mac app; model use is a separate opt-in.
+    DAN_PERSONAL_ENABLED: env.DAN_PERSONAL_ENABLED ?? "1",
   };
 }

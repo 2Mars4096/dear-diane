@@ -206,3 +206,54 @@ Example execute payload: Codex orchestrates and DeepSeek powers Codex itself.
 - DAN/Codex OpenRouter reasoning accepts default (empty), low, medium, or high. Claude forwards effort only for `anthropic/` models; other gateway models manage their own reasoning and remain experimental in that harness. Fast mode is unavailable for OpenRouter selections.
 - Native Codex/Claude subscription accounts are not model credentials for the DAN harness. DAN configuration uses its API provider; native Codex with explicit `provider: native` selects the built-in OpenAI provider.
 - Provider changes preserve DAN history but use separate provider-scoped native continuations. Keys never appear in browser profiles, API catalog responses, or CLI arguments.
+
+## Personal organizer pilot API
+
+Requires `DAN_PERSONAL_ENABLED=1`; remote requests use the existing authenticated origin. This manual API does not start an Agent V2 run or perform provider actions.
+
+- `GET /api/personal/capabilities`: check `enabled` and delivered capabilities first.
+- `POST /api/personal/captures`: `{operation_id, text, locale?}`; 64 KiB UTF-8 paste, returns original capture plus draft commitment.
+- `GET /api/personal/commitments`: snapshot with `cursor`, `has_more`, and up to 500 newest commitments.
+- `GET /api/personal/commitments/{id}`: commitment, original capture and history.
+- `PATCH /api/personal/commitments/{id}`: `{operation_id, expected_revision, title, date?, time?, timezone?, all_day?, location?, decision}`. Decisions: `save`, `confirm`, `dismiss`. Use explicit IANA timezone; confirmation rejects missing/ambiguous dates.
+- `GET /api/personal/commitments/{id}/calendar.ics`: download confirmed state only. This is not a calendar insertion receipt.
+
+Reuse the same operation ID and identical payload after a lost response. Changed payloads under the same ID and stale revisions return 409. Clients cannot set owner IDs. Automatic extraction, file intake, reminder scheduling, provider connections and replay event endpoints are not available yet.
+
+### Personal extraction and inbox reminders
+
+- `DAN_PERSONAL_MODEL` explicitly enables `POST /api/personal/commitments/{id}/extract`; body: `operation_id`, `expected_revision`. `/extract/stop` uses the same shape. Proposals remain drafts; source content has no tool authority.
+- `BriefCellAdapter` runs tool-free WorkerBrief requests through the existing Cell executor (two model calls, 4096 output tokens per call, 60 seconds). `reserve_dispatch` durably binds a unique dispatch key to existing Agent V2 task/run records. Do not replay personal jobs through ordinary random-ID admission.
+- `POST /api/personal/commitments/{id}/reminder`: `operation_id`, `expected_revision`, `action` (`schedule`, `pause`, `resume`, `stop`). Schedule also requires ISO `date`, local minute-precision `time`, IANA `timezone`, optional explicit `offset` (`-05:00`). Only confirmed records can schedule; edits invalidate existing timing.
+- `GET /api/personal/notifications` returns durable inbox receipts; `POST /notifications/{id}/read` accepts operation ID and expected revision. Inbox presence does not claim phone push delivery or task completion.
+- Review input also accepts nullable `offset` to disambiguate a DST fold; mismatching offsets are rejected.
+
+### Personal source intake
+
+- `POST /api/personal/sources?name=FILE&operation_id=UUID`: raw file bytes, max 10 MiB. Supports text PDFs (max 20 pages; requires the existing `pdf` extra), EML message bodies and UTF-8 TXT. Returns immutable source metadata including ID, SHA-256 and filename. No model call occurs during intake.
+- `POST /api/personal/captures` also accepts `source_ids` (up to five), with optional pasted `text`; combined extracted text is limited to 64 KiB. Source lookup is owner scoped and capture mutation remains transactional.
+- `GET /api/personal/commitments/{id}/sources/{source_id}` downloads an attached original with no-store and nosniff; arbitrary source IDs from other records/owners are rejected.
+- Review requires `confirm_as_new: true` when confirming a proposal classified as update/cancellation/none/unknown. This records an explicit independent commitment; it does not apply changes to another record.
+
+### Personal lifecycle and sources
+
+- `GET /api/personal/events?after=N` returns owner-scoped events, a replay cursor and `reset`. Load a snapshot when reconnecting; advance the local cursor only after required detail refreshes succeed.
+- `POST /api/personal/commitments/{id}/decision`: operation ID, expected revision, `action` (`pause`, `resume`, `wait`, `complete`, `cancel`), optional `note`. Wait/complete require a note. Completion is user-reported, not external provider verification.
+- `GET /api/personal/sources` lists uploaded source metadata. `DELETE /sources/{id}` takes operation ID and expected revision. It removes current original bytes; captured text and existing backups remain. Unused source text is cleared.
+- PNG/JPEG upload returns `needs_transcription`; `POST /sources/{id}/transcription` takes operation ID, expected revision and text. The browser performs bounded English/Chinese OCR locally, and labels the transcription unverified. Confirm against the original. Authenticated inline image previews are at `/commitments/{id}/sources/{source_id}/preview`.
+
+### Personal extraction budgets
+
+- `GET /api/personal/budget` reports USD limits, conservative per-attempt reserve, current UTC-day reservations and admission availability. Unknown legacy costs are nullable, never assumed zero.
+- Enqueue commits the reservation and job together; changed limits and UTC rollover are checked before provider work. Failed/stopped attempts keep reservations. HTTP 409 reports exhaustion; deterministic reminders stay available.
+- Budgeted extraction supports explicit OpenRouter model IDs with `provider.max_price`, no fallback and required parameter support. Requests are limited to 131,072 input bytes per call plus a framing reservation, two calls and 4,096 output tokens each. These allocations are not provider invoices.
+- `dan.connectors.actions.MockActionService` is a test-only contract implementation. It rejects non-mock adapters and has no HTTP/agent-tool approval surface; it must not be used as a real credential or user-authentication boundary.
+
+- `PATCH /api/personal/budget`: `{operation_id, expected_revision, task_limit, daily_limit, paused}`. USD amounts have at most six decimals; initial settings revision is zero. Limits cannot exceed host configuration. Replay is exact, stale settings return 409, and changes preserve earlier reservations. New calls, including repair, check the current settings.
+
+
+## Personal conversation
+
+`GET /api/personal/conversation` returns persisted `turns`, configured `model` and unread reminder count. `POST` accepts `{operation_id,text,timezone,source_ids?}`; timezone is an IANA name, text is bounded to 16,000 characters and attachments to five. Exact replay returns the same admission. Only one queued/running/applying turn per operator is admitted; conflicting admission returns 409. Poll GET for the service-produced reply and optional calendar URL. `POST /api/personal/conversation/{turn_id}/stop` stops queued/running work; the brief apply stage cannot be undone. All routes retain the existing personal enablement/authentication boundary and no-store headers.
+
+The model proposes one `Choice` through a bounded `personal_assistant` WorkerBrief. Existing services validate and execute local actions; no external-account tools are exposed. Conversation turns share the extraction USD reservation ledger. Interrupted model calls are never repeated; interrupted application reports an uncertain outcome for review in Activity.

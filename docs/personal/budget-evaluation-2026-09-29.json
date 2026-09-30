@@ -1,0 +1,27 @@
+{
+  "status": "completed",
+  "error": "",
+  "date": "2026-10-03",
+  "time": "14:00:00",
+  "timezone": "UTC",
+  "budget": {
+    "currency": "USD",
+    "task_limit": "0.50",
+    "daily_limit": "2.00",
+    "reserved_usd": "0.305152",
+    "input_price": "1.00",
+    "output_price": "5.00",
+    "max_input_bytes": 131072,
+    "max_output_tokens": 4096,
+    "max_model_calls": 2,
+    "basis": "conservative_reservation",
+    "price_control": "openrouter_max_price",
+    "day": "2026-09-29",
+    "used_reservations_usd": "0.305152",
+    "remaining_usd": "1.694848",
+    "available": true
+  },
+  "model": "deepseek/deepseek-v4.1-flash",
+  "source": "Synthetic: Meet Ada on 2026-10-03 at 14:00 UTC.",
+  "note": "Live bounded extraction passed. Reserved USD is not actual billed spend. No personal data or connected account was used."
+}

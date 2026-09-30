@@ -153,6 +153,10 @@ class RetryingLLMProvider:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._provider, name)
 
+    def with_retry_policy(self, policy: ProviderRetryPolicy) -> RetryingLLMProvider:
+        """Return a scoped retry policy without mutating another run's provider."""
+        return RetryingLLMProvider(self._provider, policy=policy)
+
     def _delay_seconds(self, attempt_index: int) -> float:
         return min(
             self._policy.initial_delay_seconds * (2 ** max(attempt_index - 1, 0)),

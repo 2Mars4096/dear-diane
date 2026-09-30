@@ -159,3 +159,6 @@ tests/**/.DS_Store
 
 # Browser automation snapshots
 .playwright-cli/
+
+# Separate persistent records for the local personal-organizer launcher
+/.personal-local/

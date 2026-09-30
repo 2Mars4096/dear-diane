@@ -11,6 +11,23 @@ from dan.remote.profiles import Profile, read_profiles, save_profile
 from dan.server.routers.remote import router
 
 
+def test_phone_installation_assets_are_public_but_keep_origin_and_private_boundaries():
+    app = FastAPI()
+    app.add_middleware(RemoteAccess, config={"id": "phone", "url": "https://diane.test", "access_key": "test-only"})
+
+    @app.get("/{path:path}")
+    def asset(path: str):
+        return {"path": path}
+
+    with TestClient(app, base_url="https://diane.test") as client:
+        for path in ("/manifest.webmanifest", "/sw.js", "/app/offline.html", "/app/icon-192.png", "/app/icon-512.png", "/app/apple-touch-icon.png"):
+            assert client.get(path).status_code == 200
+            assert client.get(path, headers={"Origin": "https://evil.test"}).status_code == 403
+            assert client.post(path, headers={"Origin": "https://diane.test"}).status_code == 401
+        for path in ("/index.html", "/api/personal/commitments", "/app/private.json", "/assets/workspace.js"):
+            assert client.get(path).status_code == 401
+
+
 def test_remote_boundary_covers_files_api_ws_origin_and_expiry():
     app = FastAPI()
     config = {"id": "mini", "url": "http://relay:8765", "access_key": "test-secret"}

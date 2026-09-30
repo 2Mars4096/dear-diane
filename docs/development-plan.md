@@ -17,7 +17,11 @@ Make difficult agent work durable, steerable, verifiable, and understandable wit
 5. [Universal Product Cutover](plans/5-universal-product-cutover.md) — completed; legacy code/docs are archived in Git and the boundary is locked.
 6. [Remote control](plans/6-remote-control.md) — implementing Mac-managed SSH profiles, persistent execution, and authenticated private-network desktop/phone access through a replaceable `ny` relay; test on mini, leave s600 to the user.
 
+7. [Phone personal agent](plans/7-phone-personal-agent.md) — browser-first extension for commitments. Shared Mac/browser foundation, bounded document/image capture, structured extraction, durable inbox reminders and task lifecycle implemented. Follow remaining Stage 0–4 gates for monetary budgets, approved Google actions, phone notifications and the physical iPhone/Android pilot; see the [acceptance ledger](personal/acceptance.md). Later providers/jobs remain gated.
+
 ## Near-term priorities
+
+- Personal interaction is conversation first: users express needs, Diane clarifies only missing information and handles supported local actions. Activity contains record forms, history and spending controls. Keep advanced capabilities behind this interaction without implying unimplemented external-account access.
 
 - Independent harness/model-source selection is delivered and live-verified for Codex/Claude with OpenRouter. SSH remote execution follows this shared profile contract; see [4-4](plans/4-4-agent-model-selection.md) and [6](plans/6-remote-control.md).
 
@@ -44,3 +48,6 @@ Make difficult agent work durable, steerable, verifiable, and understandable wit
 - Work and Notes present the same durable task/run truth as the terminal UI.
 - Every retained module has a direct dependency path to the four-layer product.
 - Default deterministic tests and builds pass without live credentials.
+
+### Plan 7 platform update — 2026-09-29
+- User prioritizes Mac alongside phone. Reuse Electron and the shared responsive browser interface; Mac hosts records/execution for now. Physical-phone HTTPS/push and live provider gates remain open.

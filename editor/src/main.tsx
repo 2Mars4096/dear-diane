@@ -5,6 +5,9 @@ import "./styles/workspaceSurfaceThemes.css";
 import App from "./App";
 import { applyAppearanceTheme } from "./lib/appearanceTheme";
 import { useSettingsStore } from "./store/useSettingsStore";
+import { registerWebApp } from "./lib/webApp";
+
+void registerWebApp();
 
 const initialSettings = useSettingsStore.getState();
 applyAppearanceTheme(initialSettings.theme, initialSettings.workspaceSurfaceTone, initialSettings.workbenchColorScheme);

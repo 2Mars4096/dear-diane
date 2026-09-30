@@ -406,6 +406,15 @@ function showMainWindow() {
   else createWindow();
 }
 
+function showPersonalCommitments() {
+  showMainWindow();
+  const contents = mainWindow?.webContents;
+  if (!contents) return;
+  const navigate = () => { void contents.executeJavaScript("window.location.hash = 'personal'"); };
+  if (contents.isLoadingMainFrame()) contents.once('did-finish-load', navigate);
+  else navigate();
+}
+
 ipcMain.on("window:background", (event, color: unknown) => {
   if (!mainWindow || event.sender !== mainWindow.webContents
       || event.senderFrame !== mainWindow.webContents.mainFrame) return;
@@ -419,6 +428,7 @@ function createTray() {
   tray = new Tray(icon);
   const contextMenu = Menu.buildFromTemplate([
     { label: "Open Dear Diane", click: showMainWindow },
+    { label: "Personal commitments", click: showPersonalCommitments },
     { type: "separator" },
     { label: "Quit", click: () => app.quit() },
   ]);

@@ -68,6 +68,14 @@ class RemoteAccess:
 
         if bad_origin or (not host_ok and not bearer):
             return await reject(403, "Unrecognized remote origin")
+        # Installation metadata contains no user or host records. Browsers may
+        # fetch icons/manifest without the authenticated page's cookies.
+        public_app_assets = {
+            "/manifest.webmanifest", "/sw.js", "/app/offline.html",
+            "/app/icon-192.png", "/app/icon-512.png", "/app/apple-touch-icon.png",
+        }
+        if scope["type"] == "http" and scope["method"] in ("GET", "HEAD") and path in public_app_assets:
+            return await self.app(scope, receive, send)
         if path == "/remote/login" and scope["type"] == "http":
             request = Request(scope, receive)
             error = ""

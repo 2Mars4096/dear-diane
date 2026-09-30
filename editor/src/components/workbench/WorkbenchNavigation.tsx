@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Layers, PanelLeft, Plus, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Layers, PanelLeft, Plus, X, CalendarCheck } from "lucide-react";
 import { directionKeys, heldDirectionSlot, reconcileSessionSlots, type NavigationSession } from "./navigation";
 
 export interface NavigationProject {
@@ -108,6 +108,7 @@ export function WorkbenchNavigation(props: Props) {
   const modifier = typeof navigator !== "undefined" && /Mac/.test(navigator.platform) ? "⌘" : "Ctrl";
   return <>
     <div className="wb-navigation">
+      <button onClick={() => { window.location.hash = 'personal'; }} aria-label="Personal commitments" title="Personal commitments"><CalendarCheck size={18} /></button>
       <span className="wb-sidebar-toggle"><button onClick={props.onToggleSidebar} aria-label={props.sidebarOpen ? "Hide sidebar" : "Show sidebar"} title={`${props.sidebarOpen ? "Hide sidebar" : "Show sidebar"} (${modifier}B)`} aria-keyshortcuts="Meta+B Control+B" aria-expanded={props.sidebarOpen} aria-controls="wb-project-sidebar"><PanelLeft size={18} /></button></span>
       <button onClick={() => open("projects")} title={`Switch project (${modifier}⇧P)`} aria-keyshortcuts="Meta+Shift+P Control+Shift+P"><Layers size={17} /><span>{project?.name || "Projects"}</span><span className="wb-shortcut">{modifier}⇧P</span></button>
       <span className="wb-divider">/</span>

@@ -11,6 +11,16 @@ Dear Diane is a focused agent product built as one stack:
 
 The pre-Universal graph builder, visual graph editor, Code/Research/Content modes, concierge, messaging adapters, publishing, RAG, and product-specific organism families were removed on 2026-08-02. They remain recoverable from Git history.
 
+## Mac and phone personal agent
+
+Personal now opens as a conversation. Ask Diane to remember something, change its time, pause or cancel a reminder, or show what is coming up. Attach documents/images in the composer; detailed records and spending controls are under **Activity**. Configure an AI model with the local launcher’s `--env-file` and `--model` options; conversation and extraction share spending limits. Connected-account actions remain unavailable.
+
+For the local Mac milestone, run `PYTHONPATH=src python -m dan.personal` from this checkout, then open `http://127.0.0.1:4197/#personal`. Uses separate persistent `.personal-local/` data and the prepared `editor/dist` client. See [local setup](docs/personal/setup.md). Physical-phone testing is deferred.
+
+The shared browser client includes app metadata, phone icons, standalone launch and a generic offline page. Open a trusted HTTPS deployment, then use **Settings → Phone app** or your browser’s **Add to Home Screen / Install app** menu. The workspace requires a connection to its host. Installation follows the [web app manifest](https://web.dev/learn/pwa/web-app-manifest) and [Apple Home Screen flow](https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/); physical-phone acceptance remains pending. The existing private HTTP relay needs HTTPS for phone service-worker support.
+
+Open **Personal** from the workspace navigation or `/#personal`. The conversation supports local appointments, reminders, follow-ups and status changes, plus questions and drafting. Activity contains source review, calendar-file downloads, record history, manual controls and **AI spending limits**. Attach up to five PDF/EML/TXT/PNG/JPEG files (10 MiB each; text PDFs up to 20 pages); image OCR runs locally in English and Chinese. Keep the Mac awake for inbox reminders; missed reminders catch up after restart. Default conservative limits are $0.50 per turn and $2 per UTC day, shared with extraction. Connected accounts, live web research in this bounded conversation lane, and phone push remain unavailable. See [setup](docs/personal/setup.md) and [acceptance status](docs/personal/acceptance.md).
+
 ## Browser research
 
 Ask Dear Diane to use the browser to search for a paper, retrieve its actual BibTeX, and save `references.bib`. Built-in Dear Diane chats and native leads have a lazy browser connection. On desktop hosts it opens visibly; without a display it runs headless. Set `DAN_BROWSER_HEADLESS=0` or `1` to override. The browser runs on the backend machine, uses a fresh isolated session, and closes when the run finishes or stops. It does not attach to your existing Chrome profile.

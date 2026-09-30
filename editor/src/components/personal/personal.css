@@ -1,0 +1,133 @@
+.personal-app {
+  --personal-bg: var(--dan-wb-background, #faf9f7);
+  --personal-surface: var(--dan-wb-surface, #f2f0ed);
+  --personal-text: var(--dan-wb-text, #292724);
+  --personal-muted: var(--dan-wb-muted, #716c66);
+  --personal-border: var(--dan-wb-border, #dedad5);
+  --personal-accent: var(--dan-wb-accent, #a66b36);
+  height:100%; overflow:auto; background:var(--personal-bg); color:var(--personal-text); font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+.personal-header { display:flex; justify-content:space-between; align-items:center; min-height:52px; padding:8px 24px; border-bottom:1px solid var(--personal-border); gap:16px; }
+.personal-header span { font-size:12px; font-weight:600; color:var(--personal-muted); }
+.personal-app a { color:inherit; text-underline-offset:3px; }
+.personal-header a { display:inline-flex; align-items:center; min-height:36px; text-decoration:none; }
+.personal-header a:hover { text-decoration:underline; }
+.personal-body { max-width:1120px; margin:auto; padding:28px 24px 48px; }
+.personal-intro { margin-bottom:24px; }
+.personal-intro h1 { font-size:24px; font-weight:600; line-height:1.3; margin:0 0 6px; letter-spacing:-.02em; }
+.personal-app p { line-height:1.55; max-width:75ch; }
+.personal-intro p { margin:0; }
+.personal-intro>p:last-child,.personal-footnote,.personal-empty,.personal-actions>span,.personal-record>span { color:var(--personal-muted); }
+.personal-app h2 { font:600 15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; margin:0 0 12px; }
+.personal-app h3 { font-size:13px; font-weight:600; margin:0 0 10px; }
+.personal-capture { border-bottom:1px solid var(--personal-border); padding:0 0 20px; }
+.personal-app label { display:flex; flex-direction:column; gap:6px; font-size:12px; }
+.personal-app input,.personal-app textarea { font:inherit; width:100%; min-width:0; background:var(--personal-bg); color:inherit; border:1px solid var(--personal-border); border-radius:6px; padding:9px 10px; box-sizing:border-box; }
+.personal-app input:disabled,.personal-app textarea:disabled { color:var(--personal-muted); }
+.personal-app textarea { margin:8px 0 12px; resize:vertical; }
+.personal-app button,.personal-app input::file-selector-button { cursor:pointer; min-height:34px; padding:7px 10px; border:1px solid var(--personal-border); border-radius:6px; background:var(--personal-bg); color:inherit; font:inherit; font-size:12px; }
+.personal-app input[type=file] { border:0; padding:4px 0; overflow:hidden; }
+.personal-app input::file-selector-button { margin-right:10px; }
+.personal-app button:hover:not(:disabled),.personal-app input::file-selector-button:hover { background:var(--personal-surface); }
+.personal-app button:active:not(:disabled) { border-color:var(--personal-accent); }
+.personal-app button:disabled { cursor:default; opacity:.5; }
+.personal-app .personal-primary { background:var(--personal-text); color:var(--personal-bg); border-color:var(--personal-text); }
+.personal-app .personal-primary:hover:not(:disabled) { background:color-mix(in srgb,var(--personal-text) 88%,var(--personal-bg)); }
+.personal-app :focus-visible { outline:2px solid var(--personal-accent); outline-offset:3px; }
+.personal-actions { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.personal-actions>span { margin-right:auto; font-size:12px; }
+.personal-columns { display:grid; grid-template-columns:minmax(240px,340px) minmax(0,1fr); gap:32px; margin-top:28px; align-items:start; }
+.personal-inbox>section { margin-bottom:24px; }
+.personal-inbox h2>span { font-size:12px; font-weight:400; color:var(--personal-muted); margin-left:6px; }
+.personal-app .personal-record { display:flex; flex-direction:column; text-align:left; width:100%; gap:5px; padding:12px; margin-bottom:6px; overflow-wrap:anywhere; }
+.personal-record[aria-pressed=true] { border-color:var(--personal-accent); background:var(--personal-surface); }
+.personal-record>span { font-size:12px; }
+.personal-record .personal-record-status { color:var(--personal-text); font-size:11px; }
+.personal-review { min-width:0; padding:0 0 0 24px; border-left:1px solid var(--personal-border); align-self:start; scroll-margin-top:16px; }
+.personal-review>p { font-size:12px; color:var(--personal-muted); }
+.personal-review fieldset { border:0; padding:0; display:grid; gap:14px; margin:20px 0 0; min-width:0; }
+.personal-app summary { cursor:pointer; padding:10px 0; font-size:12px; min-height:34px; }
+.personal-review blockquote { white-space:pre-wrap; overflow-wrap:anywhere; margin:0; padding:12px; max-height:240px; overflow:auto; background:var(--personal-surface); border:1px solid var(--personal-border); border-radius:6px; font-size:13px; line-height:1.6; }
+.personal-date-fields { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.personal-app .personal-check { flex-direction:row; align-items:center; min-height:34px; }
+.personal-check input { width:18px; height:18px; accent-color:var(--personal-accent); }
+.personal-export,.personal-reminder-controls { border-top:1px solid var(--personal-border); margin-top:20px; padding-top:16px; }
+.personal-export p,.personal-footnote { font-size:12px; }
+.personal-placeholder { padding:24px; color:var(--personal-muted); }
+.personal-placeholder h2 { color:var(--personal-text); }
+.personal-app .personal-error,.personal-app [role=alert] { overflow-wrap:anywhere; padding:10px 12px; border:1px solid var(--personal-border); background:var(--personal-surface); border-radius:6px; }
+.personal-error { margin-bottom:16px; }
+.personal-native .personal-header { padding-left:96px; min-height:60px; }
+.personal-reminder-inbox article { padding:12px 0; border-bottom:1px solid var(--personal-border); overflow-wrap:anywhere; }
+.personal-reminder-inbox article p { font-size:12px; color:var(--personal-muted); margin:4px 0; }
+.personal-source-library { margin-top:8px; font-size:12px; }
+.personal-source-library ul { list-style:none; margin:0; padding:0; }
+.personal-source-library li { border-bottom:1px solid var(--personal-border); padding:10px 0; }
+.personal-source-row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.personal-source-row>span { min-width:0; overflow-wrap:anywhere; }
+.personal-source-row>button { flex-shrink:0; }
+.personal-source-image { display:block; max-width:100%; max-height:360px; object-fit:contain; margin-top:12px; }
+.personal-summary { display:grid; grid-template-columns:80px minmax(0,1fr); gap:8px 16px; margin:16px 0; }
+.personal-summary dt { color:var(--personal-muted); }
+.personal-summary dd { margin:0; overflow-wrap:anywhere; }
+.personal-back { display:none; }
+@media(max-width:767px) {
+  .personal-body { padding:20px 16px 40px; }
+  .personal-columns { grid-template-columns:1fr; gap:24px; }
+  .personal-header { padding:8px 16px; }
+  .personal-review { grid-row:1; padding:0 0 24px; border-left:0; border-bottom:1px solid var(--personal-border); }
+  .personal-app button,.personal-app input::file-selector-button { min-height:44px; }
+  .personal-app input,.personal-app textarea { font-size:16px; }
+  .personal-app summary,.personal-header a { min-height:44px; }
+  .personal-back { display:inline-flex; margin-bottom:16px; }
+  .personal-placeholder { display:none; }
+}
+.personal-budget-fields { border:0; padding:0; margin:16px 0; min-width:0; max-width:620px; }
+
+.personal-tools { border-top:1px solid var(--personal-border); margin-top:28px; padding-top:8px; }
+.personal-app .personal-quiet { border-color:transparent; background:transparent; color:var(--personal-muted); }
+.personal-destructive { margin-right:auto; }
+.personal-capture-actions { justify-content:flex-end; }
+.personal-capture-actions .personal-attach { position:relative; display:inline-flex; min-height:34px; justify-content:center; padding:7px 10px; border:1px solid var(--personal-border); border-radius:6px; cursor:pointer; box-sizing:border-box; }
+.personal-attach:hover { background:var(--personal-surface); }
+.personal-attach:focus-within { outline:2px solid var(--personal-accent); outline-offset:3px; }
+.personal-attach input[type=file] { position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; }
+.personal-capture-actions>span { flex:1; }
+.personal-extraction { display:flex; align-items:center; gap:12px; margin:12px 0; }
+.personal-extraction p { margin:0; font-size:12px; color:var(--personal-muted); overflow-wrap:anywhere; }
+@media(max-width:767px) {
+  .personal-capture-actions .personal-attach { min-height:44px; }
+  .personal-capture-actions>span { flex-basis:100%; order:2; }
+}
+
+.personal-calendar { margin-right:auto; font-size:12px; }
+
+.personal-sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+.personal-columns-empty { display:block; margin-top:0; }
+.personal-columns-empty .personal-inbox>section { margin-top:24px; }
+
+.personal-conversation { display:flex; flex-direction:column; }
+.personal-dialogue { display:flex; flex:1; min-height:0; flex-direction:column; max-width:800px; width:100%; margin:0 auto; padding:0 24px 24px; box-sizing:border-box; }
+.personal-dialogue[hidden],.personal-activity[hidden] { display:none; }
+.personal-messages { flex:1; overflow:auto; padding:32px 0 16px; }
+.personal-welcome { min-height:240px; height:60%; display:flex; align-items:center; justify-content:center; }
+.personal-welcome h1 { font-size:28px; font-weight:500; letter-spacing:-.02em; text-align:center; }
+.personal-turn { margin:0 0 28px; }
+.personal-user-message { max-width:85%; width:fit-content; margin-left:auto; background:var(--personal-surface); border-radius:14px; padding:10px 16px; }
+.personal-turn p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; font-size:14px; line-height:1.65; }
+.personal-assistant-message { padding:20px 0 0; }
+.personal-user-message small { display:block; color:var(--personal-muted); }
+.personal-chat-composer { flex-shrink:0; border:1px solid var(--personal-border); border-radius:16px; padding:10px 14px; }
+.personal-chat-composer textarea { border:0; background:transparent; padding:4px 0; margin:0; resize:none; max-height:180px; }
+.personal-chat-actions { display:flex; justify-content:space-between; align-items:center; }
+.personal-chat-actions .personal-attach { position:relative; display:inline-flex; align-items:center; padding:10px; cursor:pointer; }
+.personal-chat-actions button { display:flex; align-items:center; justify-content:center; width:36px; height:36px; border-radius:50%; padding:0; }
+.personal-chat-attachments { display:flex; flex-wrap:wrap; gap:8px; padding:0; list-style:none; }
+.personal-chat-attachments li { display:flex; align-items:center; gap:8px; max-width:100%; overflow-wrap:anywhere; }
+.personal-activity { flex:1; min-height:0; overflow:auto; }
+.personal-activity .personal-header { display:none; }
+@media(max-width:767px) {
+ .personal-dialogue { padding:0 16px max(16px,env(safe-area-inset-bottom)); }
+ .personal-welcome h1 { font-size:24px; }
+ .personal-chat-actions button { width:44px; height:44px; }
+}

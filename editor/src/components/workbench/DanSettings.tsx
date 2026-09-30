@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useRef } from "react";
 import { X } from "lucide-react";
+import { WebAppInstall } from "./WebAppInstall";
 const DesktopUpdates = lazy(() => import("./DesktopUpdates").then(module => ({ default: module.DesktopUpdates })));
 const TokenUsage = lazy(() => import("./TokenUsage").then(module => ({ default: module.TokenUsage })));
 const SkillPool = lazy(() => import("./SkillPool").then(module => ({ default: module.SkillPool })));
@@ -25,6 +26,9 @@ export function DanSettings({ onClose, profiles, onProfilesChange, onPapers, pag
   return <Frame onClick={(event) => { const box = event.currentTarget.getBoundingClientRect(); if (event.target === event.currentTarget && (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom)) onClose(); }} ref={dialog} className={page ? "wb-dan-settings wb-settings-page" : "wb-project-settings wb-dan-settings"} onCancel={onClose} aria-labelledby="dan-settings-title">
     <header><h2 id="dan-settings-title">Dear Diane settings</h2>{!page && <button aria-label="Close Dear Diane settings" onClick={onClose}><X size={18} /></button>}</header>
     <p>Preferences for this Dear Diane app profile. Changes save automatically.</p>
+    <WebAppInstall />
+    <h3>Personal commitments</h3>
+    <p><a href="#personal">Open personal commitments</a> to capture and review invitations and deadlines on hosts with the personal pilot enabled.</p>
     <h3>Appearance</h3>
     <label className="wb-appearance-field">Mode<select value={settings.theme} onChange={(event) => settings.updateSetting("theme", event.target.value as typeof settings.theme)}>
       <option value="system">System</option><option value="vs">Light</option><option value="vs-dark">Dark</option>

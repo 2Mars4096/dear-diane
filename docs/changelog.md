@@ -1,5 +1,70 @@
 # Changelog
 
+## 2026-09-30
+- [test] 382 frontend and 98 combined backend checks pass, including 19 conversation contracts. Real-model synthetic creation/time-correction passes; stop cancels the provider task before local effects, and migration/replay/owner/budget tests pass. Browser draft recovery/Activity/390px layout, native Electron navigation, production build and Mac package signature pass. The local Mac browser host now runs the conversational version with the existing configured provider.
+- [feat] Make Personal a conversation: one message box, attachments, Stop and Activity. Keep existing detailed controls behind Activity and preserve unsent messages/replies across reloads.
+- [feat] Add schema-v6 conversation jobs, private migration backup, operator-scoped replay, bounded Agent V2/Universal Cell replies and shared AI spending reservations. Validated local actions cover create/update, separate event/reminder times, reminder stop/pause/resume, commitment status, listing and calendar download.
+- [fix] Natural time corrections can update the commitment and its reminder in one turn. Service receipts establish success; uncertain restarts do not replay calls or effects. Retain original messages through clarifying follow-ups.
+
+## 2026-09-30
+- [fix] Clarify the Personal starting screen with an explicit reminder purpose, input example, next-step action and manual-date-entry explanation when extraction is disabled. Link back to Chat with Diane; hide empty review/detail panels and rename internal lifecycle labels.
+- [test] All 13 Personal UI tests and changed-file lint pass; production build and bundle budgets pass.
+
+## 2026-09-29
+- [test] 378 frontend and 79 backend regressions pass (the loopback relay check rerun with socket permission). Production build/bundle budgets, lint, native Electron navigation/titlebar and refreshed Mac package/signature pass. Real browser verifies capture/confirm, save/cancel edits, direct reminder changes, pause/resume, completion and ICS download; desktop/390px screenshots checked.
+- [refactor] Simplify Personal: remove repeated instructions, move spending/original controls below commitments, hide empty reminders, distinguish destructive actions, and open confirmed items as compact summaries with Edit details. Confirmed edits have one Save changes action.
+- [feat] Add Change reminder with the existing reminder’s local date/time and timezone; save directly through atomic replacement without a separate Stop step. Preserve draft/revision checks and disclose reminder invalidation only when editing a scheduled commitment.
+
+## 2026-09-29
+- [test] 78 backend and 377 frontend checks pass; the affected 12 UI tests pass again after the type fix. Production build/bundle budgets, changed-file lint and refreshed Mac package/signature pass. Chromium verifies saved spending limits survive reload with no horizontal overflow.
+- [feat] Extend mock calendar contracts to all-day events with explicit exclusive end dates, including create/update and invalid mixed-input checks.
+- [fix] Type fieldset queries in Personal UI tests so production TypeScript compilation validates disabled-state assertions.
+- [feat] Add persistent per-operator spending controls in Personal: edit limits within host ceilings and pause/resume extraction. Schema v5 adds revision-bound settings with a private v4 backup; operation replay and stale-device conflicts preserve reservations.
+- [fix] Recheck spending authorization before every model call, including structured-output repair. Protect unsaved settings from polling and reject receipts whose calendar, resource identity or observed ETag do not match.
+- [feat] Add an account-free `python -m dan.connectors` demonstration: capture/confirm, approved creation, replay, approved update, response loss, restart and read-back reconciliation. Two mutations produce one mock event; real connectors remain disabled.
+
+## 2026-09-29
+- [feat] Add atomic USD extraction reservations, per-extraction/daily caps, execution-day rollover checks and visible budget status. Defaults: $0.50 per extraction, $2.00 per UTC day; conservatively reserve $0.305152 for two bounded calls. Failed/stopped/unknown attempts retain reserves. OpenRouter price ceilings are enforced per request; presets/plugins and unsupported provider routes fail closed. Reservations exclude account fees and are not actual bills.
+- [feat] Start provider-neutral calendar action contracts with a mock-only approval ledger: exact account/payload/expiry hashes, revision checks, permission revocation, durable execution intent, read-back receipts and unknown-outcome reconciliation. No real connector, credential store or approval HTTP endpoint is enabled.
+- [test] Combined checks: 66 backend and 376 frontend tests pass; production build/budgets, lint and Mac packaging/signature pass. Browser confirms exhausted-budget feedback without blocking manual capture or reminders.
+- [test] Budget tests cover atomic admission, replay/restart, cancellation, UTC rollover, changed caps, unknown legacy costs and oversized-input rejection. One live synthetic extraction succeeds with request price ceilings. Mock action tests cover concurrency, source changes, expiry/revocation, cross-account and ETag conflicts, payload tampering, lost responses and receipt-save recovery.
+
+## 2026-09-29
+- [test] Final local wrap-up: 375 frontend and 50 backend tests pass. Launcher serves the built UI, persists a synthetic capture across process restart without duplication, and retains private SQLite permissions.
+- [feat] Add `python -m dan.personal` to run this checkout’s browser client and backend on Mac loopback with separate persistent state. Document startup, restart, data location and installed-backend limitations.
+- [docs] Wrap up the local Mac/browser milestone; defer physical-phone testing at the user’s request. Keep unfinished connector, budget, privacy and phone-release implementation visible in the acceptance ledger.
+
+## 2026-09-29
+- [refactor] Align Personal with the existing workbench: system typography, shared palette, compact controls and flat sections. Remove decorative serif headings/accents; collapse advanced upload/DST help; show readable completed-task summaries and hide redundant empty groups.
+- [fix] Protect reminder edits from background refresh, allow an explicit reminder timezone for all-day commitments, and coordinate disabled controls during mutations. Phone selection moves focus to details and offers a return-to-list control. Source deletion uses an inline review with Keep/Confirm actions.
+- [test] 375 frontend and 50 focused backend checks pass; affected UI checks pass again after the final copy/control edits. Production build/budgets and changed-file lint pass. Chromium verifies 360/390/430px layouts, light/dark themes, preserved reminder drafts during a remote update, and all-day reminder scheduling. Native Electron navigation/titlebar and real-browser sanitization pass. Dependency audit reports zero vulnerabilities. Refreshed Mac bundle builds from the installed Electron runtime and passes ad-hoc signature verification; the installed app/backend remain unchanged.
+
+## 2026-09-29
+- [feat] Add local English/Simplified/Traditional Chinese image OCR with bounded PNG/JPEG intake, cancellation, original preview and reviewable transcription. Synthetic bilingual screenshot recognition passed in Chromium.
+- [feat] Add uploaded-original deletion with explicit captured-text/backup retention, and commitment pause/resume, waiting reasons and user-reported completion/cancellation. Home groups and owner-scoped event cursors refresh across devices while preserving edited forms.
+- [fix] Keep the replay cursor until selected-detail refresh succeeds; refresh history after mutations. Add UI regressions for reconnect failure, lifecycle revisions and confirmed source deletion.
+- [infra] Apply compatible dependency security updates, including Electron 41.10.7; use jsdom for DOMPurify tests because its maintainers do not support happy-dom. Existing sanitizer assertions are preserved.
+- [docs] Add account/private-phone setup instructions and a stage-by-stage acceptance ledger. Real accounts, physical devices and the elapsed pilot remain unverified; additional connector and notification implementation is still required.
+
+## 2026-09-29
+- [fix] Review Plan 7 implementation: keep extraction loops alive after claim/receipt database failures, stop pending extraction on confirmation/dismissal, require explicit new-commitment intent for cancellation/update/unclear proposals, and record reminder acknowledgements in history.
+- [feat] Add bounded PDF/EML/TXT source upload and multi-file capture, private original retention/download, page markers and schema-v4 backup migration. Five sources per capture, 10 MiB per source, 20 PDF pages and 64 KiB combined extracted text; encrypted/scanned PDFs and images have explicit unsupported feedback.
+- [test] 36 focused backend checks and seven Personal UI checks pass, including source replay/ownership, MIME attachment exclusion, original downloads, size/page limits and confirmation intent. Live desktop/390px browser checks verify two-file upload, draft reload, source/page provenance and byte-correct original PDF download without overflow. Production build/budgets, changed-file lint, Electron compilation and refreshed Mac package/signature checks pass.
+
+## 2026-09-29
+- [feat] Prioritize the existing Electron Mac app alongside the phone browser: shared Personal entry in workspace navigation, Mac tray entry and local desktop backend enablement. Mac remains the selected host.
+- [feat] Add bounded Universal Cell extraction through durable named Agent V2 admission; source anchors, nullable dates, explicit DST offsets, stop, revision-safe proposals and saved-result recovery.
+- [feat] Add schema-v3 inbox reminders with schedule/pause/resume/stop, atomic delivery/receipt, overdue catch-up and revision-safe acknowledgement. Deterministic reminders never invoke a model.
+- [test] 36 focused backend/remote checks pass, plus the 368-test frontend suite and two added extraction/reminder UI checks. Production build/budgets, Electron compilation, Mac package/signature and isolated native navigation pass. Desktop and phone-width browser checks verify schedule/pause/reload/resume, one due receipt and persistent acknowledgement.
+- [test] All 30 live synthetic extraction outputs pass local revalidation after UTC-alias normalization (original comparisons 22/30; all eight differences were equivalent timezone names). Median 1.85s, maximum 6.85s; report retains tokens and per-case evidence. This does not close upload, real-account or physical-phone gates.
+- [fix] Refresh delivered reminder status without overwriting an edited form; format reminder timestamps in their stated timezone.
+
+## 2026-09-29
+- [feat] Start Plan 7 on `codex/phone-personal-agent`: shared browser app manifest/icons, standalone launch, Settings guidance, safe-area layout and a generic offline fallback. Preserve remote authentication and keep private data out of service-worker caches.
+- [feat] Add an opt-in manual personal organizer (`DAN_PERSONAL_ENABLED=1`, `/#personal`): paste capture, source review, editable/confirmed/dismissed commitments, duplicate warning, local unsent draft and download-only ICS. Private SQLite transactions enforce exact replay, owner scope and revision conflicts; invalid/DST-ambiguous dates cannot be confirmed.
+- [docs] Recover the ignored parent plan, add Stage 0 contracts/provider research and 30 bilingual/adversarial synthetic fixtures. Extraction, uploads, durable Agent V2 admission, reminders, OAuth/broker, HTTPS deployment and real-device gates remain open.
+- [test] Frontend suite, new draft-recovery checks and production bundle budgets pass; 21 focused backend checks pass. Isolated 390px Chromium verifies service-worker activation, offline/reconnect, unsent-draft recovery, capture/review, confirmed-record reload and UTC calendar export. Physical-phone/provider acceptance is not claimed.
+
 ## 2026-09-29
 - [infra] Keep implementation and specialized plan directories local: ignore `docs/plans/` and `docs/*-plans/`, and remove existing plan files from the Git index while preserving working copies. Historical commits retain their existing files.
 

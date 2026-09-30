@@ -1,0 +1,55 @@
+{
+  "mode": "synthetic_mock_only",
+  "real_accounts_used": false,
+  "passed": true,
+  "steps": [
+    "capture",
+    "confirm",
+    "prepare_exact_create",
+    "approve",
+    "create_and_read_back",
+    "replay_without_duplicate",
+    "edit_commitment",
+    "approve_exact_update",
+    "provider_success_response_lost",
+    "restart_and_reconcile"
+  ],
+  "provider_mutations": 2,
+  "provider_events": 1,
+  "create_receipt": {
+    "provider": "mock",
+    "connection_id": "55f2e166-1660-4bb9-86d2-d745cddca7cc",
+    "calendar_id": "synthetic-calendar",
+    "resource_id": "df1b4aa7-0080-403c-b999-212fd58099e8",
+    "etag": "1",
+    "proposal_hash": "2e3349990b8689f5a54315d3276b82443238b8b2fe28f395dbc397bef2579ca2",
+    "verified": true,
+    "observed": {
+      "id": "df1b4aa7-0080-403c-b999-212fd58099e8",
+      "etag": "1",
+      "version": 1,
+      "title": "Meet Ada",
+      "all_day": false,
+      "start": "2026-10-03T14:00:00Z",
+      "end": "2026-10-03T15:00:00Z"
+    }
+  },
+  "update_receipt": {
+    "provider": "mock",
+    "connection_id": "55f2e166-1660-4bb9-86d2-d745cddca7cc",
+    "calendar_id": "synthetic-calendar",
+    "resource_id": "df1b4aa7-0080-403c-b999-212fd58099e8",
+    "etag": "2",
+    "proposal_hash": "81ab37bf3bbba0e685e66d63da8695c77b94800f7689e6b170e7cd1b5cf4ac10",
+    "verified": true,
+    "observed": {
+      "id": "df1b4aa7-0080-403c-b999-212fd58099e8",
+      "etag": "2",
+      "version": 2,
+      "title": "Meet Ada, revised time",
+      "all_day": false,
+      "start": "2026-10-03T14:30:00Z",
+      "end": "2026-10-03T15:30:00Z"
+    }
+  }
+}

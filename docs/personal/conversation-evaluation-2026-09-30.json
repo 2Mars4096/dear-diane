@@ -1,0 +1,73 @@
+{
+  "mode": "synthetic_live_model",
+  "model": "deepseek/deepseek-v4.1-flash",
+  "real_accounts_connected": false,
+  "initial_failure_and_other_flows": [
+    {
+      "message": "Remind me to call Ada tomorrow at 2 pm.",
+      "state": "completed",
+      "reply": "Saved: Call Ada. I\u2019ll remind you in Diane at 2026-10-01T06:00:00+00:00 (Asia/Hong_Kong).",
+      "record_id": "d1cc5f92-0b64-4c38-8b97-53a4aa79b442"
+    },
+    {
+      "message": "Actually make that 3 pm.",
+      "state": "completed",
+      "reply": "Updated: Call Ada. 2026-10-01 15:00:00 Asia/Hong_Kong. The old reminder was cleared. When should I remind you?",
+      "record_id": "d1cc5f92-0b64-4c38-8b97-53a4aa79b442"
+    },
+    {
+      "message": "What reminders do I have?",
+      "state": "completed",
+      "reply": "\u2022 Call Ada \u00b7 2026-10-01 15:00:00 \u00b7 active",
+      "record_id": null
+    },
+    {
+      "message": "Cancel the reminder to call Ada.",
+      "state": "completed",
+      "reply": "Cancelled: Call Ada.",
+      "record_id": "d1cc5f92-0b64-4c38-8b97-53a4aa79b442"
+    }
+  ],
+  "corrected_followup": [
+    {
+      "message": "Remind me to call Kai tomorrow at 2 pm.",
+      "state": "completed",
+      "reply": "Saved: Call Kai. I\u2019ll remind you in Diane on Thu 1 Oct at 2:00 PM (Asia/Hong_Kong).",
+      "record_id": "362e5ba4-3067-4a09-b774-c8cf3ec40865"
+    },
+    {
+      "message": "Actually make that 3 pm.",
+      "state": "completed",
+      "reply": "Updated: Call Kai. I\u2019ll remind you in Diane on Thu 1 Oct at 3:00 PM (Asia/Hong_Kong).",
+      "record_id": "362e5ba4-3067-4a09-b774-c8cf3ec40865"
+    }
+  ],
+  "verified_record": {
+    "all_day": false,
+    "attention": null,
+    "capture_id": "e5f646fb-db86-43f9-96d6-d7ffc14339d1",
+    "created_at": "2026-09-29T16:24:42.471729+00:00",
+    "date": "2026-10-01",
+    "id": "362e5ba4-3067-4a09-b774-c8cf3ec40865",
+    "lifecycle": "active",
+    "location": "",
+    "offset": null,
+    "owner_id": "operator",
+    "reminder": {
+      "created_at": "2026-09-29T16:24:51.778842+00:00",
+      "due_at": "2026-10-01T07:00:00+00:00",
+      "id": "f589baec-70db-44b5-acb6-1fc6f7b27185",
+      "state": "scheduled",
+      "timezone": "Asia/Hong_Kong"
+    },
+    "revision": 5,
+    "schema_version": 1,
+    "task_id": null,
+    "time": "15:00:00",
+    "timezone": "Asia/Hong_Kong",
+    "title": "Call Kai",
+    "updated_at": "2026-09-29T16:24:51.778949+00:00"
+  },
+  "passed_corrected_followup": true,
+  "note": "Initial correction cleared the reminder; retained as failure evidence. Revised brief/service updated the reminder in the same turn. Six bounded turns used isolated state; user records were untouched."
+}
