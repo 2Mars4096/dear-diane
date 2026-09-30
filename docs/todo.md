@@ -1,5 +1,9 @@
 # Todo
 
+- [x] Paint fast voice drafts before clearing; improve reservation handoff and Composed phrasing.
+- [ ] Add a real reservation submission/calling integration; current Personal only researches booking routes.
+
+
 - [x] Prevent standalone “嘶” noise from cancelling and restarting personal research.
 
 - [x] Preserve Qwen bilingual recognition; remove the single-language browser regression and start audio previews earlier.

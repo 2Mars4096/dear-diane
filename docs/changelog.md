@@ -1,6 +1,13 @@
 # Changelog
 
 ## 2026-09-30
+- [fix] Commit voice transcript text before clearing it after a browser paint; sending is not delayed. Cancel pending clears for new speech, session changes and unmount.
+- [fix] Instruct reservation requests to research official booking routes and prepare details instead of defaulting to reminders. No reservation submission capability is added.
+- [fix] Strengthen Composed British phrasing and measured sentence cadence; retain fixed Kokoro voice, with no claim of exact character replication.
+- [test] 17 voice/UI and 39 backend tests pass; production build and changed-file lint pass.
+
+
+## 2026-09-30
 - [fix] Ignore standalone “嘶” recognition before interrupting or submitting a voice turn. A live turn showed this noise stopped ongoing research and restarted a roughly 34-second research/reply cycle (about 24 seconds retrieval). Preserve substantive speech containing the character.
 
 

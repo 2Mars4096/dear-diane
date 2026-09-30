@@ -1,4 +1,5 @@
 import {useEffect, useRef, useState} from 'react';
+import {flushSync} from 'react-dom';
 import {Mic, PhoneOff} from 'lucide-react';
 import {requestJson} from '../../lib/http';
 import {PersonalVoiceSession, type VoiceProfile, type VoiceStatus} from '../../lib/personalVoice';
@@ -15,6 +16,26 @@ export default function VoiceControl({disabled, refresh, onError, onActive}: {di
     try { const saved = localStorage.getItem(VOICE); if (['warm', 'bright', 'steady', 'composed'].includes(saved || '')) return saved as VoiceProfile; } catch { /* Default remains available. */ }
     return 'warm';
   });
+  const clearFrame = useRef<number | null>(null);
+  const cancelClear = () => {
+    if (clearFrame.current !== null) cancelAnimationFrame(clearFrame.current);
+    clearFrame.current = null;
+  };
+  const showTranscript = (text: string) => {
+    cancelClear();
+    if (text) {
+      // Commit a fast final result even when admission resolves in the same tick.
+      flushSync(() => setTranscript(text));
+    } else {
+      // Permit a paint before clearing; network admission never waits for this.
+      clearFrame.current = requestAnimationFrame(() => {
+        clearFrame.current = requestAnimationFrame(() => {
+          clearFrame.current = null;
+          setTranscript('');
+        });
+      });
+    }
+  };
   const session = useRef<PersonalVoiceSession | null>(null);
   const callbacks = useRef({refresh, onError, onActive});
   useEffect(() => { callbacks.current = {refresh, onError, onActive}; }, [refresh, onError, onActive]);
@@ -23,17 +44,18 @@ export default function VoiceControl({disabled, refresh, onError, onActive}: {di
     void requestJson<{enabled: boolean; profiles: Profile[]}>('/api/personal/voice').then(result => {
       if (mounted) { setEnabled(Boolean(result.enabled)); setProfiles(result.profiles || []); }
     }).catch(() => {});
-    return () => { mounted = false; session.current?.end(); session.current = null; };
+    return () => { mounted = false; session.current?.end(); session.current = null; cancelClear(); };
   }, []);
   const start = (selected = profile) => {
     session.current?.end();
+    cancelClear();
     setOpen(true); setTranscript(''); setStatus('Connecting…'); callbacks.current.onError('');
     callbacks.current.onActive(true);
     const current = new PersonalVoiceSession(selected, {
-      status: setStatus, transcript: setTranscript,
+      status: setStatus, transcript: text => { if (session.current === current) showTranscript(text); },
       refresh: () => callbacks.current.refresh(),
       error: message => callbacks.current.onError(message),
-      ended: () => { if (session.current === current) { session.current = null; setOpen(false); callbacks.current.onActive(false); } },
+      ended: () => { if (session.current === current) { session.current = null; cancelClear(); setTranscript(''); setOpen(false); callbacks.current.onActive(false); } },
     });
     session.current = current; void current.start();
   };

@@ -1,5 +1,9 @@
 # Known Issues & Failed Approaches
 
+- **Invisible fast voice draft (2026-09-30):** React could batch recognized text with the immediate admission clear. Commit nonempty drafts synchronously and clear after a paint opportunity; protect newer drafts and clean up animation frames. No admission delay is added.
+- **Reservation capability gap (2026-09-30):** Personal has research and local actions but no booking submission/call tool. Prompt now requests an official booking route rather than a reminder diversion; this is a handoff, not an implemented booking integration.
+
+
 - **Noise-triggered research restart (2026-09-30):** Qwen returned standalone “嘶。”; the narrow filler list did not cover it, so it cancelled a real restaurant request and launched fresh research. Add this standalone sound without suppressing meaningful sentences. Observed restarted turn used ~6.5s model planning, ~24s retrieval and ~3.4s synthesis.
 
 
