@@ -139,3 +139,15 @@ def test_voice_api_disabled_and_oversized_upload(monkeypatch, tmp_path):
     assert client.post('/api/personal/voice/transcribe?operation_id=request-2', content=b'0' * 960045).status_code == 413
     monkeypatch.setenv('DAN_PERSONAL_ENABLED', '0')
     assert client.get('/api/personal/voice').status_code == 404
+
+
+def test_transcription_keeps_automatic_language_detection(service, monkeypatch):
+    seen = []
+    async def call(*args):
+        seen.append(args)
+        return json.dumps({'text': 'Hello，请帮我找餐厅'}).encode()
+    monkeypatch.setattr(service, 'checked_call', call)
+    result = asyncio.run(service.transcribe('operator', 'bilingual-test-1', wav()))
+    assert seen[0][3] == 'qwen/qwen3-asr-1.7b'
+    assert 'language' not in seen[0][4]
+    assert result['text'] == 'Hello，请帮我找餐厅'

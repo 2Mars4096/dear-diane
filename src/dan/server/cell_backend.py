@@ -62,6 +62,8 @@ class BriefCellAdapter:
                     # Do not log exception text, response bodies, credentials or prompts.
                     status = getattr(exc, 'status_code', None)
                     logging.getLogger(__name__).warning('Model completion failed: type=%s status=%s', type(exc).__name__, status if isinstance(status, int) else 'unknown')
+                    if status == 429:
+                        raise ValueError('The configured model provider is rate limited') from None
                     raise ValueError('The configured model provider is unavailable') from None
                 if adapter.billing:
                     adapter.billing.record(receipt, response.provider_metadata or {})

@@ -273,4 +273,4 @@ The product is **Dear Diane** and the assistant is **Diane**. After installing t
 
 Existing Python imports/package name (`dan`), `DAN_*` environment variables, backend IDs, browser storage keys, bundle ID (`com.dan.desktop`), remote services, and the desktop `Application Support/dan` profile remain stable so existing installations retain their chats, accounts, settings, and update identity. The repository remains `deep-agent-network`. Historical plans and logs retain their original names.
 
-Personal voice displays streaming draft captions in supported browsers; server recognition supplies the final message. Browser captions may use the browser vendor’s speech service. See [voice setup](docs/personal/voice.md).
+Personal voice uses Qwen automatic language detection for English, Chinese and mixed-language drafts and final recognition. See [voice setup](docs/personal/voice.md).

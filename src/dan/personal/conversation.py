@@ -252,6 +252,7 @@ def brief_for(job, history, records, research=None, can_research=True):
 def reply_options(job, base_url):
     options = budgets.completion_options(job['budget'], base_url, job['model'])
     options['extra_body']['provider']['sort'] = 'latency'
+    options['extra_body']['provider']['allow_fallbacks'] = True
     if job['model'] == 'deepseek/deepseek-v4.1-flash':
         options['extra_body']['reasoning'] = {'effort': 'low'}
     return options
@@ -261,6 +262,8 @@ def failed_reply(result):
     # Provider/runtime failures are not evidence that the user's words were unclear.
     if result.raw_result.get('error') == 'This turn has reached its reserved AI spending limit':
         return 'There isn’t enough available AI budget for this reply. Your message is saved; no action was taken. Check AI spending in Settings.'
+    if result.raw_result.get('error') == 'The configured model provider is rate limited':
+        return 'The AI provider is busy and rate-limited this reply. Your message is saved; no action was taken. Please try again shortly.'
     if result.raw_result.get('error') == 'The configured model provider is unavailable':
         return 'The AI provider couldn’t complete this reply. Your message is saved; no action was taken. Please try again.'
     error_type = result.raw_result.get('error_type', '')

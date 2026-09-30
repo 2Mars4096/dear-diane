@@ -1,5 +1,8 @@
 # Todo
 
+- [x] Preserve Qwen bilingual recognition; remove the single-language browser regression and start audio previews earlier.
+- [x] Handle provider 429 failures with price-bounded same-model failover and accurate errors.
+
 - [x] Shorten voice send pause to 1.5 seconds and distinguish provider failures from budget failures.
 
 - [x] Add browser streaming captions so visible voice drafts do not wait for a full OpenRouter request, with authoritative server recognition and fallback.

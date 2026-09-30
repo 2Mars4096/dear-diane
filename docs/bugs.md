@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- **Bilingual caption regression (2026-09-30):** browser SpeechRecognition forced navigator.language and misread mixed speech. Remove that layer; retain Qwen auto-detection. User explicitly prefers Qwen; synthetic alternative-model results are not grounds to override it. Earlier previews improve capture latency, while provider response latency remains variable.
+- **Repeated provider failure (2026-09-30):** safe diagnostics identified RateLimitError/HTTP 429. Personal disabled provider failover; enable same-model backup routing with existing price ceilings. Report remaining 429s accurately; successful synthetic verification does not guarantee provider capacity.
+
 - **Provider failure after research (2026-09-30):** saved run ended with “The configured model provider is unavailable.” The adapter had suppressed all underlying exception details, preventing retrospective classification. Show a provider-specific reply and log safe exception class/numeric status only for future diagnosis. This does not establish or fix the upstream cause.
 
 - **Visible ASR latency (2026-09-30):** shorter audio snapshots and preview reuse cannot remove OpenRouter request latency. Add independent browser streaming interim captions where supported; do not claim provider batch requests are realtime. Browser recognition availability, language and vendor-service latency vary; server recognition remains the fallback.

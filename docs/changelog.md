@@ -1,6 +1,11 @@
 # Changelog
 
 ## 2026-09-30
+- [fix] Restore Qwen-only bilingual previews by removing browser-language recognition. Keep the original Qwen model at the user’s request; advance initial audio snapshots to 0.6 seconds plus up to 150ms of boundary context, preserving 1.5-second send pauses and preview reuse.
+- [fix] Diagnose the recurring reply failure as provider HTTP 429. Enable same-model provider failover under existing price caps and distinguish rate-limit errors. A synthetic live reply completed with failover enabled.
+- [test] 16 voice and 63 backend checks pass; production build/bundle budgets and lint pass. Multilingual model comparison did not justify replacing the user’s preferred recognizer; no general latency guarantee is claimed.
+
+## 2026-09-30
 - [test] 21 voice and 25 conversation checks, production build/bundle budgets and changed-file lint pass.
 - [fix] Shorten voice end-of-turn silence from four seconds to 1.5 seconds at the user’s request, preserving short pauses, streaming drafts and preview reuse.
 - [fix] Explain model-provider failures accurately. Log only exception class and numeric HTTP status for future diagnosis; never log raw provider errors or prompts. Latest observed reply failed after research with a provider-unavailable error, not a local-budget rejection.

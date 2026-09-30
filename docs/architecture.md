@@ -319,5 +319,6 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 
 - VoiceActivity supplies the last preview identity at turn end only when no voiced frames followed it. The session can reuse its in-flight/completed ASR promise, while later speech invalidates reuse. Raw audio remains transient; one final admission and utterance guards are preserved.
 
-## Browser voice drafts
-- `lib/voiceDraft.ts` wraps standard/prefixed browser SpeechRecognition for continuous interim captions using the browser language. It is optional and may use the browser vendor’s remote service. No captions authorize actions; OpenRouter final recognition remains authoritative. Session boundaries invalidate callbacks; ended recognition restarts with committed words, permission failures stop, repeated service failures fall back. Browser text takes precedence over slower server previews until final recognition.
+## Bilingual voice drafts
+- Qwen supplies both preview and final text without a forced language parameter. The single-language browser SpeechRecognition layer was removed after a bilingual regression. The first preview targets 0.6 seconds plus at most 150ms of sound-boundary context; slow previews coalesce and complete previews remain reusable at turn end.
+- Personal chat allows provider failover within the configured model and unchanged price ceilings. HTTP 429 is reported distinctly; no conversation actions are automatically replayed.

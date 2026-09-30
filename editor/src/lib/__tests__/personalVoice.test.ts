@@ -213,11 +213,11 @@ it('keeps voice open after a failed reply already visible in chat', async () => 
 it('takes timed snapshots during uninterrupted speech and includes a little boundary context', () => {
   const preview=vi.fn(), end=vi.fn();
   const detector=new VoiceActivity(1000,vi.fn(),end,preview);
-  for(let i=0;i<12;i++) detector.feed(new Float32Array(100).fill(.2));
+  for(let i=0;i<6;i++) detector.feed(new Float32Array(100).fill(.2));
   expect(preview).not.toHaveBeenCalled();
   for(let i=0;i<4;i++) detector.feed(new Float32Array(100).fill(.2));
   expect(preview).toHaveBeenCalledTimes(1);
-  for(let i=0;i<14;i++) detector.feed(new Float32Array(100).fill(.2));
+  for(let i=0;i<10;i++) detector.feed(new Float32Array(100).fill(.2));
   expect(preview).toHaveBeenCalledTimes(2);
   expect((preview.mock.calls[1][0] as Blob).size).toBeGreaterThan((preview.mock.calls[0][0] as Blob).size);
   expect(end).not.toHaveBeenCalled();
@@ -246,24 +246,4 @@ it('reuses a slow preview covering all speech after the pause instead of restart
   expect(JSON.parse(posts[0][1]!.body as string).text).toBe('A quiet place please');
   expect(callbacks.transcript).toHaveBeenCalledWith('A quiet place please');
   expect(callbacks.transcript).toHaveBeenLastCalledWith('');
-});
-
-it('displays browser captions before server recognition and prevents slower previews from replacing them', async () => {
-  const browsers: {onresult: ((event:{results:{isFinal:boolean;0:{transcript:string}}[]})=>void)|null}[] = [];
-  vi.stubGlobal('webkitSpeechRecognition',class {
-    continuous=false;interimResults=false;lang='';onresult=null;onerror=null;onend=null;
-    constructor(){browsers.push(this);}
-    start(){} abort(){}
-  });
-  let server!: (value:{text:string})=>void;
-  request.mockImplementation(()=>new Promise(resolve=>{server=resolve;}));
-  session=new PersonalVoiceSession('warm',callbacks);await session.start();
-  frames(.2,36);await flush();
-  const browser = browsers[0];
-  browser.onresult?.({results:[{isFinal:false,0:{transcript:'Find a cozy restaurant'}}]});
-  expect(callbacks.transcript).toHaveBeenLastCalledWith('Find a cozy restaurant');
-  expect(request.mock.calls.filter(([url])=>url==='/api/personal/conversation')).toHaveLength(0);
-  server({text:'Find a cozy'});await flush();
-  expect(callbacks.transcript).toHaveBeenLastCalledWith('Find a cozy restaurant');
-  session.end();expect(browser.onresult).toBeNull();
 });

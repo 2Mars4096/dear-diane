@@ -233,7 +233,7 @@ def test_fast_reply_options_preserve_price_and_call_constraints(service):
     assert options['reasoning'] == {'effort': 'low'}
     assert options['provider']['sort'] == 'latency'
     assert options['provider']['max_price']['request'] == 0
-    assert options['provider']['allow_fallbacks'] is False
+    assert options['provider']['allow_fallbacks'] is True
     assert 'reasoning' not in reply_options(job, 'https://openrouter.ai/api/v1')['extra_body']
 
 
@@ -253,3 +253,11 @@ def test_provider_failure_is_not_reported_as_budget_or_bad_user_input():
     assert 'provider' in reply
     assert 'no action was taken' in reply
     assert 'budget' not in reply
+
+
+def test_rate_limit_reply_distinguishes_provider_capacity_from_local_budget():
+    from types import SimpleNamespace
+    from dan.personal.conversation import failed_reply
+    reply = failed_reply(SimpleNamespace(raw_result={'error': 'The configured model provider is rate limited'}))
+    assert 'rate-limited' in reply
+    assert 'no action was taken' in reply
