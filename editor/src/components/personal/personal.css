@@ -139,3 +139,5 @@
 .personal-voice-active textarea,.personal-voice-active .personal-chat-actions>.personal-attach,.personal-voice-active .personal-chat-actions>button { display:none; }
 .personal-voice-active .personal-voice-session { width:100%; margin:0; }
 .personal-voice-active .personal-voice-session select { margin-left:auto; }
+.personal-references { display:flex; flex-wrap:wrap; gap:6px 16px; margin-top:10px; font-size:12px; }
+.personal-references a { max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--personal-muted); text-decoration:underline; text-underline-offset:3px; }

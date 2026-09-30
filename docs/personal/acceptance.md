@@ -1,5 +1,9 @@
 # Plan 7 acceptance ledger
 
+## Personal research integration (2026-09-30)
+
+Workspace search and bounded public page/PDF reading are connected to chat and voice, with cited sources, context, cancellation and shared model reservation enforcement. Automated transport, dispatch, follow-up and UI checks cover the new path. Live dinner trials exposed variable recommendation quality and missing official hours/menu data; these are retained in the research evaluation report. Public research is implemented; arbitrary Workspace shell/files, interactive browser actions and connected-account execution remain separate unfinished capabilities.
+
 Updated 2026-09-30. Mac hosts execution; Mac Electron and phone browsers share the Personal UI. This ledger distinguishes completed local behavior, remaining implementation and external acceptance. Plan 7 as a whole is **not complete**. The user has deferred physical-phone testing; the current wrap-up is the local Mac/browser milestone. Account setup and phone release are not prerequisites for using that milestone.
 
 | Stage | Implemented and checked | Remaining implementation | External acceptance |

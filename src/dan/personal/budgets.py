@@ -117,3 +117,24 @@ def update_settings(store, owner, body: BudgetSettings):
             db.execute('INSERT INTO business_events(owner,entity_id,kind,at) VALUES (?,?,?,?)', (owner, 'spending-settings', 'budget_settings_changed', now()))
             return {**settings, 'revision': revision}
         return store._operation(db, owner, body.operation_id, {'action': 'budget_settings', **body.model_dump(mode='json')}, apply)
+
+
+class CallAllowance:
+    """Charge each attempted call's worst-case cost against its durable reservation.
+
+    UTF-8 bytes conservatively bound input tokens; output is charged at its full
+    requested ceiling even when the call fails. No refund or paid restart replay.
+    """
+    def __init__(self, budget):
+        self.budget = budget
+        self.remaining = Decimal(budget['reserved_usd'])
+        self.calls = 0
+
+    def charge(self, input_bytes):
+        budget = self.budget
+        cost = ((input_bytes + INPUT_FRAMING) * Decimal(budget['input_price'])
+                + OUTPUT_TOKENS * Decimal(budget['output_price'])) / Decimal(1000000)
+        if self.calls >= budget['max_model_calls'] or cost > self.remaining:
+            raise ValueError('This turn has reached its reserved AI spending limit')
+        self.remaining -= cost
+        self.calls += 1

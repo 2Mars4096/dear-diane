@@ -330,8 +330,12 @@ async def web_fetch(
     timeout: int = 30,
     max_length: int = 100_000,
     browser_fallback: bool | None = None,
+    public_only: bool = False,
     **_kwargs,
 ) -> dict:
+    if public_only:
+        from ._public_web import fetch_public
+        return await fetch_public(url, timeout, max_length)
     fallback_enabled = _browser_fallback_default() if browser_fallback is None else bool(browser_fallback)
     key = _fetch_cache_key(url, timeout, max_length, fallback_enabled)
     cached = _get_cached_fetch(key)

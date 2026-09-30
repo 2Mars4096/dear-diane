@@ -1,6 +1,12 @@
 # Changelog
 
 ## 2026-09-30
+- [feat] Connect Personal chat and voice to Workspace web search and public page/PDF reading, with a bounded follow-up pass, durable source evidence, clickable citations and Searching/Reading progress.
+- [fix] Balance page reads across queries, prioritize matching official domains, follow actual menu links and retain snippets when pages fail. Public transport validates DNS/redirects, pins addresses and bounds response sizes.
+- [feat] Allow up to four conversational model attempts under the unchanged durable money reservation by charging conservative input/output ceilings before each attempt. Research cannot authorize local mutations; Stop cancels retrieval and synthesis.
+- [test] 106 personal backend and 389 frontend checks, build/bundle budgets, changed-file lint, browser source links/390px layout and signed Mac package pass. Live synthetic dinner research exercises real search/fetch/model dispatch; initial weak recommendations are retained as failures rather than counted as verified answers. Automated results and remaining limits are recorded in the acceptance ledger.
+
+## 2026-09-30
 - [fix] Make the working timer read naturally: `4s`, `1m 12s`, `1h`. Omit padding and zero units while retaining per-second updates and reload recovery.
 
 ## 2026-09-30

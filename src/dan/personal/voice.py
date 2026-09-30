@@ -167,7 +167,11 @@ class Voice:
             row = db.execute("SELECT body FROM conversation_jobs WHERE owner=? AND id=? AND state='completed'", (owner, body.turn_id)).fetchone()
         if not row:
             raise ValueError('That reply is not ready to speak.')
-        text = json.loads(row[0]).get('reply', '')[:MAX_SPEECH_CHARS]
+        turn = json.loads(row[0])
+        spoken = turn.get('reply', '')
+        for source in turn.get('references', []):
+            spoken = spoken.replace('[' + source['id'] + ']', '')
+        text = spoken[:MAX_SPEECH_CHARS].strip()
         if not text.strip():
             raise ValueError('There is no reply to speak.')
         preset = PROFILES[body.profile]
@@ -176,4 +180,4 @@ class Voice:
         if not data or not (data.startswith(b'ID3') or data[0] == 255):
             raise ValueError('The voice service returned unreadable audio.')
         self.finish(owner, body.operation_id)
-        return {'audio': base64.b64encode(data).decode(), 'rate': preset['rate'], 'format': 'mp3', 'truncated': len(json.loads(row[0]).get('reply', '')) > MAX_SPEECH_CHARS}
+        return {'audio': base64.b64encode(data).decode(), 'rate': preset['rate'], 'format': 'mp3', 'truncated': len(spoken) > MAX_SPEECH_CHARS}

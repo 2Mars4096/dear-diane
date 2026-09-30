@@ -1,5 +1,11 @@
 # LLM-Facing API Guide
 
+## Personal research contract
+- `GET /api/personal/capabilities` includes `research: "public_web"` when a conversation model is configured. Actual provider/site availability is checked at execution.
+- A personal `Choice` can use `action: "research"`, up to two `queries` (500 characters each), and up to three public `urls`. A bounded follow-up can refine queries from source evidence; after two rounds the final choice must be `reply`. Source text is untrusted and cannot authorize mutations.
+- Final `citations` name supplied IDs (`S1`, etc.); unknown IDs are rejected. Conversation snapshots expose `references` (`id`, `url`, `title`, `kind`, `checked_at`) and transient `progress`, while raw excerpts stay in the private host journal. Earlier replies/references enter follow-up context. Existing actions and endpoints remain unchanged.
+- `web_fetch(..., public_only=True)` enforces public-address/redirect/size bounds without browser fallback. Ordinary Workspace fetch behavior remains unchanged.
+
 Product naming: **Dear Diane**; assistant: **Diane**. Python imports, API identifiers, backend IDs, and `dan` CLI commands below remain compatibility contracts. `dear-diane` is an equivalent top-level command.
 
 Document editing: `GET /api/workspace-files/document?path=...&root_path=...` returns strict UTF-8 `content` and a SHA-256 `revision` (2 MB limit). `PUT` to the same endpoint accepts `{path, root_path, content, revision}` and returns the new revision; HTTP 409 retains externally changed content. Browser-selected local documents are not implicitly uploaded or available to agents beyond supplied excerpts.

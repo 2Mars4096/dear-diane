@@ -165,7 +165,7 @@ export class PersonalVoiceSession {
     if (this.closed || generation !== this.generation) { await this.stopTurn(); return; }
     let reply = turn;
     for (let attempt = 0; running(reply); attempt++) {
-      if (attempt >= 180) throw new Error('The reply is taking too long. Voice stopped; check the chat.');
+      if (attempt >= 720) throw new Error('The reply is taking too long. Voice stopped; check the chat.');
       await sleep(1000, signal);
       const snapshot = await requestJson<{turns: Turn[]}>('/api/personal/conversation', {signal});
       reply = snapshot.turns.find(item => item.id === turn.id) || reply;

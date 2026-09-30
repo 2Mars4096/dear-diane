@@ -1,5 +1,8 @@
 # Todo
 
+- [x] Connect Personal chat/voice to Workspace public search and page/PDF reading, with sources, bounded follow-up, Stop and shared model spending limits — [7-7](plans/7-7-workspace-capabilities.md).
+- [ ] Broaden live research quality evaluation; interactive browser, workspace file/shell access and connected-account actions are not yet exposed in Personal.
+
 - [x] Simplify elapsed time to compact units, without leading zeros or unused hours/minutes.
 
 - [ ] [7-6 live voice](plans/7-6-live-voice.md): continuous session/context, four presets and local automated/live synthetic checks implemented; human microphone/voice-quality acceptance and latency tuning remain.

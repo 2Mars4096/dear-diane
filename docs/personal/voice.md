@@ -2,6 +2,8 @@
 
 Start the local Mac host with `--voice` in addition to the existing `--env-file` and `--model` options. In Personal, click the microphone, allow access, and speak. A pause ends your turn automatically; the session keeps listening. Speak during playback to interrupt. End closes the microphone. Activity, workspace navigation, tab hiding and page closure also end the session.
 
+Voice uses the same public research path as text chat. Sources remain clickable in the transcript; citation IDs are omitted from spoken audio.
+
 ## Four consistent presets
 
 | Preset | Inspiration | Fixed synthesis model / voice | Delivery |

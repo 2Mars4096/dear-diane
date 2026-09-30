@@ -72,7 +72,7 @@ def test_speech_only_reads_owned_completed_receipt_and_uses_fixed_voice(service,
     turn = chat.submit('operator', ChatInput(operation_id='chat-request-1', text='Hello', voice_profile='warm'), 'fixture/model')
     body = SpeechInput(operation_id='speech-request-1', turn_id=turn['id'], profile='composed')
     with pytest.raises(ValueError): asyncio.run(service.speak('operator', body))
-    job = chat.claim(); chat.finish(job, {'reply': 'Hello. How can I help?'})
+    job = chat.claim(); chat.finish(job, {'reply': 'Hello. How can I help? [S1]', 'references': [{'id':'S1'}]})
     with pytest.raises(ValueError): asyncio.run(service.speak('other', body))
     calls = []
     async def call(*args): calls.append(args); return b'ID3synthetic-audio'

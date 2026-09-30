@@ -72,3 +72,18 @@ it('updates elapsed time every second from the saved turn and stops when the rep
     expect(host.textContent).toContain('Done.');
   } finally {vi.useRealTimers();}
 });
+
+it('shows research progress and safe source links without rendering page markup',async()=>{
+  mock.mockResolvedValue({turns:[{id:'turn1',text:'Find dinner',state:'running',progress:'Searching…'},
+    {id:'turn2',text:'Earlier research',state:'completed',reply:'An option [S1].',references:[
+      {id:'S1',url:'https://example.com/menu',title:'<script>bad()</script>'},
+      {id:'S2',url:'javascript:alert(1)',title:'Unsafe'}]}],model:'fixture/model'});
+  await mount();
+  expect(host.textContent).toContain('Searching…');
+  const links=host.querySelectorAll('.personal-references a');
+  expect(links).toHaveLength(1);
+  expect(links[0].getAttribute('href')).toBe('https://example.com/menu');
+  expect(links[0].getAttribute('rel')).toBe('noopener noreferrer');
+  expect(links[0].textContent).toContain('S1: <script>bad()</script>');
+  expect(host.querySelector('script')).toBeNull();
+});

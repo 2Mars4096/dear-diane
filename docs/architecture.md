@@ -1,5 +1,11 @@
 # Architecture
 
+## Personal public research
+- `personal/research.py` reuses Workspace search/fetch, with at most two rounds of two queries, three selected pages and two linked menu pages per round. Official-domain matches get priority without starving the other query. Sources, timestamps, snippets/read failures and progress persist in the existing conversation body; the API exposes only references and progress.
+- `tools/_public_web.py` backs `web_fetch(public_only=True)`: public HTTP(S), DNS/IP pinning with original TLS identity, validation at every redirect, no environment proxy, 2 MiB responses, bounded text/PDF parsing. It does not use logged-in browser sessions or local network access.
+- Conversation research uses up to four model calls, with at most two per brief including repair. `budgets.CallAllowance` charges input UTF-8 bytes plus framing and the full output ceiling before every attempt against the unchanged durable USD reservation. Failed/stopped calls retain the reservation; no restart replay. `BriefCellAdapter.charge_completion` is optional, leaving existing extraction behavior unchanged. Conversation leases/voice waits allow 720 seconds for the bounded pipeline.
+- Research evidence cannot select a local mutation. Chat/voice share the same validated result. Stop cancels the pipeline. Search-provider fees are separate from model reservations.
+
 ## Browser app and personal organizer pilot
 
 - `personal/voice.py` adds bounded OpenRouter STT/TTS and fixed four-voice mappings. Schema v7 adds private `voice_operations` intent/reservation/transcript records and a v6 backup; raw audio stays transient. Audio reservations share AI budgets, with cached catalog checks rather than upstream price enforcement.

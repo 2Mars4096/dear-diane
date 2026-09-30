@@ -49,7 +49,7 @@ def run(operation):
 def capabilities(response: Response):
     response.headers['Cache-Control'] = 'no-store'
     return {"enabled": enabled(), "capture": ["paste", "pdf", "eml", "txt", "png", "jpeg"], "extraction": "worker" if extraction_model() else "manual", "model": extraction_model(), "calendar": "download",
-            "reminders": "inbox", "connections": False}
+            "reminders": "inbox", "connections": False, "research": "public_web" if extraction_model() else None}
 
 
 class ExtractionRequest(BaseModel):
@@ -186,7 +186,7 @@ from dan.personal.conversation import Conversation, ChatInput
 
 @router.get('/conversation')
 def conversation(db: PersonalStore = Depends(store)):
-    turns = [{**{key: value for key, value in turn.items() if key in {'id','text','reply','state','created_at','record_id','calendar_url'}}, 'sources': [{'id': source['id'], 'name': source['name']} for source in turn.get('sources', [])]} for turn in Conversation(db).history(OWNER)]
+    turns = [{**{key: value for key, value in turn.items() if key in {'id','text','reply','state','created_at','record_id','calendar_url','references','progress'}}, 'sources': [{'id': source['id'], 'name': source['name']} for source in turn.get('sources', [])]} for turn in Conversation(db).history(OWNER)]
     return {'turns': turns, 'model': extraction_model(), 'unread': sum(not item['read'] for item in Reminders(db).inbox(OWNER)['notifications'])}
 
 

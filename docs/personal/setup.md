@@ -1,5 +1,13 @@
 # Personal-agent pilot setup
 
+## Web research from chat or voice
+
+Ask “Find two cozy dinner options in Central or Sheung Wan, HKD 1000 total for two; check menus and hours.” Search uses the existing Workspace provider configuration on the Mac (including `DAN_TAVILY_API_KEY`, when configured) and available fallbacks. No new search form is needed. Links appear under the reply; blocked or unreadable pages are reported as gaps.
+
+A turn allows at most two research rounds: four queries and ten page/menu reads total. Search may use a cached result (Workspace default 15 minutes). Page reads are fresh. Search service fees are outside the model reservation and follow that provider account's limits. Model calls stay within the existing $0.305152 default reservation using an aggregate conservative byte/output ceiling, up to four attempts. Spending pause and Stop apply to research too.
+
+Public research does not connect email, booking, payment or external calendar accounts. Sites requiring JavaScript/login may remain unreadable.
+
 Mac hosts execution and records. Local capture, extraction (when explicitly configured), calendar download and inbox reminders do not require Google or phone access.
 
 ## Use the Mac browser version now

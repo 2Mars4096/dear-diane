@@ -1,5 +1,7 @@
 # Development Plan
 
+- Personal now reuses Workspace public search/page reading through the existing Agent V2/Cell stack. The conversational surface remains shared by Mac/browser and voice; richer workspace and connected-account actions still need their own execution contracts.
+
 ## Product naming
 
 **Dear Diane** is the product; **Diane** is the assistant. Subtitle: “A workspace for research, code, and ideas.” Existing technical IDs remain compatible. See [rename](plans/4-10-dear-diane.md).

@@ -1,0 +1,165 @@
+{
+  "scenario": "Dinner for two in Central or Sheung Wan, total HKD 1000, cozy; check menus and hours.",
+  "model": "deepseek/deepseek-v4.1-flash",
+  "seconds": 62.97,
+  "state": "completed",
+  "queries": [
+    "cozy restaurant Central Hong Kong dinner menu prices opening hours official site",
+    "cozy bistro Sheung Wan Hong Kong dinner menu prices opening hours official site",
+    "Honjo Sheung Wan official dinner menu prices opening hours honjo.hk",
+    "Chachawan Sheung Wan official a la carte dinner menu prices"
+  ],
+  "reply": "Two cozy Sheung Wan picks, both with hours and menu prices checked:\n\n1. Chachawan — 206 Hollywood Rd. Isaan Thai, buzzy neighbourhood vibe, no service charge. Dinner daily 6–11pm (last order 10pm). Starters from $108, mains from $138, desserts from $88 [S2][S12]. Two people with a couple of starters, two mains and a shared dessert lands around $580 — comfortably inside your HKD 1000 total.\n\n2. Samsen Sheung Wan — Thai, walk-in friendly. Dinner 6–10pm Sun–Thu, 6–11pm Fri–Sat. Dishes like charcoal chicken satay $138 and wagyu boat noodles, cocktails $92–98 [S6]. A few shared plates plus drinks for two should stay under $1000.\n\nGaps: Chachawan's full à la carte PDF wouldn't load, so those are starting prices only; Samsen's full dinner list was only partly visible. Honjo is nearby but I could only verify lunch pricing, not dinner, so I've left it out.",
+  "sources": [
+    {
+      "id": "S1",
+      "url": "https://www.tripadvisor.com/Restaurant_Review-g294217-d21217204-Reviews-Cozy_Cafe-Hong_Kong.html",
+      "title": "COZY CAFE, Hong Kong - Restaurant Reviews, Photos & Phone Number - Tripadvisor",
+      "kind": "search_result",
+      "read_error": "Page could not be read; only the search excerpt is available."
+    },
+    {
+      "id": "S2",
+      "url": "https://thehoneycombers.com/hong-kong/guide-to-sheung-wan/",
+      "title": "Sheung Wan guide: Where to eat, shop, and explore",
+      "kind": "page",
+      "read_error": null
+    },
+    {
+      "id": "S3",
+      "url": "https://www.cntraveler.com/gallery/best-restaurants-in-hong-kong",
+      "title": "30 Best Restaurants in Hong Kong | Condé Nast Traveler",
+      "kind": "search_result",
+      "read_error": "Page could not be read; only the search excerpt is available."
+    },
+    {
+      "id": "S4",
+      "url": "https://bouillonhk.com",
+      "title": "Bouillonhk - Restaurant, Bistro, Restaurant, Dining",
+      "kind": "search_result",
+      "read_error": null
+    },
+    {
+      "id": "S5",
+      "url": "https://hutong.com.hk/restaurant",
+      "title": "Restaurant | Hutong Hong Kong | Northern Chinese Cuisine",
+      "kind": "search_result",
+      "read_error": null
+    },
+    {
+      "id": "S6",
+      "url": "https://www.samsen-hk.com/sheung-wan",
+      "title": "Samsen Sheung Wan",
+      "kind": "search_result",
+      "read_error": null
+    },
+    {
+      "id": "S7",
+      "url": "https://urbanpixxels.com/best-restaurants-in-hong-kong",
+      "title": "My Top 10 Best Restaurants in Hong Kong You Have To Try",
+      "kind": "search_result",
+      "read_error": null
+    },
+    {
+      "id": "S8",
+      "url": "https://www.timeout.com/hong-kong/restaurants/best-restaurants-in-sheung-wan",
+      "title": "The 31 Best Restaurants in Sheung Wan — Time Out Hong Kong",
+      "kind": "search_result",
+      "read_error": null
+    },
+    {
+      "id": "S9",
+      "url": "https://www.elephantgrounds.com/_files/ugd/4d24c9_7abca94ba8f14b86b600863de7578089.pdf",
+      "title": "Elephant Grounds menu",
+      "kind": "page",
+      "read_error": null
+    },
+    {
+      "id": "S10",
+      "url": "https://chachawan.hk/menu.php",
+      "title": "Chachawan menu",
+      "kind": "page",
+      "read_error": null
+    },
+    {
+      "id": "S11",
+      "url": "https://www.tatlerasia.com/dining/food/new-year-day-brunch-hong-kong",
+      "title": "10 Of The Best 2021 New Year's Day Brunches To Try In ...",
+      "kind": "search_result",
+      "read_error": "Page could not be read; only the search excerpt is available."
+    },
+    {
+      "id": "S12",
+      "url": "https://www.chachawan.hk",
+      "title": "Chachawan: About",
+      "kind": "page",
+      "read_error": null
+    },
+    {
+      "id": "S13",
+      "url": "https://www.scmp.com/lifestyle/food-drink/article/3031805/comforting-family-food-hong-kong-plus-unrivalled-italian-and",
+      "title": "Where a chef eats comforting, family food in Hong Kong",
+      "kind": "page",
+      "read_error": null
+    },
+    {
+      "id": "S14",
+      "url": "https://www.facebook.com/ditphongkong/posts/chachawanexperience-hong-kongs-original-taste-of-isaan-at-chachawan-the-citys-fi/1228985389392235",
+      "title": "CHACHAWAN Experience Hong Kong's original taste ...",
+      "kind": "search_result",
+      "read_error": null
+    },
+    {
+      "id": "S15",
+      "url": "https://www.prestigeonline.com/hk/lifestyle/wine-plus-dine/the-top-8-dishes-we-ate-in-august-2019",
+      "title": "The Top 8 Dishes We Ate in August 2019",
+      "kind": "search_result",
+      "read_error": null
+    },
+    {
+      "id": "S16",
+      "url": "https://thisgirlabroad.com/authentic-northern-thai-dining-chachawan",
+      "title": "Authentic Northern Thai Dining At Chachawan - thisgirlabroad",
+      "kind": "search_result",
+      "read_error": null
+    },
+    {
+      "id": "S17",
+      "url": "https://us.trip.com/moments/destination-hong-kong-38",
+      "title": "2026 Hong Kong Travel Guide: must-see attractions, popular food, hotels, transport & travel experiences (updated in September)| Trip Moments",
+      "kind": "search_result",
+      "read_error": null
+    },
+    {
+      "id": "S18",
+      "url": "https://us.trip.com/moments/poi-chachawan-17024918",
+      "title": "[2026 Hong Kong Restaurant] Chachawan Travel Guide & ...",
+      "kind": "search_result",
+      "read_error": null
+    },
+    {
+      "id": "S19",
+      "url": "https://www.chachawan.hk/menus/20231017_party_menu_chachawan_digital_compressed.pdf",
+      "title": "View Menu",
+      "kind": "requested_page",
+      "read_error": "Page could not be read; only the search excerpt is available."
+    },
+    {
+      "id": "S20",
+      "url": "https://www.chachawan.hk/menu.php",
+      "title": "MENU",
+      "kind": "page",
+      "read_error": null
+    }
+  ],
+  "assessment": "Real search, public fetch, follow-up dispatch and cited reply completed. Partial recommendation acceptance: some official menu contents remain unavailable; estimates and third-party prices are not verified totals. No booking performed.",
+  "earlier_failures": [
+    "Broad first pass returned unnamed candidates and confused per-head with total budget.",
+    "Named-query hints alone did not reliably reach official pages.",
+    "Ranking all candidates together starved one query of page reads; per-query slots added."
+  ],
+  "limits": [
+    "No human voice acceptance or physical-phone test.",
+    "No interactive browser, shell/files or connected-account integration in Personal."
+  ]
+}

@@ -7,7 +7,7 @@ import './personal.css';
 import VoiceControl from './VoiceControl';
 const Records = lazy(() => import('./PersonalApp'));
 const DRAFT = 'dan.personal.conversation.draft.v1';
-type Turn = {id: string; created_at?: string; text: string; reply?: string; state: string; record_id?: string; calendar_url?: string; sources?: {id: string; name: string}[]};
+type Turn = {id: string; created_at?: string; text: string; reply?: string; progress?: string; state: string; record_id?: string; calendar_url?: string; sources?: {id: string; name: string}[]; references?: {id: string; url: string; title: string; kind: string; checked_at: string}[]};
 type Draft = {text: string; operation: string; sources: SourceAttachment[]};
 const blank = (): Draft => ({text: '', operation: crypto.randomUUID(), sources: []});
 function load(): Draft {
@@ -15,7 +15,7 @@ function load(): Draft {
   return blank();
 }
 const active = (turn: Turn) => ['queued', 'running', 'applying'].includes(turn.state);
-function WorkingElapsed({startedAt}: {startedAt?: string}) {
+function WorkingElapsed({startedAt, label = 'Working…'}: {startedAt?: string; label?: string}) {
   const [fallback] = useState(Date.now);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
@@ -26,7 +26,7 @@ function WorkingElapsed({startedAt}: {startedAt?: string}) {
   const seconds = Math.max(0, Math.floor((now - (Number.isFinite(parsed) ? parsed : fallback)) / 1000));
   const hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds / 60) % 60, remainder = seconds % 60;
   const elapsed = [hours ? `${hours}h` : '', minutes ? `${minutes}m` : '', remainder ? `${remainder}s` : ''].filter(Boolean).join(' ') || '0s';
-  return <span>Working… <time className="personal-elapsed" aria-live="off" dateTime={`PT${seconds}S`}>{elapsed}</time></span>;
+  return <span>{label} <time className="personal-elapsed" aria-live="off" dateTime={`PT${seconds}S`}>{elapsed}</time></span>;
 }
 
 export default function PersonalConversation() {
@@ -108,7 +108,8 @@ export default function PersonalConversation() {
         {!loaded && <p role="status">Connecting…</p>}
         {turns.map(turn => <div key={turn.id} className="personal-turn">
           <article className="personal-user-message" aria-label="You"><p>{turn.text}</p>{turn.sources?.map(source => <small key={source.id}>{source.name}</small>)}</article>
-          <article className="personal-assistant-message" aria-label="Diane"><p>{turn.reply || (active(turn) ? <WorkingElapsed startedAt={turn.created_at} /> : 'This reply was interrupted.')}</p>
+          <article className="personal-assistant-message" aria-label="Diane"><p>{turn.reply || (active(turn) ? <WorkingElapsed startedAt={turn.created_at} label={turn.progress} /> : 'This reply was interrupted.')}</p>
+            {Boolean(turn.references?.length) && <nav className="personal-references" aria-label="Sources">{turn.references?.filter(source => /^https?:\/\//i.test(source.url)).map(source => <a key={source.id} href={source.url} target="_blank" rel="noopener noreferrer" title={`${source.kind === 'page' ? 'Page read' : 'Search result'} · ${source.title}`}><span>{source.id}: {source.title}</span></a>)}</nav>}
             {turn.calendar_url && <a href={turn.calendar_url}>Download calendar file</a>}
           </article>
         </div>)}
