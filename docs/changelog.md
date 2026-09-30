@@ -1,6 +1,11 @@
 # Changelog
 
 ## 2026-09-30
+- [fix] Preserve slow recognition previews through the end-of-turn pause. Reuse a pending or completed preview only when its audio includes every voiced frame; otherwise final recognition still captures later words. Avoid restarting identical paid transcription and retain stale-utterance guards.
+- [infra] Raise this Mac’s private Personal limits to $20/day and $2/task at the user’s request; retain provider receipts and historical unverified holds.
+- [test] Sixteen voice checks pass, including a delayed preview finishing after the pause with one ASR request and one conversation admission. Production build/bundle budgets and changed-file lint pass; running host reports $20/day, $2/task and $18.02 remaining.
+
+## 2026-09-30
 - [fix] Ignore filler-only English/Chinese recognition before interrupting work or playback. Separate utterance recognition from response cancellation; preserve meaningful short answers. Timed previews allow up to 250ms for a sound boundary and replace overlapping drafts.
 - [fix] Keep voice open after a failed conversation reply without duplicating its error in the composer. Report reserved-budget failures accurately instead of generic AI failure.
 - [test] Fifteen voice regression checks and 24 conversation checks pass, covering filler protection during work/playback, continuous-speech snapshots, failed replies, resumed audio and cleanup. Production build/bundle budgets and changed-file lint pass.

@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **Slow transcript at pauses (2026-09-30):** final transcription aborted an unfinished preview and started recognition again. Keep it alive, reuse it only if its snapshot includes every voiced frame, and otherwise allow it to display while authoritative final recognition runs. Slow network/provider latency remains; one-second capture cadence is not a one-second recognition guarantee.
+
 - **Voice filler interruption (2026-09-30):** amplitude onset cancelled active work before recognition, so “嗯” stopped replies. Gate cancellation on meaningful recognition; final-only filtering is too late.
 - **Misleading AI failure (2026-09-30):** latest saved backend failure was “This turn has reached its reserved AI spending limit.” Map that exact safe error to a budget explanation. Do not erase unverified historical holds or raise limits to hide it. Voice previously duplicated the failed chat reply as a composer error and closed the mic; keep listening instead.
 

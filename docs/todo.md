@@ -1,5 +1,8 @@
 # Todo
 
+- [x] Remove end-of-turn transcription restarts when previews cover all speech; preserve slow preview display.
+- [x] Loosen this Mac’s Personal AI budget at the user’s request ($20/day, $2/task).
+
 - [x] Filter filler-only voice interruptions, refine timed transcript boundaries and keep voice open after failed replies.
 - [x] Explain reserved-budget reply failures accurately.
 

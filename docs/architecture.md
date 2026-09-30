@@ -316,3 +316,5 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 
 ## Voice interruption and draft ownership
 - Candidate audio has its own generation and cancellation controller. Only meaningful recognized speech cancels the active response; hesitation-only audio leaves it running. Timed/phrase-break snapshots share cumulative audio and replace the draft, so overlap is not appended twice. Admission clears only the matching utterance. Failed conversation replies remain in chat while voice continues listening.
+
+- VoiceActivity supplies the last preview identity at turn end only when no voiced frames followed it. The session can reuse its in-flight/completed ASR promise, while later speech invalidates reuse. Raw audio remains transient; one final admission and utterance guards are preserved.

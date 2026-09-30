@@ -124,7 +124,6 @@ it('preserves earlier audio when the user resumes during final transcription', a
   let firstSize=0, secondSize=0, transcriptions=0;
   request.mockImplementation(async(url,options)=>{
     if(url.includes('/transcribe')) {
-      if ((options!.body as Blob).size < 100000) return {text:'Find a cozy place'};
       transcriptions++;
       if(transcriptions===1) {firstSize=(options!.body as Blob).size; return new Promise(resolve=>{resolveFirst=resolve;});}
       secondSize=(options!.body as Blob).size;
@@ -222,4 +221,29 @@ it('takes timed snapshots during uninterrupted speech and includes a little boun
   expect(preview).toHaveBeenCalledTimes(2);
   expect((preview.mock.calls[1][0] as Blob).size).toBeGreaterThan((preview.mock.calls[0][0] as Blob).size);
   expect(end).not.toHaveBeenCalled();
+});
+
+it('reuses a slow preview covering all speech after the pause instead of restarting ASR', async () => {
+  let finish!: (value:{text:string})=>void;
+  let previewSignal: AbortSignal | undefined;
+  request.mockImplementation(async (url, options) => {
+    if(url.includes('/transcribe')) {
+      previewSignal=options?.signal as AbortSignal;
+      return new Promise(resolve=>{finish=resolve;});
+    }
+    if(options?.method==='POST') return {id:'reused',state:'queued'};
+    return {turns:[]};
+  });
+  session=new PersonalVoiceSession('warm',callbacks);await session.start();
+  frames(.2,12);frames(0,12);await flush();
+  expect(request.mock.calls.filter(([url])=>url.includes('/transcribe'))).toHaveLength(1);
+  frames(0,84);await flush();
+  expect(previewSignal?.aborted).toBe(false);
+  expect(request.mock.calls.filter(([url])=>url.includes('/transcribe'))).toHaveLength(1);
+  finish({text:'A quiet place please'});await flush();
+  const posts=request.mock.calls.filter(([url,o])=>url==='/api/personal/conversation' && o?.method==='POST');
+  expect(posts).toHaveLength(1);
+  expect(JSON.parse(posts[0][1]!.body as string).text).toBe('A quiet place please');
+  expect(callbacks.transcript).toHaveBeenCalledWith('A quiet place please');
+  expect(callbacks.transcript).toHaveBeenLastCalledWith('');
 });

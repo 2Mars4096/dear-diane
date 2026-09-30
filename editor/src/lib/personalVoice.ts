@@ -21,12 +21,13 @@ export class VoiceActivity {
   private voiced = 0;
   private previewedVoice = 0;
   private lastPreview = 0;
+  private previewAudio?: Blob;
   private speaking = false;
   private rate: number;
   private begin: () => void;
-  private end: (data: Blob) => void;
+  private end: (data: Blob, coveredPreview?: Blob) => void;
   private preview?: (data: Blob) => void;
-  constructor(rate: number, begin: () => void, end: (data: Blob) => void, preview?: (data: Blob) => void) { this.rate = rate; this.begin = begin; this.end = end; this.preview = preview; }
+  constructor(rate: number, begin: () => void, end: (data: Blob, coveredPreview?: Blob) => void, preview?: (data: Blob) => void) { this.rate = rate; this.begin = begin; this.end = end; this.preview = preview; }
   feed(frame: Float32Array) {
     const seconds = frame.length / this.rate;
     const rms = Math.sqrt(frame.reduce((sum, value) => sum + value * value, 0) / frame.length);
@@ -36,7 +37,7 @@ export class VoiceActivity {
       this.loud = rms > 0.015 ? this.loud + seconds : 0;
       if (this.loud < 0.18) return;
       this.speaking = true; this.duration = 0; this.previewAt = 1; this.voiced = 0; this.previewedVoice = 0; this.lastPreview = 0; this.quiet = 0;
-      this.chunks = this.leading; this.leading = []; this.begin();
+      this.chunks = this.leading; this.leading = []; this.previewAudio = undefined; this.begin();
     } else this.chunks.push(frame);
     this.duration += seconds;
     this.quiet = rms > 0.012 ? 0 : this.quiet + seconds;
@@ -44,11 +45,12 @@ export class VoiceActivity {
     if (this.quiet >= 4 || this.duration >= 29) {
       const captured = this.chunks;
       this.chunks = []; this.speaking = false; this.loud = 0;
-      this.end(encodeWav(captured, this.rate));
+      this.end(encodeWav(captured, this.rate), this.voiced === this.previewedVoice ? this.previewAudio : undefined);
     } else if (this.voiced > this.previewedVoice && this.duration - this.lastPreview >= 0.5 && ((this.duration >= this.previewAt && (this.quiet >= 0.08 || this.duration >= this.previewAt + 0.25)) || this.quiet >= 0.35)) {
       this.previewAt = this.duration + 1;
       this.lastPreview = this.duration; this.previewedVoice = this.voiced;
-      this.preview?.(encodeWav(this.chunks, this.rate));
+      this.previewAudio = encodeWav(this.chunks, this.rate);
+      this.preview?.(this.previewAudio);
     }
   }
 }
@@ -112,6 +114,7 @@ export class PersonalVoiceSession {
   private previewRequest?: AbortController;
   private queuedPreview?: {data: Blob; generation: number};
   private pendingAudio?: Blob;
+  private previewResult?: {data: Blob; result: Promise<string | undefined>};
   private generation = 0;
   private utterance = 0;
   private recognized = false;
@@ -139,9 +142,9 @@ export class PersonalVoiceSession {
       if (this.closed) return;
       this.source = this.context.createMediaStreamSource(media);
       this.capture = new AudioWorkletNode(this.context, 'diane-voice-capture');
-      const detector = new VoiceActivity(this.context.sampleRate, () => this.beginUtterance(), data => {
+      const detector = new VoiceActivity(this.context.sampleRate, () => this.beginUtterance(), (data, coveredPreview) => {
         const utterance = this.utterance;
-        void this.transcribe(data, utterance).catch(error => {
+        void this.transcribe(data, utterance, coveredPreview).catch(error => {
           if (utterance === this.utterance && !this.closed) this.fail(error);
         });
       }, data => { void this.preview(data); });
@@ -162,7 +165,7 @@ export class PersonalVoiceSession {
     this.callbacks.error(message === 'Permission denied' ? 'Microphone access was denied. Allow it in browser settings to use voice.' : message);
   }
   private beginUtterance() {
-    this.utterance++; this.recognized = false;
+    this.utterance++; this.recognized = false; this.previewResult = undefined;
     this.recognition?.abort();
     this.queuedPreview = undefined; this.previewRequest?.abort(); this.previewRequest = undefined;
     if (!this.pendingAudio) this.callbacks.transcript('');
@@ -172,15 +175,20 @@ export class PersonalVoiceSession {
     if (this.previewRequest) { this.queuedPreview = {data, generation: this.utterance}; return; }
     const controller = new AbortController(); this.previewRequest = controller;
     const utterance = this.utterance;
+    let resolveResult!: (text: string | undefined) => void;
+    const result = new Promise<string | undefined>(resolve => { resolveResult = resolve; });
+    this.previewResult = {data, result};
     try {
       const audio = await joinVoiceAudio(this.pendingAudio, data);
       if (controller.signal.aborted || this.closed) return;
       const {text} = await requestJson<{text: string}>(`/api/personal/voice/transcribe?operation_id=${crypto.randomUUID()}`, {method: 'POST', body: audio, signal: controller.signal, timeoutMs: 70000});
+      resolveResult(controller.signal.aborted ? undefined : text);
       if (!this.closed && utterance === this.utterance && !controller.signal.aborted && meaningfulVoice(text)) {
         this.interrupt(); this.callbacks.transcript(text);
       }
     } catch { /* A missed preview must not submit or discard the final utterance. */ }
     finally {
+      resolveResult(undefined);
       if (this.previewRequest === controller) {
         this.previewRequest = undefined;
         const latest = this.queuedPreview; this.queuedPreview = undefined;
@@ -198,14 +206,19 @@ export class PersonalVoiceSession {
     this.pending = this.pending.then(() => this.stopTurn());
     this.callbacks.status('Hearing you…');
   }
-  private async transcribe(data: Blob, utterance: number) {
-    this.queuedPreview = undefined; this.previewRequest?.abort(); this.previewRequest = undefined;
+  private async transcribe(data: Blob, utterance: number, coveredPreview?: Blob) {
+    // Keep slow previews visible. Reuse only a snapshot containing every voiced frame.
+    const reusable = coveredPreview && this.previewResult?.data === coveredPreview ? this.previewResult.result : undefined;
+    this.queuedPreview = undefined;
     data = await joinVoiceAudio(this.pendingAudio, data);
     if (this.closed || utterance !== this.utterance) return;
     this.pendingAudio = data;
     const controller = new AbortController(); this.recognition = controller;
-    const {text} = await requestJson<{text: string}>(`/api/personal/voice/transcribe?operation_id=${crypto.randomUUID()}`, {method: 'POST', body: data, signal: controller.signal, timeoutMs: 70000});
+    const previewText = await reusable;
     if (this.closed || utterance !== this.utterance) return;
+    const text = previewText ?? (await requestJson<{text: string}>(`/api/personal/voice/transcribe?operation_id=${crypto.randomUUID()}`, {method: 'POST', body: data, signal: controller.signal, timeoutMs: 70000})).text;
+    if (this.closed || utterance !== this.utterance) return;
+    this.previewRequest?.abort(); this.previewRequest = undefined; this.previewResult = undefined;
     this.pendingAudio = undefined;
     if (!meaningfulVoice(text)) { this.callbacks.transcript(''); return; }
     this.interrupt(); this.callbacks.transcript(text);
