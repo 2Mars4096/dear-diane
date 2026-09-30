@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-30
+- [infra] Install and launch the signed compact Settings build; installed archive, signature, app-owned backend, and desktop proxy health verified. Previous app bundle retained for rollback.
+
+## 2026-09-30
 - [fix] Compact App updates into a version/status and actions row; move account refresh and manual-build details into Update options, hide unavailable install actions, and retain inline sign-in/progress/errors. Tighten Settings section spacing. Three update interaction tests, production build/budgets, and desktop/mobile previews pass.
 
 ## 2026-09-30
