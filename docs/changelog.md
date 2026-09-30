@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-30
+- [docs] Record OpenRouter-only voice requirement: retain Qwen bilingual recognition, with no local model or direct Alibaba/browser-vendor recognizer. Current API yields complete responses to successive audio previews, not native partial events.
+
+
+## 2026-09-30
 - [refactor] Cancel local Qwen inference at the user’s request. Stop the background installer; delete its isolated environment, partial model cache and setup artifacts. Remove the optional local API/client/launcher code and restore OpenRouter-only voice. Keep prior implementation history below.
 
 

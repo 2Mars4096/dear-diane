@@ -46,3 +46,7 @@ Each preview uses a temporary $0.005 recognition hold, settled to its provider-r
 - [OpenRouter recognition](https://openrouter.ai/docs/guides/overview/multimodal/stt) and [speech synthesis](https://openrouter.ai/docs/guides/overview/multimodal/tts).
 - [Qwen voice identifiers](https://docs.qwencloud.com/developer-guides/speech/voice-list/qwen-audio-tts).
 - Interaction patterns informed by [OpenAI voice activity detection](https://developers.openai.com/api/docs/guides/realtime-vad) and [interruption/context handling](https://developers.openai.com/api/docs/guides/realtime-conversations). No OpenAI Realtime connection is used by this implementation.
+
+## Provider preference
+
+Use OpenRouter only; retain Qwen automatic bilingual recognition. Do not install local speech models or add direct Alibaba/browser-vendor recognition. The current OpenRouter transcription endpoint returns complete JSON results; cumulative audio previews are supported, but native word-by-word partial events are not available through this integration.
