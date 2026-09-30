@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-30
+- [infra] Reinstall and launch the signed left-hand shortcut build; installed archive matches the prepared build, signature and app-owned backend/proxy health pass, and the previous bundle is retained for rollback.
 - [fix] Move the project-switcher shortcut from Cmd/Ctrl+Shift+P to Cmd/Ctrl+Shift+E for left-hand access; update visible and accessible shortcut labels.
 
 ## 2026-09-29
