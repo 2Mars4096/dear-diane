@@ -825,3 +825,38 @@
 .wb-update-options > summary:focus-visible { outline:2px solid var(--wb-accent); outline-offset:3px; }
 .wb-settings-section { padding:22px 0; }
 .wb-dan-settings .wb-settings-section > .wb-settings-section-title { margin-bottom:14px; }
+
+.wb-worker-conversation { display: grid; gap: 8px; min-width: 0; }
+.wb-worker-event summary { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12em; overflow: auto; font-size: 12px; cursor: pointer; }
+.wb-worker-conversation pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24em; overflow: auto; }
+.wb-worker-conversation label { display: grid; gap: 6px; font-size: 12px; }
+.wb-worker-conversation textarea { width: 100%; box-sizing: border-box; background: var(--dan-wb-background); color: inherit; border: 1px solid var(--dan-wb-border); border-radius: 6px; padding: 8px; resize: vertical; }
+.wb-worker-conversation button { margin: 4px 4px 4px 0; }
+
+.wb-changes { flex: 1; width: 100%; box-sizing: border-box; padding: 12px; overflow: auto; min-width: 0; font-size: 12px; }
+.wb-changes-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+.wb-changes-toolbar label { display: grid; gap: 5px; min-width: 0; width: 100%; }
+.wb-changes select { max-width: 100%; color: inherit; background: var(--dan-wb-surface); border: 1px solid var(--dan-wb-border); padding: 5px; }
+.wb-changes-note { color: var(--dan-wb-muted); }
+.wb-change-file { padding: 12px 0; border-bottom: 1px solid var(--dan-wb-border); }
+.wb-change-file summary { overflow-wrap: anywhere; cursor: pointer; }
+.wb-change-file pre { overflow: auto; max-height: 60vh; font-size: 11px; }
+
+.wb-changes button, .wb-worker-conversation button { border: 1px solid var(--dan-wb-border); background: var(--dan-wb-surface); color: var(--dan-wb-text); border-radius: 5px; padding: 5px 8px; cursor: pointer; font-size: 12px; }
+.wb-changes button:hover, .wb-worker-conversation button:hover { background: var(--dan-wb-background); }
+.wb-changes button:disabled, .wb-worker-conversation button:disabled { opacity: .5; cursor: default; }
+.wb-changes button:focus-visible, .wb-worker-conversation button:focus-visible { outline: 2px solid var(--dan-wb-accent); outline-offset: 2px; }
+.wb-change-file pre { padding: 8px 0; line-height: 1.65; }
+.wb-change-file pre span { display: block; min-width: max-content; }
+.wb-change-file pre [data-diff=added] { background: color-mix(in srgb, var(--dan-wb-accent) 9%, transparent); }
+.wb-change-file pre [data-diff=removed] { color: var(--dan-wb-muted); }
+
+/* Review actions share the same compact controls in light/dark and narrow panels. */
+.wb-review-options { width: 100%; color: var(--dan-wb-muted); }
+.wb-review-options summary { cursor: pointer; }
+.wb-review-options button { margin-top: 8px; }
+.wb-worker-conversation form { display: grid; gap: 8px; }
+.wb-worker-conversation form > div { min-width: 0; }
+.wb-worker-conversation button[aria-pressed=true] { border-color: var(--dan-wb-accent); background: color-mix(in srgb, var(--dan-wb-accent) 12%, var(--dan-wb-surface)); }
+.wb-notification-setting label { display: flex; align-items: center; gap: 8px; }
+.wb-notification-setting input[type=checkbox] { width: auto; flex: 0 0 auto; }

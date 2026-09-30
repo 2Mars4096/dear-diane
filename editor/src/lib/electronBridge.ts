@@ -11,6 +11,10 @@ export interface DesktopUpdateState {
 }
 
 interface ElectronAPI {
+  attention?: {
+    show: (target: { thread: string; worker?: string; title: string }) => Promise<void>;
+    onOpen: (callback: (target: { thread: string; worker?: string }) => void) => () => void;
+  };
   updates?: {
     status: () => Promise<DesktopUpdateState>;
     action: (action: "check" | "choose" | "install-local" | "download" | "install" | "github-sign-in" | "github-cancel" | "github-status") => Promise<DesktopUpdateState>;

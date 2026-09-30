@@ -1,8 +1,9 @@
+export type WorkerRequest = { id: string | number; method: string; params: { questions?: { id: string; question: string; options?: { label: string; description?: string }[] }[]; [key: string]: unknown } };
 export type TeamAction = { text: string; at: number };
 export type TeamWorker = {
   worker_id: string; parent_run_id: string; backend: string; status: string;
   prompt: string; response: string; error: string; native_session_id: string;
-  can_stop?: boolean; origin?: string;
+  can_stop?: boolean; can_reply?: boolean; can_apply?: boolean; source_workspace?: string; workspace_root?: string; requests?: WorkerRequest[]; origin?: string;
   created_at?: number; activity?: string; actions?: TeamAction[];
 };
 export type WorkerPhase = "attention" | "active" | "settled";
@@ -26,7 +27,7 @@ export function taskTitle(prompt: string): string {
 
 export function workerPhase(worker: TeamWorker): WorkerPhase {
   if (worker.status === "running") return "active";
-  if (worker.status === "needs_input" || worker.status === "failed") return "attention";
+  if (worker.status === "needs_input" || worker.status === "failed" || worker.status === "interrupted") return "attention";
   return "settled";
 }
 

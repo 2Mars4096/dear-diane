@@ -8,6 +8,8 @@ import { SidecarChat } from "../workbench/SidecarChat";
 import { LeadAgentMenu } from "../workbench/LeadAgentMenu";
 import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from "../workbench/NativeWorkers";
 import { EMPTY_PROFILE, leadExecutionProfile, modelSource, OPENROUTER_URL, withLeadSelection } from "../workbench/modelSelection";
+const ChangesPanel = lazy(() => import("../workbench/ChangesPanel"));
+const WorkNotifications = lazy(() => import("../workbench/WorkNotifications"));
 import { TeamPanel, TeamStrip, useTeamWorkers } from "../workbench/TeamProgress";
 import { PersistentPanel } from "../workbench/PersistentPanel";
 import { SideTabs, readLastSideTab, rememberSideTab, type SideTab, type SideTabItem } from "../workbench/SideTabs";
@@ -13299,6 +13301,7 @@ export default function ChunkWorkspaceApp() {
   const attachedRunKeyRef = useRef("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [tasks, setTasks] = useState<ChatV2TaskSnapshot[]>([]);
+  const [backgroundTasksReady, setBackgroundTasksReady] = useState(false);
   const [backgroundTasks, setBackgroundTasks] = useState<ChatV2TaskSnapshot[]>([]);
   const [agentEvents, setAgentEvents] = useState<ChatV2AgentRunEvent[]>([]);
   const [input, setInput] = useState("");
@@ -14021,6 +14024,7 @@ export default function ChunkWorkspaceApp() {
     try {
       const next = await listChatV2Tasks({ limit: 160 });
       setBackgroundTasks(next);
+      setBackgroundTasksReady(true);
       return next;
     } catch {
       setBackgroundTasks([]);
@@ -14595,6 +14599,7 @@ export default function ChunkWorkspaceApp() {
   const activeRunningTask = selectActiveRunningTask(workPanelTasks);
   const activeRunId = activeRunningTask ? taskRunId(activeRunningTask) : "";
   const teamParentIds = useMemo(() => [...new Set(tasks.map(taskRunId).filter(Boolean))], [tasks]);
+  const [notificationWorker, setNotificationWorker] = useState("");
   const team = useTeamWorkers(teamParentIds, Boolean(activeRunningTask));
   const sidecarExecution = () => {
     const payload = withLeadSelection(buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode), selectedAgentId, leadProfiles);
@@ -14659,6 +14664,7 @@ export default function ChunkWorkspaceApp() {
       { id: "chat", label: readerFile ? "Reading" : "Chat" },
       ...(readerFile ? [{ id: "notes" as const, label: "Notes" }] : []),
       { id: "files", label: "Files" },
+      { id: "changes", label: "Changes" },
       { id: "literature", label: "Literature" },
       ...(activePreviewFileEntry || selectedBlueprintNode || selectedChunk || promptLogPreview ? [{ id: "preview" as const, label: "Preview" }] : []),
       ...(agentEvents.length || activeRunningTask ? [{ id: "activity" as const, label: "Activity", live: Boolean(activeRunningTask) }] : []),
@@ -18909,11 +18915,16 @@ export default function ChunkWorkspaceApp() {
           {!readerFile && !activeThread && <aside className="wb-activity-panel"><p className="wb-activity-empty wb-side-empty">Start a conversation to open a side chat about it.</p></aside>}
           </PersistentPanel>
           <PersistentPanel active={visibleSideTab === "activity"} name="Activity"> <aside className="wb-activity-panel"><WorkbenchActivity events={agentEvents} /></aside></PersistentPanel>
-          <PersistentPanel active={visibleSideTab === "team"} name="Team"> <TeamPanel header={false} workers={team.workers} error={team.error} onStop={(worker) => void team.stop(worker)} onClose={() => setTeamPanel(false)} /></PersistentPanel>
+          <PersistentPanel active={visibleSideTab === "changes"} name="Changes" key={`changes:${developmentRoot}:${activeThread?.id}`}><Suspense fallback={null}><ChangesPanel active={visibleSideTab === "changes"} root={developmentRoot} thread={activeThread?.id || ""} onComment={text => { setComposerInputValue(input ? `${input}\n\n${text}` : text); setActiveMainTab("chat"); setPhonePage("chat"); if (isPhoneViewport) openSideTab(null); requestAnimationFrame(() => composerRef.current?.focus()); }} /></Suspense></PersistentPanel>
+          <PersistentPanel active={visibleSideTab === "team"} name="Team"> <TeamPanel header={false} workers={team.workers} selectedWorker={notificationWorker} error={team.error} onChange={team.update} onStop={(worker) => void team.stop(worker)} onClose={() => setTeamPanel(false)} /></PersistentPanel>
           </aside>
 
         </section>
       )}
+      <Suspense fallback={null}><WorkNotifications tasksReady={backgroundTasksReady} tasks={sessionStatusTasks} activeThread={activeThread?.id || ""} watching={activePane === "work" && activeMainTab === "chat"} onOpen={(id, worker) => {
+        const summary = threads.find(thread => thread.id === id);
+        if (summary) void openSession(summary).then(() => { setActiveMainTab("chat"); setPhonePage("chat"); if (worker) { openSideTab("team"); setNotificationWorker(worker); } else if (isPhoneViewport) openSideTab(null); });
+      }} /></Suspense>
       <nav
         className={cx(
           "dan-phone-nav hidden shrink-0 border-t border-slate-200/80 bg-white/95 px-2 py-1.5 shadow-[0_-8px_24px_rgba(15,23,42,0.06)] backdrop-blur dark:border-slate-800 dark:bg-slate-950/95",

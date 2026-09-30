@@ -1,6 +1,8 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { Check, ChevronDown, CircleAlert, Square, X } from "lucide-react";
 import { agentLabel, elapsed, leadActivity, resultLine, startedAt, stripWorkers, taskTitle, workerPhase, workerState, type TeamWorker } from "./teamPresentation";
+
+const WorkerConversation = lazy(() => import("./WorkerConversation"));
 
 /** Polls the lead's team; faster while anything is running. */
 export function useTeamWorkers(parentIds: string[], leadRunning: boolean) {
@@ -35,7 +37,7 @@ export function useTeamWorkers(parentIds: string[], leadRunning: boolean) {
       setWorkers((rows) => rows.map((row) => row.worker_id === updated.worker_id ? { ...row, ...updated } : row));
     } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
   }
-  return { workers, error, stop };
+  return { workers, error, stop, update: (updated: TeamWorker) => setWorkers(rows => rows.map(row => row.worker_id === updated.worker_id ? updated : row)) };
 }
 
 /** One stable line above the transcript: who is doing what right now. */
@@ -57,25 +59,24 @@ export function TeamStrip({ workers, lead, leadRunning, open, onToggle }: { work
 }
 
 /** Side panel: one lane per task, live work first, finished work settled below. */
-export function TeamPanel({ workers, error, onStop, onClose, header }: { workers: TeamWorker[]; error: string; onStop: (worker: TeamWorker) => void; onClose: () => void; header?: ReactNode }) {
+export function TeamPanel({ workers, error, onStop, onClose, header, onChange, selectedWorker }: { selectedWorker?: string; onChange?: (worker: TeamWorker) => void; workers: TeamWorker[]; error: string; onStop: (worker: TeamWorker) => void; onClose: () => void; header?: ReactNode }) {
   const live = workers.filter((worker) => workerPhase(worker) !== "settled");
   const settled = workers.filter((worker) => workerPhase(worker) === "settled");
   return <aside className="wb-activity-panel wb-team-panel" aria-label="Team">
     {header ?? <div className="wb-panel-heading"><span>Team</span><button onClick={onClose} aria-label="Close team"><X size={17} /></button></div>}
     {error && <p className="wb-team-error" role="alert">{error}</p>}
     <div className="wb-team-lanes">
-      {live.map((worker) => <TeamLane key={worker.worker_id} worker={worker} onStop={onStop} />)}
-      {settled.length > 0 && live.length > 0 && <div className="wb-team-divider">Done</div>}
-      {settled.map((worker) => <TeamLane key={worker.worker_id} worker={worker} onStop={onStop} />)}
+      {[...live, ...settled].map((worker) => <TeamLane key={worker.worker_id} worker={worker} onStop={onStop} onChange={onChange} selected={selectedWorker === worker.worker_id} />)}
       {!workers.length && <p className="wb-activity-empty">No team tasks in this conversation.</p>}
     </div>
   </aside>;
 }
 
-function TeamLane({ worker, onStop }: { worker: TeamWorker; onStop: (worker: TeamWorker) => void }) {
+function TeamLane({ worker, onStop, onChange, selected }: { selected?: boolean; onChange?: (worker: TeamWorker) => void; worker: TeamWorker; onStop: (worker: TeamWorker) => void }) {
   const [open, setOpen] = useState(false);
+  useEffect(() => { if (selected) setOpen(true); }, [selected]);
   const phase = workerPhase(worker);
-  const running = worker.status === "running";
+  const running = worker.status === "running" || worker.status === "needs_input";
   const since = startedAt(worker);
   const outcome = running ? "" : resultLine(worker);
   const actions = (worker.actions ?? []).slice(-8);
@@ -93,6 +94,7 @@ function TeamLane({ worker, onStop }: { worker: TeamWorker; onStop: (worker: Tea
     </div>
     {outcome && <p className="wb-lane-result">{outcome}</p>}
     {open && <div className="wb-lane-details">
+      <Suspense fallback={<p>Loading conversation…</p>}><WorkerConversation worker={worker} onChange={onChange} /></Suspense>
       {actions.length > 0 && <ol>{actions.map((action, index) => <li key={`${action.at}-${index}`}>{action.text}</li>)}</ol>}
       {(worker.response || worker.error) && <pre>{worker.response || worker.error}</pre>}
     </div>}

@@ -25,3 +25,17 @@ it("shows observed Codex children and results without offering unsupported Stop"
     expect(host.querySelector('button[aria-label^="Stop"]')).toBeNull();
   } finally { act(() => root.unmount()); }
 });
+
+it("keeps an expanded conversation open when its worker completes", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ entries: [], before: null }))));
+  const host = document.createElement("div"), root = createRoot(host);
+  const worker: TeamWorker = { worker_id: "owned", parent_run_id: "run", backend: "codex", status: "needs_input", prompt: "Refine spacing", response: "", error: "", native_session_id: "saved" };
+  const render = (status: string) => root.render(createElement(TeamPanel, { workers: [{ ...worker, status }], error: "", onStop: vi.fn(), onClose: vi.fn() }));
+  try {
+    await act(async () => render("needs_input"));
+    await act(async () => host.querySelector<HTMLButtonElement>(".wb-lane-title")!.click());
+    expect(host.querySelector(".wb-lane-title")?.getAttribute("aria-expanded")).toBe("true");
+    await act(async () => render("completed"));
+    expect(host.querySelector(".wb-lane-title")?.getAttribute("aria-expanded")).toBe("true");
+  } finally { act(() => root.unmount()); vi.unstubAllGlobals(); }
+});

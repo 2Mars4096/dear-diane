@@ -55,6 +55,14 @@ window.addEventListener("DOMContentLoaded", () => {
 
 contextBridge.exposeInMainWorld("electronAPI", {
   isElectron: true,
+  attention: {
+    show: (target: { thread: string; worker?: string; title: string }) => ipcRenderer.invoke("attention:show", target),
+    onOpen: (callback: (target: { thread: string; worker?: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, target: { thread: string; worker?: string }) => callback(target);
+      ipcRenderer.on("attention:open", handler);
+      return () => ipcRenderer.removeListener("attention:open", handler);
+    },
+  },
   updates: {
     status: () => ipcRenderer.invoke("updates:status"),
     action: (action: string) => ipcRenderer.invoke("updates:action", action),

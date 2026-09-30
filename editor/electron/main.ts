@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, shell } from "electron";
+import { app, Notification, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, shell } from "electron";
 import path from "node:path";
 import fs, { type FSWatcher } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -413,6 +413,20 @@ ipcMain.on("window:background", (event, color: unknown) => {
   if (!mainWindow || event.sender !== mainWindow.webContents
       || event.senderFrame !== mainWindow.webContents.mainFrame) return;
   if (typeof color === "string" && /^#[\da-f]{6}$/i.test(color)) mainWindow.setBackgroundColor(color);
+});
+
+const workAlerts = new Map<string, Notification>();
+ipcMain.handle("attention:show", (event, target: { thread?: unknown; worker?: unknown; title?: unknown }) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return;
+  if (!target || typeof target.thread !== "string" || target.thread.length > 200 || typeof target.title !== "string" || !Notification.isSupported()) return;
+  const thread = target.thread;
+  const worker = typeof target.worker === "string" ? target.worker.slice(0, 200) : undefined;
+  workAlerts.get(thread)?.close();
+  const notification = new Notification({ title: "Dear Diane", body: target.title.slice(0, 200), silent: true });
+  workAlerts.set(thread, notification);
+  notification.on("click", () => { showMainWindow(); mainWindow?.focus(); mainWindow?.webContents.send("attention:open", { thread, worker }); });
+  notification.on("close", () => { if (workAlerts.get(thread) === notification) workAlerts.delete(thread); });
+  notification.show();
 });
 
 function createTray() {

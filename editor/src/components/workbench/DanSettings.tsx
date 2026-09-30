@@ -1,3 +1,4 @@
+import { NotificationSetting } from "./WorkNotifications";
 import { lazy, Suspense, useEffect, useRef } from "react";
 import { X } from "lucide-react";
 const DesktopUpdates = lazy(() => import("./DesktopUpdates").then(module => ({ default: module.DesktopUpdates })));
@@ -21,7 +22,7 @@ export function DanSettings({ onClose, profiles, onProfilesChange, onPapers, pag
     dialog.current?.showModal();
     return () => previous?.focus();
   }, [page]);
-  const sections = [["appearance", "Appearance"], ["connections", "Connections"], ["agents", "Agents & skills"], ...(onPapers ? [["library", "Library"]] : []), ["usage", "Usage"], ["app", "App updates"]];
+  const sections = [["appearance", "Appearance"], ["connections", "Connections"], ["agents", "Agents & skills"], ...(onPapers ? [["library", "Library"]] : []), ["usage", "Usage"], ["notifications", "Notifications"], ["app", "App updates"]];
   const jumpTo = (id: string) => {
     const section = dialog.current?.querySelector<HTMLElement>(`#settings-${id}`);
     section?.scrollIntoView({ block: "start" });
@@ -65,6 +66,9 @@ export function DanSettings({ onClose, profiles, onProfilesChange, onPapers, pag
     <section id="settings-usage" className="wb-settings-section" tabIndex={-1} aria-label="Usage">
       <h3 className="wb-settings-section-title">Usage</h3>
       <Suspense fallback={<p>Loading token usage…</p>}><TokenUsage /></Suspense>
+    </section>
+    <section id="settings-notifications" className="wb-settings-section" tabIndex={-1} aria-label="Notifications">
+      <h3 className="wb-settings-section-title">Notifications</h3><NotificationSetting />
     </section>
     <section id="settings-app" className="wb-settings-section" tabIndex={-1} aria-label="App updates">
       <h3 className="wb-settings-section-title">App updates</h3>
