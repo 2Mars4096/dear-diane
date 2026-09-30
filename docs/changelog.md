@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-30
+- [infra] Commit/push Settings and direct-provider changes; install the signed desktop bundle with rollback retained. Archive/signature, app-owned backend, desktop proxy, and provider status endpoint verified. LaunchServices startup timed out; a direct launch with the known Python interpreter succeeded.
+
+## 2026-09-30
 - [feat] Keep agent selection separate from Native/API model controls, rename the built-in choice Default, and add OpenAI, DeepSeek, Moonshot, and OpenRouter provider choices with model-specific reasoning controls.
 - [feat] Add masked local API-key entry/removal in Settings; store owner-only credentials on the host and route supported Codex/Claude/Default runs without changing native login configuration. Validation: 53 model/worker/lead tests, nine SSH tests, 16 focused UI tests, and production build/bundle budgets pass; mobile Settings/SSH preview checked.
 

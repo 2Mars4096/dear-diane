@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **2026-09-30 reinstall startup:** LaunchServices starts the installed app but its backend times out without diagnostics. Normal quit/SIGTERM did not close the startup error state; after verifying no active work, force-closing that app and launching its executable directly with `/opt/anaconda3/bin/python` restored app-owned backend/proxy health. Root cause of the LaunchServices-only failure remains unconfirmed.
+
 - **Fixed 2026-09-30: SSH settings mixed connection and relay deployment.** Removed relay controls and the implicit relay override from SSH checks. Browser fixture initially omitted `receivers` from the skills API response and crashed the fixture; corrected the mock before rechecking.
 
 - **Dear Diane rename checks (2026-09-29):** package renaming would change Electron's default profile path; explicitly retain `appData/dan`. Existing placeholder/status recognizers used literal DAN names; support both generations. Initial frontend run found two missing recognizers, now corrected. Root npm invocation and the repository venv (no pytest installed) were unsuitable; run npm in editor and pytest through the existing Anaconda environment. Relay socket binding, Flutter SDK cache writes, and Electron runtime downloads needed sandbox escalation; their permitted retries passed. Terminal chrome assertions now distinguish Dear Diane from the Diane message prefix.
