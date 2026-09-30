@@ -10,7 +10,7 @@ it("cancels without resending, blocks empty edits, and keeps drafts on failure",
   const host = document.createElement("div"); document.body.append(host);
   const root = createRoot(host);
   const onEdit = vi.fn().mockRejectedValue(new Error("Connection failed"));
-  const button = (text: string) => [...host.querySelectorAll("button")].find((item) => item.textContent === text)!;
+  const button = (text: string) => [...host.querySelectorAll("button")].find((item) => (item.getAttribute("aria-label") || item.textContent) === text)!;
   const change = async (value: string) => {
     await act(async () => {
       const field = host.querySelector("textarea")!;

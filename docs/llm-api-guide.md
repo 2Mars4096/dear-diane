@@ -206,3 +206,12 @@ Example execute payload: Codex orchestrates and DeepSeek powers Codex itself.
 - DAN/Codex OpenRouter reasoning accepts default (empty), low, medium, or high. Claude forwards effort only for `anthropic/` models; other gateway models manage their own reasoning and remain experimental in that harness. Fast mode is unavailable for OpenRouter selections.
 - Native Codex/Claude subscription accounts are not model credentials for the DAN harness. DAN configuration uses its API provider; native Codex with explicit `provider: native` selects the built-in OpenAI provider.
 - Provider changes preserve DAN history but use separate provider-scoped native continuations. Keys never appear in browser profiles, API catalog responses, or CLI arguments.
+
+
+#### API providers and local credentials
+
+- Profile `provider`: `native`, `openrouter`, `openai`, `deepseek`, or `moonshot`. Use the runtime catalog's `sources[].models`, `model_efforts`, `supported`, and `configured` fields; do not infer compatibility from provider names.
+- Codex supports all API sources. Claude supports OpenRouter, DeepSeek, and Moonshot. Default (`dan`) uses Chat Completions; official OpenAI selections currently allow GPT-4.1/GPT-4.1-mini. Cursor/Antigravity remain native-only. API fast mode is rejected.
+- `GET /api/model-providers` returns `providers[]` with `id`, `label`, `configured`, `saved`, and `key_env`; never returns keys.
+- `PUT /api/model-providers/{provider}/key` accepts `{ "api_key": "..." }`; an empty string removes the saved key. Returns the same status-only catalog. These credential routes require a local host/client/origin and are disabled on remote execution servers.
+- Saved host-local credentials override the matching environment key. Provider endpoints are fixed; credentials never enter execution profiles or command arguments. Configure keys separately on each execution host.

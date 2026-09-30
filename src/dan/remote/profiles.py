@@ -168,7 +168,8 @@ from pathlib import Path
 h=Path.home()
 p=":".join(map(str,[h/".local/bin",*sorted((h/".nvm/versions/node").glob("*/bin"),reverse=True),h/".npm-global/bin",Path("/usr/local/bin"),Path("/usr/bin"),Path("/bin")]))
 print(json.dumps({"hostname":platform.node(),"platform":platform.system(),"home":str(h),"tools":{n:shutil.which(n,path=p) for n in ["python3.11","python3.12","python3.13","uv","node","codex","claude","cursor","agy"]},"linger":subprocess.run(["loginctl","show-user",os.environ.get("USER",""),"-p","Linger"],capture_output=True,text=True).stdout.strip() if shutil.which("loginctl") else "Boot persistence not checked"}))'''
-    output = await command(ssh(profile.ssh_alias, profile.relay_ssh_alias if profile.ssh_via_relay else None, port=profile.ssh_port, identity_file=profile.identity_file) + ["python3 -c " + shlex.quote(script)])
+    # Connection checks follow the host alias/config, independent of relay deployment routing.
+    output = await command(ssh(profile.ssh_alias, port=profile.ssh_port, identity_file=profile.identity_file) + ["python3 -c " + shlex.quote(script)])
     return json.loads(output)
 
 

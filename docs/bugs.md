@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **Fixed 2026-09-30: SSH settings mixed connection and relay deployment.** Removed relay controls and the implicit relay override from SSH checks. Browser fixture initially omitted `receivers` from the skills API response and crashed the fixture; corrected the mock before rechecking.
+
 - **Dear Diane rename checks (2026-09-29):** package renaming would change Electron's default profile path; explicitly retain `appData/dan`. Existing placeholder/status recognizers used literal DAN names; support both generations. Initial frontend run found two missing recognizers, now corrected. Root npm invocation and the repository venv (no pytest installed) were unsuitable; run npm in editor and pytest through the existing Anaconda environment. Relay socket binding, Flutter SDK cache writes, and Electron runtime downloads needed sandbox escalation; their permitted retries passed. Terminal chrome assertions now distinguish Dear Diane from the Diane message prefix.
 
 - **Literature reinstall check (2026-09-28):** the first idle-check command referenced `./editor/dist-electron` while already in `editor/`; reran from the repository root before installation. The app was closed, so no process termination was needed. The manual idle gate also checks literature batches, including metadata preparation before an Agent V2 run exists.
@@ -2150,3 +2152,7 @@ When renaming workflows or moving error data between environments:
 - **GitHub authentication (2026-09-20):** earlier API checks returned 401 despite SSH source access. Browser device authorization restored API access as 2Mars4096. SSH Git transport and release API authentication are separate; do not suggest changing repository visibility to resolve this.
 
 - **Local updater packaging (2026-09-20), fixed:** electron-builder `--dir --publish never` did not emit `app-update.yml` for the prepared local client. Explicit `build/github-update.yml` extraResources now carries the private GitHub channel/cache metadata in local app bundles as well as release builds.
+
+## 2026-09-30 — Direct provider compatibility
+- Default uses Chat Completions, so official OpenAI API choices are restricted to GPT-4.1 models; GPT-6 tool calling needs the Codex Responses adapter. Claude has no direct OpenAI Anthropic-compatible endpoint. Cursor/Antigravity API routes remain disabled until implemented.
+- Isolated Claude API runs must clear inherited `CLAUDE_CODE_EFFORT_LEVEL` and `ANTHROPIC_SMALL_FAST_MODEL`; otherwise native environment settings can override the selected API model/options. Covered by launch regression tests.

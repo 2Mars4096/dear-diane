@@ -31,13 +31,13 @@ export function NativeWorkerSettings({ profiles, onChange, lead, inline = false,
   useEffect(() => { if (inline && !catalog) void refresh(); }, [inline, catalog]);
   const panel = <div className={inline ? "wb-agent-fields" : "wb-native-settings-panel"}>
       {!inline && <><h3>Team</h3><p>Choose an agent and configure its role in the team.</p></>}
-      {!lead && <label>Agent<select value={viewedRuntime} onChange={(event) => setViewedRuntime(event.target.value)}>{runtimes.map((runtime) => <option key={runtime.id} value={runtime.id}>{runtime.label}{profiles[runtime.id]?.enabled ? " · included" : ""}</option>)}</select></label>}
+      {!lead && <label>Agent<select value={viewedRuntime} onChange={(event) => setViewedRuntime(event.target.value)}>{runtimes.map((runtime) => <option key={runtime.id} value={runtime.id}>{runtime.id === "dan" ? "Default" : runtime.label}{profiles[runtime.id]?.enabled ? " · included" : ""}</option>)}</select></label>}
       {error && <p role="alert">{error}</p>}
       {(catalog ?? runtimes).filter((runtime) => runtime.id === (lead || viewedRuntime)).map((runtime) => {
         const profile = profiles[runtime.id] || empty;
         const update = (patch: Partial<WorkerProfile>) => onChange({ ...profiles, [runtime.id]: { ...profile, ...patch } });
         return <fieldset key={runtime.id}>
-          {!inline && <legend>{runtime.label}</legend>}
+          {!inline && <legend>{runtime.id === "dan" ? "Default" : runtime.label}</legend>}
           {!lead && <label className="wb-native-enabled"><input type="checkbox" checked={profile.enabled} disabled={!runtime.available} onChange={(event) => update({ enabled: event.target.checked })} />Include in team</label>}
           {!runtime.available ? <p>{runtime.setup || "Install this CLI to enable it."}</p> : <>
             <ModelFields runtime={runtime} profile={profile} onChange={update} disabled={disabled} />

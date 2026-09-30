@@ -1,7 +1,7 @@
 """Workbench runtime discovery and parent-scoped worker inspection."""
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 from dan.native_workers.sessions import discover, messages
 from dan.server.chat_store import ChatMessage
 import json
@@ -14,6 +14,43 @@ router = APIRouter(tags=["native-workers"])
 @router.get("/api/native-workers/catalog")
 def runtime_catalog():
     return catalog()
+
+class ProviderKeyInput(BaseModel):
+    api_key: SecretStr
+
+
+def _local_provider_settings(request: Request):
+    from urllib.parse import urlsplit
+    import os
+    origin = request.headers.get("origin")
+    host = urlsplit("//" + request.headers.get("host", "")).hostname
+    if (os.environ.get("DAN_REMOTE_CONFIG") or not request.client
+            or request.client.host not in {"127.0.0.1", "::1", "testclient"}
+            or host not in {"localhost", "127.0.0.1", "testserver", "::1"}
+            or (origin and urlsplit(origin).hostname not in {"localhost", "127.0.0.1", "::1"})):
+        raise HTTPException(403, "Manage API keys from the local Dear Diane app on this host")
+
+
+@router.get("/api/model-providers")
+def model_providers(request: Request):
+    _local_provider_settings(request)
+    from dan.native_workers.models import API_PROVIDERS, provider_key
+    from dan.native_workers.provider_credentials import saved_keys
+    saved = saved_keys()
+    return {"providers": [{"id": key, "label": spec["label"], "configured": bool(provider_key(key)),
+                            "saved": bool(saved.get(key)), "key_env": spec["env"]} for key, spec in API_PROVIDERS.items()]}
+
+
+@router.put("/api/model-providers/{provider}/key")
+def save_provider_key(provider: str, body: ProviderKeyInput, request: Request):
+    _local_provider_settings(request)
+    from dan.native_workers.provider_credentials import save_key
+    try:
+        save_key(provider, body.api_key.get_secret_value())
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from None
+    return model_providers(request)
+
 
 @router.get("/api/native-sessions")
 def native_sessions(workspace: str):

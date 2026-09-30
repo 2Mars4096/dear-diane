@@ -1,6 +1,20 @@
 # Changelog
 
 ## 2026-09-30
+- [feat] Keep agent selection separate from Native/API model controls, rename the built-in choice Default, and add OpenAI, DeepSeek, Moonshot, and OpenRouter provider choices with model-specific reasoning controls.
+- [feat] Add masked local API-key entry/removal in Settings; store owner-only credentials on the host and route supported Codex/Claude/Default runs without changing native login configuration. Validation: 53 model/worker/lead tests, nine SSH tests, 16 focused UI tests, and production build/bundle budgets pass; mobile Settings/SSH preview checked.
+
+## 2026-09-30
+- [fix] Remove relay/phone/deployment controls from the SSH section and stop injecting legacy relay routing into SSH inspection; preserve deployment records and existing workspace links.
+- [feat] Group Settings under six named sections with in-page navigation and focus handling.
+
+## 2026-09-30
+- [fix] Make the quota meter fill and accessible value show remaining capacity, with blue for normal quota and existing low-quota warning colors; shorten the sidebar settings entry and panel title to Settings.
+
+## 2026-09-30
+- [fix] Remove visible text from Edit, Regenerate, and Fork message actions; retain descriptive tooltips and explicit accessible names.
+
+## 2026-09-30
 - [infra] Install and launch the signed session-wheel redesign; installed archive matches the prepared build, signature and app-owned backend/proxy health pass, and rollback is retained.
 - [fix] Restyle the session wheel with project-style cards, compact empty-position markers, and a selected-session preview; retain stable slots and directional controls. Browser checks cover light/dark, one/eight sessions, keyboard opening, and non-overlapping 320px/390px layouts.
 

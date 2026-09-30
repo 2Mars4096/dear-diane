@@ -65,8 +65,8 @@
 - Lazy `ActivitySummary` translates observed action summaries into concise progress labels without predicting results. Completed replies expose Work details rather than event counts; original records stay inside the disclosure.
 
 ## SSH setup
-- SSH hosts render as compact rows; status is saved/installed until an explicit inspection succeeds. A native details dialog owns access-key reveal and opt-in installation settings, clearing secrets when closed; editor/phone forms remain separate.
-- `RemoteConnections` uses a native modal dialog for name/hostname/port/authentication, mirroring the installed Codex workflow. Workspace and package options are progressive; phone relay configuration is a separate action.
+- SSH hosts render as compact rows; status is saved/installed until an explicit inspection succeeds. A native details dialog owns SSH properties, editing, and connectivity checks. Relay/phone/deployment controls are excluded; existing workspace links remain available.
+- `RemoteConnections` uses a native modal dialog for name/hostname/port/authentication, mirroring the installed Codex workflow. Only connection fields are shown. SSH inspection follows host/config without injecting the legacy deployment relay; deployment records remain intact.
 - Profiles add optional `ssh_port`/`identity_file` and `relay_enabled`; missing flags retain legacy behavior. SSH-only profiles have no browser URL and cannot be deployed until a private relay is configured. Normalized comparisons retain installed state on legacy renames.
 - Local-only `/api/remote/ssh-hosts` reads literal aliases and bounded Include files, returning names only. SSH/SCP share argument construction; target identity/port are never applied to the relay.
 
@@ -271,3 +271,9 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - Ready items require a selected candidate, substantive notes, source anchors, and valid read-page numbers. Stop leaves queued items staged. Backend restart resumes queued items and flags active/interrupted imports for explicit retry. Drafts, corrections, PDFs, execution selection, and Agent run IDs persist independently of the browser.
 - `server/paper_ingest.py` packages the deterministic ingest-paper-kb planner/writer without personal skill-path dependencies. Full selected-subset preflight checks keys, DOI/content duplicates, hashes, destination confinement, and existing files. Exclusive links publish verified PDF copies and Hugo pages; ordinary errors roll back only newly created files. Sources are retained. Existing pages are never overwritten or automatically merged; crash-interrupted writes require rechecking through Retry.
 - Crossref coverage is incomplete, especially for books and working papers. Manual BibTeX/title correction remains available. PDF extraction uses the existing optional `pdf` dependencies; scanned-page OCR/rendering depends on the selected lead's tools. Book overview is distinct from a full chapter-by-chapter read. No Zotero or two-way synchronization is required.
+
+- Settings groups related controls under named sections with keyboard-accessible jump buttons and section focus.
+
+### Provider selection and credentials
+- `native_workers/models.py` defines native/API compatibility, endpoint routing, model reasoning capabilities, and provider key resolution shared by leads and workers. Codex uses process-scoped Responses providers; Claude uses isolated provider-specific config directories and Anthropic-compatible endpoints.
+- `native_workers/provider_credentials.py` atomically stores host-local keys under `graphs/model_credentials/keys.json` with mode 0600. Local-only status/write routes never return key values. `ApiProviders.tsx` provides masked Settings entry and removal; model profiles store only provider/model/options.

@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import tomllib
 
-from .models import OPENROUTER_URL, openrouter_key, source_catalog, validate_model_source
+from .models import API_PROVIDERS, provider_key, openrouter_key, source_catalog, validate_model_source
 
 RUNTIMES = {"codex": "Codex", "claude": "Claude Code", "antigravity": "Antigravity", "cursor": "Cursor"}
 
@@ -136,8 +136,8 @@ def catalog() -> dict:
                        "fast": runtime == "codex" or (runtime == "claude" and claude_fast),
                        "setup": "" if executable else {"antigravity": "Install agy and sign in with agy.",
                                                         "cursor": "Install the Cursor CLI (curl https://cursor.com/install -fsS | bash), then run agent login."}.get(runtime, "")})
-    result.insert(0, {"id": "dan", "label": "Diane", "available": True, "version": "",
-                      "accounts": [{"id": "default", "label": "Diane configuration"}],
+    result.insert(0, {"id": "dan", "label": "Default", "available": True, "version": "",
+                      "accounts": [{"id": "default", "label": "Default configuration"}],
                       "models": [],
                       "efforts": [], "fast": False, "setup": ""})
     for runtime in result:
@@ -200,11 +200,15 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
         cmd += ["-c", 'service_tier="fast"' if fast else 'service_tier="default"']
         if fast:
             cmd += ["-c", "features.fast_mode=true"]
-        if source == "openrouter":
-            env["DAN_CODEX_OPENROUTER_KEY"] = openrouter_key()
-            # Replace a DAN-owned provider table in memory, never the user's config.toml.
-            provider = '{name="OpenRouter",base_url="' + OPENROUTER_URL + '",wire_api="responses",env_key="DAN_CODEX_OPENROUTER_KEY",requires_openai_auth=false}'
-            cmd += ["-c", 'model_provider="dan_openrouter"', "-c", f"model_providers.dan_openrouter={provider}"]
+        if source != "native":
+            spec = API_PROVIDERS[source]
+            key_env = f"DAN_CODEX_{source.upper()}_KEY"
+            env[key_env] = provider_key(source)
+            # A process-local provider; never rewrite the user's CLI config.
+            provider = '{name=' + json.dumps(spec["label"]) + ',base_url=' + json.dumps(spec["url"]) + ',wire_api="responses",env_key=' + json.dumps(key_env) + ',requires_openai_auth=false}'
+            cmd += ["-c", f'model_provider="dan_{source}"', "-c", f"model_providers.dan_{source}={provider}"]
+            if source == "moonshot" and model == "kimi-k3":
+                cmd += ["-c", "model_context_window=1048576"]
             if effort:
                 cmd += ["-c", "model_supports_reasoning_summaries=true"]
         elif profile.get("provider") == "native":
@@ -212,17 +216,17 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
     else:
         cmd = [executable, "-p", objective, "--output-format", "stream-json"]
         if runtime == "claude":
-            if source == "openrouter":
+            if source != "native":
                 from dan.server.paths import resolve_graphs_dir
                 # Isolate gateway login from cached subscription/keychain credentials.
                 import hashlib
                 account_id = hashlib.sha256(str(profile.get("account") or "default").encode()).hexdigest()[:16]
-                config_dir = Path(resolve_graphs_dir()) / "model_accounts" / "claude_openrouter" / account_id
+                config_dir = Path(resolve_graphs_dir()) / "model_accounts" / f"claude_{source}" / account_id
                 config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-                env.update(CLAUDE_CONFIG_DIR=str(config_dir), ANTHROPIC_BASE_URL="https://openrouter.ai/api",
-                           ANTHROPIC_AUTH_TOKEN=openrouter_key(), ANTHROPIC_API_KEY="",
+                env.update(CLAUDE_CONFIG_DIR=str(config_dir), ANTHROPIC_BASE_URL=API_PROVIDERS[source]["anthropic_url"],
+                           ANTHROPIC_AUTH_TOKEN=provider_key(source), ANTHROPIC_MODEL=model, ANTHROPIC_API_KEY="",
                            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1")
-                for key in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"):
+                for key in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_EFFORT_LEVEL", "ANTHROPIC_SMALL_FAST_MODEL"):
                     env.pop(key, None)
                 for role in ("FABLE", "OPUS", "SONNET", "HAIKU"):
                     env[f"ANTHROPIC_DEFAULT_{role}_MODEL"] = model

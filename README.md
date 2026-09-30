@@ -46,7 +46,7 @@ Work opens with a familiar project/chat sidebar: New chat, search, collapsible p
 - **Processes:** the side panel's Processes tab runs commands that must stay up (dev servers, watchers). They keep running after a chat or agent run ends; agents start them through Dear Diane for the same reason.
 - **Skills:** Dear Diane settings → Skills lets Claude Code use skills installed for Codex or Cursor, without changing any CLI's own folders.
 - **Usage:** hover the sidebar's Usage button for remaining quota (5h/week/model windows) on the accounts you used most recently.
-- **Token usage:** Dear Diane settings → Token usage → **Open analyzer**. *All sessions* combines your recent Claude Code and Codex sessions (tokens per day, by project, agent, model, and activity, plus the changes that would save the most). *By session* shows one session's chat rounds, most expensive steps, and avoidable patterns. It reads the transcripts already on your computer. **Label stages with model** optionally refines the activity labels with Jev (`jev-latest`) through your OpenRouter key; it sends step summaries, never file contents or command output.
+- **Token usage:** Settings → Usage → **Open analyzer**. *All sessions* combines your recent Claude Code and Codex sessions (tokens per day, by project, agent, model, and activity, plus the changes that would save the most). *By session* shows one session's chat rounds, most expensive steps, and avoidable patterns. It reads the transcripts already on your computer. **Label stages with model** optionally refines the activity labels with Jev (`jev-latest`) through your OpenRouter key; it sends step summaries, never file contents or command output.
 - **Literature:** open the right side panel → **Literature**. Browse your library or drop a batch of PDFs into **Import**. Choose a configured Hugo KB, optionally supply BibTeX, then **Prepare PDFs** using the selected lead. Dear Diane retrieves Crossref citation candidates, checks each match, and drafts notes with source anchors. Review uncertain matches, retry individual documents, or stop preparation. **Import ready items** saves verified PDF copies and `index.md` pages; originals and existing notes are preserved. Imports survive panel closure and reload; queued work resumes after a backend restart, while interrupted documents offer Retry. Books support an explicitly labelled overview. No Zotero installation is needed.
 
 - **Reader:** click a PDF in Files (or **Read** in Preview); it opens as a tab beside the conversation. The side panel's **Reading** and **Notes** tabs follow the active PDF. Select text → **Ask** stages it in the side chat with the page's text; **Comment** saves a highlight with an optional note. Scanned pages are OCR'd in-app so they become selectable; highlights are text-anchored so they survive PDF changes; **Export** saves a copy with comments as PDF highlights. Zoom, page references (**Refs**), comments, and your position are remembered per PDF.
@@ -77,21 +77,13 @@ Browser-selected files stay in your browser and offer **Download edits**, leavin
 
 ## Remote machines and phone access
 
-In **Dear Diane settings → SSH connections → Add SSH connection**, enter a display name and hostname (`server.example`, `user@host`, or an existing alias such as `mini`). SSH port and identity file are optional; the default uses your SSH config/agent. Save, then use **⋯** for connection details and **Check SSH**. The folder icon opens remote projects; the phone icon opens access details. No manual SSH config edit or VPN details are needed to save a host. Workspace and package-source options are under Advanced.
+In **Settings → Connections → Add SSH connection**, enter a display name and hostname (`server.example`, `user@host`, or an existing SSH alias). SSH port and identity file are optional; the default uses your SSH config/agent. Save, then use **⋯ → Check SSH**. The folder icon opens an existing configured remote workspace. This section manages SSH only; relay, phone-access, and deployment controls are not included. Existing remote services and their saved configuration are preserved.
 
-For persistent remote Dear Diane and phone access, open the host details, choose **Phone access → Set up** (or **Configure**), enter the private/VPN and relay details, and save. Open **Installation** in the details panel to choose **Install Dear Diane**. SSH-only profiles do not yet provide a direct SSH tunnel to Dear Diane. The local installer needs this source checkout and `cd editor && npm run build:verify`; set `DAN_SOURCE_ROOT` when the backend runs outside the checkout. Linux targets need Python 3.11+, systemd user services, and trusted SSH host keys. Install native agent CLIs and log in on the execution host.
+Settings has section headings and jump buttons for Appearance, Connections, Agents & skills, Library, Usage, and App updates.
 
-Each machine gets its own browser address on the relay. **Show access key** supplies its sign-in credential. Open that address from your phone while connected to the existing VPN. Execution and saved chats stay on the remote machine when the Mac/browser disconnects. Projects synchronize across browsers; local tabs and preferences remain separate. Backend restarts can interrupt active agent work.
+To work on an existing remote project, open its configured workspace, then choose **New project** and browse folders on that machine. This registers the folder without moving or uploading files. Chats and agents use that remote working folder.
 
-To work on an existing remote project, choose **Open Mini** (or your saved host), then **New project**. Browse the folders on that machine, select one, and choose **Create project**. Use the arrow beside a folder to see its subfolders, or enter a remote path/prefix and choose **Go**. This registers the folder in Dear Diane without moving or uploading files. Chats and agents use that remote working folder. Project settings also lets you change it later.
-
-The Mac manages setup. OpenRouter provisioning is an explicit installation checkbox; native account directories are never copied. Keys are kept in private files on the Mac/execution host. The initial relay is private-network HTTP over your VPN, not a public website. Change relay fields to use another relay; retire the previous service after verifying the replacement. Each remote needs a distinct relay port.
-
-For slow package networks, the connection form offers the Tsinghua PyPI mirror. Prepared deployments can set `DAN_REMOTE_WHEELHOUSE` to a folder of compatible Linux/Python wheels, including build dependencies; those wheels are bundled and installed without reaching a package index.
-
-If the relay firewall blocks its selected port, allow that port only from your VPN peers. Dear Diane reports installation and connection failures separately; it does not change existing firewall or VPN rules.
-
-Services are `dan-execution-<machine>.service` on the execution host and `dan-relay-<machine>.service` on the relay, managed with `systemctl --user`. Releases/state are under `~/.local/share/dan-remote/<machine>/`. Check logs with `journalctl --user -u <service>`; install reports whether boot persistence is enabled. Updates restart the service, so finish active work first. See [remote control](docs/plans/6-remote-control.md) for remaining public login, approval, and recovery work.
+Existing remote services keep their configuration. Relay and phone-access setup are managed separately from this SSH section.
 
 ## Requirements
 
@@ -220,7 +212,7 @@ src/dan/tools/           Selectively loaded Dear Diane capabilities
 src/dan/skills/          Skill discovery and loading
 editor/                  Work/Notes React + Electron app
 mobile/                  Optional Flutter phone app
-docs/plans/              Active numbered roadmap (1–6)
+docs/plans/              Active numbered roadmap (1–7)
 ```
 
 ## Archive policy
@@ -229,11 +221,13 @@ Git is the archive. Do not add an in-tree legacy archive or reintroduce old prod
 
 ### Agents and models
 
-**Lead** and **Team** separate the agent harness from its model. Choose Dear Diane, Codex, Claude Code, Cursor, or Antigravity, then choose **Model source**, **Model**, **Reasoning**, and supported **Fast mode**. Native model suggestions come from the runtime catalog; OpenRouter offers DeepSeek V4.1 Flash, Kimi K2.6, and a custom model ID. Each source remembers its settings when you switch back.
+**Lead** and **Team** share the same model controls. Choose **Default**, **Codex**, **Claude Code**, **Cursor**, or **Antigravity**, then choose **Native** (Default configuration for the built-in agent) or **API**. API providers are OpenAI, DeepSeek, Moonshot / Kimi, and OpenRouter. Each provider remembers its model and reasoning choice; native choices retain supported fast mode.
 
-Codex and Claude Code can run **directly on OpenRouter models**, independently of their teammates. Dear Diane also supports OpenRouter. Cursor and Antigravity currently support their native model sources only. Claude Code with non-Anthropic gateway models is experimental, with reasoning managed by the model; fast mode is disabled for OpenRouter selections. Dear Diane's native configuration uses API credentials, not a Codex or Claude subscription.
+Add or remove keys in **Settings → Agents & skills → API providers** on the local app. Keys are stored in a host-local file with owner-only permissions, never in browser profiles or model catalogs. Saved keys take precedence over server environment keys; removing a saved key restores any environment fallback. No backend restart is needed after saving a key.
 
-The server loads project `.env` at startup. Set `OPENROUTER_API_KEY` (or `DAN_OPENROUTER_API_KEY`), or reuse `DAN_LLM_API_KEY` with `DAN_LLM_BASE_URL=https://openrouter.ai/api/v1`. Restart the backend after changing credentials. Keys stay server-side; selecting OpenRouter does not rewrite your CLI configuration or log out native accounts.
+Codex supports all four API providers. Claude Code supports DeepSeek, Moonshot, and OpenRouter; non-Anthropic OpenRouter models remain experimental. Default uses Chat Completions and currently limits official OpenAI selections to GPT-4.1 models; choose Codex for GPT-6 tool calling. Cursor and Antigravity use native sources. API fast mode is unavailable; reasoning choices follow the selected model's capabilities.
+
+Server keys can also use `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY` (or `KIMI_API_KEY`), and `OPENROUTER_API_KEY`, with `DAN_` overrides. Provider selection does not rewrite CLI configuration or log out native accounts.
 
 Open **Team** to enable delegates and configure each harness/model combination. Codex accounts come from local codexx configuration (`DAN_CODEXX_CONFIG` can override its path). Native Claude uses its current configuration or profiles under `DAN_CLAUDE_ACCOUNTS_DIR` (default `~/.claude-accounts`). Install each CLI separately and authenticate it when using native models; Antigravity uses `agy`. Unsupported controls stay disabled.
 

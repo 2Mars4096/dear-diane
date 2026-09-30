@@ -526,7 +526,7 @@
 .wb-usage-row { display:grid; grid-template-columns:44px 1fr 56px auto; align-items:center; gap:8px; font-size:11px; color:var(--wb-muted); margin:5px 0; }
 .wb-usage-label { color:var(--wb-ink); }
 .wb-usage-bar { display:block; height:6px; border-radius:3px; background:var(--wb-line); overflow:hidden; }
-.wb-usage-bar i { display:block; height:100%; border-radius:3px; background:var(--wb-accent); transition:width 400ms ease; }
+.wb-usage-bar i { display:block; height:100%; border-radius:3px; background:oklch(0.60 0.20 255); transition:width 400ms ease; }
 .wb-usage-row[data-level=mid] .wb-usage-bar i { background:#c99a2e; }
 .wb-usage-row[data-level=high] .wb-usage-bar i { background:var(--wb-danger,#bc3030); }
 .wb-usage-pct { text-align:right; font-variant-numeric:tabular-nums; color:var(--wb-ink); }
@@ -782,3 +782,18 @@
 .wb-ssh-dialog button:disabled, .wb-ssh-dialog fieldset:disabled { opacity:.55; }
 .wb-ssh-dialog .wb-ssh-error { color:var(--wb-danger,#bc3030); }
 @media(max-width:480px) { .wb-ssh-heading { gap:12px; } .wb-ssh-dialog { padding:20px; } .wb-ssh-list { padding:0 10px; } .wb-ssh-row { gap:8px; } .wb-ssh-row-actions { gap:0; } .wb-ssh-row-actions button { width:30px; } }
+
+/* Settings groups share a clear heading and in-page navigation. */
+.wb-settings-jump { display:flex; flex-wrap:wrap; gap:6px; margin:20px 0 8px; }
+.wb-settings-jump button { padding:7px 10px; border:1px solid var(--wb-line); border-radius:6px; font-size:12px; color:var(--wb-ink); background:var(--wb-soft); }
+.wb-settings-jump button:hover { border-color:var(--wb-muted); }
+.wb-settings-section { padding:26px 0; border-bottom:1px solid var(--wb-line); scroll-margin-top:20px; }
+.wb-settings-section:last-of-type { border-bottom:0; }
+.wb-settings-section:focus { outline:none; }
+.wb-settings-section:focus-visible { outline:2px solid var(--wb-accent); outline-offset:6px; }
+.wb-dan-settings .wb-settings-section h3 { border:0; padding-top:0; }
+.wb-dan-settings .wb-settings-section > .wb-settings-section-title { margin:0 0 18px; font-size:17px; font-weight:600; letter-spacing:-.02em; color:var(--wb-ink); }
+
+.wb-api-providers input[type=password] { display:block; width:100%; max-width:360px; margin-top:8px; padding:8px 10px; border:1px solid var(--wb-line); border-radius:6px; background:var(--wb-paper); color:var(--wb-ink); }
+
+.wb-api-providers { margin-bottom: 24px; }

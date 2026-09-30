@@ -33,9 +33,9 @@ export function RequestActions({ text, disabled, onEdit, onRegenerate, onFork }:
       {error && <p role="alert">{error}</p>}
       <div><button type="button" disabled={saving} onClick={cancel}>Cancel</button><button type="submit" disabled={disabled || saving || !draft.trim()}>{saving ? "Resending…" : "Save & resend"}</button></div>
     </form> : <>
-      {onEdit && <button ref={editButton} type="button" disabled={disabled} onClick={() => { setDraft(text); setEditing(true); }} title={disabled ? "Wait for the current run to finish or stop it before editing" : "Edit and resend this message"}><Pencil size={12} />Edit</button>}
-      {onRegenerate && <button type="button" disabled={disabled} onClick={onRegenerate} title="Run this request again and replace the answer below"><RefreshCw size={12} />Regenerate</button>}
-      {onFork && <button type="button" disabled={disabled} onClick={onFork} title="Continue this conversation in a new chat"><GitFork size={12} />Fork</button>}
+      {onEdit && <button ref={editButton} aria-label="Edit" type="button" disabled={disabled} onClick={() => { setDraft(text); setEditing(true); }} title={disabled ? "Wait for the current run to finish or stop it before editing" : "Edit and resend this message"}><Pencil size={12} aria-hidden="true" /></button>}
+      {onRegenerate && <button type="button" disabled={disabled} onClick={onRegenerate} aria-label="Regenerate" title="Run this request again and replace the answer below"><RefreshCw size={12} aria-hidden="true" /></button>}
+      {onFork && <button type="button" disabled={disabled} onClick={onFork} aria-label="Fork" title="Continue this conversation in a new chat"><GitFork size={12} aria-hidden="true" /></button>}
     </>}
   </div>;
 }

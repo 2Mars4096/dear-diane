@@ -1,5 +1,13 @@
 # Todo
 
+- [x] Restrict Connections to SSH setup/checks and organize Settings into named sections with jump navigation — [6-2](plans/6-2-ssh-connection-setup.md).
+
+- [x] Show remaining quota as a blue fill and shorten the settings entry/title to Settings — [4-1](plans/4-1-agent-workbench.md).
+
+- [x] Make Edit, Regenerate, and Fork icon-only with tooltips and accessible names — [4-1](plans/4-1-agent-workbench.md).
+
+- [x] Minimal model-selector update: Default label, Native/API grouping, direct provider choices, local Settings key entry, and capability-aware reasoning controls.
+
 - [x] Align the session wheel with project-card styling and verify keyboard/narrow-screen behavior — [4-1](plans/4-1-agent-workbench.md).
 
 - [x] Move project switching to left-hand Cmd/Ctrl+Shift+E — [4-1](plans/4-1-agent-workbench.md).

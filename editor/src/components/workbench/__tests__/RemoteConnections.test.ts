@@ -12,19 +12,15 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-it("keeps credential provisioning opt-in and starts an explicit install", async () => {
-  const fetcher = vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith("/install")
-    ? { id: "job", status: "complete", message: "Installed" }
-    : { local: true, connections: [{ id: "mini", name: "Mini", ssh_alias: "mini", relay_ssh_alias: "ny", installed: false }] }), { status: 200 }));
+it("keeps legacy relay and deployment controls out of the SSH section", async () => {
+  const fetcher = vi.fn(async (_url: string) => new Response(JSON.stringify({ local: true, connections: [{ id: "mini", name: "Mini", ssh_alias: "mini", relay_ssh_alias: "ny", relay_enabled: true, ssh_via_relay: true, installed: true }] })));
   vi.stubGlobal("fetch", fetcher);
   await act(async () => root.render(createElement(RemoteConnections)));
+  expect(button("Phone access for Mini")).toBeUndefined();
   await act(async () => button("Connection details for Mini").click());
-  const checkbox = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
-  expect(checkbox.checked).toBe(false);
-  const install = [...host.querySelectorAll("button")].find(button => button.textContent === "Install Dear Diane")!;
-  await act(async () => install.click());
-  expect(fetcher).toHaveBeenLastCalledWith("/api/remote/connections/mini/install", expect.objectContaining({ method: "POST", body: JSON.stringify({ share_openrouter: false }) }));
-  expect(host.textContent).toContain("Installed");
+  expect(button("Check SSH")).toBeTruthy();
+  for (const label of ["Phone access", "Installation", "Jump host", "OpenRouter", "Show access key"]) expect(host.textContent).not.toContain(label);
+  expect(fetcher.mock.calls.some(([url]) => /install|access-key/.test(String(url)))).toBe(false);
 });
 
 it("remote browsers identify the machine and cannot bootstrap other hosts", async () => {
@@ -59,6 +55,7 @@ it("adds a manual host with optional port/key, without VPN fields or an install"
   expect(host.querySelector("dialog")?.open).toBe(true);
   expect(host.querySelector('input[placeholder="10.77.77.3"]')).toBeNull();
   expect(host.querySelectorAll("datalist option")).toHaveLength(2);
+  for (const label of ["Advanced options", "Remote workspace", "relay", "Python packages"]) expect(host.querySelector("dialog")?.textContent).not.toContain(label);
   await fill("Display name", "Research box");
   await fill("Hostname", "adam@lab.example");
   await fill("SSH port", "2222");
@@ -72,7 +69,7 @@ it("adds a manual host with optional port/key, without VPN fields or an install"
   expect(button("Check SSH")).toBeUndefined();
   await act(async () => button("Connection details for Research box").click());
   expect(button("Check SSH")).toBeTruthy();
-  expect(button("Set up")).toBeTruthy();
+  expect(button("Set up")).toBeUndefined();
 });
 
 it("preserves legacy relay routing when editing and keeps errors in the dialog", async () => {
@@ -107,7 +104,7 @@ it("keeps rows compact and only shows connected after a successful SSH check", a
   expect(button("Check SSH")).toBeUndefined();
   await act(async () => button("Connection details for Mini").click());
   expect(host.querySelector("dialog")?.open).toBe(true);
-  expect(host.querySelector("dialog")?.textContent).toContain(existing.url);
+  expect(host.querySelector("dialog")?.textContent).not.toContain(existing.url);
   await act(async () => button("Check SSH").click());
   expect(host.querySelector(".wb-ssh-row")?.textContent).toContain("SSH connected");
   await act(async () => button("Close connection details").click());

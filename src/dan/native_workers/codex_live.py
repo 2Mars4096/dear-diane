@@ -121,8 +121,8 @@ async def run_live(team, record, command, env):
         if profile.get("model"):
             params["model"] = profile["model"]
         from .models import model_source
-        if model_source(profile) == "openrouter":
-            params["modelProvider"] = "dan_openrouter"
+        if model_source(profile) != "native":
+            params["modelProvider"] = f"dan_{model_source(profile)}"
         elif profile.get("provider") == "native":
             params["modelProvider"] = "openai"
         session = record.get("native_session_id") or profile.get("resume_session", "")

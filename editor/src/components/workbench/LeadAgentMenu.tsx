@@ -4,7 +4,7 @@ import { ChevronDown } from "lucide-react";
 
 import { NativeWorkerSettings, type WorkerProfiles, type Runtime } from "./NativeWorkers";
 
-const choices = [{ id: "native", label: "Diane" }, { id: "codex", label: "Codex" }, { id: "claude", label: "Claude Code" }, { id: "antigravity", label: "Antigravity" }, { id: "cursor", label: "Cursor" }] as const;
+const choices = [{ id: "native", label: "Default" }, { id: "codex", label: "Codex" }, { id: "claude", label: "Claude Code" }, { id: "antigravity", label: "Antigravity" }, { id: "cursor", label: "Cursor" }] as const;
 export type LeadAgentId = typeof choices[number]["id"];
 export function LeadAgentMenu({ selected, onChange, disabled = false, profiles, onProfilesChange }: {
   selected: LeadAgentId; onChange: (id: LeadAgentId) => void; disabled?: boolean;

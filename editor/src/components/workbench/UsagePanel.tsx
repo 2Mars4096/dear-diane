@@ -57,7 +57,7 @@ export function UsagePanel() {
           const used = Math.min(100, Math.max(0, window.used_percent));
           return <div key={window.label} className="wb-usage-row" data-level={usageLevel(used)}>
             <span className="wb-usage-label">{window.label}</span>
-            <span className="wb-usage-bar" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(used)} aria-label={`${window.label} used`}><i style={{ width: `${used}%` }} /></span>
+            <span className="wb-usage-bar" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(100 - used)} aria-label={`${window.label} remaining`}><i style={{ width: `${100 - used}%` }} /></span>
             <span className="wb-usage-pct">{Math.round(100 - used)}% left</span>
             <span className="wb-usage-reset">{resetsIn(window.resets_at)}</span>
           </div>;

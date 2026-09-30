@@ -45,7 +45,7 @@ it("selects OpenRouter for Codex without changing the harness and restores nativ
   }
   try {
     await act(async () => root.render(createElement(Harness)));
-    change("Model source", "openrouter");
+    change("Model source", "api");
     expect(host.textContent).toContain("DeepSeek V4.1 Flash");
     expect(host.textContent).not.toContain("Account");
     expect(host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled).toBe(true);
@@ -62,7 +62,7 @@ it("keeps unsupported sources visible but disabled", () => {
   const host = document.createElement("div"); const root = createRoot(host);
   try {
     act(() => root.render(createElement(ModelFields, { runtime: { ...runtime, id: "cursor", sources: runtime.sources!.map(source => ({ ...source, supported: source.id === "native", reason: "Native only" })) }, profile: EMPTY_PROFILE, onChange: vi.fn() })));
-    expect(host.querySelector<HTMLOptionElement>('option[value="openrouter"]')?.disabled).toBe(true);
+    expect(host.querySelector<HTMLOptionElement>('option[value="api"]')?.disabled).toBe(true);
     expect(host.textContent).toContain("Native only");
   } finally { act(() => root.unmount()); }
 });
@@ -74,4 +74,18 @@ it("uses the same selected source for Diane/native lead payloads and recorded me
     expect(payload.profile_policy).toMatchObject({ backend: agent, lead_profile: profile });
     expect(payload.metadata).toMatchObject({ selected_agent: agent, selected_model_provider: "openrouter", selected_model: profile.model, selected_reasoning_effort: "medium" });
   }
+});
+
+it("remembers direct API choices independently and restores the last API provider", () => {
+  let profile = switchModelSource({ ...EMPTY_PROFILE, model: 'gpt-6-astra', effort: 'medium', fast: true }, 'deepseek');
+  profile = { ...profile, model: 'deepseek-v4-pro', effort: 'max' };
+  profile = switchModelSource(profile, 'moonshot');
+  expect(profile).toMatchObject({ model: 'kimi-k3', fast: false, effort: '' });
+  profile = { ...profile, effort: 'high' };
+  profile = switchModelSource(profile, 'deepseek');
+  expect(profile).toMatchObject({ model: 'deepseek-v4-pro', effort: 'max', last_api_provider: 'deepseek' });
+  profile = switchModelSource(profile, 'native');
+  expect(profile).toMatchObject({ model: 'gpt-6-astra', effort: 'medium', fast: true, last_api_provider: 'deepseek' });
+  expect(profile.base_url).toBeUndefined();
+  expect(switchModelSource(profile, 'moonshot')).toMatchObject({ model: 'kimi-k3', effort: 'high', fast: false });
 });

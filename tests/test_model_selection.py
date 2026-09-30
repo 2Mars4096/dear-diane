@@ -116,3 +116,72 @@ async def test_dan_team_forwards_the_same_model_choice(configured, monkeypatch, 
     worker = await team.start("dan", "work")
     await team.tasks[worker["worker_id"]]
     assert calls[0].profile_policy == {**dan_model_policy(configured), "native_workers": {}}
+
+
+@pytest.mark.parametrize('source,model', [('openai', 'gpt-6-astra'), ('deepseek', 'deepseek-flash'), ('moonshot', 'kimi-k3')])
+def test_direct_provider_codex_route(configured, monkeypatch, tmp_path, source, model):
+    from dan.native_workers.models import API_PROVIDERS
+    spec = API_PROVIDERS[source]
+    monkeypatch.setenv(spec['env'], 'direct-test-secret')
+    args, env = catalog.launch('codex', {'provider': source, 'model': model, 'effort': 'high'}, 'work', str(tmp_path))
+    config = tomllib.loads('\n'.join(args[i + 1] for i, part in enumerate(args[:-1]) if part == '-c'))
+    provider = config['model_providers'][f'dan_{source}']
+    assert provider['base_url'] == spec['url']
+    assert env[provider['env_key']] == 'direct-test-secret'
+    assert 'direct-test-secret' not in json.dumps(args)
+
+
+@pytest.mark.parametrize('source,model', [('deepseek', 'deepseek-flash'), ('moonshot', 'kimi-k3')])
+def test_direct_claude_route(configured, monkeypatch, tmp_path, source, model):
+    from dan.native_workers.models import API_PROVIDERS
+    spec = API_PROVIDERS[source]
+    monkeypatch.setenv(spec['env'], 'direct-test-secret')
+    monkeypatch.setenv('ANTHROPIC_SMALL_FAST_MODEL', 'unrelated-model')
+    monkeypatch.setenv('CLAUDE_CODE_EFFORT_LEVEL', 'low')
+    monkeypatch.setattr('dan.native_workers.skills.build_pool', lambda *args: None)
+    args, env = catalog.launch('claude', {'provider': source, 'model': model, 'effort': 'high'}, 'work', str(tmp_path))
+    assert env['ANTHROPIC_BASE_URL'] == spec['anthropic_url']
+    assert env['ANTHROPIC_AUTH_TOKEN'] == 'direct-test-secret'
+    assert env['ANTHROPIC_DEFAULT_HAIKU_MODEL'] == model
+    assert 'ANTHROPIC_SMALL_FAST_MODEL' not in env
+    assert 'CLAUDE_CODE_EFFORT_LEVEL' not in env
+    assert args[args.index('--effort') + 1] == 'high'
+    assert 'direct-test-secret' not in json.dumps(args)
+
+
+def test_saved_credentials_private_redacted_and_removable(configured, monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from dan.server.routers.native_workers import router
+    from dan.native_workers.models import provider_key
+    from dan.native_workers.provider_credentials import _path
+    monkeypatch.delenv('DAN_REMOTE_CONFIG', raising=False)
+    monkeypatch.setenv('DEEPSEEK_API_KEY', 'environment-fallback')
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.put('/api/model-providers/deepseek/key', json={'api_key': 'saved-test-secret'})
+        assert response.status_code == 200
+        assert 'saved-test-secret' not in response.text
+        assert provider_key('deepseek') == 'saved-test-secret'
+        assert _path().stat().st_mode & 0o777 == 0o600
+        assert 'saved-test-secret' not in client.get('/api/model-providers').text
+        assert 'saved-test-secret' not in json.dumps(source_catalog('codex'))
+        assert client.put('/api/model-providers/deepseek/key', json={'api_key': ''}).status_code == 200
+        assert provider_key('deepseek') == 'environment-fallback'
+        assert client.put('/api/model-providers/unknown/key', json={'api_key': 'x'}).status_code == 400
+        assert client.put('/api/model-providers/deepseek/key', json={'api_key': 'x'}, headers={'origin': 'https://evil.example'}).status_code == 403
+        monkeypatch.setenv('DAN_REMOTE_CONFIG', 'remote')
+        assert client.get('/api/model-providers').status_code == 403
+
+
+def test_direct_reasoning_options_and_compatibility(configured, monkeypatch):
+    from dan.native_workers.models import validate_model_source
+    monkeypatch.setenv('DEEPSEEK_API_KEY', 'test-key')
+    policy = dan_model_policy({'provider': 'deepseek', 'model': 'deepseek-flash', 'effort': 'max'})
+    assert policy['base_url'] == 'https://api.deepseek.com'
+    assert ReasoningProvider(None, 'max', 'deepseek').options({}) == {'reasoning_effort': 'max'}
+    with pytest.raises(ValueError, match='not supported'):
+        validate_model_source('claude', {'provider': 'openai', 'model': 'gpt-6-astra'})
+    with pytest.raises(ValueError, match='GPT-4.1'):
+        dan_model_policy({'provider': 'openai', 'model': 'gpt-6-astra'})

@@ -261,3 +261,21 @@ async def test_manual_port_and_identity_reach_inspection_and_upload(monkeypatch,
     assert upload[upload.index("-i") + 1] == p.identity_file
     assert execution[execution.index("-p") + 1] == "2222"
     assert "-i" not in relay and "-p" not in relay
+
+
+@pytest.mark.asyncio
+async def test_ssh_inspection_does_not_inject_legacy_relay(monkeypatch):
+    from dan.remote import profiles
+    calls = []
+    async def command(args, **kwargs):
+        calls.append(args)
+        return '{"hostname":"research-box"}'
+    monkeypatch.setattr(profiles, "command", command)
+    profile = Profile(id="box", name="Box", ssh_alias="adam@10.77.77.2", address="10.77.77.2",
+                      ssh_via_relay=True, relay_ssh_alias="ny", ssh_port=2222, identity_file="/tmp/test-key")
+    assert (await profiles.inspect(profile))["hostname"] == "research-box"
+    assert "-J" not in calls[0] and "ny" not in calls[0]
+    assert calls[0][calls[0].index("-p") + 1] == "2222"
+    assert calls[0][calls[0].index("-i") + 1] == "/tmp/test-key"
+    assert "adam@10.77.77.2" in calls[0]
+    assert profile.ssh_via_relay is True  # Deployment configuration is not rewritten.
