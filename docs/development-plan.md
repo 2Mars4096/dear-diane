@@ -17,6 +17,8 @@ Make difficult agent work durable, steerable, verifiable, and understandable wit
 5. [Universal Product Cutover](plans/5-universal-product-cutover.md) — completed; legacy code/docs are archived in Git and the boundary is locked.
 6. [Remote control](plans/6-remote-control.md) — implementing Mac-managed SSH profiles, persistent execution, and authenticated private-network desktop/phone access through a replaceable `ny` relay; test on mini, leave s600 to the user.
 
+7. [Personal agent on the phone](plans/7-phone-personal-agent.md) — planned extension of the existing stack: both phones/browser first, commitment follow-through, provider-neutral connections (Google first), approvals, and durable reminders. Implementation not started.
+
 ## Near-term priorities
 
 - Independent harness/model-source selection is delivered and live-verified for Codex/Claude with OpenRouter. SSH remote execution follows this shared profile contract; see [4-4](plans/4-4-agent-model-selection.md) and [6](plans/6-remote-control.md).
@@ -34,7 +36,7 @@ Make difficult agent work durable, steerable, verifiable, and understandable wit
 
 - Restoring the visual graph builder or separate Code/Research/Content/Operations modes.
 - Adding task-family organism classes.
-- Reintroducing concierge, messaging, RAG, publishing, marketplace, or thin-client products without a new explicit roadmap decision.
+- Reintroducing retired concierge, messaging, RAG, publishing, marketplace, or thin-client products. Plan 7 authorizes planning personal-workflow extensions and scoped service connectors within the existing stack; it does not restore those products.
 - Remote control is the explicitly requested extension of the existing Work/Notes client and Agent V2 backend; it does not introduce a separate agent product or scheduler.
 - Treating more cells as automatically better; concurrency must be justified by dependency structure and expected value.
 

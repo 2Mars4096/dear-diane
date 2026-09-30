@@ -1,51 +1,79 @@
 # Idea Cart
 
-Last reviewed: 2026-07-21
+Last reviewed: 2026-09-30
+
+## Priority and expected gain
+
+Ranked for the next useful discovery or validation step, using expected user benefit and learning value, then effort, dependencies, and confidence. These are qualitative judgments from project records; commercial gains are unvalidated. Items remain carted.
+
+| Order | Item | Priority | Expected gain | Effort for next step | Next useful step / dependency |
+|---|---|---|---|---|---|
+| 1 | IC-030 — Fluid task surfaces | High | High potential for clearer decisions and easier input across current workflows | Medium | Audit existing typed views, then compare one task-specific view with the current interface. Start with existing task contracts. |
+| 2 | IC-029 — Adaptive task-native blueprints | High | High reuse potential across task families; incremental benefit uncertain | Medium | Audit the current substrate and test contrasting task families; identify missing behavior before adding orchestration machinery. |
+| 3 | IC-025 — Meeting Mode | Medium | Medium near-term confidence; potential team coordination gains | Medium–high | Validate one shared-session workflow and its decision record before investing in multi-user infrastructure. |
+| 4 | IC-027 — Factory broker layer | Medium | Medium learning value: establish whether a narrow manufacturing business is viable | Medium | Research one product family, provider interfaces, responsibilities, and unit economics before IC-026. |
+| 5 | IC-026 — Manufacturing compiler | Low for now | Potentially high long-term benefit; low confidence and high delivery effort | High | Defer prototype work until IC-027 supports a viable product family; apply IC-028 before any disclosure or physical order. |
+| Gate | IC-028 — Human-gated physical orders | High when manufacturing starts | Risk reduction and explicit responsibility | Scoped with manufacturing | Mandatory prerequisite for manufacturing execution; define gates alongside IC-027/026. |
+
+IC-031 and IC-032 are checked out into [Plan 7](../docs/plans/7-phone-personal-agent.md). The remaining cart stays exploratory; reassess IC-030/029 against that plan before further checkout.
+
+Review notes:
+- Plan 7 combines IC-031 mobile delivery and IC-032 personal-agent capabilities. International positioning remains a discovery question in that plan, not a validated market claim.
+- IC-029/030 overlap with the historical implemented substrate described in `docs/business/meeting-mode-to-manufacturing-vision.md`. Its Plan 59 link predates the current cutover; inspect current code before deciding what is complete or still missing. Keep only unresolved acceptance work at checkout.
+- IC-026 remains low priority for near-term work. IC-028 retains high priority as a conditional gate.
 
 ## Active Items
 
-### IC-025 - Meeting Mode and group vibe coding
+### Workflow preferences for remaining IC-038–039
+- Optimize for the user’s smooth personal workflow; uniqueness is not a goal. Build on existing orchestration and parallel work.
+- Preserve conversations, sidebar, and Team panel; no Kanban requirement.
+- IC-034–037 are checked out into [Plan 4-11](../docs/plans/4-11-workflow-friction.md); IC-038/039 remain carted.
+
+
+
+
+
+### IC-038 - Undo a particular agent change
 - Status: carted
 - Priority: medium
 - Kind: idea
-- Scope: collaborative product surface
-- Point: Let multiple people and agents talk and perform visible work in one live room, with parallel workstreams, provenance, and explicit decision and merge gates.
-- Why: Conversation should be able to guide work while it is happening instead of becoming a transcript that must be converted into tasks afterward.
-- Checkout target: future product-discovery brief
-- Acceptance: Real group sessions demonstrate a clearer decision record and faster reviewed output than ordinary chat plus separate project tools.
-- Links: `docs/business/meeting-mode-to-manufacturing-vision.md`
+- Scope: change recovery
+- Point: Preview and undo a selected agent change while preserving unrelated edits.
+- Why: Make experimentation reversible.
+- Checkout target: Tracked changes and rollback design at checkout.
+- Acceptance: Undo one iteration without losing unrelated work; overlapping changes require conflict resolution. Message edit/resend already exists but does not reverse filesystem effects.
 
-### IC-026 - Vibe-to-manufacturing compiler
+### IC-039 - Voice input
+- Status: carted
+- Priority: medium
+- Kind: idea
+- Scope: composer input
+- Point: Hold a shortcut to dictate, release to edit the transcription, then send.
+- Why: Capture detailed ideas with less typing.
+- Checkout target: Composer voice-input plan at checkout.
+- Acceptance: Clear start/stop/cancel states and editable drafts; never auto-send. Evaluate existing OS dictation before adding infrastructure; built-in voice capture was not found.
+
+### IC-033 - Responsive hybrid paper search
+- Status: carted
+- Priority: medium
+- Kind: idea
+- Scope: Dear Diane Cmd+K paper search
+- Point: Combine immediate keyword results with asynchronous semantic retrieval over titles, abstracts, and note sections, keeping exact title/citation matches first and showing useful matching excerpts.
+- Why: Both Simchi-Levi papers are indexed correctly but lack the word “resilience”; lexical matching misses their related robustness and disruption-mitigation concepts.
+- Constraints: Precompute and locally cache embeddings, refresh changed files only, debounce query embedding, reuse repeated queries, and ignore stale responses; retain keyword fallback. Choose local versus API embeddings explicitly based on latency and text-disclosure tradeoffs; no vector database or answer-generation call needed for the current catalogue.
+- Checkout target: paper-search implementation plan when selected; also address the silent 12-result cap.
+- Acceptance: “Resilience” retrieves both relevant Simchi-Levi papers; representative exact and conceptual queries retain useful ranking; measure cold/warm semantic latency while keyword results remain responsive, including provider failure.
+- Source: 2026-09-29 search diagnosis and latency discussion. Deferred by user; implementation not started.
+
+### IC-030 - Fluid task surfaces
 - Status: carted
 - Priority: high
 - Kind: idea
-- Scope: physical-product creation
-- Point: Compile conversational product intent into reviewable, process-specific production packages rather than treating a render or generic blueprint as factory-ready.
-- Why: Parts, garments, electronics, and food-contact goods require different files, validations, and approval paths.
-- Checkout target: research prototype only after product-family validation
-- Acceptance: One narrow, non-regulated product family can produce packages that multiple providers quote with no more than one bounded human correction cycle.
-- Links: `docs/business/meeting-mode-to-manufacturing-vision.md`
-
-### IC-027 - Existing-factory broker layer
-- Status: carted
-- Priority: medium
-- Kind: follow-up
-- Scope: manufacturing-as-a-service
-- Point: Explore DAN as the orchestration and brokerage layer above existing instant-quote services, RFQ marketplaces, and manufacturing concierges instead of owning factory capacity first.
-- Why: The market already supports one-off digital fabrication and low-volume electronics, but finished-product assembly and cross-category ordering remain fragmented.
-- Checkout target: provider and unit-economics research
-- Acceptance: A provider map identifies quote/order interfaces, geographic coverage, responsibility boundaries, and viable prototype economics for one narrow wedge.
-- Links: `docs/business/meeting-mode-to-manufacturing-vision.md`
-
-### IC-028 - Human-gated physical orders
-- Status: carted
-- Priority: high
-- Kind: constraint
-- Scope: blueprint release and manufacturing orders
-- Point: Never release a generated design or place a paid physical-production order without process-specific DFM, applicable compliance review, and explicit human approvals.
-- Why: Manufacturability does not prove function or safety, and physical products introduce IP, quality, liability, importer, warranty, and recall responsibilities.
-- Checkout target: future safety and approval contract
-- Acceptance: Any future prototype flow has named approval gates for supplier disclosure, design release, payment, sample acceptance, and production scale-up.
+- Scope: adaptive interaction design
+- Point: Project the current task graph, artifact, and decision point into task-appropriate typed views and request-input controls within a stable conversational shell.
+- Why: Users should be able to understand and steer different kinds of work without translating everything into generic chat or navigating a different arbitrary application for every task.
+- Checkout target: future interaction-design research brief
+- Acceptance: Several task families demonstrate clearer comprehension and lower-friction input through a trusted component grammar, with free-form chat, accessibility, provenance, and user override preserved.
 - Links: `docs/business/meeting-mode-to-manufacturing-vision.md`
 
 ### IC-029 - Adaptive task-native blueprints
@@ -59,18 +87,58 @@ Last reviewed: 2026-07-21
 - Acceptance: Representative task families can use visibly different graph topologies while preserving stable goal, permission, evidence, status, provenance, and completion contracts.
 - Links: `docs/business/meeting-mode-to-manufacturing-vision.md`
 
-### IC-030 - Fluid task surfaces
+### IC-025 - Meeting Mode and group vibe coding
+- Status: carted
+- Priority: medium
+- Kind: idea
+- Scope: collaborative product surface
+- Point: Let multiple people and agents talk and perform visible work in one live room, with parallel workstreams, provenance, and explicit decision and merge gates.
+- Why: Conversation should be able to guide work while it is happening instead of becoming a transcript that must be converted into tasks afterward.
+- Checkout target: future product-discovery brief
+- Acceptance: Real group sessions demonstrate a clearer decision record and faster reviewed output than ordinary chat plus separate project tools.
+- Links: `docs/business/meeting-mode-to-manufacturing-vision.md`
+
+### IC-027 - Existing-factory broker layer
+- Status: carted
+- Priority: medium
+- Kind: follow-up
+- Scope: manufacturing-as-a-service
+- Point: Explore DAN as the orchestration and brokerage layer above existing instant-quote services, RFQ marketplaces, and manufacturing concierges instead of owning factory capacity first.
+- Why: The market already supports one-off digital fabrication and low-volume electronics, but finished-product assembly and cross-category ordering remain fragmented.
+- Checkout target: provider and unit-economics research
+- Acceptance: A provider map identifies quote/order interfaces, geographic coverage, responsibility boundaries, and viable prototype economics for one narrow wedge.
+- Links: `docs/business/meeting-mode-to-manufacturing-vision.md`
+
+### IC-026 - Vibe-to-manufacturing compiler
+- Status: carted
+- Priority: low
+- Kind: idea
+- Scope: physical-product creation
+- Point: Compile conversational product intent into reviewable, process-specific production packages rather than treating a render or generic blueprint as factory-ready.
+- Why: Parts, garments, electronics, and food-contact goods require different files, validations, and approval paths.
+- Checkout target: research prototype only after product-family validation
+- Acceptance: One narrow, non-regulated product family can produce packages that multiple providers quote with no more than one bounded human correction cycle.
+- Links: `docs/business/meeting-mode-to-manufacturing-vision.md`
+
+### IC-028 - Human-gated physical orders
 - Status: carted
 - Priority: high
-- Kind: idea
-- Scope: adaptive interaction design
-- Point: Project the current task graph, artifact, and decision point into task-appropriate typed views and request-input controls within a stable conversational shell.
-- Why: Users should be able to understand and steer different kinds of work without translating everything into generic chat or navigating a different arbitrary application for every task.
-- Checkout target: future interaction-design research brief
-- Acceptance: Several task families demonstrate clearer comprehension and lower-friction input through a trusted component grammar, with free-form chat, accessibility, provenance, and user override preserved.
+- Kind: constraint
+- Scope: blueprint release and manufacturing orders
+- Point: Never release a generated design or place a paid physical-production order without process-specific DFM, applicable compliance review, and explicit human approvals.
+- Why: Manufacturability does not prove function or safety, and physical products introduce IP, quality, liability, importer, warranty, and recall responsibilities.
+- Checkout target: future safety and approval contract
+- Acceptance: Any future prototype flow has named approval gates for supplier disclosure, design release, payment, sample acceptance, and production scale-up.
 - Links: `docs/business/meeting-mode-to-manufacturing-vision.md`
 
 ## Checkout Log
+
+### 2026-09-30
+- IC-034–037 -> [Plan 4-11](../docs/plans/4-11-workflow-friction.md), authorized for sequential implementation with minimal changes and reuse of the existing team mechanism. Removed from active cart. Browser-style session tabs added to the same plan by follow-up request. IC-038/039 remain carted.
+
+### 2026-09-29
+- IC-031 -> plan: [7-phone-personal-agent](../docs/plans/7-phone-personal-agent.md), both iPhone and Android, browser first; native share/device access deferred. Removed from active cart.
+- IC-032 -> plan: same staged plan covers personal records, durable follow-through, approvals, Google first, common provider contracts and rollout, then claims/returns/goals. [Muse connection research](../docs/business/muse-app-connections.md) informs the design. Planning complete; implementation not started. Removed from active cart.
 
 ### 2026-07-21
 - IC-029 and IC-030 -> carted from the adaptive task-blueprint and fluid-frontend discussion; plan-execute-validate remains available as one graph pattern, while the stable contracts and typed-interface boundary are preserved in `docs/business/meeting-mode-to-manufacturing-vision.md`.
