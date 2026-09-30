@@ -244,3 +244,12 @@ def test_spending_failure_reports_budget_instead_of_generic_model_error():
     assert 'budget' in reply
     assert 'Settings' in reply
     assert 'no action was taken' in reply
+
+
+def test_provider_failure_is_not_reported_as_budget_or_bad_user_input():
+    from types import SimpleNamespace
+    from dan.personal.conversation import failed_reply
+    reply = failed_reply(SimpleNamespace(raw_result={'error_type': 'ValueError', 'error': 'The configured model provider is unavailable'}))
+    assert 'provider' in reply
+    assert 'no action was taken' in reply
+    assert 'budget' not in reply

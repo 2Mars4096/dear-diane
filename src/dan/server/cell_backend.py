@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import logging
 
 from dan.providers import LLMProvider
 from dan.providers.retrying_provider import RetryingLLMProvider, ProviderRetryPolicy
@@ -57,7 +58,10 @@ class BriefCellAdapter:
                         messages=messages,
                         model=adapter.model, temperature=0, max_tokens=4096, **adapter.completion_options,
                     )
-                except Exception:
+                except Exception as exc:
+                    # Do not log exception text, response bodies, credentials or prompts.
+                    status = getattr(exc, 'status_code', None)
+                    logging.getLogger(__name__).warning('Model completion failed: type=%s status=%s', type(exc).__name__, status if isinstance(status, int) else 'unknown')
                     raise ValueError('The configured model provider is unavailable') from None
                 if adapter.billing:
                     adapter.billing.record(receipt, response.provider_metadata or {})

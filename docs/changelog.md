@@ -1,6 +1,11 @@
 # Changelog
 
 ## 2026-09-30
+- [test] 21 voice and 25 conversation checks, production build/bundle budgets and changed-file lint pass.
+- [fix] Shorten voice end-of-turn silence from four seconds to 1.5 seconds at the user’s request, preserving short pauses, streaming drafts and preview reuse.
+- [fix] Explain model-provider failures accurately. Log only exception class and numeric HTTP status for future diagnosis; never log raw provider errors or prompts. Latest observed reply failed after research with a provider-unavailable error, not a local-budget rejection.
+
+## 2026-09-30
 - [feat] Show streaming browser speech-recognition drafts when supported, independently of OpenRouter request latency. Replace interim corrections instead of appending duplicate words; authoritative server recognition still controls submission.
 - [fix] Ignore stale draft callbacks, reset at turn/playback boundaries, bound service-error restarts and retain server fallback. Browser drafts never admit actions or override final server text.
 - [test] 21 voice checks pass, including browser words displayed before a pending server response and protection from slower previews. Production build/bundle budgets and lint pass. Physical browser speech-service latency remains unmeasured.

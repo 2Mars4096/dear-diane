@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **Provider failure after research (2026-09-30):** saved run ended with “The configured model provider is unavailable.” The adapter had suppressed all underlying exception details, preventing retrospective classification. Show a provider-specific reply and log safe exception class/numeric status only for future diagnosis. This does not establish or fix the upstream cause.
+
 - **Visible ASR latency (2026-09-30):** shorter audio snapshots and preview reuse cannot remove OpenRouter request latency. Add independent browser streaming interim captions where supported; do not claim provider batch requests are realtime. Browser recognition availability, language and vendor-service latency vary; server recognition remains the fallback.
 
 - **Slow transcript at pauses (2026-09-30):** final transcription aborted an unfinished preview and started recognition again. Keep it alive, reuse it only if its snapshot includes every voiced frame, and otherwise allow it to display while authoritative final recognition runs. Slow network/provider latency remains; one-second capture cadence is not a one-second recognition guarantee.

@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Shorten voice send pause to 1.5 seconds and distinguish provider failures from budget failures.
+
 - [x] Add browser streaming captions so visible voice drafts do not wait for a full OpenRouter request, with authoritative server recognition and fallback.
 
 - [x] Remove end-of-turn transcription restarts when previews cover all speech; preserve slow preview display.

@@ -100,12 +100,12 @@ it('previews speech, keeps short pauses in one utterance, and waits for a longer
   const begin=vi.fn(), end=vi.fn(), preview=vi.fn();
   const detector=new VoiceActivity(1000,begin,end,preview);
   const feed=(volume:number,count:number)=>{for(let i=0;i<count;i++) detector.feed(new Float32Array(100).fill(volume));};
-  feed(0.2,20); feed(0,18);
+  feed(0.2,20); feed(0,10);
   expect(end).not.toHaveBeenCalled();
   expect(preview.mock.calls.length).toBeGreaterThanOrEqual(2);
-  feed(0.2,10); feed(0,30);
+  feed(0.2,10); feed(0,14);
   expect(end).not.toHaveBeenCalled();
-  feed(0,11);
+  feed(0,2);
   expect(begin).toHaveBeenCalledTimes(1); expect(end).toHaveBeenCalledTimes(1);
 });
 
@@ -169,7 +169,7 @@ it('previews a brief phrase during a pause without repeatedly transcribing silen
   for(let i=0;i<6;i++) detector.feed(new Float32Array(100).fill(.2));
   for(let i=0;i<6;i++) detector.feed(new Float32Array(100));
   expect(preview).toHaveBeenCalledTimes(1);
-  for(let i=0;i<25;i++) detector.feed(new Float32Array(100));
+  for(let i=0;i<7;i++) detector.feed(new Float32Array(100));
   expect(preview).toHaveBeenCalledTimes(1);
   expect(end).not.toHaveBeenCalled();
 });

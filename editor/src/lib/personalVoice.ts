@@ -43,7 +43,7 @@ export class VoiceActivity {
     this.duration += seconds;
     this.quiet = rms > 0.012 ? 0 : this.quiet + seconds;
     if (rms > 0.012) this.voiced += seconds;
-    if (this.quiet >= 4 || this.duration >= 29) {
+    if (this.quiet >= 1.5 || this.duration >= 29) {
       const captured = this.chunks;
       this.chunks = []; this.speaking = false; this.loud = 0;
       this.end(encodeWav(captured, this.rate), this.voiced === this.previewedVoice ? this.previewAudio : undefined);
