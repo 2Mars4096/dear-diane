@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- **Local Qwen cancelled (2026-09-30):** user requires an API-hosted solution. Background installation stopped and local runtime/model artifacts and integration removed; do not resume local inference setup.
+
+
 - **Local Qwen setup (2026-09-30):** normal and alternate-index runtime downloads and both Xet/HTTP model downloads were too slow to complete interactive validation. A bounded HTTP model probe delivered about 40 KB/s. Implementation tests pass, but do not enable local captions until the isolated runtime/model benchmark passes. Token output streams from snapshots; this is not a persistent incremental audio decoder.
 
 - **Bilingual caption regression (2026-09-30):** browser SpeechRecognition forced navigator.language and misread mixed speech. Remove that layer; retain Qwen auto-detection. User explicitly prefers Qwen; synthetic alternative-model results are not grounds to override it. Earlier previews improve capture latency, while provider response latency remains variable.

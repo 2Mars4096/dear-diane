@@ -8,7 +8,6 @@ type Profile = {id: VoiceProfile; name: string; description: string};
 export default function VoiceControl({disabled, refresh, onError, onActive}: {disabled: boolean; refresh: () => void; onError: (message: string) => void; onActive: (active: boolean) => void}) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [enabled, setEnabled] = useState(false);
-  const [localCaptions, setLocalCaptions] = useState(false);
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<VoiceStatus>('Connecting…');
   const [transcript, setTranscript] = useState('');
@@ -21,8 +20,8 @@ export default function VoiceControl({disabled, refresh, onError, onActive}: {di
   useEffect(() => { callbacks.current = {refresh, onError, onActive}; }, [refresh, onError, onActive]);
   useEffect(() => {
     let mounted = true;
-    void requestJson<{enabled: boolean; local_captions?: boolean; profiles: Profile[]}>('/api/personal/voice').then(result => {
-      if (mounted) { setEnabled(Boolean(result.enabled)); setLocalCaptions(Boolean(result.local_captions)); setProfiles(result.profiles || []); }
+    void requestJson<{enabled: boolean; profiles: Profile[]}>('/api/personal/voice').then(result => {
+      if (mounted) { setEnabled(Boolean(result.enabled)); setProfiles(result.profiles || []); }
     }).catch(() => {});
     return () => { mounted = false; session.current?.end(); session.current = null; };
   }, []);
@@ -35,7 +34,7 @@ export default function VoiceControl({disabled, refresh, onError, onActive}: {di
       refresh: () => callbacks.current.refresh(),
       error: message => callbacks.current.onError(message),
       ended: () => { if (session.current === current) { session.current = null; setOpen(false); callbacks.current.onActive(false); } },
-    }, localCaptions);
+    });
     session.current = current; void current.start();
   };
   if (!enabled) return null;

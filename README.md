@@ -274,5 +274,3 @@ The product is **Dear Diane** and the assistant is **Diane**. After installing t
 Existing Python imports/package name (`dan`), `DAN_*` environment variables, backend IDs, browser storage keys, bundle ID (`com.dan.desktop`), remote services, and the desktop `Application Support/dan` profile remain stable so existing installations retain their chats, accounts, settings, and update identity. The repository remains `deep-agent-network`. Historical plans and logs retain their original names.
 
 Personal voice uses Qwen automatic language detection for English, Chinese and mixed-language drafts and final recognition. See [voice setup](docs/personal/voice.md).
-
-On Apple Silicon, optional `--local-voice` streams local Qwen draft tokens while keeping OpenRouter final recognition. See [setup and limitations](docs/personal/voice.md#optional-local-qwen-captions-mac).

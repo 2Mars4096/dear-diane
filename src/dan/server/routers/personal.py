@@ -232,22 +232,3 @@ async def voice_speech(body: SpeechInput, db: PersonalStore = Depends(store)):
         raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-
-
-@router.post('/voice/preview')
-async def local_voice_preview(request: Request, db: PersonalStore = Depends(store)):
-    from dan.personal import local_voice
-    from dan.personal.voice import validate_audio
-    from fastapi.responses import StreamingResponse
-    if not local_voice.enabled():
-        raise HTTPException(404, 'Local captions are not enabled')
-    data = bytearray()
-    async for chunk in request.stream():
-        if len(data) + len(chunk) > MAX_AUDIO_BYTES:
-            raise HTTPException(413, 'Speak in segments of up to 30 seconds.')
-        data.extend(chunk)
-    try:
-        validate_audio(bytes(data))
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    return StreamingResponse(local_voice.stream(bytes(data)), media_type='application/x-ndjson', headers={'Cache-Control':'no-store'})

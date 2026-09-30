@@ -322,7 +322,3 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 ## Bilingual voice drafts
 - Qwen supplies both preview and final text without a forced language parameter. The single-language browser SpeechRecognition layer was removed after a bilingual regression. The first preview targets 0.6 seconds plus at most 150ms of sound-boundary context; slow previews coalesce and complete previews remain reusable at turn end.
 - Personal chat allows provider failover within the configured model and unchanged price ceilings. HTTP 429 is reported distinctly; no conversation actions are automatically replayed.
-
-## Optional Mac Qwen captions
-- `personal/local_voice.py` loads quantized Qwen 1.7B on a single inference worker. The opt-in launcher warms it; `/api/personal/voice/preview` streams bounded cumulative NDJSON drafts. Concurrent work is rejected; cancellation stops token iteration. Existing authentication/deployment boundaries apply. Audio/text are transient and no actions originate from this endpoint.
-- `lib/localVoicePreview.ts` decodes partial UTF-8/NDJSON; PersonalVoiceSession protects utterance ownership and still uses OpenRouter for final admission. Failed local captions fall back to existing cloud previews. Optional dependencies stay outside the base environment.

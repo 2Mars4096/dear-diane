@@ -15,7 +15,6 @@ def main():
     parser.add_argument('--env-file', type=Path, help='Load existing provider configuration from a private environment file')
     parser.add_argument('--model', help='Explicit provider/model ID for conversation and extraction')
     parser.add_argument('--voice', action='store_true', help='Enable continuous voice using OpenRouter speech services')
-    parser.add_argument('--local-voice', action='store_true', help='Use optional local Qwen on Apple Silicon for streaming draft captions')
     args = parser.parse_args()
     if args.voice:
         os.environ['DAN_PERSONAL_VOICE'] = '1'
@@ -41,10 +40,6 @@ def main():
     print(f'Dear Diane personal: http://127.0.0.1:{args.port}/#personal', flush=True)
     print(f'Persistent data: {data}', flush=True)
     print('Keep this process running for reminders. Ctrl+C stops it; saved records remain.', flush=True)
-    if args.local_voice:
-        os.environ['DAN_PERSONAL_LOCAL_VOICE'] = '1'
-        from .local_voice import warm
-        warm()
     import uvicorn
     uvicorn.run('dan.server.app:app', host='127.0.0.1', port=args.port, workers=1)
 

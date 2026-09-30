@@ -247,23 +247,3 @@ it('reuses a slow preview covering all speech after the pause instead of restart
   expect(callbacks.transcript).toHaveBeenCalledWith('A quiet place please');
   expect(callbacks.transcript).toHaveBeenLastCalledWith('');
 });
-
-it('shows local Qwen words before completion but submits only the final remote transcript', async()=>{
- let stream!: ReadableStreamDefaultController<Uint8Array>;
- vi.stubGlobal('fetch',vi.fn(async()=>new Response(new ReadableStream({start(c){stream=c;}}))));
- request.mockImplementation(async(url,options)=>{
-   if(url.includes('/transcribe'))return {text:'Hello，你好，明天七点'};
-   if(options?.method==='POST')return {id:'local-draft-final',state:'queued'};
-   return {turns:[]};
- });
- session=new PersonalVoiceSession('warm',callbacks,true);await session.start();
- frames(.2,12);frames(0,12);await flush();
- stream.enqueue(new TextEncoder().encode('{"text":"Hello，你好"}\n'));await flush();
- expect(callbacks.transcript).toHaveBeenLastCalledWith('Hello，你好');
- expect(request.mock.calls.filter(([url])=>url==='/api/personal/conversation')).toHaveLength(0);
- stream.enqueue(new TextEncoder().encode('{"text":"Hello，你好","done":true}\n'));stream.close();await flush();
- frames(0,30);await flush();
- const posts=request.mock.calls.filter(([url,o])=>url==='/api/personal/conversation' && o?.method==='POST');
- expect(posts).toHaveLength(1);
- expect(JSON.parse(posts[0][1]!.body as string).text).toBe('Hello，你好，明天七点');
-});

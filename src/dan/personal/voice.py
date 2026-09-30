@@ -48,7 +48,7 @@ def capabilities():
         config(); enabled = True
     except Conflict:
         enabled = False
-    return {'enabled': enabled, 'local_captions': os.environ.get('DAN_PERSONAL_LOCAL_VOICE') == '1', 'profiles': [{'id': key, **{field: value[field] for field in ('name', 'description', 'gender')}} for key, value in PROFILES.items()]}
+    return {'enabled': enabled, 'profiles': [{'id': key, **{field: value[field] for field in ('name', 'description', 'gender')}} for key, value in PROFILES.items()]}
 
 
 class SpeechInput(BaseModel):

@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-30
+- [refactor] Cancel local Qwen inference at the user’s request. Stop the background installer; delete its isolated environment, partial model cache and setup artifacts. Remove the optional local API/client/launcher code and restore OpenRouter-only voice. Keep prior implementation history below.
+
+
+## 2026-09-30
 - [feat] Implement optional Mac-local Qwen 1.7B token-streamed draft captions, with automatic bilingual recognition, bounded single-worker inference, transient audio, cancellation and cloud-preview fallback. Final messages still use the existing OpenRouter Qwen transcript.
 - [test] 19 frontend and 42 backend checks pass, including partial UTF-8 Chinese text, cumulative updates, no draft admission, and busy/error cleanup. Production build and lint pass.
 - [infra] Isolated local runtime/model setup remains incomplete: public payload downloads are slow (bounded model probe about 40 KB/s). Local mode remains disabled pending real inference latency and multilingual acceptance; no word-level latency claim is made.

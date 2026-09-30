@@ -1,5 +1,4 @@
 import {requestJson} from './http';
-import {localVoicePreview} from './localVoicePreview';
 
 export type VoiceProfile = 'warm' | 'bright' | 'steady' | 'composed';
 export type VoiceStatus = 'Connecting…' | 'Listening…' | 'Hearing you…' | 'Thinking…' | 'Speaking…';
@@ -127,8 +126,7 @@ export class PersonalVoiceSession {
   private pending: Promise<void> = Promise.resolve();
   private profile: VoiceProfile;
   private callbacks: VoiceCallbacks;
-  private localCaptions: boolean;
-  constructor(profile: VoiceProfile, callbacks: VoiceCallbacks, localCaptions = false) { this.profile = profile; this.callbacks = callbacks; this.localCaptions = localCaptions; }
+  constructor(profile: VoiceProfile, callbacks: VoiceCallbacks) { this.profile = profile; this.callbacks = callbacks; }
 
   async start() {
     try {
@@ -183,17 +181,6 @@ export class PersonalVoiceSession {
     try {
       const audio = await joinVoiceAudio(this.pendingAudio, data);
       if (controller.signal.aborted || this.closed) return;
-      if (this.localCaptions) {
-        try {
-          await localVoicePreview(audio, controller.signal, (text, complete) => {
-            if (!this.closed && utterance === this.utterance && !controller.signal.aborted && meaningfulVoice(text)) {
-              if (complete || /[\s，。.!?]/u.test(text.trim())) this.interrupt();
-              this.callbacks.transcript(text);
-            }
-          });
-          return;
-        } catch { if (controller.signal.aborted || this.closed) return; }
-      }
       const {text} = await requestJson<{text: string}>(`/api/personal/voice/transcribe?operation_id=${crypto.randomUUID()}`, {method: 'POST', body: audio, signal: controller.signal, timeoutMs: 70000});
       resolveResult(controller.signal.aborted ? undefined : text);
       if (!this.closed && utterance === this.utterance && !controller.signal.aborted && meaningfulVoice(text)) {
@@ -221,7 +208,7 @@ export class PersonalVoiceSession {
   }
   private async transcribe(data: Blob, utterance: number, coveredPreview?: Blob) {
     // Keep slow previews visible. Reuse only a snapshot containing every voiced frame.
-    const reusable = !this.localCaptions && coveredPreview && this.previewResult?.data === coveredPreview ? this.previewResult.result : undefined;
+    const reusable = coveredPreview && this.previewResult?.data === coveredPreview ? this.previewResult.result : undefined;
     this.queuedPreview = undefined;
     data = await joinVoiceAudio(this.pendingAudio, data);
     if (this.closed || utterance !== this.utterance) return;
