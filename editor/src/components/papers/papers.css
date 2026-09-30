@@ -74,7 +74,12 @@
 .papers-search-caption { font-size:11px; color:var(--wb-muted); padding:12px 20px 7px; }
 .papers-search-dialog [role=listbox] { max-height:51vh; overflow:auto; padding:0 8px 8px; }
 .papers-search-result { display:flex; align-items:center; gap:13px; padding:12px; border-radius:6px; cursor:pointer; }
-.papers-search-result[aria-selected=true] { background:var(--wb-soft); outline:1px solid var(--wb-line); }
+.papers-search-result[aria-selected=true] {
+ background:color-mix(in oklch,var(--wb-accent) 18%,var(--wb-soft));
+ outline:2px solid color-mix(in oklch,var(--wb-accent) 70%,var(--wb-line));
+ outline-offset:-2px;
+}
+.papers-search-result[aria-selected=true] > svg { color:var(--wb-accent); }
 .papers-search-result > div { min-width:0; flex:1; }
 .papers-search-result strong { font-size:14px; font-weight:550; }
 .papers-search-result small { font-size:10px; color:var(--wb-muted); }
