@@ -1,4 +1,5 @@
 import {requestJson} from './http';
+import {VoiceDraft} from './voiceDraft';
 
 export type VoiceProfile = 'warm' | 'bright' | 'steady' | 'composed';
 export type VoiceStatus = 'Connecting…' | 'Listening…' | 'Hearing you…' | 'Thinking…' | 'Speaking…';
@@ -106,6 +107,9 @@ const sleep = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, r
 /** One explicitly opened session, continuously listening until end/navigation. */
 export class PersonalVoiceSession {
   private context?: AudioContext;
+  private draft?: VoiceDraft;
+  private draftVisible = false;
+  private acceptingDraft = false;
   private stream?: MediaStream;
   private capture?: AudioWorkletNode;
   private source?: MediaStreamAudioSourceNode;
@@ -150,6 +154,12 @@ export class PersonalVoiceSession {
       }, data => { void this.preview(data); });
       this.capture.port.onmessage = event => { if (!this.closed) detector.feed(event.data); };
       this.source.connect(this.capture); this.capture.connect(this.context.destination);
+      this.draft = new VoiceDraft(text => {
+        if (!this.closed && this.acceptingDraft && meaningfulVoice(text)) {
+          this.draftVisible = true; this.callbacks.transcript(text);
+        }
+      }, () => { this.draftVisible = false; });
+      this.draft.start();
       this.callbacks.status('Listening…');
       document.addEventListener('visibilitychange', this.visibility);
       window.addEventListener('pagehide', this.end);
@@ -166,6 +176,8 @@ export class PersonalVoiceSession {
   }
   private beginUtterance() {
     this.utterance++; this.recognized = false; this.previewResult = undefined;
+    if (this.player) this.draft?.reset();
+    this.acceptingDraft = true; this.draftVisible = false;
     this.recognition?.abort();
     this.queuedPreview = undefined; this.previewRequest?.abort(); this.previewRequest = undefined;
     if (!this.pendingAudio) this.callbacks.transcript('');
@@ -184,7 +196,7 @@ export class PersonalVoiceSession {
       const {text} = await requestJson<{text: string}>(`/api/personal/voice/transcribe?operation_id=${crypto.randomUUID()}`, {method: 'POST', body: audio, signal: controller.signal, timeoutMs: 70000});
       resolveResult(controller.signal.aborted ? undefined : text);
       if (!this.closed && utterance === this.utterance && !controller.signal.aborted && meaningfulVoice(text)) {
-        this.interrupt(); this.callbacks.transcript(text);
+        this.interrupt(); if (!this.draftVisible) this.callbacks.transcript(text);
       }
     } catch { /* A missed preview must not submit or discard the final utterance. */ }
     finally {
@@ -220,6 +232,7 @@ export class PersonalVoiceSession {
     if (this.closed || utterance !== this.utterance) return;
     this.previewRequest?.abort(); this.previewRequest = undefined; this.previewResult = undefined;
     this.pendingAudio = undefined;
+    this.acceptingDraft = false; this.draft?.reset();
     if (!meaningfulVoice(text)) { this.callbacks.transcript(''); return; }
     this.interrupt(); this.callbacks.transcript(text);
     const generation = this.generation;
@@ -270,13 +283,14 @@ export class PersonalVoiceSession {
     this.player = this.context.createBufferSource(); this.player.buffer = buffer; this.player.playbackRate.value = speech.rate;
     this.player.connect(this.context.destination); this.spokenTurn = reply.id;
     this.player.onended = () => {
-      if (!this.closed && generation === this.generation) { this.spokenTurn = undefined; this.player = undefined; this.callbacks.status('Listening…'); }
+      if (!this.closed && generation === this.generation) { this.spokenTurn = undefined; this.player = undefined; this.draft?.reset(); this.callbacks.status('Listening…'); }
     };
     this.callbacks.status('Speaking…'); this.player.start();
   }
 
   end = () => {
     if (this.closed) return;
+    this.draft?.stop(); this.acceptingDraft = false;
     this.closed = true; this.generation++; this.utterance++; this.request?.abort(); this.recognition?.abort();
     this.queuedPreview = undefined; this.previewRequest?.abort(); this.previewRequest = undefined; this.pendingAudio = undefined;
     this.player?.stop(); this.player = undefined;

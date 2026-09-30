@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Add browser streaming captions so visible voice drafts do not wait for a full OpenRouter request, with authoritative server recognition and fallback.
+
 - [x] Remove end-of-turn transcription restarts when previews cover all speech; preserve slow preview display.
 - [x] Loosen this Mac’s Personal AI budget at the user’s request ($20/day, $2/task).
 

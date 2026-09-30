@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **Visible ASR latency (2026-09-30):** shorter audio snapshots and preview reuse cannot remove OpenRouter request latency. Add independent browser streaming interim captions where supported; do not claim provider batch requests are realtime. Browser recognition availability, language and vendor-service latency vary; server recognition remains the fallback.
+
 - **Slow transcript at pauses (2026-09-30):** final transcription aborted an unfinished preview and started recognition again. Keep it alive, reuse it only if its snapshot includes every voiced frame, and otherwise allow it to display while authoritative final recognition runs. Slow network/provider latency remains; one-second capture cadence is not a one-second recognition guarantee.
 
 - **Voice filler interruption (2026-09-30):** amplitude onset cancelled active work before recognition, so “嗯” stopped replies. Gate cancellation on meaningful recognition; final-only filtering is too late.

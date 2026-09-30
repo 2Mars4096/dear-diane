@@ -1,6 +1,11 @@
 # Changelog
 
 ## 2026-09-30
+- [feat] Show streaming browser speech-recognition drafts when supported, independently of OpenRouter request latency. Replace interim corrections instead of appending duplicate words; authoritative server recognition still controls submission.
+- [fix] Ignore stale draft callbacks, reset at turn/playback boundaries, bound service-error restarts and retain server fallback. Browser drafts never admit actions or override final server text.
+- [test] 21 voice checks pass, including browser words displayed before a pending server response and protection from slower previews. Production build/bundle budgets and lint pass. Physical browser speech-service latency remains unmeasured.
+
+## 2026-09-30
 - [fix] Preserve slow recognition previews through the end-of-turn pause. Reuse a pending or completed preview only when its audio includes every voiced frame; otherwise final recognition still captures later words. Avoid restarting identical paid transcription and retain stale-utterance guards.
 - [infra] Raise this Mac’s private Personal limits to $20/day and $2/task at the user’s request; retain provider receipts and historical unverified holds.
 - [test] Sixteen voice checks pass, including a delayed preview finishing after the pause with one ASR request and one conversation admission. Production build/bundle budgets and changed-file lint pass; running host reports $20/day, $2/task and $18.02 remaining.

@@ -247,3 +247,22 @@ it('reuses a slow preview covering all speech after the pause instead of restart
   expect(callbacks.transcript).toHaveBeenCalledWith('A quiet place please');
   expect(callbacks.transcript).toHaveBeenLastCalledWith('');
 });
+
+it('displays browser captions before server recognition and prevents slower previews from replacing them', async () => {
+  let browser!: {onresult: ((event:{results:{isFinal:boolean;0:{transcript:string}}[]})=>void)|null};
+  vi.stubGlobal('webkitSpeechRecognition',class {
+    continuous=false;interimResults=false;lang='';onresult=null;onerror=null;onend=null;
+    constructor(){browser=this;}
+    start(){} abort(){}
+  });
+  let server!: (value:{text:string})=>void;
+  request.mockImplementation(()=>new Promise(resolve=>{server=resolve;}));
+  session=new PersonalVoiceSession('warm',callbacks);await session.start();
+  frames(.2,36);await flush();
+  browser.onresult?.({results:[{isFinal:false,0:{transcript:'Find a cozy restaurant'}}]});
+  expect(callbacks.transcript).toHaveBeenLastCalledWith('Find a cozy restaurant');
+  expect(request.mock.calls.filter(([url])=>url==='/api/personal/conversation')).toHaveLength(0);
+  server({text:'Find a cozy'});await flush();
+  expect(callbacks.transcript).toHaveBeenLastCalledWith('Find a cozy restaurant');
+  session.end();expect(browser.onresult).toBeNull();
+});
