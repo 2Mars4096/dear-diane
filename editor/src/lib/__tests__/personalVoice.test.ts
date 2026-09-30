@@ -249,16 +249,17 @@ it('reuses a slow preview covering all speech after the pause instead of restart
 });
 
 it('displays browser captions before server recognition and prevents slower previews from replacing them', async () => {
-  let browser!: {onresult: ((event:{results:{isFinal:boolean;0:{transcript:string}}[]})=>void)|null};
+  const browsers: {onresult: ((event:{results:{isFinal:boolean;0:{transcript:string}}[]})=>void)|null}[] = [];
   vi.stubGlobal('webkitSpeechRecognition',class {
     continuous=false;interimResults=false;lang='';onresult=null;onerror=null;onend=null;
-    constructor(){browser=this;}
+    constructor(){browsers.push(this);}
     start(){} abort(){}
   });
   let server!: (value:{text:string})=>void;
   request.mockImplementation(()=>new Promise(resolve=>{server=resolve;}));
   session=new PersonalVoiceSession('warm',callbacks);await session.start();
   frames(.2,36);await flush();
+  const browser = browsers[0];
   browser.onresult?.({results:[{isFinal:false,0:{transcript:'Find a cozy restaurant'}}]});
   expect(callbacks.transcript).toHaveBeenLastCalledWith('Find a cozy restaurant');
   expect(request.mock.calls.filter(([url])=>url==='/api/personal/conversation')).toHaveLength(0);
