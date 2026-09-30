@@ -8,6 +8,7 @@ import { SidecarChat } from "../workbench/SidecarChat";
 import { LeadAgentMenu } from "../workbench/LeadAgentMenu";
 import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from "../workbench/NativeWorkers";
 import { EMPTY_PROFILE, leadExecutionProfile, modelSource, OPENROUTER_URL, withLeadSelection } from "../workbench/modelSelection";
+const RecentSessions = lazy(() => import("../workbench/RecentSessions"));
 const ChangesPanel = lazy(() => import("../workbench/ChangesPanel"));
 const WorkNotifications = lazy(() => import("../workbench/WorkNotifications"));
 import { TeamPanel, TeamStrip, useTeamWorkers } from "../workbench/TeamProgress";
@@ -13232,6 +13233,7 @@ export default function ChunkWorkspaceApp() {
     initialUiState.selectedChunkId,
   );
   const [selectedBlueprintNodeId, setSelectedBlueprintNodeId] = useState<string | null>(null);
+  const [recentSessionHost, setRecentSessionHost] = useState<HTMLDivElement | null>(null);
   const [threads, setThreads] = useState<ChatV2ThreadSummary[]>([]);
   const [workbenchSettings, setWorkbenchSettings] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
@@ -17392,6 +17394,13 @@ export default function ChunkWorkspaceApp() {
           <button aria-label="Workspace settings" title="Workspace settings" aria-pressed={workbenchSettings} onClick={() => { setCreatingProject(false); setWorkbenchSettings(true); }}><MoreHorizontal size={18} /></button>
         </div>
       </header>}
+      {activePane === "work" && <Suspense fallback={null}><RecentSessions
+        host={recentSessionHost}
+        active={activeThread && !loadingThreadId ? { ...activeThread, title: activeThread.title || "New session", project: workspace?.name || "Project", workspaceId: activeWorkspaceId || "", root: developmentRoot } : null}
+        titles={Object.fromEntries(threads.map(thread => [`${thread.workflow_id}:${thread.id}`, thread.title]))}
+        excluded={threads.filter(thread => thread.archived).map(thread => `${thread.workflow_id}:${thread.id}`)}
+        onSelect={session => { const summary = threads.find(thread => thread.id === session.id && thread.workflow_id === session.workflowId) || { id: session.id, workflow_id: session.workflowId, title: session.title, message_count: 0, created_at: "", updated_at: "" }; void openSession(summary, session.workspaceId, session.root); openTab({ id: "chat", kind: "chat", label: "Chat" }); setPhonePage("chat"); }}
+      /></Suspense>}
       {importNativeSessions && <Suspense fallback={null}><ImportNativeSessions workspace={importNativeSessions.root} workspaceId={importNativeSessions.id} onClose={() => setImportNativeSessions(null)} onImport={async (thread) => { bindThreadToWorkspace(thread.workflow_id, thread.id, importNativeSessions.id); await refreshThreads(); }} /></Suspense>}
       {activePane === "work" && workbenchSettings && <Suspense fallback={null}><ProjectSettings
         name={creatingProject ? "" : workspace?.name || "Project"}
@@ -18492,6 +18501,7 @@ export default function ChunkWorkspaceApp() {
             <button className="wb-sidebar-new" onClick={() => { void startNewSession(); setShowConversationChunks(true); setPhonePage("chat"); }}><Plus size={16} />New chat</button>
             <Suspense fallback={null}><PaperSidebar onOpen={openLibraryReading} onBrowse={openPaperLibrary} /></Suspense>
             <label className="wb-shelf-search"><Search size={15} /><input aria-label="Search sessions" placeholder="Search chats or session ID" value={threadQuery} onChange={(event) => setThreadQuery(event.target.value)} /></label>
+            <div ref={setRecentSessionHost} />
             <div className="wb-projects-heading"><span>{sessionShelfScope === "archived" ? "Archived chats" : "Projects"}</span><button title="New project" aria-label="New project" onClick={() => { setCreatingProject(true); setWorkbenchSettings(true); }}><Plus size={15} /></button></div>
             <div className="wb-shelf-list">
               {sessionGroups.flatMap((group) => group.subgroups ?? [group]).filter((group) => sessionShelfScope === "archived" ? group.archived : !group.archived).map((group) => {
