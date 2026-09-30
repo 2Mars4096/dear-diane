@@ -193,3 +193,45 @@ def test_conversation_api_is_private_and_rejects_bad_timezone(monkeypatch,tmp_pa
     assert 'budget' not in response.json()['turns'][0]
     monkeypatch.setenv('DAN_PERSONAL_ENABLED','0')
     assert client.get('/api/personal/conversation').status_code==404
+
+
+def test_failed_turn_preserves_user_context_without_repeating_system_error(service):
+    job = submit(service, text='I just told you about the budget')
+    history = [{'id': 'earlier', 'text': 'Central, budget HKD 1000', 'state': 'failed',
+                'reply': 'I couldn’t understand that request. Could you rephrase it?'}]
+    evidence = brief_for(job, history, []).evidence[0].content
+    assert 'budget HKD 1000' in evidence
+    assert 'couldn’t understand' not in evidence
+
+
+@pytest.mark.parametrize('error_type,expected', [('TimeoutError', 'timed out'), ('ValueError', 'failed')])
+def test_failed_backend_reports_infrastructure_failure_without_effects(service, monkeypatch, tmp_path, error_type, expected):
+    import asyncio
+    from types import SimpleNamespace
+    from dan.personal.conversation import process
+    from dan.server.chat_v2_store import ChatV2Store
+    async def backend(*args, **kwargs):
+        assert kwargs['adapter'].timeout == 120
+        return SimpleNamespace(status='failed', raw_result={'error_type': error_type, 'error': 'private diagnostic'})
+    monkeypatch.setattr('dan.cli.resolve_config', lambda: {'base_url': 'https://openrouter.ai/api/v1', 'api_key': 'fixture'})
+    monkeypatch.setattr('dan.cli.live_gateway.build_gateway_backed_live_provider', lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr('dan.server.chat_v2_backend.run_agent_backend', backend)
+    submit(service); job = service.claim()
+    app = SimpleNamespace(state=SimpleNamespace(chat_v2_store=ChatV2Store(tmp_path/'chat')))
+    asyncio.run(process(app, service, job))
+    turn = service.history('operator')[0]
+    assert turn['state'] == 'failed'
+    assert expected in turn['reply'] and 'no action was taken' in turn['reply']
+    assert 'private diagnostic' not in turn['reply']
+    assert not service.store.snapshot('operator')['commitments']
+
+
+def test_fast_reply_options_preserve_price_and_call_constraints(service):
+    from dan.personal.conversation import reply_options
+    job = submit(service)
+    options = reply_options({**job, 'model': 'deepseek/deepseek-v4.1-flash'}, 'https://openrouter.ai/api/v1')['extra_body']
+    assert options['reasoning'] == {'effort': 'low'}
+    assert options['provider']['sort'] == 'latency'
+    assert options['provider']['max_price']['request'] == 0
+    assert options['provider']['allow_fallbacks'] is False
+    assert 'reasoning' not in reply_options(job, 'https://openrouter.ai/api/v1')['extra_body']

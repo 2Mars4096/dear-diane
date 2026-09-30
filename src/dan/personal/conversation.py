@@ -223,6 +223,7 @@ def brief_for(job, history, records):
         task='Respond to the latest user message. Return one JSON Choice. Use reply to answer or ask one concise clarification; use a local action only when the user requested it. Never claim an action succeeded in reply.',
         hard_constraints=[
             'You are Diane, a capable, concise personal assistant. Speak naturally in the user’s language. Do not describe internal schemas, models or software.',
+            'Use the previous user messages to retain preferences, location, budget and corrections. A failed or stopped turn still contains valid user context; it does not mean the user was unclear. Do not ask again for information already supplied. Keep ordinary replies brief and directly relevant.',
             'Available actions are local commitments and in-app reminders, status changes, list and calendar-file download. You can also discuss, explain and draft text. Google/email sending, external calendar writes, purchases, live web research and phone push are unavailable; never claim to do them.',
             'Choose one action per turn. If multiple independent actions are requested, ask which to do first. For updates, cancellations or references like it, select an unambiguous record from the snapshot and use its exact revision. Ask if there are multiple matches.',
             'Use the current timestamp and the supplied user timezone to resolve tomorrow and other unambiguous relative times. Never guess ambiguous AM/PM or dates. Missing essential fields require a conversational question. all_day is true only if requested. Ask for a reminder time for all-day items.',
@@ -233,7 +234,23 @@ def brief_for(job, history, records):
             'reply may contain useful answers or drafts, but never state that something was saved, sent, scheduled, updated or completed without selecting that action. Retain the user’s intended title and details across clarifying replies.',
         ], tool_policy=ToolUseContract(allowed_tool_ids=[]),
         output_contract=OutputContract(definition_of_done='A grounded response or one proposed local action', expected_return_shape='JSON object', output_schema=Choice.model_json_schema()),
-        evidence=[EvidenceBlock(label='Conversation and records', content=redact_source(canonical({'now': now(), 'user_timezone': job['timezone'], 'history': [{'user': r['text'], 'assistant': r.get('reply',''), 'attachments': r.get('sources', [])} for r in history[-20:] if r['id'] != job['id']], 'records': records[:50], 'latest_message': job['text'], 'attachments': job.get('sources', [])})), ref_id='personal-conversation')])
+        evidence=[EvidenceBlock(label='Conversation and records', content=redact_source(canonical({'now': now(), 'user_timezone': job['timezone'], 'history': [{'user': r['text'], 'assistant': r.get('reply','') if r.get('state', 'completed') == 'completed' else '', 'state': r.get('state', 'completed'), 'attachments': r.get('sources', [])} for r in history[-20:] if r['id'] != job['id']], 'records': records[:50], 'latest_message': job['text'], 'attachments': job.get('sources', [])})), ref_id='personal-conversation')])
+
+
+def reply_options(job, base_url):
+    options = budgets.completion_options(job['budget'], base_url, job['model'])
+    options['extra_body']['provider']['sort'] = 'latency'
+    if job['model'] == 'deepseek/deepseek-v4.1-flash':
+        options['extra_body']['reasoning'] = {'effort': 'low'}
+    return options
+
+
+def failed_reply(result):
+    # Provider/runtime failures are not evidence that the user's words were unclear.
+    error_type = result.raw_result.get('error_type', '')
+    if error_type in {'TimeoutError', 'ReadTimeout', 'APITimeoutError'}:
+        return 'The AI reply timed out. Your message is saved; no action was taken. You can ask me to try again.'
+    return 'The AI reply failed. Your message is saved; no action was taken. You can ask me to try again.'
 
 
 async def run_conversations(app):
@@ -270,13 +287,13 @@ async def process(app, service, job):
     from dan.server.chat_v2_backend import run_agent_backend
     from dan.server.chat_v2_dispatch import reserve_dispatch
     config = resolve_config()
-    options = budgets.completion_options(job['budget'], config['base_url'], job['model'])
+    options = reply_options(job, config['base_url'])
     if not service.authorize(job):
         return
     provider = build_gateway_backed_live_provider(job['model'], api_key=config['api_key'], base_url=config['base_url'])
     try:
         run = reserve_dispatch(app.state.chat_v2_store, key='personal-chat:'+job['id'], objective='Respond to the personal conversation', thread_id='_personal_conversation', metadata={'template': 'personal.conversation.v1'})
-        adapter = BriefCellAdapter(brief_for(job, service.history(job['owner']), service.store.snapshot(job['owner'])['commitments']), job['model'], provider, completion_options=options, before_completion=lambda: service.authorize(job))
+        adapter = BriefCellAdapter(brief_for(job, service.history(job['owner']), service.store.snapshot(job['owner'])['commitments']), job['model'], provider, timeout=120, completion_options=options, before_completion=lambda: service.authorize(job))
         work = asyncio.create_task(run_agent_backend(app.state.chat_v2_store, run.run_id, adapter=adapter, overrides={'mutation_policy': {'mode':'plan','permission':'forbidden'}, 'tool_policy': {'allowed_tool_ids':[]}}))
         try:
             while not work.done():
@@ -294,7 +311,8 @@ async def process(app, service, job):
                 with suppress(asyncio.CancelledError):
                     await work
         if result.status != 'completed':
-            raise ValueError('I couldn’t understand that request. Could you rephrase it?')
+            service.finish(job, {'reply': failed_reply(result)}, 'failed')
+            return
         raw = result.raw_result.get('result') or result.summary
         choice = Choice.model_validate_json(raw) if isinstance(raw, str) else Choice.model_validate(raw)
         # Serialize stop vs effects across the entire deterministic mutation/receipt.

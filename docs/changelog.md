@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-30
+- [fix] Correct personal conversation timeout reporting: infrastructure failures no longer ask the user to rephrase. Preserve failed-turn user context, prefer low-latency provider routing, set DeepSeek V4.1 Flash reasoning to low, and allow 120 seconds within the existing 180-second lease.
+- [test] 32 conversation/budget tests pass. One isolated live restaurant/budget request completed in 2.77 seconds; this does not guarantee provider latency.
+
+## 2026-09-30
 - [feat] Show Working elapsed time as 00h00m00s, updating each second from the persisted turn creation time; stop the timer when the reply arrives.
 - [test] Five conversation UI checks, changed-file lint and the production build pass; timer regression covers the hour boundary and completed replies.
 

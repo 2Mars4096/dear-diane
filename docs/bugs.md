@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **Personal chat timeout (2026-09-30):** two user replies hit the adapter’s exact 60-second deadline, but all failed backend results were reported as misunderstanding. Failure metadata confirms TimeoutError; user text/context remained saved. Report the actual timeout, retain failed user context without feeding system errors back as assistant dialogue, prefer low-latency routing and low DeepSeek reasoning, and use a 120-second reply deadline. No automatic paid retries or budget resets.
+
 - **Spending settings review (2026-09-29):** newly added settings fieldsets exposed an overly broad UI-test selector; scope review assertions to the review form. Happy DOM reports floating-point step mismatches for valid micro-dollar increments, so allow any browser numeric step and enforce six decimal places plus bounds on the server. Polling now rejects older settings revisions and preserves dirty drafts. Migration fixtures must drop the later settings table before simulating schema v1.
 - **Model repair spending boundary (2026-09-29):** checking budget only before the extraction run allowed a repair call after the user paused. Recheck before each provider invocation. Receipt verification also now binds calendar, resource ID and observed ETag; matching title/time alone is insufficient evidence.
 
