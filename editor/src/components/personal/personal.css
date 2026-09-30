@@ -141,3 +141,5 @@
 .personal-voice-active .personal-voice-session select { margin-left:auto; }
 .personal-references { display:flex; flex-wrap:wrap; gap:6px 16px; margin-top:10px; font-size:12px; }
 .personal-references a { max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--personal-muted); text-decoration:underline; text-underline-offset:3px; }
+
+.personal-voice-transcript { flex-basis:100%; order:-1; margin:0 0 8px; max-height:160px; overflow-y:auto; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.5; }

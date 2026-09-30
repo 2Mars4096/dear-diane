@@ -1,6 +1,12 @@
 # Changelog
 
 ## 2026-09-30
+- [feat] Show an updating voice transcript in the composer using bounded recognition snapshots every three seconds, with one preview request at a time. Drafts cannot trigger actions; final recognition remains authoritative.
+- [fix] Allow 2.4-second pauses and combine unsubmitted audio when speech resumes during recognition. Abort stale previews and microphone requests on interruption/end; retain the existing 30-second audio bound.
+- [fix] Separate connection status from action errors so successful polling clears Reconnecting while preserving drafts. Restart the local Mac host detached from the coding session after finding its former process had exited.
+- [test] 393 frontend checks, production build/bundle budgets and changed-file lint pass. Synthetic browser verification covers visible progressive text, a short pause, zero premature actions, microphone cleanup and 390px layout. Human microphone/latency acceptance remains open.
+
+## 2026-09-30
 - [feat] Connect Personal chat and voice to Workspace web search and public page/PDF reading, with a bounded follow-up pass, durable source evidence, clickable citations and Searching/Reading progress.
 - [fix] Balance page reads across queries, prioritize matching official domains, follow actual menu links and retain snippets when pages fail. Public transport validates DNS/redirects, pins addresses and bounds response sizes.
 - [feat] Allow up to four conversational model attempts under the unchanged durable money reservation by charging conservative input/output ceilings before each attempt. Research cannot authorize local mutations; Stop cancels retrieval and synthesis.

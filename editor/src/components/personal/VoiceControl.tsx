@@ -46,6 +46,6 @@ export default function VoiceControl({disabled, refresh, onError, onActive}: {di
       start(selected);
     }}>{profiles.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select>
     <button type="button" aria-label="End voice conversation" title="End voice conversation" onClick={() => session.current?.end()}><PhoneOff size={18} /></button>
-    {transcript && <span className="personal-sr-only" aria-live="polite">{transcript}</span>}
+    {transcript && <p className="personal-voice-transcript" aria-label="Your voice transcript" aria-live="polite" aria-atomic="true">{transcript}</p>}
   </div> : <button type="button" disabled={disabled} aria-label="Start voice conversation" title="Start voice conversation" onClick={() => start()}><Mic size={18} /></button>;
 }

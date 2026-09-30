@@ -1,5 +1,7 @@
 # Architecture
 
+- Personal voice now emits cumulative audio previews at three-second intervals through the existing budgeted transcription endpoint, at most one preview in flight. Interim text is visible but never admitted as an action. VAD allows 2.4 seconds of quiet, and resumed unsubmitted PCM audio is joined within the existing 30-second bound. Generation/abort checks discard stale recognition results. Preview transcripts share the existing private audio journal and reservations; final recognition alone supplies conversation input. Connection polling owns a separate recoverable status flag.
+
 ## Personal public research
 - `personal/research.py` reuses Workspace search/fetch, with at most two rounds of two queries, three selected pages and two linked menu pages per round. Official-domain matches get priority without starving the other query. Sources, timestamps, snippets/read failures and progress persist in the existing conversation body; the API exposes only references and progress.
 - `tools/_public_web.py` backs `web_fetch(public_only=True)`: public HTTP(S), DNS/IP pinning with original TLS identity, validation at every redirect, no environment proxy, 2 MiB responses, bounded text/PDF parsing. It does not use logged-in browser sessions or local network access.

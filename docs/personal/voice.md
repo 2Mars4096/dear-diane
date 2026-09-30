@@ -1,6 +1,6 @@
 # Continuous voice pilot
 
-Start the local Mac host with `--voice` in addition to the existing `--env-file` and `--model` options. In Personal, click the microphone, allow access, and speak. A pause ends your turn automatically; the session keeps listening. Speak during playback to interrupt. End closes the microphone. Activity, workspace navigation, tab hiding and page closure also end the session.
+Start the local Mac host with `--voice` in addition to the existing `--env-file` and `--model` options. In Personal, click the microphone, allow access, and speak. Your words appear in the composer as recognition returns, with snapshots about every three seconds. A pause of about 2.4 seconds ends your turn automatically; the session keeps listening. Speak during playback to interrupt. End closes the microphone. Activity, workspace navigation, tab hiding and page closure also end the session.
 
 Voice uses the same public research path as text chat. Sources remain clickable in the transcript; citation IDs are omitted from spoken audio.
 
@@ -29,6 +29,8 @@ These are original preset voices inspired by the requested qualities, not exact 
 - Audio uses catalog-checked cost estimates, not chat endpoint `max_price` enforcement. Provider invoices may differ. Failed/stopped/uncertain requests retain reservations; no automatic paid retry. Pause/caps are rechecked immediately before the paid call and on UTC rollover.
 - Keys stay on the host. Raw microphone and synthesized audio are transient, not written to the database. The private SQLite voice journal retains request hashes, reservations and successful transcripts, including transcripts that never reach chat after an interruption. Existing backup/history retention applies.
 - Speech begins only after a microphone click. Browser echo cancellation is requested; noisy-room/speaker echo behavior still needs a human microphone test. Headphones can help with acoustic feedback.
+
+Each preview uses the existing $0.005 recognition reservation and private transcript journal. Only one preview runs at a time; late previews are ignored. These are periodic recognitions, not word-by-word streaming. Preview accuracy and speed depend on the speech provider. If you resume before a turn is submitted, the audio is combined within the 30-second bound.
 
 ## Verification (2026-09-30)
 

@@ -87,3 +87,17 @@ it('shows research progress and safe source links without rendering page markup'
   expect(links[0].textContent).toContain('S1: <script>bad()</script>');
   expect(host.querySelector('script')).toBeNull();
 });
+
+it('clears a recovered connection warning without losing the draft',async()=>{
+  vi.useFakeTimers();
+  try {
+    localStorage.setItem('dan.personal.conversation.draft.v1',JSON.stringify({text:'Keep this draft',operation:'draft-001',sources:[]}));
+    mock.mockRejectedValue(new Error('offline'));
+    await mount();
+    expect(host.textContent).toContain('Reconnecting…');
+    mock.mockResolvedValue({turns:[],model:'fixture/model'});
+    await act(async()=>{await vi.advanceTimersByTimeAsync(2000);});
+    expect(host.textContent).not.toContain('Reconnecting…');
+    expect(host.querySelector('textarea')!.value).toBe('Keep this draft');
+  } finally {vi.useRealTimers();}
+});

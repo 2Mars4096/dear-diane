@@ -36,6 +36,7 @@ export default function PersonalConversation() {
   const [loaded, setLoaded] = useState(false);
   const [model, setModel] = useState('');
   const [error, setError] = useState('');
+  const [disconnected, setDisconnected] = useState(false);
   const [warning, setWarning] = useState('');
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState('');
@@ -51,11 +52,11 @@ export default function PersonalConversation() {
   const refresh = async () => {
     const request = ++lastSnapshot.current;
     const result = await requestJson<{turns: Turn[]; model: string; unread?: number}>('/api/personal/conversation');
-    if (mounted.current && request === lastSnapshot.current) { setTurns(result.turns); setModel(result.model); setUnread(result.unread || 0); setLoaded(true); }
+    if (mounted.current && request === lastSnapshot.current) { setTurns(result.turns); setModel(result.model); setUnread(result.unread || 0); setLoaded(true); setDisconnected(false); }
   };
   useEffect(() => {
     mounted.current = true;
-    const update = () => void refresh().catch(() => { if (mounted.current) setError('Unable to connect. Your unsent message is kept here.'); });
+    const update = () => void refresh().catch(() => { if (mounted.current) setDisconnected(true); });
     update(); const timer = setInterval(update, 2000); window.addEventListener('online', update);
     return () => { mounted.current = false; clearInterval(timer); window.removeEventListener('online', update); controller.current?.abort(); };
   }, []);
@@ -117,7 +118,7 @@ export default function PersonalConversation() {
       </div>
       <form className={`personal-chat-composer${voiceActive ? ' personal-voice-active' : ''}`} onSubmit={event => { event.preventDefault(); void send(); }}>
         {loaded && !model && <p className="personal-footnote">Chat needs an AI connection on this Mac. Your reminders are in Activity.</p>}
-        {error && <p role="alert">{error}</p>}{warning && <p role="status">{warning}</p>}
+        {disconnected && <p role="status">Reconnecting… Your unsent message is kept here.</p>}{error && <p role="alert">{error}</p>}{warning && <p role="status">{warning}</p>}
         {uploading && <p role="status">{uploading} <button type="button" onClick={() => controller.current?.abort()}>Stop import</button></p>}
         {draft.sources.length > 0 && <ul className="personal-chat-attachments">{draft.sources.map(source => <li key={source.id}>{source.name}<button type="button" aria-label={`Remove ${source.name}`} disabled={busy} onClick={() => setDraft(previous => ({...previous, operation: crypto.randomUUID(), sources: previous.sources.filter(item => item.id !== source.id)}))}>×</button></li>)}</ul>}
         <textarea ref={input} aria-label="Message Diane" placeholder="Tell Diane what you need…" rows={2} maxLength={16000} value={draft.text} disabled={busy || voiceActive} onChange={event => setDraft(previous => ({...previous, text:event.target.value, operation:crypto.randomUUID()}))} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />

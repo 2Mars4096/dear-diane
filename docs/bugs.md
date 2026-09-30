@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **Voice transcript/reconnect (2026-09-30):** final transcripts were screen-reader-only and the 1.1-second silence threshold split ordinary pauses. Expose progressive ASR text, wait 2.4 seconds and preserve audio when speaking resumes before admission. Polling errors also stayed visible after recovery; separate transient connection state from action errors. The local host process had exited, so restart it detached. TypeScript rejects parameter properties under erasableSyntaxOnly; use explicit fields for the preview callback.
+
 - **Personal research quality (2026-09-30):** the initial two-call broad-query trial returned listicles, an unnamed venue and a per-person/total-budget mismatch. Named-query hints alone did not reliably fix this. Add a bounded follow-up research pass, official-domain prioritization, balanced page slots across queries, actual menu-link reads, explicit budget/primary-source instructions and an aggregate cost ceiling. Preserve failures in evaluation evidence; do not equate a completed network request with verified recommendations.
 - **Research test fixes (2026-09-30):** a live fixture tried finishing a queued turn before claiming it, correctly blocking the next submission; claim first. Source-link test caught a missing visible citation ID; display the ID. Ranking initially let one query consume all read slots; reserve a slot for each query.
 

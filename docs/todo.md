@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Add visible progressive voice transcription, more forgiving pauses/resumed audio, and automatic connection-warning recovery — [7-6](plans/7-6-live-voice.md).
+
 - [x] Connect Personal chat/voice to Workspace public search and page/PDF reading, with sources, bounded follow-up, Stop and shared model spending limits — [7-7](plans/7-7-workspace-capabilities.md).
 - [ ] Broaden live research quality evaluation; interactive browser, workspace file/shell access and connected-account actions are not yet exposed in Personal.
 
