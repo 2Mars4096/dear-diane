@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-30
+- [fix] Make the working timer read naturally: `4s`, `1m 12s`, `1h`. Omit padding and zero units while retaining per-second updates and reload recovery.
+
+## 2026-09-30
 - [feat] Add continuous voice with four fixed presets, automatic speech turns, barge-in, chat/record context and microphone cleanup. Audio uses OpenRouter recognition/synthesis and speaks completed service replies.
 - [feat] Add schema-v7 audio intent/reservations and private v6 backup. Share AI limits, reject uncertain paid replay, recheck caps/UTC rollover and validate audio sizes/catalog prices. Raw audio stays transient.
 - [test] 101 personal/connector backend and 388 frontend checks pass; production build, native compilation/package/signature, real four-voice synthesis and a synthetic end-to-end voice request pass. Chromium verifies two continuous turns/interruption at 390px; native synthetic microphone start/end passes. Physical microphone/OS permissions and subjective voice quality remain unverified.

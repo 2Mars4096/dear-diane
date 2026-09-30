@@ -63,9 +63,9 @@ it('updates elapsed time every second from the saved turn and stops when the rep
     vi.setSystemTime(new Date('2026-09-30T02:00:00Z'));
     mock.mockResolvedValue({turns:[{id:'turn1',text:'Help me',state:'running',created_at:'2026-09-30T01:00:01Z'}],model:'fixture/model'});
     await mount();
-    expect(host.querySelector('time')?.textContent).toBe('00h59m59s');
+    expect(host.querySelector('time')?.textContent).toBe('59m 59s');
     await act(async()=>{await vi.advanceTimersByTimeAsync(1000);});
-    expect(host.querySelector('time')?.textContent).toBe('01h00m00s');
+    expect(host.querySelector('time')?.textContent).toBe('1h');
     mock.mockResolvedValue({turns:[{id:'turn1',text:'Help me',state:'completed',reply:'Done.',created_at:'2026-09-30T01:00:01Z'}],model:'fixture/model'});
     await act(async()=>{await vi.advanceTimersByTimeAsync(1000);});
     expect(host.querySelector('time')).toBeNull();

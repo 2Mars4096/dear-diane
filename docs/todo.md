@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Simplify elapsed time to compact units, without leading zeros or unused hours/minutes.
+
 - [ ] [7-6 live voice](plans/7-6-live-voice.md): continuous session/context, four presets and local automated/live synthetic checks implemented; human microphone/voice-quality acceptance and latency tuning remain.
 
 - [x] Fix misleading conversation timeout replies and retain user preferences through failed turns.

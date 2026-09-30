@@ -24,8 +24,9 @@ function WorkingElapsed({startedAt}: {startedAt?: string}) {
   }, []);
   const parsed = Date.parse(startedAt || '');
   const seconds = Math.max(0, Math.floor((now - (Number.isFinite(parsed) ? parsed : fallback)) / 1000));
-  const pad = (value: number) => String(value).padStart(2, '0');
-  return <span>Working… <time className="personal-elapsed" aria-live="off" dateTime={`PT${seconds}S`}>{pad(Math.floor(seconds / 3600))}h{pad(Math.floor(seconds / 60) % 60)}m{pad(seconds % 60)}s</time></span>;
+  const hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds / 60) % 60, remainder = seconds % 60;
+  const elapsed = [hours ? `${hours}h` : '', minutes ? `${minutes}m` : '', remainder ? `${remainder}s` : ''].filter(Boolean).join(' ') || '0s';
+  return <span>Working… <time className="personal-elapsed" aria-live="off" dateTime={`PT${seconds}S`}>{elapsed}</time></span>;
 }
 
 export default function PersonalConversation() {

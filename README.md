@@ -13,7 +13,7 @@ The pre-Universal graph builder, visual graph editor, Code/Research/Content mode
 
 ## Mac and phone personal agent
 
-Personal now opens as a conversation. Ask Diane to remember something, change its time, pause or cancel a reminder, or show what is coming up. Attach documents/images in the composer; detailed records and spending controls are under **Activity**. While Diane works, a live `00h00m00s` timer shows elapsed time, including after a reload. Configure an AI model with the local launcher’s `--env-file` and `--model` options; conversation and extraction share spending limits. Connected-account actions remain unavailable.
+Personal now opens as a conversation. Ask Diane to remember something, change its time, pause or cancel a reminder, or show what is coming up. Attach documents/images in the composer; detailed records and spending controls are under **Activity**. While Diane works, a compact live timer (`4s`, `1m 12s`) shows elapsed time, including after a reload. Configure an AI model with the local launcher’s `--env-file` and `--model` options; conversation and extraction share spending limits. Connected-account actions remain unavailable.
 
 For the local Mac milestone, run `PYTHONPATH=src python -m dan.personal` from this checkout, then open `http://127.0.0.1:4197/#personal`. Uses separate persistent `.personal-local/` data and the prepared `editor/dist` client. See [local setup](docs/personal/setup.md). Physical-phone testing is deferred.
 
