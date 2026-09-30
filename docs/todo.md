@@ -1,5 +1,8 @@
 # Todo
 
+- [x] Implement optional local Qwen token-streamed drafts with bilingual recognition and cloud final validation.
+- [ ] Complete local model download, measure real Mac latency and activate only after validation.
+
 - [x] Preserve Qwen bilingual recognition; remove the single-language browser regression and start audio previews earlier.
 - [x] Handle provider 429 failures with price-bounded same-model failover and accurate errors.
 

@@ -46,3 +46,9 @@ Each preview uses a temporary $0.005 recognition hold, settled to its provider-r
 - [OpenRouter recognition](https://openrouter.ai/docs/guides/overview/multimodal/stt) and [speech synthesis](https://openrouter.ai/docs/guides/overview/multimodal/tts).
 - [Qwen voice identifiers](https://docs.qwencloud.com/developer-guides/speech/voice-list/qwen-audio-tts).
 - Interaction patterns informed by [OpenAI voice activity detection](https://developers.openai.com/api/docs/guides/realtime-vad) and [interruption/context handling](https://developers.openai.com/api/docs/guides/realtime-conversations). No OpenAI Realtime connection is used by this implementation.
+
+## Optional local Qwen captions (Mac)
+
+`--local-voice` adds token-by-token draft output from `mlx-community/Qwen3-ASR-1.7B-4bit` (the same Qwen architecture, quantized for Apple Silicon). Install `mlx-audio` in a separate environment first. The launcher warms the model before accepting requests; initial setup downloads model weights. Run the launcher using that environment's Python. `HF_HOME` can point to `.personal-local/asr-cache` to keep the download separate.
+
+Local snapshots retain automatic language detection. Drafts replace prior text; final admission still uses the existing OpenRouter Qwen transcript. If local inference fails, previews fall back to OpenRouter. Only one local inference runs at once; audio is bounded to 30 seconds and is not saved. This streams model output from short audio snapshots, not a native persistent audio-stream decoder. Hardware latency must be measured before enabling it for normal use.

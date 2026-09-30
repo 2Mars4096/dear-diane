@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **Local Qwen setup (2026-09-30):** normal and alternate-index runtime downloads and both Xet/HTTP model downloads were too slow to complete interactive validation. A bounded HTTP model probe delivered about 40 KB/s. Implementation tests pass, but do not enable local captions until the isolated runtime/model benchmark passes. Token output streams from snapshots; this is not a persistent incremental audio decoder.
+
 - **Bilingual caption regression (2026-09-30):** browser SpeechRecognition forced navigator.language and misread mixed speech. Remove that layer; retain Qwen auto-detection. User explicitly prefers Qwen; synthetic alternative-model results are not grounds to override it. Earlier previews improve capture latency, while provider response latency remains variable.
 - **Repeated provider failure (2026-09-30):** safe diagnostics identified RateLimitError/HTTP 429. Personal disabled provider failover; enable same-model backup routing with existing price ceilings. Report remaining 429s accurately; successful synthetic verification does not guarantee provider capacity.
 

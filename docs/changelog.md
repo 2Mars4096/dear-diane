@@ -1,6 +1,11 @@
 # Changelog
 
 ## 2026-09-30
+- [feat] Implement optional Mac-local Qwen 1.7B token-streamed draft captions, with automatic bilingual recognition, bounded single-worker inference, transient audio, cancellation and cloud-preview fallback. Final messages still use the existing OpenRouter Qwen transcript.
+- [test] 19 frontend and 42 backend checks pass, including partial UTF-8 Chinese text, cumulative updates, no draft admission, and busy/error cleanup. Production build and lint pass.
+- [infra] Isolated local runtime/model setup remains incomplete: public payload downloads are slow (bounded model probe about 40 KB/s). Local mode remains disabled pending real inference latency and multilingual acceptance; no word-level latency claim is made.
+
+## 2026-09-30
 - [fix] Restore Qwen-only bilingual previews by removing browser-language recognition. Keep the original Qwen model at the user’s request; advance initial audio snapshots to 0.6 seconds plus up to 150ms of boundary context, preserving 1.5-second send pauses and preview reuse.
 - [fix] Diagnose the recurring reply failure as provider HTTP 429. Enable same-model provider failover under existing price caps and distinguish rate-limit errors. A synthetic live reply completed with failover enabled.
 - [test] 16 voice and 63 backend checks pass; production build/bundle budgets and lint pass. Multilingual model comparison did not justify replacing the user’s preferred recognizer; no general latency guarantee is claimed.
