@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-30
+- [feat] Show Working elapsed time as 00h00m00s, updating each second from the persisted turn creation time; stop the timer when the reply arrives.
+- [test] Five conversation UI checks, changed-file lint and the production build pass; timer regression covers the hour boundary and completed replies.
+
+## 2026-09-30
 - [test] 382 frontend and 98 combined backend checks pass, including 19 conversation contracts. Real-model synthetic creation/time-correction passes; stop cancels the provider task before local effects, and migration/replay/owner/budget tests pass. Browser draft recovery/Activity/390px layout, native Electron navigation, production build and Mac package signature pass. The local Mac browser host now runs the conversational version with the existing configured provider.
 - [feat] Make Personal a conversation: one message box, attachments, Stop and Activity. Keep existing detailed controls behind Activity and preserve unsent messages/replies across reloads.
 - [feat] Add schema-v6 conversation jobs, private migration backup, operator-scoped replay, bounded Agent V2/Universal Cell replies and shared AI spending reservations. Validated local actions cover create/update, separate event/reminder times, reminder stop/pause/resume, commitment status, listing and calendar download.

@@ -6,7 +6,7 @@ import { isElectron } from '../../lib/electronBridge';
 import './personal.css';
 const Records = lazy(() => import('./PersonalApp'));
 const DRAFT = 'dan.personal.conversation.draft.v1';
-type Turn = {id: string; text: string; reply?: string; state: string; record_id?: string; calendar_url?: string; sources?: {id: string; name: string}[]};
+type Turn = {id: string; created_at?: string; text: string; reply?: string; state: string; record_id?: string; calendar_url?: string; sources?: {id: string; name: string}[]};
 type Draft = {text: string; operation: string; sources: SourceAttachment[]};
 const blank = (): Draft => ({text: '', operation: crypto.randomUUID(), sources: []});
 function load(): Draft {
@@ -14,6 +14,19 @@ function load(): Draft {
   return blank();
 }
 const active = (turn: Turn) => ['queued', 'running', 'applying'].includes(turn.state);
+function WorkingElapsed({startedAt}: {startedAt?: string}) {
+  const [fallback] = useState(Date.now);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const parsed = Date.parse(startedAt || '');
+  const seconds = Math.max(0, Math.floor((now - (Number.isFinite(parsed) ? parsed : fallback)) / 1000));
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return <span>Working… <time className="personal-elapsed" aria-live="off" dateTime={`PT${seconds}S`}>{pad(Math.floor(seconds / 3600))}h{pad(Math.floor(seconds / 60) % 60)}m{pad(seconds % 60)}s</time></span>;
+}
+
 export default function PersonalConversation() {
   const [draft, setDraft] = useState(load);
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -92,7 +105,7 @@ export default function PersonalConversation() {
         {!loaded && <p role="status">Connecting…</p>}
         {turns.map(turn => <div key={turn.id} className="personal-turn">
           <article className="personal-user-message" aria-label="You"><p>{turn.text}</p>{turn.sources?.map(source => <small key={source.id}>{source.name}</small>)}</article>
-          <article className="personal-assistant-message" aria-label="Diane"><p>{turn.reply || (active(turn) ? 'Working…' : 'This reply was interrupted.')}</p>
+          <article className="personal-assistant-message" aria-label="Diane"><p>{turn.reply || (active(turn) ? <WorkingElapsed startedAt={turn.created_at} /> : 'This reply was interrupted.')}</p>
             {turn.calendar_url && <a href={turn.calendar_url}>Download calendar file</a>}
           </article>
         </div>)}

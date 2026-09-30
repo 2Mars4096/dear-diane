@@ -56,3 +56,19 @@ it('does not silently accept a message when no AI model is configured',async()=>
   expect(button('Send message').disabled).toBe(true);
   expect(host.textContent).toContain('Chat needs an AI connection');
 });
+
+it('updates elapsed time every second from the saved turn and stops when the reply arrives',async()=>{
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(new Date('2026-09-30T02:00:00Z'));
+    mock.mockResolvedValue({turns:[{id:'turn1',text:'Help me',state:'running',created_at:'2026-09-30T01:00:01Z'}],model:'fixture/model'});
+    await mount();
+    expect(host.querySelector('time')?.textContent).toBe('00h59m59s');
+    await act(async()=>{await vi.advanceTimersByTimeAsync(1000);});
+    expect(host.querySelector('time')?.textContent).toBe('01h00m00s');
+    mock.mockResolvedValue({turns:[{id:'turn1',text:'Help me',state:'completed',reply:'Done.',created_at:'2026-09-30T01:00:01Z'}],model:'fixture/model'});
+    await act(async()=>{await vi.advanceTimersByTimeAsync(1000);});
+    expect(host.querySelector('time')).toBeNull();
+    expect(host.textContent).toContain('Done.');
+  } finally {vi.useRealTimers();}
+});

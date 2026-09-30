@@ -131,3 +131,5 @@
  .personal-welcome h1 { font-size:24px; }
  .personal-chat-actions button { width:44px; height:44px; }
 }
+
+.personal-elapsed { color:var(--personal-muted); font-variant-numeric:tabular-nums; margin-left:6px; white-space:nowrap; }

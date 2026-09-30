@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Show per-second elapsed time beside conversation Working status, restored from the saved turn timestamp.
+
 - [x] [7-5 conversation](plans/7-5-conversational-personal-agent.md): simple chat entry, durable turns, natural follow-ups, local service receipts and shared AI limits.
 
 - [x] Clarify the first-use reminder flow, manual entry and main-chat navigation; remove empty review panels.
