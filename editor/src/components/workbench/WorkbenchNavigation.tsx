@@ -83,9 +83,9 @@ export function WorkbenchNavigation(props: Props) {
         return;
       }
       if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey || event.repeat) return;
-      if (event.code !== "KeyP" && event.code !== "KeyS") return;
+      if (event.code !== "KeyE" && event.code !== "KeyS") return;
       event.preventDefault();
-      if (!mode) open(event.code === "KeyP" ? "projects" : "sessions");
+      if (!mode) open(event.code === "KeyE" ? "projects" : "sessions");
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -109,7 +109,7 @@ export function WorkbenchNavigation(props: Props) {
   return <>
     <div className="wb-navigation">
       <span className="wb-sidebar-toggle"><button onClick={props.onToggleSidebar} aria-label={props.sidebarOpen ? "Hide sidebar" : "Show sidebar"} title={`${props.sidebarOpen ? "Hide sidebar" : "Show sidebar"} (${modifier}B)`} aria-keyshortcuts="Meta+B Control+B" aria-expanded={props.sidebarOpen} aria-controls="wb-project-sidebar"><PanelLeft size={18} /></button></span>
-      <button onClick={() => open("projects")} title={`Switch project (${modifier}⇧P)`} aria-keyshortcuts="Meta+Shift+P Control+Shift+P"><Layers size={17} /><span>{project?.name || "Projects"}</span><span className="wb-shortcut">{modifier}⇧P</span></button>
+      <button onClick={() => open("projects")} title={`Switch project (${modifier}⇧E)`} aria-keyshortcuts="Meta+Shift+E Control+Shift+E"><Layers size={17} /><span>{project?.name || "Projects"}</span><span className="wb-shortcut">{modifier}⇧E</span></button>
       <span className="wb-divider">/</span>
       <button onClick={() => open("sessions")} title={`Switch session (${modifier}⇧S)`} aria-keyshortcuts="Meta+Shift+S Control+Shift+S"><span>{sessions.find((item) => item.id === props.activeSessionId)?.title || "Sessions"}</span><span className="wb-shortcut">{modifier}⇧S</span></button>
       <button onClick={props.onNewSession} aria-label="New session" title="New session"><Plus size={18} /></button>

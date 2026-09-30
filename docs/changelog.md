@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-09-30
+- [fix] Move the project-switcher shortcut from Cmd/Ctrl+Shift+P to Cmd/Ctrl+Shift+E for left-hand access; update visible and accessible shortcut labels.
+
 ## 2026-09-29
 - [infra] Keep implementation and specialized plan directories local: ignore `docs/plans/` and `docs/*-plans/`, and remove existing plan files from the Git index while preserving working copies. Historical commits retain their existing files.
 
