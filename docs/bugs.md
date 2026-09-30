@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- **Voice filler interruption (2026-09-30):** amplitude onset cancelled active work before recognition, so “嗯” stopped replies. Gate cancellation on meaningful recognition; final-only filtering is too late.
+- **Misleading AI failure (2026-09-30):** latest saved backend failure was “This turn has reached its reserved AI spending limit.” Map that exact safe error to a budget explanation. Do not erase unverified historical holds or raise limits to hide it. Voice previously duplicated the failed chat reply as a composer error and closed the mic; keep listening instead.
+
 - **Transcript cadence (2026-09-30):** three-second snapshots and dropping snapshots during recognition made updates sparse. Use one-second/phrase-break snapshots with one latest pending snapshot; keep final turn detection separate at four seconds. Provider latency still limits visible update speed.
 
 - **Fixed reservation exhaustion (2026-09-30):** completed calls retained $0.305152 chat, $0.05 speech and $0.005 transcription reservations instead of settling reported cost. The provider wrapper also dropped dollar cost/generation ID. Preserve those receipts and reconcile audio metadata; a live three-call sample cost $0.0013454675 rather than the $0.360152 hold. Do not erase or guess older charges whose IDs were never stored. New admission now uses available headroom instead of rejecting every balance below the old fixed hold.

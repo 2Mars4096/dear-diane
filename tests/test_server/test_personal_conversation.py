@@ -235,3 +235,12 @@ def test_fast_reply_options_preserve_price_and_call_constraints(service):
     assert options['provider']['max_price']['request'] == 0
     assert options['provider']['allow_fallbacks'] is False
     assert 'reasoning' not in reply_options(job, 'https://openrouter.ai/api/v1')['extra_body']
+
+
+def test_spending_failure_reports_budget_instead_of_generic_model_error():
+    from types import SimpleNamespace
+    from dan.personal.conversation import failed_reply
+    reply = failed_reply(SimpleNamespace(raw_result={'error_type': 'ValueError', 'error': 'This turn has reached its reserved AI spending limit'}))
+    assert 'budget' in reply
+    assert 'Settings' in reply
+    assert 'no action was taken' in reply

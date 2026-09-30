@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import {afterEach, beforeEach, expect, it, vi} from 'vitest';
-import {PersonalVoiceSession, VoiceActivity, encodeWav, type VoiceCallbacks} from '../personalVoice';
+import {PersonalVoiceSession, VoiceActivity, encodeWav, meaningfulVoice, type VoiceCallbacks} from '../personalVoice';
 import {requestJson} from '../http';
 vi.mock('../http', () => ({requestJson: vi.fn()}));
 const request = vi.mocked(requestJson);
@@ -82,7 +82,7 @@ it('stops a superseded pending action before admitting the next voice turn', asy
   });
   session = new PersonalVoiceSession('warm', callbacks); await session.start();
   frames(0.2, 12); frames(0, 96); await flush();
-  frames(0.2, 8); await flush();
+  frames(0.2, 36); await flush();
   expect(request).toHaveBeenCalledWith('/api/personal/conversation/turn-1/stop', {method: 'POST'});
   expect(callbacks.error).not.toHaveBeenCalled();
 });
@@ -154,7 +154,7 @@ it('coalesces slow previews to the newest audio without overlapping requests',as
     return {text:'The latest complete phrase'};
   });
   session=new PersonalVoiceSession('warm',callbacks); await session.start();
-  frames(.2,30); await flush();
+  frames(.2,36); await flush();
   expect(calls).toBe(1);
   frames(.2,100); await flush();
   expect(calls).toBe(1);
@@ -172,5 +172,54 @@ it('previews a brief phrase during a pause without repeatedly transcribing silen
   expect(preview).toHaveBeenCalledTimes(1);
   for(let i=0;i<25;i++) detector.feed(new Float32Array(100));
   expect(preview).toHaveBeenCalledTimes(1);
+  expect(end).not.toHaveBeenCalled();
+});
+
+it('filters only hesitation sounds, preserving short answers and substantive speech', () => {
+  for (const text of ['嗯。', '呃，嗯', 'um, uh...', 'hmm', '']) expect(meaningfulVoice(text)).toBe(false);
+  for (const text of ['yes', 'no', 'stop', '好', '不', '停', '嗯，明天提醒我', 'um, somewhere cozy']) expect(meaningfulVoice(text)).toBe(true);
+});
+it.each(['running', 'completed'])('leaves a %s response alone during filler-only speech', async state => {
+  let text='Find a cozy restaurant';
+  request.mockImplementation(async (url, options) => {
+    if(url.includes('/transcribe')) return {text};
+    if(url.endsWith('/speech')) return {audio:btoa('synthetic'),rate:1};
+    if(options?.method==='POST') return {id:'original',state};
+    return {turns:[{id:'original',state,reply:'An idea'}]};
+  });
+  session=new PersonalVoiceSession('warm',callbacks); await session.start();
+  frames(.2,12);frames(0,96);await flush();
+  expect(callbacks.transcript).toHaveBeenLastCalledWith('');
+  text='嗯。'; frames(.2,36);await flush();frames(0,96);await flush();
+  expect(request.mock.calls.filter(([url])=>url.endsWith('/stop'))).toHaveLength(0);
+  expect(request.mock.calls.filter(([url,options])=>url==='/api/personal/conversation' && options?.method==='POST')).toHaveLength(1);
+  expect(stopPlayer).not.toHaveBeenCalled();
+  expect(callbacks.error).not.toHaveBeenCalled();
+});
+
+it('keeps voice open after a failed reply already visible in chat', async () => {
+  request.mockImplementation(async (url, options) => {
+    if(url.includes('/transcribe')) return {text:'Find somewhere cozy'};
+    if(options?.method==='POST') return {id:'failed-turn',state:'failed',reply:'Budget exhausted'};
+    return {turns:[]};
+  });
+  session=new PersonalVoiceSession('warm',callbacks);await session.start();
+  frames(.2,12);frames(0,96);await flush();
+  expect(callbacks.transcript).toHaveBeenLastCalledWith('');
+  expect(callbacks.status).toHaveBeenLastCalledWith('Listening…');
+  expect(callbacks.error).not.toHaveBeenCalled();
+  expect(stopTrack).not.toHaveBeenCalled();
+});
+
+it('takes timed snapshots during uninterrupted speech and includes a little boundary context', () => {
+  const preview=vi.fn(), end=vi.fn();
+  const detector=new VoiceActivity(1000,vi.fn(),end,preview);
+  for(let i=0;i<12;i++) detector.feed(new Float32Array(100).fill(.2));
+  expect(preview).not.toHaveBeenCalled();
+  for(let i=0;i<4;i++) detector.feed(new Float32Array(100).fill(.2));
+  expect(preview).toHaveBeenCalledTimes(1);
+  for(let i=0;i<14;i++) detector.feed(new Float32Array(100).fill(.2));
+  expect(preview).toHaveBeenCalledTimes(2);
+  expect((preview.mock.calls[1][0] as Blob).size).toBeGreaterThan((preview.mock.calls[0][0] as Blob).size);
   expect(end).not.toHaveBeenCalled();
 });

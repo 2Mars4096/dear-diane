@@ -1,6 +1,12 @@
 # Changelog
 
 ## 2026-09-30
+- [fix] Ignore filler-only English/Chinese recognition before interrupting work or playback. Separate utterance recognition from response cancellation; preserve meaningful short answers. Timed previews allow up to 250ms for a sound boundary and replace overlapping drafts.
+- [fix] Keep voice open after a failed conversation reply without duplicating its error in the composer. Report reserved-budget failures accurately instead of generic AI failure.
+- [test] Fifteen voice regression checks and 24 conversation checks pass, covering filler protection during work/playback, continuous-speech snapshots, failed replies, resumed audio and cleanup. Production build/bundle budgets and changed-file lint pass.
+- [fix] Clear the voice transcript from the composer after successful message admission. Keep the saved conversation message and avoid clearing a newer utterance when an older request returns.
+
+## 2026-09-30
 - [fix] Separate fast transcript updates from patient turn-taking: target one-second previews, early phrase-break previews and four seconds of silence before submitting. Preserve the existing recording bound.
 - [fix] Coalesce slow recognition to the newest pending snapshot with one request in flight. Drop queued previews on final submission/interruption/end and avoid retranscribing silence without new words.
 - [test] Ten voice regression checks cover finer previews, longer pauses, coalescing, resumed audio and cleanup. Synthetic Chromium checks three previews across a three-second pause, zero premature actions and cleanup at 390px. Production build/bundle budgets, lint and signed Mac package pass.

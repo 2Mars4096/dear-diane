@@ -259,6 +259,8 @@ def reply_options(job, base_url):
 
 def failed_reply(result):
     # Provider/runtime failures are not evidence that the user's words were unclear.
+    if result.raw_result.get('error') == 'This turn has reached its reserved AI spending limit':
+        return 'There isn’t enough available AI budget for this reply. Your message is saved; no action was taken. Check AI spending in Settings.'
     error_type = result.raw_result.get('error_type', '')
     if error_type in {'TimeoutError', 'ReadTimeout', 'APITimeoutError'}:
         return 'The AI reply timed out. Your message is saved; no action was taken. You can ask me to try again.'
