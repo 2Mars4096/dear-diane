@@ -168,7 +168,7 @@ Then read `/api/v2/tasks`, `/api/v2/agent-runs/{run_id}`, and `/api/v2/agent-run
 
 ## Workbench native workers
 
-Enabled mutation-capable GUI manager stages receive `native_worker(action, backend?, prompt?, worker_id?)`. Backends: `codex`, `claude`, `antigravity`. `start` returns immediately; start multiple independent tasks before polling `status`. Status waits up to ten seconds and returns saved output/status. `stop` affects only its named child. `resume` sends a follow-up to a settled child within the same active parent; it cannot modify another parent's worker. Inspect child results before ending the manager run, which stops remaining children.
+Enabled mutation-capable GUI manager stages receive `native_worker(action, backend?, prompt?, worker_id?, isolate=true)`. Backends: `codex`, `claude`, `antigravity`. `start` returns immediately; start multiple independent tasks before polling `status`. Status waits up to ten seconds and returns saved output/status. `stop` affects only its named child. `resume` sends a follow-up to a settled child within the same active parent; it cannot modify another parent's worker. Inspect child results before ending the manager run, which stops remaining children.
 
 Runtime choices are in the execute request's `profile_policy.native_workers`, keyed by backend, with `enabled`, `account`, `provider`, `model`, `effort`, and `fast`. `provider` is `native` (default/current configuration) or `openrouter`, independently of the harness. Account names resolve server-side; never send credentials in this payload. Imported native context always forks before native continuation.
 
@@ -178,7 +178,7 @@ Read-only discovery: `GET /api/native-workers/catalog`, `GET /api/native-session
 - Agent-run execute backends: `native_codex`, `claude`, `antigravity`, `cursor`; `super_dan` remains the DAN lead. Existing `codex` backend is retained for compatibility; use `native_codex` for the new source-aware Codex adapter.
 - `profile_policy.lead_profile`: account, provider, model, effort, fast; also accepted for `super_dan`. Continuation IDs are server-owned and scoped to thread/folder/runtime/account/source.
 - `profile_policy.native_workers`: enabled profiles keyed by `dan`, `codex`, `claude`, `antigravity`, `cursor`; DAN profiles optionally set `base_url` for legacy callers.
-- `native_worker` accepts start/status/stop/resume. Native leads receive an equivalent run-scoped shell bridge. Team members cannot recursively delegate.
+- `native_worker` accepts start/status/stop/resume/apply. Native leads receive an equivalent run-scoped shell bridge. Team members cannot recursively delegate.
 
 ### Independent model sources
 
@@ -215,3 +215,13 @@ Example execute payload: Codex orchestrates and DeepSeek powers Codex itself.
 - `GET /api/model-providers` returns `providers[]` with `id`, `label`, `configured`, `saved`, and `key_env`; never returns keys.
 - `PUT /api/model-providers/{provider}/key` accepts `{ "api_key": "..." }`; an empty string removes the saved key. Returns the same status-only catalog. These credential routes require a local host/client/origin and are disabled on remote execution servers.
 - Saved host-local credentials override the matching environment key. Provider endpoints are fixed; credentials never enter execution profiles or command arguments. Configure keys separately on each execution host.
+
+
+### Worker recovery, isolation, and review
+
+- `native_worker(start, ..., isolate=true)` uses an owned Git worktree. Set `isolate=false` for shared read-only work or non-Git folders. The native CLI bridge uses `--shared-workspace` for the same choice. Source changes and untracked files form the baseline; ignored dependencies/secrets are excluded. `apply` integrates a settled worker after source conflict checks; it does not commit the source or delete the worktree.
+- `POST /api/native-workers/{parent}/{worker}/reply` with `{prompt}` steers a live supported worker or resumes the persisted original runtime/profile. Missing native sessions retry with saved task/output context. Observed lead-owned subagents reject independent resume.
+- `GET .../{worker}/events?before=N&limit=100` pages older log entries; `after=N` polls newer entries. `entries` carries `{cursor,event}` and `before` is null at the beginning. The legacy `events` array remains available.
+- `POST .../{worker}/answer` accepts `{request_id, decision:"accept"|"decline"}` for one-time approvals or `{request_id, answers:{question_id:"answer"}}` for supported questions. Stale requests reject; no session-wide approval escalation.
+- `GET .../{worker}/changes` returns the owned worktree diff and tree ID. `POST .../{worker}/apply` with `{tree}` applies the isolated worker delta; source HEAD or touched-file changes reject with 409. Event pages also return `has_more` for forward catch-up after completion. Public worker records advertise `can_reply`, `can_stop`, `can_apply`, and live `requests`.
+- `GET /api/workspace-changes?root=...&thread=...&snapshot=...` returns boundaries and text diffs; `POST` with `{root,thread}` marks the current state. Automatic boundaries precede V2 execution. This is review of project edits, not attribution to a particular agent and not rollback.

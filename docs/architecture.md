@@ -1,5 +1,19 @@
 # Architecture
 
+## Worker continuity and workspace review
+
+- NativeTeam retains worker identity/profile and original execution policies on explicit resume. Public worker records expose supported controls without profiles; paginated event cursors recover complete history, draining queued pages after completion. Codex Team workers use app-server for questions and one-time approvals; observed native children remain lead-controlled.
+- `native_workers/workspaces.py` owns isolated Git worktrees for Team delegation. Baseline trees include existing dirty/untracked work; apply checks source HEAD and touched-file fingerprints, preserves the source index, and retains owned worktrees. Shared work remains explicit; admission failures remove their unused new worktree.
+- `workspace_changes.py` records bounded local UTF-8 snapshots before V2 requests, with ten boundaries per project/session. `routers/workspace_changes.py` and lazy `ChangesPanel` provide review and draft feedback without changing source files or Git staging. Visible Changes refreshes automatically; hidden panels stop polling.
+- `WorkNotifications` detects task/worker state transitions across sessions and suppresses watched-session alerts. Successful empty feeds establish a baseline; requests use the shared timeout transport and do not overlap. Narrow Electron attention IPC displays notifications and routes clicks back to a session/worker; browser delivery uses granted Notification permission.
+- `RecentSessions` retains ten visits per origin (current plus nine previous), excludes the active/archived session, and freezes shortcut targets while the platform modifier is held. Its controller stays mounted while the sidebar is hidden; a portal renders the numbered list above project folders. Existing MainTabs and document lifetimes are unchanged.
+
+## Planned personal-agent extension
+
+- [Plan 7](plans/7-phone-personal-agent.md) specifies shared phone/browser views, personal records, durable wakeups, connector adapters/broker, and approval receipts. These modules are proposed and are not implemented.
+- Reuse Agent V2 task/run execution; keep business obligations distinct from individual run completion. Google is first, with a common adapter contract and provider conformance loop.
+- [Muse connection research](business/muse-app-connections.md) records the external evidence informing this proposal. Native device access follows browser-first validation.
+
 ## Product identity
 - Public product: Dear Diane; assistant: Diane. Desktop packaging and browser/phone titles use the product name; agent messages and runtime labels use Diane.
 - Electron pins `userData` to the existing `appData/dan` before setting its display name. Bundle ID, Python package, protocol IDs, environment variables, remote services, and saved keys retain their original identities. New bundles are `Dear Diane.app`; local update discovery uses that path.
@@ -31,6 +45,7 @@
 - InteractivePdfViewer always loads PDFs with `disableFontFace: true` and `useSystemFonts: false`, drawing glyph outlines locally without browser font conversion/substitution. No manual repair control or per-document preference remains; old stored preferences are ignored. PDF bytes are unchanged. Reader text/OCR callbacks ignore results from replaced documents.
 
 ## Persistent side tools
+- `SideTabs` presents the current tool as a menu button instead of a horizontal tab strip. The context-aware radio menu includes descriptions and keyboard navigation; background activity retains a direct Running shortcut. Persistent tool bodies are labeled regions.
 - Work owns one side-panel frame/header. `workbench/PersistentPanel.tsx` mounts a tool on first visit, then hides it without unmounting; chat polling and drafts continue, and scroll/expanded logs survive. Files and Preview use the same frame on desktop and phone. Project/PDF/thread keys isolate context-specific state.
 - `MainTabs` handles the dedicated active-tab close shortcut and calls the existing guarded close callback. Native window shortcuts are not intercepted.
 
@@ -271,6 +286,12 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - Ready items require a selected candidate, substantive notes, source anchors, and valid read-page numbers. Stop leaves queued items staged. Backend restart resumes queued items and flags active/interrupted imports for explicit retry. Drafts, corrections, PDFs, execution selection, and Agent run IDs persist independently of the browser.
 - `server/paper_ingest.py` packages the deterministic ingest-paper-kb planner/writer without personal skill-path dependencies. Full selected-subset preflight checks keys, DOI/content duplicates, hashes, destination confinement, and existing files. Exclusive links publish verified PDF copies and Hugo pages; ordinary errors roll back only newly created files. Sources are retained. Existing pages are never overwritten or automatically merged; crash-interrupted writes require rechecking through Retry.
 - Crossref coverage is incomplete, especially for books and working papers. Manual BibTeX/title correction remains available. PDF extraction uses the existing optional `pdf` dependencies; scanned-page OCR/rendering depends on the selected lead's tools. Book overview is distinct from a full chapter-by-chapter read. No Zotero or two-way synchronization is required.
+
+## Mac title-bar interaction
+
+- `electron/preload.ts` marks Mac documents with `data-native-titlebar="mac"`, handles blank Work/Notes header pointer capture and double-clicks, and excludes buttons, inputs, links, and dialogs. CSS enables pointer events for these Mac captions; other platforms retain native drag regions.
+- `electron/windowControls.ts` accepts only the current main frame’s `window:titlebar` commands. The main process uses actual screen cursor coordinates, a four-pixel threshold, and current window bounds to move the window, restore a maximized drag under the pointer, or toggle maximize. Fullscreen is left intact; pointer release/cancel/lost capture/blur ends dragging. No renderer-supplied window bounds or OS preference writes.
+- Custom movement uses `setPosition`; OS edge-tiling previews are not implemented by this path. Native traffic-light controls remain available.
 
 - Settings groups related controls under named sections with keyboard-accessible jump buttons and section focus.
 

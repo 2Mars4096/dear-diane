@@ -1,6 +1,28 @@
 # Changelog
 
 ## 2026-09-30
+- [infra] Reinstall and launch automatic recent-session navigation. Signed archive matches the prepared build; app-owned backend and desktop proxy health pass. Chats/settings preserved and previous bundle retained for rollback.
+
+## 2026-09-30
+- [feat] Replace the duplicate upper session-tab row with automatic recent sessions above project folders. Cmd/Ctrl+1–9 selects previous visits, excludes the current session, and freezes destinations while the modifier is held. Existing lower Chat/document tabs remain unchanged.
+- [test] All 381 frontend tests and production build/bundle checks pass. Browser checks cover held-key targets, previous-session toggling, persistence, hidden-sidebar shortcuts, document preservation, and narrow layouts.
+
+## 2026-09-30
+- [infra] Install and launch the reviewed IC-034–037/session-tabs build in `/Applications/Dear Diane.app` after idle checks. Signed archive matches the prepared build; app-owned backend, desktop proxy, and worker-attention endpoint pass. Existing profile preserved; previous bundle retained for rollback.
+
+## 2026-09-30
+- [fix] Review IC-034–037 and session tabs: fix horizontal diff layout, automatic review refresh, phone feedback focus, tab arrow focus/last-tab restoration, first-worker alerts, disconnected-worker status, final history catch-up, and unused worktree cleanup. Single-question choices answer in one click; notification permission uses one control.
+- [test] All 381 frontend tests and 132 focused backend tests pass, plus production build/bundle budgets, Electron compilation, desktop/dark/390px browser flows, and a real signed-in Codex isolated edit → reviewed apply → native-session recovery smoke. Native OS notification delivery and non-Codex live adapters remain unverified. Installed app unchanged.
+
+## 2026-09-30
+- [test] Workflow changes: 129 backend and 15 frontend tests, production build/bundle budgets, Electron compilation, and isolated browser flows pass. Fix worker option accessibility labels and preserve expanded conversation state through completion. Native OS notification delivery and authenticated mixed-provider acceptance remain unverified; installed app unchanged.
+- [feat] Implement IC-034–037 through existing Team and workspace services: paginated worker history and scoped recovery/input, quiet session notifications, review boundaries and Changes tool, isolated Git delegation with conflict-checked application.
+- [feat] Add ordered cross-project session tabs with drag/keyboard reorder and Cmd/Ctrl+number selection; tab closure preserves sessions and running work.
+
+## 2026-09-30
+- [docs] Cart IC-034–039 for smoother personal workflows: worker recovery/intervention, quiet actionable notifications, changes since feedback, parallel edit isolation, selective undo, and voice input. Preserve existing orchestration and the preference against Kanban; implementation remains uncommitted.
+
+## 2026-09-30
 - [infra] Install and launch the signed compact Settings build; installed archive, signature, app-owned backend, and desktop proxy health verified. Previous app bundle retained for rollback.
 
 ## 2026-09-30
@@ -31,8 +53,24 @@
 - [infra] Reinstall and launch the signed left-hand shortcut build; installed archive matches the prepared build, signature and app-owned backend/proxy health pass, and the previous bundle is retained for rollback.
 - [fix] Move the project-switcher shortcut from Cmd/Ctrl+Shift+P to Cmd/Ctrl+Shift+E for left-hand access; update visible and accessible shortcut labels.
 
+## 2026-09-30
+- [infra] Install and launch the signed tool-switcher update at `/Applications/Dear Diane.app`, retaining the previous bundle for rollback. Installed archive matches the prepared build; switcher assets, signature, owned backend, and desktop proxy health verified.
+- [fix] Replace the clipped side-panel tab strip with a current-tool dropdown, descriptions, keyboard navigation, and a direct Running shortcut. Keep tool state mounted. Five focused tests and production bundle checks pass; isolated browser checks cover 316px light and 390px dark layouts.
+
+## 2026-09-29
+- [docs] Cart hybrid paper search as IC-033 with responsiveness, embedding-provider choice, and retrieval acceptance criteria; defer the earlier search follow-up tasks until checkout.
+
+## 2026-09-29
+- [docs] Diagnose missing Simchi-Levi results for `resilience`: source catalogue preserves both papers and notes, but lexical search cannot connect related concepts. Record conceptual retrieval and the silent 12-result cap as follow-up work.
+
+## 2026-09-29
+- [fix] Make the Cmd/Ctrl+K paper-search selection easier to see with an accent-tinted background, stronger inset outline, and accent icons across workbench palettes.
+
 ## 2026-09-29
 - [infra] Keep implementation and specialized plan directories local: ignore `docs/plans/` and `docs/*-plans/`, and remove existing plan files from the Git index while preserving working copies. Historical commits retain their existing files.
+
+## 2026-09-29
+- [docs] Check out IC-031/032 into Plan 7: browser-first personal agent for both phones, clear contracts, seven dependency-ordered stages, provider evaluation loop, Google/Microsoft rollout and live acceptance gates. Add sourced Muse connection research distinguishing API/skill, custom MCP, browser, and device paths; implementation remains not started.
 
 ## 2026-09-29
 - [infra] Install verified Dear Diane.app in Applications, launch successfully, and verify its owned backend/proxy and existing profile. Move the inactive DAN.app to Trash after health checks; preserve chats and settings.
@@ -41,6 +79,19 @@
 - [feat] Rename the product Dear Diane and the assistant Diane across desktop/web/phone, backend messages, terminal UI, and build metadata; add the `dear-diane` command alias. Recover the earlier naming discussion and retain the selected icon.
 - [fix] Pin the existing desktop profile and retain bundle/protocol/storage identities; recognize legacy session placeholders and agent receipts alongside Diane output.
 - [test] 365 frontend, 702 backend, and one Flutter widget test pass; production build/budgets and Electron compilation pass. Isolated real Electron confirms profile preservation. Renamed local macOS bundle passes signature, plist, archive, and update-marker checks; installed app and remote deployments remain unchanged.
+
+## 2026-09-29
+- [docs] Correct IC-032 to a phone-based personal agent; record provisional Meta Muse comparison, ordered capability candidates, three validation workflows, and the relationship to IC-031. International positioning remains a secondary hypothesis; no implementation checkout.
+
+## 2026-09-29
+- [fix] Make the blank Mac Work/Notes top bar expand/restore on double-click. Pair preload pointer capture with main-frame-only window controls for dragging, click jitter, blur/cancel cleanup, and dragging from maximized; center the traffic lights. Browser and other-platform headers retain their existing behavior.
+- [test] Eight focused tests, production build/bundle budgets, and Electron compilation pass. Real native double-clicks in a sandboxed isolated Electron renderer expand and restore exact original bounds; button exclusion and a 40×30 pointer drag pass. Installed app unchanged.
+
+## 2026-09-29
+- [docs] Rank all eight active idea-cart items by near-term priority, expected gain, effort, and dependencies; recommend mobile/market discovery first, retain the manufacturing approval gate, and flag historical blueprint/surface implementation overlap. Preserve IDs, receipts, and carted status.
+
+## 2026-09-29
+- [docs] Cart Dear Diane mobile and Muse AI-inspired personal-assistant opportunities outside the US as IC-031/032; link from Todo without committing to implementation. Market opportunity and exact competitor remain to be validated.
 
 ## 2026-09-28
 - [infra] Reinstall the signed Literature desktop build with rollback retained after idle-work checks. Installed archive/signature, owned backend and desktop-proxy health, Literature endpoints, and the 305-paper catalogue pass; user state is preserved.

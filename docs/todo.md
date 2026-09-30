@@ -1,5 +1,11 @@
 # Todo
 
+- [x] Reinstall automatic recent-session navigation; lower Chat/document tabs preserved — [4-11](plans/4-11-workflow-friction.md).
+
+- [x] Install and verify the reviewed workflow/session-tabs build — [4-11](plans/4-11-workflow-friction.md).
+
+- [x] [4-11-workflow-friction](plans/4-11-workflow-friction.md) — IC-034–037 implemented and revised after one review round: 381 frontend/132 backend tests, browser layouts, production build, and live Codex isolation/application/recovery pass. Also adds ordered cross-project session tabs and browser-style number shortcuts. IC-038/039 remain in the [idea cart](../.agents/idea-cart.md).
+
 - [x] Compact Settings update rows and progressively disclose secondary options — [6-2](plans/6-2-ssh-connection-setup.md).
 
 - [x] Restrict Connections to SSH setup/checks and organize Settings into named sections with jump navigation — [6-2](plans/6-2-ssh-connection-setup.md).
@@ -8,15 +14,24 @@
 
 - [x] Make Edit, Regenerate, and Fork icon-only with tooltips and accessible names — [4-1](plans/4-1-agent-workbench.md).
 
-- [x] Minimal model-selector update: Default label, Native/API grouping, direct provider choices, local Settings key entry, and capability-aware reasoning controls.
-
 - [x] Align the session wheel with project-card styling and verify keyboard/narrow-screen behavior — [4-1](plans/4-1-agent-workbench.md).
 
 - [x] Move project switching to left-hand Cmd/Ctrl+Shift+E — [4-1](plans/4-1-agent-workbench.md).
 
+- [x] Install and verify the side-panel tool-switcher desktop update — [reader and side panel](UI-plans/3-reader-and-side-panel.md).
+
+- Paper-search concept recall and Cmd+K result-limit improvements are carted as IC-033 in the [idea cart](../.agents/idea-cart.md); deferred, not committed work.
+
+- [x] Strengthen Cmd/Ctrl+K paper-search selection with theme-accent fill, outline, and icons — [4-7](plans/4-7-paper-library.md).
+
 - [x] Keep `docs/plans/` and specialized `docs/*-plans/` local and excluded from future commits; plan links refer to local working copies.
 
 - [x] [4-10-dear-diane](plans/4-10-dear-diane.md) — Dear Diane product/Diane assistant rename; compatibility tests and signed local desktop build verified; installed Dear Diane and moved old DAN.app to Trash.
+
+- [x] Fix Mac top-bar double-click expansion/restoration and center window controls; verified in isolated Electron — [4-1](plans/4-1-agent-workbench.md).
+- [x] Install the top-bar update; user interaction check remains pending — [4-1](plans/4-1-agent-workbench.md).
+
+Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-031/032 are now planned in [7-phone-personal-agent](plans/7-phone-personal-agent.md); remaining ideas stay exploratory.
 
 - [x] Reinstall and verify the Literature desktop update — [4-8](plans/4-8-literature-import.md).
 
@@ -71,6 +86,9 @@
 - [x] [DAN icon concept](UI-plans/1-work-notes-gui.md) — generated retro-futuristic artwork and saved its prompt in `output/imagegen/`.
 
 ## Universal product stack
+- [x] Replace crowded side-panel tabs with a labeled tool switcher; verify narrow layouts and keyboard access — [reader and side panel](UI-plans/3-reader-and-side-panel.md).
+
+- [ ] [7-phone-personal-agent](plans/7-phone-personal-agent.md) — staged plan: both phones/browser first; commitment capture, durable tasks, approvals, Google then broader providers, phone pilot, and follow-on workflows. Implementation not started.
 
 - [ ] [6-remote-control](plans/6-remote-control.md) — Settings profiles, SSH installer, authenticated `ny` relay, and shared projects deployed/tested on mini; direct VPN verified; physical-phone acceptance pending, s600 reserved for user testing.
   - [ ] [6-1-private-relay](plans/6-1-private-relay.md) — mini/ny services and native/OpenRouter live tests pass; direct VPN verified; physical-phone acceptance pending.
@@ -187,3 +205,5 @@
 - [ ] Live-verify Up next delivery (append and continue lanes) against a real run in the installed app.
 
 - [x] Paper search follow-up: verified and installed the pointer/keyboard selection fix; user confirmed working ([4-7](plans/4-7-paper-library.md)).
+
+- [x] Minimal model-selector update: Default label, Native/API grouping, direct provider choices, local Settings key entry, and capability-aware reasoning controls.
