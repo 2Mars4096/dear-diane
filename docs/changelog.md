@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-30
+- [infra] Install and launch the signed session-wheel redesign; installed archive matches the prepared build, signature and app-owned backend/proxy health pass, and rollback is retained.
 - [fix] Restyle the session wheel with project-style cards, compact empty-position markers, and a selected-session preview; retain stable slots and directional controls. Browser checks cover light/dark, one/eight sessions, keyboard opening, and non-overlapping 320px/390px layouts.
 
 ## 2026-09-30
