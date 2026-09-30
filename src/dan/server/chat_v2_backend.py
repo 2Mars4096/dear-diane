@@ -813,7 +813,7 @@ class SuperDanBackendAdapter:
                 payload={"backend": record["backend"], "worker_id": record["worker_id"],
                          "parent_run_id": request.run_id, "native_session_id": record["native_session_id"], "raw": row},
             ))
-        profiles = dict(request.profile_policy.get("native_workers") or {})
+        profiles = {name: {**settings, "permission": request.profile_policy.get("permission_mode", "auto")} for name, settings in (request.profile_policy.get("native_workers") or {}).items()}
         import_path = Path(resolve_graphs_dir()) / "native_imports" / f"{request.thread_id}.json"
         if request.thread_id and Path(request.thread_id).name == request.thread_id and import_path.is_file():
             source = json.loads(import_path.read_text())
@@ -824,6 +824,8 @@ class SuperDanBackendAdapter:
 
         team = NativeTeam(request.run_id, request.workspace_root or str(Path.cwd()), profiles,
                           Path(resolve_graphs_dir()) / "native_workers", emit_child, parent_request=request)
+        if profiles.get("codex", {}).get("enabled"):
+            profiles["codex"].update(_live_steering=True, _interactive=True)
         active_teams[request.run_id] = team
         token = current_team.set(team)
         try:
@@ -1219,6 +1221,16 @@ async def run_agent_backend(
         raise KeyError(run_id)
     task = store.get_task(run.task_id)
     request = build_agent_backend_request(run, task, overrides=overrides)
+    if request.workspace_root and request.thread_id:
+        from dan.workspace_changes import capture
+        from dan.server.paths import resolve_graphs_dir
+        try:
+            await asyncio.to_thread(capture, Path(resolve_graphs_dir()), request.workspace_root,
+                                    request.thread_id, request.run_id, request.objective)
+        except Exception as exc:
+            # Review is optional; a non-Git project must still execute normally.
+            store.update_run_metadata(run_id, {"change_review_unavailable": str(exc)})
+
     # Execution overrides (including native account/model) must survive restart.
     store.update_run_metadata(run_id, {
         key: getattr(request, key)

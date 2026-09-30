@@ -1,12 +1,12 @@
 """Workbench runtime discovery and parent-scoped worker inspection."""
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, SecretStr, Field
 from dan.native_workers.sessions import discover, messages
 from dan.server.chat_store import ChatMessage
 import json
 from dan.native_workers.catalog import catalog
-from dan.native_workers.service import active_teams, read_workers
+from dan.native_workers.service import active_teams, read_workers, public_worker, continue_worker
 from dan.server.paths import resolve_graphs_dir
 
 router = APIRouter(tags=["native-workers"])
@@ -87,9 +87,30 @@ def import_session(body: SessionImport, request: Request):
     return {"id": thread.id, "workflow_id": thread.workflow_id, "title": thread.title,
             "message_count": len(thread.messages), "created_at": thread.created_at.isoformat(), "updated_at": thread.updated_at.isoformat()}
 
+@router.get("/api/worker-attention")
+def worker_attention():
+    base = Path(resolve_graphs_dir()) / "native_workers"
+    workers = []
+    for path in sorted(base.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:160]:
+        try:
+            row = json.loads(path.read_text())
+            if row.get("thread_id"):
+                item = {key: row.get(key, "") for key in ("worker_id", "thread_id", "status")}
+                team = active_teams.get(row["parent_run_id"])
+                client = team.steering.get(row["worker_id"]) if team else None
+                if row["status"] in {"running", "needs_input"} and (not team or row["worker_id"] not in team.records):
+                    item["status"] = "interrupted"
+                item["attempt"] = str((row.get("actions") or [{}])[0].get("at", row.get("created_at", "")))
+                item["request"] = ":".join(client.requests) if client and hasattr(client, "requests") else ""
+                workers.append(item)
+        except (ValueError, OSError):
+            continue
+    return {"workers": workers}
+
+
 @router.get("/api/native-workers/{parent_id}")
 def list_workers(parent_id: str):
-    return {"workers": read_workers(Path(resolve_graphs_dir()) / "native_workers", parent_id)}
+    return {"workers": [public_worker(row) for row in read_workers(Path(resolve_graphs_dir()) / "native_workers", parent_id)]}
 
 @router.post("/api/native-workers/{parent_id}/{worker_id}/stop")
 async def stop_worker(parent_id: str, worker_id: str):
@@ -98,21 +119,109 @@ async def stop_worker(parent_id: str, worker_id: str):
         raise HTTPException(404, "No active worker with that parent")
     if team.records[worker_id].get("can_stop") is False:
         raise HTTPException(409, "This subagent is controlled by its Codex lead")
-    return await team.stop(worker_id)
+    return public_worker(await team.stop(worker_id))
+
+class WorkerReply(BaseModel):
+    prompt: str = Field(min_length=1, max_length=100000)
+
+
+@router.post("/api/native-workers/{parent_id}/{worker_id}/reply")
+async def reply_worker(parent_id: str, worker_id: str, body: WorkerReply):
+    try:
+        return await continue_worker(Path(resolve_graphs_dir()) / "native_workers", parent_id, worker_id, body.prompt)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/api/native-workers/{parent_id}/{worker_id}/changes")
+def worker_changes(parent_id: str, worker_id: str):
+    from dan.native_workers.workspaces import preview
+    row = next((r for r in read_workers(Path(resolve_graphs_dir()) / "native_workers", parent_id) if r["worker_id"] == worker_id), None)
+    if not row:
+        raise HTTPException(404, "Unknown worker")
+    try:
+        return preview(row)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+class WorkerApply(BaseModel):
+    tree: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/api/native-workers/{parent_id}/{worker_id}/apply")
+async def apply_worker(parent_id: str, worker_id: str, body: WorkerApply):
+    import asyncio
+    from dan.native_workers.workspaces import apply
+    from dan.native_workers.service import NativeTeam
+    base = Path(resolve_graphs_dir()) / "native_workers"
+    row = next((r for r in read_workers(base, parent_id) if r["worker_id"] == worker_id), None)
+    team = active_teams.get(parent_id)
+    task = team.tasks.get(worker_id) if team else None
+    if not row or row.get("can_stop") is False or (task and not task.done()):
+        raise HTTPException(409, "Wait for this worker to finish")
+    try:
+        # Serialize apply against follow-up admission on this team.
+        owner = team or NativeTeam(parent_id, row["workspace_root"], {}, base)
+        active_teams.setdefault(parent_id, owner)
+        owner.records.setdefault(worker_id, row)
+        async with owner.admission_lock:
+            task = owner.tasks.get(worker_id)
+            if task and not task.done():
+                raise ValueError("Worker is still running")
+            live_row = owner.records.get(worker_id, row)
+            await asyncio.to_thread(apply, live_row, body.tree)
+            owner.save(live_row)
+            return public_worker(live_row)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+class WorkerAnswer(BaseModel):
+    request_id: str
+    decision: str = ""
+    answers: dict[str, str] = Field(default_factory=dict)
+
+
+@router.post("/api/native-workers/{parent_id}/{worker_id}/answer")
+async def answer_worker(parent_id: str, worker_id: str, body: WorkerAnswer):
+    team = active_teams.get(parent_id)
+    client = team.steering.get(worker_id) if team else None
+    if not client:
+        raise HTTPException(409, "Worker is no longer connected; resume it instead")
+    if body.decision == "accept" and team.records[worker_id].get("profile", {}).get("permission") == "plan":
+        raise HTTPException(409, "Plan mode cannot approve mutations")
+    try:
+        await client.reply(body.request_id, body.decision, body.answers)
+        return public_worker(team.records[worker_id])
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
 
 @router.get("/api/native-workers/{parent_id}/{worker_id}/events")
-def worker_events(parent_id: str, worker_id: str):
+def worker_events(parent_id: str, worker_id: str, before: int | None = None, limit: int = 100, after: int | None = None):
     base = Path(resolve_graphs_dir()) / "native_workers"
     if not any(row["worker_id"] == worker_id for row in read_workers(base, parent_id)):
         raise HTTPException(404, "Unknown worker")
     path = base / f"{worker_id}.jsonl"
-    # Display a bounded tail; the complete durable log remains on disk.
-    import json
     from collections import deque
-    if not path.exists():
-        return {"events": []}
-    with path.open() as stream:
-        return {"events": [json.loads(line) for line in deque(stream, maxlen=200)]}
+    page = deque(maxlen=max(1, min(limit, 200)))
+    if path.exists():
+        with path.open() as stream:
+            for index, line in enumerate(stream):
+                if before is not None and index >= before:
+                    break
+                if after is not None and index <= after:
+                    continue
+                if after is not None and len(page) == page.maxlen:
+                    break
+                try:
+                    page.append({"cursor": index, "event": json.loads(line)})
+                except ValueError:
+                    continue  # tolerate a partially written last event
+    return {"events": [row["event"] for row in page], "entries": list(page),
+            "has_more": after is not None and len(page) == page.maxlen,
+            "before": page[0]["cursor"] if page and page[0]["cursor"] else None}
 
 
 @router.get("/api/usage")

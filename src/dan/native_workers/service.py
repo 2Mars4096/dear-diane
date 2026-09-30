@@ -25,9 +25,12 @@ class NativeTeam:
         self.records: dict[str, dict] = {}
         self.steering: dict[str, object] = {}
         self.processes: dict[str, asyncio.subprocess.Process] = {}
+        self.admission_lock = asyncio.Lock()
         base.mkdir(parents=True, exist_ok=True)
 
     def save(self, record: dict):
+        if self.parent_request:
+            record.setdefault("thread_id", getattr(self.parent_request, "thread_id", ""))
         path = self.base / f'{record["worker_id"]}.json'
         temporary = path.with_suffix(".tmp")
         temporary.write_text(json.dumps(record, ensure_ascii=False))
@@ -44,7 +47,11 @@ class NativeTeam:
         if self.emit:
             self.emit(record, row)
 
-    async def start(self, backend: str, prompt: str, worker_id: str = "") -> dict:
+    async def start(self, backend: str, prompt: str, worker_id: str = "", isolate: bool = False) -> dict:
+        async with self.admission_lock:
+            return await self._start(backend, prompt, worker_id, isolate)
+
+    async def _start(self, backend: str, prompt: str, worker_id: str = "", isolate: bool = False) -> dict:
         profile = self.profiles.get(backend, {})
         if not profile.get("enabled"):
             raise ValueError("Enable this worker in the workbench first")
@@ -53,61 +60,85 @@ class NativeTeam:
         if sum(not task.done() for task in self.tasks.values()) >= 4:
             raise ValueError("Four native workers are already running; inspect or stop one first")
         previous = self.records.get(worker_id) if worker_id else None
-        if worker_id and (not previous or (previous["backend"] != "dan" and not previous.get("native_session_id"))):
+        if worker_id and not previous:
             raise ValueError("No resumable session for this worker")
-        if worker_id and not self.tasks[worker_id].done():
+        if worker_id and worker_id in self.tasks and not self.tasks[worker_id].done():
             raise ValueError("Worker is still running; stop it before sending a follow-up")
         if previous and previous["backend"] != backend:
             raise ValueError("Cannot change a worker's runtime")
         selected_profile = previous["profile"] if previous else profile
+        if previous and previous.get("can_stop") is False:
+            raise ValueError("This subagent is controlled by its lead")
         session = previous.get("native_session_id", "") if previous else str(profile.get("resume_session") or "")
-        if backend == "dan":
-            from .models import dan_model_policy
-            dan_model_policy(selected_profile)  # Validate before admitting a worker.
-            record = previous or {"worker_id": uuid4().hex, "parent_run_id": self.parent_id, "backend": backend,
-                                  "profile": dict(profile), "workspace_root": self.workspace, "created_at": time.time(), "native_session_id": ""}
-            history = (record.get("history", []) + [{"role": "user", "content": record["prompt"]}, {"role": "assistant", "content": record["response"]}] if previous else [])
-            record["history"] = history
+        if previous and not session and backend != "dan":
+            prompt = ("Recover the saved task below. Inspect existing files and completed actions before proceeding; "
+                      "do not repeat external side effects without checking their outcome.\n\n"
+                      + previous["prompt"] + "\n\nLast saved output:\n" + previous.get("response", "")
+                      + "\n\nUser instruction:\n" + prompt)
+        identity = previous["worker_id"] if previous else uuid4().hex
+        isolation = {}
+        if isolate and not previous:
+            from .workspaces import create
+            isolation = await asyncio.to_thread(create, self.base, identity, self.workspace)
+        workspace = previous["workspace_root"] if previous else isolation.get("workspace_root", self.workspace)
+
+        try:
+            if backend == "dan":
+                from .models import dan_model_policy
+                dan_model_policy(selected_profile)  # Validate before admitting a worker.
+                record = previous or {"worker_id": identity, **isolation, "parent_run_id": self.parent_id, "backend": backend,
+                                      "profile": dict(profile), "workspace_root": workspace, "created_at": time.time(), "native_session_id": ""}
+                history = (record.get("history", []) + [{"role": "user", "content": record["prompt"]}, {"role": "assistant", "content": record["response"]}] if previous else [])
+                record["history"] = history
+                record.update(status="running", prompt=prompt, response="", error="", activity="Starting", actions=[{"text": "Starting", "at": time.time()}])
+                self.records[record["worker_id"]] = record
+                record["inherited_policy"] = {key: getattr(self.parent_request, key, {}) for key in ("mutation_policy", "approval_policy", "tool_policy")} if self.parent_request else record.get("inherited_policy", {})
+                self.save(record)
+                self.event(record, {"type": "user", "text": prompt})
+                self.tasks[record["worker_id"]] = asyncio.create_task(self.run_dan(record, history))
+                return dict(record)
+            command, env = launch(backend, selected_profile, prompt, workspace, session)
+            source = selected_profile.get("source_session") if not previous else None
+            if source:
+                if backend == "codex":
+                    from .sessions import fork_codex
+                    session = await fork_codex(source, workspace, env)
+                    command, env = launch(backend, selected_profile, prompt, workspace, session)
+                elif backend == "claude":
+                    command, env = launch(backend, selected_profile, prompt, workspace, source)
+                    command += ["--fork-session"]
+                else:
+                    raise ValueError("Headless forking is not available for this runtime")
+            record = previous or {"worker_id": identity, **isolation, "parent_run_id": self.parent_id, "backend": backend,
+                                  "profile": dict(profile), "workspace_root": workspace, "created_at": time.time(), "native_session_id": ""}
+            if session:
+                record["native_session_id"] = session
             record.update(status="running", prompt=prompt, response="", error="", activity="Starting", actions=[{"text": "Starting", "at": time.time()}])
             self.records[record["worker_id"]] = record
             self.save(record)
-            self.tasks[record["worker_id"]] = asyncio.create_task(self.run_dan(record, history))
+            self.event(record, {"type": "user", "text": prompt})
+            self.tasks[record["worker_id"]] = asyncio.create_task(self.run(record, command, env))
             return dict(record)
-        command, env = launch(backend, selected_profile, prompt, self.workspace, session)
-        source = selected_profile.get("source_session") if not previous else None
-        if source:
-            if backend == "codex":
-                from .sessions import fork_codex
-                session = await fork_codex(source, self.workspace, env)
-                command, env = launch(backend, selected_profile, prompt, self.workspace, session)
-            elif backend == "claude":
-                command, env = launch(backend, selected_profile, prompt, self.workspace, source)
-                command += ["--fork-session"]
-            else:
-                raise ValueError("Headless forking is not available for this runtime")
-        record = previous or {"worker_id": uuid4().hex, "parent_run_id": self.parent_id, "backend": backend,
-                              "profile": dict(profile), "workspace_root": self.workspace, "created_at": time.time(), "native_session_id": ""}
-        if session:
-            record["native_session_id"] = session
-        record.update(status="running", prompt=prompt, response="", error="", activity="Starting", actions=[{"text": "Starting", "at": time.time()}])
-        self.records[record["worker_id"]] = record
-        self.save(record)
-        self.tasks[record["worker_id"]] = asyncio.create_task(self.run(record, command, env))
-        return dict(record)
+        except Exception:
+            # Admission failed before a process owned this newly created copy.
+            if isolation and identity not in self.records:
+                from .workspaces import git
+                await asyncio.to_thread(git, self.workspace, 'worktree', 'remove', '--force', workspace)
+            raise
 
     async def run_dan(self, record: dict, history: list):
         from dan.server.chat_v2_backend import AgentBackendRunRequest, SuperDanBackendAdapter
         profile = record["profile"]
         from .models import dan_model_policy
         policy = {**dan_model_policy(profile), "native_workers": {}}
-        inherited = {key: getattr(self.parent_request, key, {}) for key in ("mutation_policy", "approval_policy", "tool_policy")}
+        inherited = record.get("inherited_policy", {})
         request = AgentBackendRunRequest(**inherited, task_id=record["worker_id"], run_id=record["worker_id"],
-            objective=record["prompt"], workspace_root=self.workspace, history=history, profile_policy=policy)
+            objective=record["prompt"], workspace_root=record["workspace_root"], history=history, profile_policy=policy)
         # Team members are leaves: a Diane child must not inherit its parent's team.
         token = current_team.set(None)
         try:
             from dan.tools._browser_session import browser_scope
-            async with browser_scope(self.workspace, request.run_id):
+            async with browser_scope(record["workspace_root"], request.run_id):
                 result = await SuperDanBackendAdapter()._run(request, lambda event: self.event(record, event.model_dump(mode="json")))
             record.update(status=result.status, response=result.summary)
         except asyncio.CancelledError:
@@ -127,7 +158,7 @@ class NativeTeam:
         stderr_task = None
         terminal = ""
         try:
-            process = await asyncio.create_subprocess_exec(*command, cwd=self.workspace, env=env,
+            process = await asyncio.create_subprocess_exec(*command, cwd=record["workspace_root"], env=env,
                        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
                        stderr=asyncio.subprocess.PIPE, start_new_session=True, limit=4 * 1024 * 1024)
             self.processes[record["worker_id"]] = process
@@ -208,7 +239,7 @@ class NativeTeam:
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-            if self.records[worker_id]["status"] == "running":
+            if self.records[worker_id]["status"] in {"running", "needs_input"}:
                 self.records[worker_id]["status"] = "stopped"
                 self.save(self.records[worker_id])
         return dict(self.records[worker_id])
@@ -303,7 +334,44 @@ def read_workers(base: Path, parent_id: str) -> list[dict]:
         except (ValueError, OSError):
             continue
         if row.get("parent_run_id") == parent_id:
-            if row["status"] == "running" and parent_id not in active_teams:
+            if row["status"] in {"running", "needs_input"} and (parent_id not in active_teams or row["worker_id"] not in active_teams[parent_id].records):
                 row["status"] = "interrupted"
             records.append(row)
     return sorted(records, key=lambda row: row["created_at"])
+
+
+def public_worker(row: dict) -> dict:
+    """Expose capabilities from actual process/session ownership, never credentials."""
+    team = active_teams.get(row["parent_run_id"])
+    task = team.tasks.get(row["worker_id"]) if team else None
+    live = bool(task and not task.done())
+    client = team.steering.get(row["worker_id"]) if team else None
+    owned = row.get("can_stop") is not False
+    result = {key: value for key, value in row.items() if key not in {"profile", "history", "inherited_policy", "source_files"}}
+    result.update(can_stop=owned and live,
+                  can_reply=owned and (bool(client and client.turn_id) or (not live and bool(row.get("profile")))),
+                  can_apply=owned and not live and bool(row.get("baseline_tree")) and row.get("profile", {}).get("permission") != "plan",
+                  requests=list(client.requests.values()) if client and hasattr(client, "requests") else [])
+    return result
+
+
+async def continue_worker(base: Path, parent_id: str, worker_id: str, prompt: str) -> dict:
+    from types import SimpleNamespace
+    row = next((r for r in read_workers(base, parent_id) if r["worker_id"] == worker_id), None)
+    if not row or row.get("can_stop") is False:
+        raise ValueError("This worker cannot be resumed independently")
+    if not prompt.strip():
+        raise ValueError("Enter a reply or instruction")
+    team = active_teams.get(parent_id)
+    if team is None:
+        team = NativeTeam(parent_id, row["workspace_root"], {}, base)
+        active_teams[parent_id] = team
+    if worker_id not in team.records:
+        team.records[worker_id] = row
+    team.profiles.setdefault(row["backend"], row["profile"])
+    client = team.steering.get(worker_id)
+    if client:
+        await client.steer([SimpleNamespace(id=uuid4().hex, text=prompt, metadata={})])
+        team.event(row, {"type": "user", "text": prompt})
+        return public_worker(team.records[worker_id])
+    return public_worker(await team.start(row["backend"], prompt, worker_id))

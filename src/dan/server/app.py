@@ -20,6 +20,7 @@ from dan.server.routers.sessions import router as sessions_router
 from dan.server.routers.native_workers import router as native_workers_router
 from dan.server.routers.reader import router as reader_router
 from dan.server.routers.remote import router as remote_router
+from dan.server.routers.workspace_changes import router as workspace_changes_router
 from dan.server.routers.documents import router as documents_router
 from dan.server.routers.papers import router as papers_router
 from dan.server.routers.literature import router as literature_router
@@ -41,6 +42,9 @@ def create_app() -> FastAPI:
             yield
         finally:
             await app.state.literature_runner.close()
+            from dan.native_workers.service import active_teams
+            await asyncio.gather(*(team.close() for team in list(active_teams.values())), return_exceptions=True)
+            active_teams.clear()
             recovery.cancel()
             with suppress(asyncio.CancelledError):
                 await recovery
@@ -69,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(remote_router)
     app.include_router(remote_registry_router)
     app.include_router(documents_router)
+    app.include_router(workspace_changes_router)
     app.include_router(papers_router)
     app.include_router(literature_router)
     if remote:

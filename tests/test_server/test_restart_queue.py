@@ -121,10 +121,13 @@ def test_app_lifespan_runs_recovery(tmp_path, monkeypatch):
     seen = []
     executor(monkeypatch, seen)
     with TestClient(create_app()) as client:
-        for _ in range(20):
+        import time
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
             client.get("/api/v2/tasks/" + accepted.task_id)
             if len(seen) == 2:
                 break
+            time.sleep(.01)
         assert len(seen) == 2
     assert all(item.status == "completed" for item in store.get_task(accepted.task_id).queue_items)
 

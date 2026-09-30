@@ -29,7 +29,7 @@ async def serve(directory: Path, team):
                     # Profiles contain server-side continuation details, not tool output.
                     def public(value):
                         if isinstance(value, dict):
-                            return {k: public(v) for k, v in value.items() if k != "profile"}
+                            return {k: public(v) for k, v in value.items() if k not in {"profile", "source_files", "inherited_policy", "history"}}
                         if isinstance(value, list):
                             return [public(v) for v in value]
                         return value
@@ -48,7 +48,8 @@ async def serve(directory: Path, team):
 def main():
     parser = argparse.ArgumentParser(description="Control the enabled team for this Dear Diane lead run")
     parser.add_argument("--queue", required=True)
-    parser.add_argument("action", choices=["start", "status", "stop", "resume"])
+    parser.add_argument("action", choices=["start", "status", "stop", "resume", "apply"])
+    parser.add_argument("--shared-workspace", action="store_true")
     parser.add_argument("--backend", default="")
     parser.add_argument("--prompt", default="")
     parser.add_argument("--worker-id", default="")
@@ -58,7 +59,7 @@ def main():
         parser.error("This lead run has ended; its team bridge is closed")
     request = directory / f"{uuid4().hex}.request"
     temporary = request.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"action": args.action, "backend": args.backend, "prompt": args.prompt, "worker_id": args.worker_id}))
+    temporary.write_text(json.dumps({"action": args.action, "backend": args.backend, "prompt": args.prompt, "worker_id": args.worker_id, "isolate": not args.shared_workspace}))
     temporary.replace(request)
     response = request.with_suffix(".response")
     deadline = time.monotonic() + 120

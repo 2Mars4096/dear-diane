@@ -94,6 +94,8 @@ class NativeLeadAdapter:
                        "native_session_id": record["native_session_id"], "raw": row}, "native_worker.event")
             profiles = {name: {**settings, "permission": permission} for name, settings in (request.profile_policy.get("native_workers") or {}).items()}
             team = NativeTeam(request.run_id, workspace, profiles, base / "native_workers", on_child, parent_request=request)
+            if profiles.get("codex", {}).get("enabled"):
+                profiles["codex"].update(_live_steering=True, _interactive=True)
             active_teams[request.run_id] = team
             if backend == "codex":
                 from .catalog import accounts
@@ -103,6 +105,7 @@ class NativeLeadAdapter:
                 if home:
                     children = CodexChildren(team, Path(home))
             prompt = _objective_with_surface_context(request)
+            prompt += "\nTeam editing tasks use isolated Git worktrees by default. For shared read-only tasks or non-Git folders pass --shared-workspace. Inspect results, then use the team bridge apply action to integrate completed edits. Do not discard worker worktrees automatically. Install needed dependencies inside the owned worktree; ignored files and secrets are not copied."
             prompt += "\n\nYou are working in Dear Diane, a workspace for research, code, and ideas. Diane is the assistant name; retain your actual native runtime identity when reporting execution details."
             if request.thread_id:
                 prompt += (

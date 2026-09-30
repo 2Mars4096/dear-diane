@@ -95,7 +95,7 @@ async def test_bridge_can_delegate_to_dan_and_reject_disabled_workers(monkeypatc
         out, _ = await asyncio.wait_for(process.communicate(), 5)
         return json.loads(out)
     try:
-        result = await call("start", "--backend", "dan", "--prompt", "review")
+        result = await call("start", "--backend", "dan", "--prompt", "review", "--shared-workspace")
         assert result["ok"] and "profile" not in result["result"]
         worker = result["result"]["worker_id"]
         status = await call("status", "--worker-id", worker)

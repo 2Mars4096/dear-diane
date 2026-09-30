@@ -8,10 +8,12 @@ import signal
 
 
 class CodexLive:
-    def __init__(self, process, notify):
+    def __init__(self, process, notify, interactive=False):
         self.process, self.notify = process, notify
         self.pending = {}
         self.sequence = 0
+        self.interactive = interactive
+        self.requests = {}
         self.thread_id = ""
         self.turn_id = ""
         self.finished = asyncio.get_running_loop().create_future()
@@ -44,6 +46,10 @@ class CodexLive:
                             future.set_result(row.get("result", {}))
                     continue
                 if "id" in row:
+                    if self.interactive and row["method"] in {"item/tool/requestUserInput", "item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
+                        self.requests[str(row["id"])] = row
+                        self.notify("worker/inputRequested", row)
+                        continue
                     # No implicit approval escalation or fabricated user answers.
                     await self.send({"id": row["id"], "error": {"code": -32601, "message": "This request needs interactive approval; unavailable in Dear Diane's headless transport."}})
                     continue
@@ -67,6 +73,24 @@ class CodexLive:
             if not self.finished.done():
                 self.finished.set_exception(error)
 
+    async def reply(self, request_id, decision="", answers=None):
+        row = self.requests.get(request_id)
+        if row is None:
+            raise ValueError("This request is no longer waiting")
+        if row["method"] == "item/tool/requestUserInput":
+            questions = row.get("params", {}).get("questions", [])
+            if not answers or any(not answers.get(q["id"], "").strip() for q in questions):
+                raise ValueError("Answer each question")
+            result = {"answers": {q["id"]: {"answers": [answers[q["id"]]]} for q in questions}}
+        else:
+            if decision not in {"accept", "decline"}:
+                raise ValueError("Choose Allow once or Deny")
+            result = {"decision": decision}
+        # Claim before awaiting IO so a double click cannot answer twice.
+        del self.requests[request_id]
+        await self.send({"id": row["id"], "result": result})
+        self.notify("worker/inputAnswered", {"requestId": request_id, "decision": decision or "answered"})
+
     async def steer(self, items):
         if not self.turn_id or self.finished.done():
             raise ValueError("The turn has already finished; message remains queued")
@@ -84,6 +108,10 @@ async def run_live(team, record, command, env):
     profile = record["profile"]
     texts = {}
     def notify(method, params):
+        if method == "worker/inputRequested":
+            record["status"] = "needs_input"
+        elif method == "worker/inputAnswered":
+            record["status"] = "needs_input" if client.requests else "running"
         item = params.get("item", {})
         kind = item.get("type", "")
         if method == "item/agentMessage/delta":
@@ -104,7 +132,7 @@ async def run_live(team, record, command, env):
         for index, part in enumerate(command[:-1]):
             if part == "-c":
                 args.extend([part, command[index + 1]])
-        process = await asyncio.create_subprocess_exec(*args, cwd=team.workspace, env=env,
+        process = await asyncio.create_subprocess_exec(*args, cwd=record["workspace_root"], env=env,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, start_new_session=True, limit=8 * 1024 * 1024)
         team.processes[worker_id] = process
@@ -112,12 +140,14 @@ async def run_live(team, record, command, env):
             while await process.stderr.read(8192):
                 pass
         errors = asyncio.create_task(drain())
-        client = CodexLive(process, notify)
+        client = CodexLive(process, notify, profile.get("_interactive", False))
+        if profile.get("_interactive"):
+            team.steering[worker_id] = client
         reader = asyncio.create_task(client.read())
         await client.request("initialize", {"clientInfo": {"name": "dan", "version": "0.2.0"}, "capabilities": {"experimentalApi": True}})
         await client.send({"method": "initialized", "params": {}})
         permission = profile.get("permission", "auto")
-        params = {"cwd": team.workspace, "approvalPolicy": "never", "sandbox": {"plan":"read-only", "auto":"workspace-write", "full":"danger-full-access"}[permission]}
+        params = {"cwd": record["workspace_root"], "approvalPolicy": "on-request" if profile.get("_interactive") and permission != "plan" else "never", "sandbox": {"plan":"read-only", "auto":"workspace-write", "full":"danger-full-access"}[permission]}
         if profile.get("model"):
             params["model"] = profile["model"]
         from .models import model_source
