@@ -175,7 +175,7 @@ it('previews a brief phrase during a pause without repeatedly transcribing silen
 });
 
 it('filters only hesitation sounds, preserving short answers and substantive speech', () => {
-  for (const text of ['嗯。', '呃，嗯', 'um, uh...', 'hmm', '']) expect(meaningfulVoice(text)).toBe(false);
+  for (const text of ['嗯。', '嘶。', '呃，嗯', 'um, uh...', 'hmm', '']) expect(meaningfulVoice(text)).toBe(false);
   for (const text of ['yes', 'no', 'stop', '好', '不', '停', '嗯，明天提醒我', 'um, somewhere cozy']) expect(meaningfulVoice(text)).toBe(true);
 });
 it.each(['running', 'completed'])('leaves a %s response alone during filler-only speech', async state => {
@@ -189,7 +189,7 @@ it.each(['running', 'completed'])('leaves a %s response alone during filler-only
   session=new PersonalVoiceSession('warm',callbacks); await session.start();
   frames(.2,12);frames(0,96);await flush();
   expect(callbacks.transcript).toHaveBeenLastCalledWith('');
-  text='嗯。'; frames(.2,36);await flush();frames(0,96);await flush();
+  text='嘶。'; frames(.2,36);await flush();frames(0,96);await flush();
   expect(request.mock.calls.filter(([url])=>url.endsWith('/stop'))).toHaveLength(0);
   expect(request.mock.calls.filter(([url,options])=>url==='/api/personal/conversation' && options?.method==='POST')).toHaveLength(1);
   expect(stopPlayer).not.toHaveBeenCalled();

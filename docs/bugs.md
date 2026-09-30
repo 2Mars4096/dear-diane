@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- **Noise-triggered research restart (2026-09-30):** Qwen returned standalone “嘶。”; the narrow filler list did not cover it, so it cancelled a real restaurant request and launched fresh research. Add this standalone sound without suppressing meaningful sentences. Observed restarted turn used ~6.5s model planning, ~24s retrieval and ~3.4s synthesis.
+
+
 - **Local Qwen cancelled (2026-09-30):** user requires an API-hosted solution. Background installation stopped and local runtime/model artifacts and integration removed; do not resume local inference setup.
 
 

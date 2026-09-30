@@ -92,7 +92,7 @@ export async function joinVoiceAudio(first: Blob | undefined, second: Blob): Pro
 /** Ignore hesitation sounds only; short answers and commands remain meaningful. */
 export function meaningfulVoice(text: string): boolean {
   const words = text.toLowerCase().replace(/[\p{P}\p{S}]/gu, ' ').trim();
-  return !!words && !/^(?:(?:u+h+|u+m+|e+r+m*|h+m+|嗯+|呃+|唔+|啊+|额+)\s*)+$/u.test(words);
+  return !!words && !/^(?:(?:u+h+|u+m+|e+r+m*|h+m+|嗯+|呃+|唔+|嘶+|啊+|额+)\s*)+$/u.test(words);
 }
 
 type Turn = {id: string; state: string; reply?: string};

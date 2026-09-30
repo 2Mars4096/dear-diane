@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Prevent standalone “嘶” noise from cancelling and restarting personal research.
+
 - [x] Preserve Qwen bilingual recognition; remove the single-language browser regression and start audio previews earlier.
 - [x] Handle provider 429 failures with price-bounded same-model failover and accurate errors.
 

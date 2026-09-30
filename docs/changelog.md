@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-30
+- [fix] Ignore standalone “嘶” recognition before interrupting or submitting a voice turn. A live turn showed this noise stopped ongoing research and restarted a roughly 34-second research/reply cycle (about 24 seconds retrieval). Preserve substantive speech containing the character.
+
+
+## 2026-09-30
 - [docs] Record OpenRouter-only voice requirement: retain Qwen bilingual recognition, with no local model or direct Alibaba/browser-vendor recognizer. Current API yields complete responses to successive audio previews, not native partial events.
 
 
