@@ -797,3 +797,18 @@
 .wb-api-providers input[type=password] { display:block; width:100%; max-width:360px; margin-top:8px; padding:8px 10px; border:1px solid var(--wb-line); border-radius:6px; background:var(--wb-paper); color:var(--wb-ink); }
 
 .wb-api-providers { margin-bottom: 24px; }
+
+/* Compact settings: status and its actions share a row, with secondary details tucked away. */
+.wb-desktop-updates { padding:0; border:0; }
+.wb-update-overview { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px 24px; }
+.wb-update-summary { flex:1 1 220px; min-width:0; }
+.wb-update-version { font-size:13px; font-weight:500; color:var(--wb-ink); }
+.wb-dan-settings .wb-update-summary p { margin:4px 0 0; font-size:12px; color:var(--wb-muted); }
+.wb-update-overview > .wb-update-actions { flex:0 1 auto; }
+.wb-update-options { margin-top:12px; font-size:12px; color:var(--wb-muted); }
+.wb-update-options > summary { cursor:pointer; width:fit-content; padding:4px 0; }
+.wb-update-option-row, .wb-update-signin { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:10px 0; }
+.wb-dan-settings .wb-update-option-row p, .wb-dan-settings .wb-update-signin p { flex:1 1 220px; margin:0; }
+.wb-update-options > summary:focus-visible { outline:2px solid var(--wb-accent); outline-offset:3px; }
+.wb-settings-section { padding:22px 0; }
+.wb-dan-settings .wb-settings-section > .wb-settings-section-title { margin-bottom:14px; }

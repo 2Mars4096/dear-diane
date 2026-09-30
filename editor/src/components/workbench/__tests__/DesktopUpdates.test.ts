@@ -15,7 +15,7 @@ it("supports local prepare/install without pretending an unconfigured release ch
     expect(host.textContent).toContain("Published updates aren’t configured");
     const button = (label: string) => [...host.querySelectorAll("button")].find(b => b.textContent === label)!;
     expect(button("Check for updates").disabled).toBe(false);
-    expect(button("Install local update").disabled).toBe(true);
+    expect(button("Install local update")).toBeUndefined();
     expect(host.textContent).toContain("Local updates do not require GitHub sign-in");
     await act(async () => button("Choose a different build…").click());
     expect(api.action).toHaveBeenCalledWith("choose");
@@ -39,7 +39,7 @@ it("offers browser sign-in, shows the device code, and supports cancellation", a
     await act(async () => button("Sign in to GitHub").click());
     expect(api.action).toHaveBeenCalledWith("github-sign-in");
     expect(host.textContent).toContain("ABCD-1234");
-    expect(host.querySelector('a')?.getAttribute('href')).toBe('https://github.com/login/device');
+    expect(button("Open GitHub sign-in")).toBeDefined();
     await act(async () => button("Cancel sign-in").click());
     expect(api.action).toHaveBeenCalledWith("github-cancel");
     expect(host.textContent).not.toContain("ABCD-1234");
