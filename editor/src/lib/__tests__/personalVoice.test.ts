@@ -1,0 +1,97 @@
+// @vitest-environment happy-dom
+import {afterEach, beforeEach, expect, it, vi} from 'vitest';
+import {PersonalVoiceSession, VoiceActivity, encodeWav, type VoiceCallbacks} from '../personalVoice';
+import {requestJson} from '../http';
+vi.mock('../http', () => ({requestJson: vi.fn()}));
+const request = vi.mocked(requestJson);
+let node: {port: {onmessage: ((event: {data: Float32Array}) => void) | null}; disconnect: ReturnType<typeof vi.fn>};
+let stopTrack: ReturnType<typeof vi.fn>, stopPlayer: ReturnType<typeof vi.fn>, callbacks: VoiceCallbacks;
+let session: PersonalVoiceSession | undefined;
+function frames(value: number, count: number) { for (let i = 0; i < count; i++) node.port.onmessage?.({data: new Float32Array(2048).fill(value)}); }
+async function flush() { for (let i = 0; i < 20; i++) await Promise.resolve(); }
+beforeEach(() => {
+  vi.useFakeTimers(); vi.resetAllMocks();
+  stopTrack = vi.fn(); stopPlayer = vi.fn();
+  callbacks = {status: vi.fn(), transcript: vi.fn(), error: vi.fn(), refresh: vi.fn(), ended: vi.fn()};
+  const track = {stop: stopTrack, onended: null};
+  vi.stubGlobal('AudioContext', class {
+    sampleRate = 48000; destination = {}; audioWorklet = {addModule: vi.fn(async () => {})};
+    resume = vi.fn(async () => {}); close = vi.fn(async () => {});
+    createMediaStreamSource = () => ({connect: vi.fn(), disconnect: vi.fn()});
+    decodeAudioData = vi.fn(async () => ({}));
+    createBufferSource = () => ({connect: vi.fn(), start: vi.fn(), stop: stopPlayer, playbackRate: {value: 1}});
+  });
+  vi.stubGlobal('AudioWorkletNode', class {
+    port = {onmessage: null}; connect = vi.fn(); disconnect = vi.fn();
+    constructor() { node = {port: this.port, disconnect: this.disconnect}; }
+  });
+  Object.defineProperty(navigator, 'mediaDevices', {configurable: true, value: {getUserMedia: vi.fn(async () => ({getTracks: () => [track], getAudioTracks: () => [track]}))}});
+});
+afterEach(async () => {session?.end(); session = undefined; await flush(); vi.useRealTimers(); vi.unstubAllGlobals();});
+
+it('ignores silence, preserves initial speech, and automatically finishes a turn', async () => {
+  const begin = vi.fn(), end = vi.fn();
+  const detector = new VoiceActivity(48000, begin, end);
+  for (let i = 0; i < 50; i++) detector.feed(new Float32Array(2048));
+  expect(begin).not.toHaveBeenCalled();
+  for (let i = 0; i < 12; i++) detector.feed(new Float32Array(2048).fill(0.2));
+  for (let i = 0; i < 27; i++) detector.feed(new Float32Array(2048));
+  expect(begin).toHaveBeenCalledTimes(1); expect(end).toHaveBeenCalledTimes(1);
+  const blob = end.mock.calls[0][0] as Blob;
+  const view = new DataView(await blob.arrayBuffer());
+  expect(view.getUint32(24, true)).toBe(16000);
+  expect(blob.size).toBeLessThanOrEqual(960044);
+});
+
+it('bounds long recordings and encodes signed PCM correctly', async () => {
+  const blob = encodeWav([new Float32Array(48000 * 31).fill(-1)], 48000);
+  expect(blob.size).toBe(960044);
+  const view = new DataView(await blob.arrayBuffer());
+  expect(view.getInt16(44, true)).toBe(-32768);
+});
+
+it('keeps listening across two turns and interrupts playback with context', async () => {
+  let current = 'turn-1';
+  request.mockImplementation(async (url, options) => {
+    if (url.includes('/transcribe')) return {text: 'Somewhere cozier'};
+    if (url.endsWith('/speech')) return {audio: btoa('synthetic'), rate: 1};
+    if (options?.method === 'POST') return {id: current, state: 'queued'};
+    return {turns: [{id: current, state: 'completed', reply: 'Here is an idea.'}]};
+  });
+  session = new PersonalVoiceSession('composed', callbacks); await session.start();
+  frames(0.2, 12); frames(0, 27); await flush();
+  await vi.advanceTimersByTimeAsync(1100); await flush();
+  expect(callbacks.status).toHaveBeenCalledWith('Speaking…');
+  current = 'turn-2'; frames(0.2, 12); frames(0, 27); await flush();
+  expect(stopPlayer).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1100); await flush();
+  const posts = request.mock.calls.filter(([url, options]) => url === '/api/personal/conversation' && options?.method === 'POST');
+  expect(posts).toHaveLength(2);
+  expect(JSON.parse(posts[1][1]!.body as string)).toMatchObject({voice_profile: 'composed', interrupted_turn_id: 'turn-1'});
+  expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+  session.end(); expect(stopTrack).toHaveBeenCalledTimes(1); expect(callbacks.ended).toHaveBeenCalledTimes(1);
+});
+
+it('stops a superseded pending action before admitting the next voice turn', async () => {
+  let stopped = false;
+  request.mockImplementation(async (url, options) => {
+    if (url.includes('/transcribe')) return {text: 'Remind me tomorrow'};
+    if (url.endsWith('/stop')) { stopped = true; return {}; }
+    if (options?.method === 'POST') return {id: 'turn-1', state: 'queued'};
+    return {turns: [{id: 'turn-1', state: stopped ? 'stopped' : 'running'}]};
+  });
+  session = new PersonalVoiceSession('warm', callbacks); await session.start();
+  frames(0.2, 12); frames(0, 27); await flush();
+  frames(0.2, 8); await flush();
+  expect(request).toHaveBeenCalledWith('/api/personal/conversation/turn-1/stop', {method: 'POST'});
+  expect(callbacks.error).not.toHaveBeenCalled();
+});
+
+it('cleans up permission that arrives after the session was ended', async () => {
+  let permit!: (value: unknown) => void;
+  vi.mocked(navigator.mediaDevices.getUserMedia).mockImplementation(() => new Promise(resolve => { permit = resolve as (value: unknown) => void; }));
+  session = new PersonalVoiceSession('warm', callbacks); const start = session.start(); await flush(); session.end();
+  permit({getTracks: () => [{stop: stopTrack}]}); await start;
+  expect(stopTrack).toHaveBeenCalledTimes(1);
+  expect(request).not.toHaveBeenCalled();
+});

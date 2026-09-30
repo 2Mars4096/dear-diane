@@ -51,3 +51,5 @@ Make difficult agent work durable, steerable, verifiable, and understandable wit
 
 ### Plan 7 platform update — 2026-09-29
 - User prioritizes Mac alongside phone. Reuse Electron and the shared responsive browser interface; Mac hosts records/execution for now. Physical-phone HTTPS/push and live provider gates remain open.
+
+- 2026-09-30: User expanded the Mac-first personal pilot to continuous voice with interruption, existing context and four consistent voice identities. Chained OpenRouter voice is implemented as a pilot; native speech-model streaming and physical microphone/phone acceptance remain separate work.

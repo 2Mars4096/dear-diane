@@ -38,7 +38,7 @@ class PersonalStore:
         self.path.chmod(0o600)
         with sqlite3.connect(self.path) as probe:
             previous_version = probe.execute('PRAGMA user_version').fetchone()[0]
-            if previous_version in (1, 2, 3, 4, 5):
+            if previous_version in (1, 2, 3, 4, 5, 6):
                 backup = directory / (f'state.v{previous_version}.' + uuid.uuid4().hex + '.backup.sqlite3')
                 fd = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
                 os.close(fd)
@@ -46,7 +46,7 @@ class PersonalStore:
                     probe.backup(target)
         with self.connection() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version > 6:
+            if version > 7:
                 raise RuntimeError("Personal state uses a newer schema; update Dear Diane")
             if version == 0:
                 for sql in (
@@ -76,6 +76,9 @@ class PersonalStore:
             if version < 6:
                 db.execute("CREATE TABLE conversation_jobs (id TEXT PRIMARY KEY, owner TEXT NOT NULL, state TEXT NOT NULL, lease_until REAL NOT NULL, body TEXT NOT NULL)")
                 db.execute("PRAGMA user_version=6")
+            if version < 7:
+                db.execute("CREATE TABLE voice_operations (owner TEXT NOT NULL, id TEXT NOT NULL, hash TEXT NOT NULL, state TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(owner,id))")
+                db.execute("PRAGMA user_version=7")
 
     @contextmanager
     def connection(self):

@@ -25,6 +25,8 @@ Updated 2026-09-30. Mac hosts execution; Mac Electron and phone browsers share t
 
 ## Evidence
 
+- Continuous voice pilot: four live-tested synthesis IDs, successful real recognition/chat/synthesis path, two automatic Chromium turns with interruption, and native synthetic microphone cleanup. 101 personal/connector backend and 388 frontend checks pass. Human microphone/voice-quality acceptance and latency tuning remain open; see [voice evidence and limits](voice.md).
+
 - Conversational entry: durable turns, replay/stop, local action receipts, Activity disclosure and shared AI reservations. Real-model create → conversational time correction passes; initial failure retained in `conversation-evaluation-2026-09-30.json`. Browser confirms draft reload, Activity navigation and no overflow at 390px; native Electron navigation/titlebar passes.
 
 - Convenience pass: compact confirmed summaries, inline editing/cancel, direct reminder changes, grouped actions and reduced copy. Browser checks cover capture/confirm, save/cancel edits, schedule/change, pause/resume, completion and ICS download; desktop/390px layouts checked.

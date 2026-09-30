@@ -199,3 +199,36 @@ def converse(body: ChatInput, db: PersonalStore = Depends(store)):
 def stop_conversation(turn_id: str, db: PersonalStore = Depends(store)):
     run(lambda: Conversation(db).stop(OWNER, turn_id))
     return {'ok': True}
+
+
+from dan.personal.voice import Voice, SpeechInput, MAX_AUDIO_BYTES, capabilities as voice_capabilities
+
+
+@router.get('/voice')
+def voice_config(db: PersonalStore = Depends(store)):
+    return voice_capabilities()
+
+
+@router.post('/voice/transcribe')
+async def voice_transcribe(request: Request, operation_id: str = Query(min_length=8, max_length=100), db: PersonalStore = Depends(store)):
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > MAX_AUDIO_BYTES:
+            raise HTTPException(413, 'Speak in segments of up to 30 seconds.')
+        data.extend(chunk)
+    try:
+        return await Voice(db).transcribe(OWNER, operation_id, bytes(data))
+    except Conflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post('/voice/speech')
+async def voice_speech(body: SpeechInput, db: PersonalStore = Depends(store)):
+    try:
+        return await Voice(db).speak(OWNER, body)
+    except Conflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc

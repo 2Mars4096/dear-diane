@@ -1,6 +1,11 @@
 # Changelog
 
 ## 2026-09-30
+- [feat] Add continuous voice with four fixed presets, automatic speech turns, barge-in, chat/record context and microphone cleanup. Audio uses OpenRouter recognition/synthesis and speaks completed service replies.
+- [feat] Add schema-v7 audio intent/reservations and private v6 backup. Share AI limits, reject uncertain paid replay, recheck caps/UTC rollover and validate audio sizes/catalog prices. Raw audio stays transient.
+- [test] 101 personal/connector backend and 388 frontend checks pass; production build, native compilation/package/signature, real four-voice synthesis and a synthetic end-to-end voice request pass. Chromium verifies two continuous turns/interruption at 390px; native synthetic microphone start/end passes. Physical microphone/OS permissions and subjective voice quality remain unverified.
+
+## 2026-09-30
 - [fix] Correct personal conversation timeout reporting: infrastructure failures no longer ask the user to rephrase. Preserve failed-turn user context, prefer low-latency provider routing, set DeepSeek V4.1 Flash reasoning to low, and allow 120 seconds within the existing 180-second lease.
 - [test] 32 conversation/budget tests pass. One isolated live restaurant/budget request completed in 2.77 seconds; this does not guarantee provider latency.
 

@@ -119,7 +119,7 @@
 .personal-user-message small { display:block; color:var(--personal-muted); }
 .personal-chat-composer { flex-shrink:0; border:1px solid var(--personal-border); border-radius:16px; padding:10px 14px; }
 .personal-chat-composer textarea { border:0; background:transparent; padding:4px 0; margin:0; resize:none; max-height:180px; }
-.personal-chat-actions { display:flex; justify-content:space-between; align-items:center; }
+.personal-chat-actions { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; }
 .personal-chat-actions .personal-attach { position:relative; display:inline-flex; align-items:center; padding:10px; cursor:pointer; }
 .personal-chat-actions button { display:flex; align-items:center; justify-content:center; width:36px; height:36px; border-radius:50%; padding:0; }
 .personal-chat-attachments { display:flex; flex-wrap:wrap; gap:8px; padding:0; list-style:none; }
@@ -133,3 +133,9 @@
 }
 
 .personal-elapsed { color:var(--personal-muted); font-variant-numeric:tabular-nums; margin-left:6px; white-space:nowrap; }
+.personal-voice-session { display:flex; align-items:center; gap:10px; margin-left:auto; min-width:0; flex-wrap:wrap; }
+.personal-voice-session [role="status"] { color:var(--personal-muted); font-size:13px; white-space:nowrap; }
+.personal-voice-session select { max-width:110px; }
+.personal-voice-active textarea,.personal-voice-active .personal-chat-actions>.personal-attach,.personal-voice-active .personal-chat-actions>button { display:none; }
+.personal-voice-active .personal-voice-session { width:100%; margin:0; }
+.personal-voice-active .personal-voice-session select { margin-left:auto; }

@@ -4,6 +4,7 @@ import { personalApi, type SourceAttachment } from '../../lib/personalApi';
 import { requestJson } from '../../lib/http';
 import { isElectron } from '../../lib/electronBridge';
 import './personal.css';
+import VoiceControl from './VoiceControl';
 const Records = lazy(() => import('./PersonalApp'));
 const DRAFT = 'dan.personal.conversation.draft.v1';
 type Turn = {id: string; created_at?: string; text: string; reply?: string; state: string; record_id?: string; calendar_url?: string; sources?: {id: string; name: string}[]};
@@ -39,6 +40,7 @@ export default function PersonalConversation() {
   const [uploading, setUploading] = useState('');
   const [activity, setActivity] = useState(false);
   const [visited, setVisited] = useState(false);
+  const [voiceActive, setVoiceActive] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const uploadOperations = useRef(new Map<string, string>());
@@ -61,7 +63,7 @@ export default function PersonalConversation() {
   useEffect(() => { if (!activity) bottom.current?.scrollIntoView({block: 'nearest'}); }, [last?.id, last?.reply, activity]);
   const working = turns.find(active);
   const send = async () => {
-    if (busy || working || !loaded || !model || (!draft.text.trim() && !draft.sources.length)) return;
+    if (voiceActive || busy || working || !loaded || !model || (!draft.text.trim() && !draft.sources.length)) return;
     setBusy(true); setError('');
     try {
       await requestJson('/api/personal/conversation', {method: 'POST', body: JSON.stringify({operation_id: draft.operation, text: draft.text.trim() || 'Please help me with this file.', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', source_ids: draft.sources.map(source => source.id)})});
@@ -70,7 +72,7 @@ export default function PersonalConversation() {
     finally { setBusy(false); }
   };
   const attach = async (files: File[]) => {
-    if (busy || working) return;
+    if (voiceActive || busy || working) return;
     if (draft.sources.length + files.length > 5 || files.some(file => file.size > 10 * 1024 * 1024)) { setError('Attach up to five files, 10 MB each.'); return; }
     setBusy(true); setError(''); const abort = new AbortController(); controller.current = abort;
     try {
@@ -111,14 +113,15 @@ export default function PersonalConversation() {
         </div>)}
         <div ref={bottom} />
       </div>
-      <form className="personal-chat-composer" onSubmit={event => { event.preventDefault(); void send(); }}>
+      <form className={`personal-chat-composer${voiceActive ? ' personal-voice-active' : ''}`} onSubmit={event => { event.preventDefault(); void send(); }}>
         {loaded && !model && <p className="personal-footnote">Chat needs an AI connection on this Mac. Your reminders are in Activity.</p>}
         {error && <p role="alert">{error}</p>}{warning && <p role="status">{warning}</p>}
         {uploading && <p role="status">{uploading} <button type="button" onClick={() => controller.current?.abort()}>Stop import</button></p>}
         {draft.sources.length > 0 && <ul className="personal-chat-attachments">{draft.sources.map(source => <li key={source.id}>{source.name}<button type="button" aria-label={`Remove ${source.name}`} disabled={busy} onClick={() => setDraft(previous => ({...previous, operation: crypto.randomUUID(), sources: previous.sources.filter(item => item.id !== source.id)}))}>×</button></li>)}</ul>}
-        <textarea ref={input} aria-label="Message Diane" placeholder="Tell Diane what you need…" rows={2} maxLength={16000} value={draft.text} disabled={busy} onChange={event => setDraft(previous => ({...previous, text:event.target.value, operation:crypto.randomUUID()}))} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
-        <div className="personal-chat-actions"><label className="personal-attach" title="Attach a file"><Paperclip size={18} /><span className="personal-sr-only">Attach files</span><input type="file" aria-label="Attach files" accept=".pdf,.eml,.txt,.png,.jpg,.jpeg" multiple disabled={busy || Boolean(working)} onChange={event => { const files=Array.from(event.target.files || []); event.target.value=''; void attach(files); }} /></label>
-          {working ? <button type="button" aria-label="Stop Diane" disabled={busy || working.state === 'applying'} onClick={() => void stop()}><Square size={16} /></button> : <button type="submit" className="personal-primary" aria-label="Send message" disabled={busy || !model || !loaded || (!draft.text.trim() && !draft.sources.length)}><ArrowUp size={18} /></button>}
+        <textarea ref={input} aria-label="Message Diane" placeholder="Tell Diane what you need…" rows={2} maxLength={16000} value={draft.text} disabled={busy || voiceActive} onChange={event => setDraft(previous => ({...previous, text:event.target.value, operation:crypto.randomUUID()}))} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
+        <div className="personal-chat-actions"><label className="personal-attach" title="Attach a file"><Paperclip size={18} /><span className="personal-sr-only">Attach files</span><input type="file" aria-label="Attach files" accept=".pdf,.eml,.txt,.png,.jpg,.jpeg" multiple disabled={busy || voiceActive || Boolean(working)} onChange={event => { const files=Array.from(event.target.files || []); event.target.value=''; void attach(files); }} /></label>
+          {!activity && <VoiceControl disabled={busy || Boolean(working) || !loaded || !model || Boolean(draft.text.trim() || draft.sources.length)} refresh={() => void refresh().catch(() => {})} onError={setError} onActive={setVoiceActive} />}
+          {working ? <button type="button" aria-label="Stop Diane" disabled={busy || working.state === 'applying'} onClick={() => void stop()}><Square size={16} /></button> : <button type="submit" className="personal-primary" aria-label="Send message" disabled={busy || voiceActive || !model || !loaded || (!draft.text.trim() && !draft.sources.length)}><ArrowUp size={18} /></button>}
         </div>
       </form>
     </div>

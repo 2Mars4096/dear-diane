@@ -1,0 +1,60 @@
+{
+  "steps": [
+    {
+      "stage": "transcription",
+      "seconds": 5.9,
+      "text": "Hello, I am Diane. How can I help you today?"
+    },
+    {
+      "stage": "conversation",
+      "state": "completed",
+      "seconds": 3.03,
+      "reply": "Hi there — I'm Diane. What can I help you with today? I can keep track of commitments, set reminders, and manage your list or calendar file."
+    },
+    {
+      "stage": "speech",
+      "seconds": 5.98,
+      "audio_base64_bytes": 217084
+    }
+  ],
+  "budget": "0.360152",
+  "cache_comparison": [
+    {
+      "catalog": "cold",
+      "stt_seconds": 11.06,
+      "tts_seconds": 4.19
+    },
+    {
+      "catalog": "cached",
+      "stt_seconds": 5.58,
+      "tts_seconds": 4.46
+    }
+  ],
+  "browser": {
+    "synthetic_microphone": true,
+    "automatic_turns": 2,
+    "transcriptions": 2,
+    "speech_responses": 2,
+    "tracks_ended": true,
+    "viewport_width": 390,
+    "scroll_width": 390
+  },
+  "native": {
+    "synthetic_microphone": true,
+    "listening": true,
+    "tracks_ended": true,
+    "overflow": false
+  },
+  "presets_verified": [
+    "qwen/qwen-audio-3.0-tts-flash:longanfengyue",
+    "qwen/qwen-audio-3.0-tts-flash:longanlingxi",
+    "qwen/qwen-audio-3.0-tts-flash:loongjohn",
+    "hexgrad/kokoro-82m:bm_george"
+  ],
+  "not_verified": [
+    "Physical microphone and OS permission acceptance",
+    "Human assessment of the four voices",
+    "Noisy-room echo and multilingual speech quality",
+    "Physical phone acceptance"
+  ]
+}

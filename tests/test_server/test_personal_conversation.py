@@ -134,11 +134,11 @@ def test_conversation_lifecycle_uses_existing_services(service,action,note,expec
 
 def test_schema_five_gets_private_backup_before_conversation_migration(service):
     with service.store.connection() as db:
-        db.execute('DROP TABLE conversation_jobs'); db.execute('PRAGMA user_version=5')
+        db.execute('DROP TABLE voice_operations'); db.execute('DROP TABLE conversation_jobs'); db.execute('PRAGMA user_version=5')
     migrated=PersonalStore(service.store.directory)
     assert list(migrated.directory.glob('state.v5.*.backup.sqlite3'))
     with migrated.connection() as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0]==6
+        assert db.execute('PRAGMA user_version').fetchone()[0]==7
 
 
 def test_clarifying_turn_preserves_original_user_message(service):

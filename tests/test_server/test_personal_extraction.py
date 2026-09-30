@@ -112,7 +112,7 @@ def test_v1_migration_backs_up_records_and_rejects_future_schema(tmp_path):
     store = PersonalStore(tmp_path / 'personal')
     record = store.capture('operator', CaptureInput(operation_id='capture-001', text='Hello'))['commitment']
     with store.connection() as db:
-        db.execute('DROP TABLE conversation_jobs'); db.execute('DROP TABLE personal_settings'); db.execute('DROP TABLE sources'); db.execute('DROP TABLE notifications'); db.execute('DROP TABLE reminders')
+        db.execute('DROP TABLE voice_operations'); db.execute('DROP TABLE conversation_jobs'); db.execute('DROP TABLE personal_settings'); db.execute('DROP TABLE sources'); db.execute('DROP TABLE notifications'); db.execute('DROP TABLE reminders')
         db.execute('DROP TABLE extraction_jobs'); db.execute('PRAGMA user_version=1')
     migrated = PersonalStore(tmp_path / 'personal')
     assert migrated.detail('operator', record['id'])['capture']['text'] == 'Hello'

@@ -14,7 +14,10 @@ def main():
     parser.add_argument('--static-dir', type=Path, default=checkout / 'editor' / 'dist', help='Built browser client directory')
     parser.add_argument('--env-file', type=Path, help='Load existing provider configuration from a private environment file')
     parser.add_argument('--model', help='Explicit provider/model ID for conversation and extraction')
+    parser.add_argument('--voice', action='store_true', help='Enable continuous voice using OpenRouter speech services')
     args = parser.parse_args()
+    if args.voice:
+        os.environ['DAN_PERSONAL_VOICE'] = '1'
     if args.env_file:
         from dotenv import load_dotenv
         if not args.env_file.expanduser().is_file():

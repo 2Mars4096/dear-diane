@@ -1,5 +1,7 @@
 # Todo
 
+- [ ] [7-6 live voice](plans/7-6-live-voice.md): continuous session/context, four presets and local automated/live synthetic checks implemented; human microphone/voice-quality acceptance and latency tuning remain.
+
 - [x] Fix misleading conversation timeout replies and retain user preferences through failed turns.
 
 - [x] Show per-second elapsed time beside conversation Working status, restored from the saved turn timestamp.

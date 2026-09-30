@@ -285,7 +285,7 @@ function startProductionServer(distDir: string): Promise<number> {
             proxyRes.pipe(res);
           },
         );
-        proxyReq.setTimeout(BACKEND_PROXY_TIMEOUT_MS, () => {
+        proxyReq.setTimeout(url.startsWith('/api/personal/voice/') ? 70000 : BACKEND_PROXY_TIMEOUT_MS, () => {
           proxyReq.destroy(new Error("Backend request timed out"));
         });
         req.on("aborted", () => {

@@ -162,7 +162,7 @@ def test_schema_four_backup_preserves_records_before_settings_migration(tmp_path
     store = PersonalStore(tmp_path)
     record = capture(store, 1)
     with store.connection() as db:
-        db.execute('DROP TABLE conversation_jobs'); db.execute('DROP TABLE personal_settings')
+        db.execute('DROP TABLE voice_operations'); db.execute('DROP TABLE conversation_jobs'); db.execute('DROP TABLE personal_settings')
         db.execute('PRAGMA user_version=4')
     reopened = PersonalStore(tmp_path)
     assert reopened.detail('operator', record['id'])['commitment']['revision'] == 1

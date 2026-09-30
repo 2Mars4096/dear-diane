@@ -28,6 +28,8 @@ class ChatInput(BaseModel):
     text: str = Field(min_length=1, max_length=16000)
     timezone: str = Field(default='UTC', max_length=80)
     source_ids: list[str] = Field(default_factory=list, max_length=5)
+    voice_profile: Literal['warm', 'bright', 'steady', 'composed'] | None = None
+    interrupted_turn_id: str | None = Field(default=None, max_length=100)
 
     @field_validator('timezone')
     @classmethod
@@ -77,6 +79,8 @@ class Conversation:
             def apply():
                 if db.execute("SELECT 1 FROM conversation_jobs WHERE owner=? AND state IN ('queued','running','applying')", (owner,)).fetchone():
                     raise Conflict('Diane is still working on your last message. Stop it or wait for the reply.')
+                if body.interrupted_turn_id and not db.execute('SELECT 1 FROM conversation_jobs WHERE id=? AND owner=?', (body.interrupted_turn_id, owner)).fetchone():
+                    raise ValueError('The interrupted reply does not belong to this conversation.')
                 sources = []
                 for identity in body.source_ids:
                     row = db.execute('SELECT text,body FROM sources WHERE id=? AND owner=?', (identity, owner)).fetchone()
@@ -84,11 +88,11 @@ class Conversation:
                         raise ValueError('An attached file is no longer available')
                     sources.append({'id': identity, 'name': json.loads(row['body'])['name'], 'text': row['text'][:24000]})
                 budget = budgets.reserve(db, owner)
-                value = {'id': str(uuid.uuid4()), 'owner': owner, 'text': body.text, 'timezone': body.timezone, 'sources': sources,
+                value = {'id': str(uuid.uuid4()), 'owner': owner, 'text': body.text, 'timezone': body.timezone, 'sources': sources, 'voice_profile': body.voice_profile, 'interrupted_turn_id': body.interrupted_turn_id,
                          'created_at': now(), 'model': model, 'budget': budget, 'budget_days': [now()[:10]]}
                 db.execute("INSERT INTO conversation_jobs VALUES (?,?, 'queued',0,?)", (value['id'], owner, canonical(value)))
                 return {**value, 'state': 'queued'}
-            return self.store._operation(db, owner, body.operation_id, body.model_dump(mode='json'), apply)
+            return self.store._operation(db, owner, body.operation_id, body.model_dump(mode='json', exclude_none=True), apply)
 
     def stop(self, owner, identity):
         with self.store.connection() as db:
@@ -222,6 +226,7 @@ def brief_for(job, history, records):
     return WorkerBrief(role=RoleSpec(role_label='personal_assistant', responsibility='Help the user through conversation'),
         task='Respond to the latest user message. Return one JSON Choice. Use reply to answer or ask one concise clarification; use a local action only when the user requested it. Never claim an action succeeded in reply.',
         hard_constraints=[
+            'When voice_profile is set, this is a continuous spoken conversation. Use short natural sentences, usually under 100 words, no Markdown tables or long lists. warm is gentle and conversational; bright is lively; steady is restrained and direct; composed is calm and precise. Keep the same facts and capabilities for every voice. interrupted_turn_id means the user may not have heard all of that reply; respond to the interruption without assuming they heard the rest. Completed local actions remain completed even if their spoken receipt was interrupted.',
             'You are Diane, a capable, concise personal assistant. Speak naturally in the user’s language. Do not describe internal schemas, models or software.',
             'Use the previous user messages to retain preferences, location, budget and corrections. A failed or stopped turn still contains valid user context; it does not mean the user was unclear. Do not ask again for information already supplied. Keep ordinary replies brief and directly relevant.',
             'Available actions are local commitments and in-app reminders, status changes, list and calendar-file download. You can also discuss, explain and draft text. Google/email sending, external calendar writes, purchases, live web research and phone push are unavailable; never claim to do them.',
@@ -234,7 +239,7 @@ def brief_for(job, history, records):
             'reply may contain useful answers or drafts, but never state that something was saved, sent, scheduled, updated or completed without selecting that action. Retain the user’s intended title and details across clarifying replies.',
         ], tool_policy=ToolUseContract(allowed_tool_ids=[]),
         output_contract=OutputContract(definition_of_done='A grounded response or one proposed local action', expected_return_shape='JSON object', output_schema=Choice.model_json_schema()),
-        evidence=[EvidenceBlock(label='Conversation and records', content=redact_source(canonical({'now': now(), 'user_timezone': job['timezone'], 'history': [{'user': r['text'], 'assistant': r.get('reply','') if r.get('state', 'completed') == 'completed' else '', 'state': r.get('state', 'completed'), 'attachments': r.get('sources', [])} for r in history[-20:] if r['id'] != job['id']], 'records': records[:50], 'latest_message': job['text'], 'attachments': job.get('sources', [])})), ref_id='personal-conversation')])
+        evidence=[EvidenceBlock(label='Conversation and records', content=redact_source(canonical({'now': now(), 'user_timezone': job['timezone'], 'voice_profile': job.get('voice_profile'), 'interrupted_turn_id': job.get('interrupted_turn_id'), 'history': [{'user': r['text'], 'assistant': r.get('reply','') if r.get('state', 'completed') == 'completed' else '', 'state': r.get('state', 'completed'), 'attachments': r.get('sources', [])} for r in history[-20:] if r['id'] != job['id']], 'records': records[:50], 'latest_message': job['text'], 'attachments': job.get('sources', [])})), ref_id='personal-conversation')])
 
 
 def reply_options(job, base_url):

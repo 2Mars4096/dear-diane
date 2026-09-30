@@ -1,0 +1,201 @@
+import {requestJson} from './http';
+
+export type VoiceProfile = 'warm' | 'bright' | 'steady' | 'composed';
+export type VoiceStatus = 'Connecting…' | 'Listening…' | 'Hearing you…' | 'Thinking…' | 'Speaking…';
+export type VoiceCallbacks = {
+  status: (status: VoiceStatus) => void;
+  transcript: (text: string) => void;
+  error: (message: string) => void;
+  refresh: () => void;
+  ended: () => void;
+};
+
+/** Local amplitude VAD with leading audio, sustained onset and a pause to finish. */
+export class VoiceActivity {
+  private leading: Float32Array[] = [];
+  private chunks: Float32Array[] = [];
+  private loud = 0;
+  private quiet = 0;
+  private duration = 0;
+  private speaking = false;
+  private rate: number;
+  private begin: () => void;
+  private end: (data: Blob) => void;
+  constructor(rate: number, begin: () => void, end: (data: Blob) => void) { this.rate = rate; this.begin = begin; this.end = end; }
+  feed(frame: Float32Array) {
+    const seconds = frame.length / this.rate;
+    const rms = Math.sqrt(frame.reduce((sum, value) => sum + value * value, 0) / frame.length);
+    if (!this.speaking) {
+      this.leading.push(frame);
+      while (this.leading.length > Math.ceil(this.rate * 0.4 / frame.length)) this.leading.shift();
+      this.loud = rms > 0.015 ? this.loud + seconds : 0;
+      if (this.loud < 0.18) return;
+      this.speaking = true; this.duration = 0; this.quiet = 0;
+      this.chunks = this.leading; this.leading = []; this.begin();
+    } else this.chunks.push(frame);
+    this.duration += seconds;
+    this.quiet = rms > 0.012 ? 0 : this.quiet + seconds;
+    if (this.quiet >= 1.1 || this.duration >= 29) {
+      const captured = this.chunks;
+      this.chunks = []; this.speaking = false; this.loud = 0;
+      this.end(encodeWav(captured, this.rate));
+    }
+  }
+}
+
+export function encodeWav(chunks: Float32Array[], rate: number): Blob {
+  const samples = new Float32Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) { samples.set(chunk, offset); offset += chunk.length; }
+  const count = Math.min(480000, Math.floor(samples.length * 16000 / rate));
+  const buffer = new ArrayBuffer(44 + count * 2), view = new DataView(buffer);
+  const ascii = (at: number, text: string) => { [...text].forEach((char, index) => view.setUint8(at + index, char.charCodeAt(0))); };
+  ascii(0, 'RIFF'); view.setUint32(4, 36 + count * 2, true); ascii(8, 'WAVE'); ascii(12, 'fmt ');
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, 16000, true); view.setUint32(28, 32000, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  ascii(36, 'data'); view.setUint32(40, count * 2, true);
+  for (let i = 0; i < count; i++) {
+    const from = Math.floor(i * rate / 16000), to = Math.max(from + 1, Math.floor((i + 1) * rate / 16000));
+    let value = 0;
+    for (let j = from; j < Math.min(to, samples.length); j++) value += samples[j];
+    value = Math.max(-1, Math.min(1, value / (to - from)));
+    view.setInt16(44 + i * 2, value < 0 ? value * 32768 : value * 32767, true);
+  }
+  return new Blob([buffer], {type: 'audio/wav'});
+}
+
+type Turn = {id: string; state: string; reply?: string};
+const running = (turn: Turn) => ['queued', 'running', 'applying'].includes(turn.state);
+const sleep = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+  const abort = () => { clearTimeout(timer); reject(new DOMException('Stopped', 'AbortError')); };
+  const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, ms);
+  if (signal.aborted) abort(); else signal.addEventListener('abort', abort, {once: true});
+});
+
+/** One explicitly opened session, continuously listening until end/navigation. */
+export class PersonalVoiceSession {
+  private context?: AudioContext;
+  private stream?: MediaStream;
+  private capture?: AudioWorkletNode;
+  private source?: MediaStreamAudioSourceNode;
+  private player?: AudioBufferSourceNode;
+  private request?: AbortController;
+  private generation = 0;
+  private closed = false;
+  private turn?: string;
+  private spokenTurn?: string;
+  private interruptedTurn?: string;
+  private pending: Promise<void> = Promise.resolve();
+  private profile: VoiceProfile;
+  private callbacks: VoiceCallbacks;
+  constructor(profile: VoiceProfile, callbacks: VoiceCallbacks) { this.profile = profile; this.callbacks = callbacks; }
+
+  async start() {
+    try {
+      if (!navigator.mediaDevices?.getUserMedia || !window.AudioContext) throw new Error('Voice needs microphone access in a secure browser or the Mac app.');
+      this.context = new AudioContext();
+      await this.context.resume();
+      this.callbacks.status('Connecting…');
+      const media = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1}});
+      if (this.closed) { media.getTracks().forEach(track => track.stop()); return; }
+      this.stream = media;
+      media.getAudioTracks().forEach(track => { track.onended = () => this.fail(new Error('Microphone disconnected.')); });
+      await this.context.audioWorklet.addModule('/app/voice-capture.js');
+      if (this.closed) return;
+      this.source = this.context.createMediaStreamSource(media);
+      this.capture = new AudioWorkletNode(this.context, 'diane-voice-capture');
+      const detector = new VoiceActivity(this.context.sampleRate, () => this.interrupt(), data => {
+        const generation = this.generation;
+        const previous = this.pending;
+        this.pending = this.respond(data, generation, previous).catch(error => {
+          if (generation === this.generation && !this.closed) this.fail(error);
+        });
+      });
+      this.capture.port.onmessage = event => { if (!this.closed) detector.feed(event.data); };
+      this.source.connect(this.capture); this.capture.connect(this.context.destination);
+      this.callbacks.status('Listening…');
+      document.addEventListener('visibilitychange', this.visibility);
+      window.addEventListener('pagehide', this.end);
+      window.addEventListener('hashchange', this.navigation);
+    } catch (error) { if (!this.closed) this.fail(error); }
+  }
+
+  private navigation = () => { if (location.hash !== '#personal') this.end(); };
+  private visibility = () => { if (document.hidden) this.end(); };
+  private fail(error: unknown) {
+    this.end();
+    const message = error instanceof Error ? error.message : 'Voice stopped. You can keep typing.';
+    this.callbacks.error(message === 'Permission denied' ? 'Microphone access was denied. Allow it in browser settings to use voice.' : message);
+  }
+  private interrupt() {
+    this.generation++;
+    this.request?.abort();
+    if (this.spokenTurn) this.interruptedTurn = this.spokenTurn;
+    this.player?.stop(); this.player = undefined; this.spokenTurn = undefined;
+    this.pending = this.pending.then(() => this.stopTurn());
+    this.callbacks.status('Hearing you…');
+  }
+  private async stopTurn() {
+    if (!this.turn) return;
+    const turn = this.turn;
+    await requestJson(`/api/personal/conversation/${encodeURIComponent(turn)}/stop`, {method: 'POST'});
+    // Applying effects cannot be undone by stopping speech. Wait for the receipt.
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const snapshot = await requestJson<{turns: Turn[]}>('/api/personal/conversation');
+      if (!snapshot.turns.some(item => item.id === turn && running(item))) { this.turn = undefined; return; }
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    throw new Error('The previous action is finishing. Check the chat before continuing.');
+  }
+  private async respond(data: Blob, generation: number, previous: Promise<void>) {
+    await previous;
+    if (this.closed || generation !== this.generation) return;
+    await this.stopTurn();
+    if (this.closed || generation !== this.generation) return;
+    const controller = new AbortController(); this.request = controller;
+    const signal = controller.signal;
+    this.callbacks.status('Thinking…');
+    const {text} = await requestJson<{text: string}>(`/api/personal/voice/transcribe?operation_id=${crypto.randomUUID()}`, {method: 'POST', body: data, signal, timeoutMs: 70000});
+    if (this.closed || generation !== this.generation) return;
+    if (!text.trim()) { this.callbacks.status('Listening…'); return; }
+    this.callbacks.transcript(text);
+    // Do not abort admission: retain the returned ID to stop a superseded turn.
+    const turn = await requestJson<Turn>('/api/personal/conversation', {method: 'POST', body: JSON.stringify({operation_id: crypto.randomUUID(), text, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', voice_profile: this.profile, interrupted_turn_id: this.interruptedTurn || null})});
+    this.turn = turn.id; this.interruptedTurn = undefined; this.callbacks.refresh();
+    if (this.closed || generation !== this.generation) { await this.stopTurn(); return; }
+    let reply = turn;
+    for (let attempt = 0; running(reply); attempt++) {
+      if (attempt >= 180) throw new Error('The reply is taking too long. Voice stopped; check the chat.');
+      await sleep(1000, signal);
+      const snapshot = await requestJson<{turns: Turn[]}>('/api/personal/conversation', {signal});
+      reply = snapshot.turns.find(item => item.id === turn.id) || reply;
+    }
+    this.turn = undefined; this.callbacks.refresh();
+    if (reply.state !== 'completed') throw new Error(reply.reply || 'The reply stopped.');
+    this.spokenTurn = reply.id;
+    const speech = await requestJson<{audio: string; rate: number}>('/api/personal/voice/speech', {method: 'POST', body: JSON.stringify({operation_id: crypto.randomUUID(), turn_id: reply.id, profile: this.profile}), signal, timeoutMs: 70000});
+    if (this.closed || generation !== this.generation || !this.context) return;
+    const bytes = Uint8Array.from(atob(speech.audio), value => value.charCodeAt(0));
+    const buffer = await this.context.decodeAudioData(bytes.buffer);
+    if (this.closed || generation !== this.generation) return;
+    this.player = this.context.createBufferSource(); this.player.buffer = buffer; this.player.playbackRate.value = speech.rate;
+    this.player.connect(this.context.destination); this.spokenTurn = reply.id;
+    this.player.onended = () => {
+      if (!this.closed && generation === this.generation) { this.spokenTurn = undefined; this.player = undefined; this.callbacks.status('Listening…'); }
+    };
+    this.callbacks.status('Speaking…'); this.player.start();
+  }
+
+  end = () => {
+    if (this.closed) return;
+    this.closed = true; this.generation++; this.request?.abort();
+    this.player?.stop(); this.player = undefined;
+    this.capture?.disconnect(); this.source?.disconnect();
+    this.stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
+    if (this.capture) this.capture.port.onmessage = null;
+    void this.context?.close().catch(() => {});
+    void this.pending.finally(() => this.stopTurn()).catch(() => { this.callbacks.error('Voice ended. Check the chat for the last action’s status.'); });
+    document.removeEventListener('visibilitychange', this.visibility); window.removeEventListener('pagehide', this.end); window.removeEventListener('hashchange', this.navigation);
+    this.callbacks.ended();
+  };
+}

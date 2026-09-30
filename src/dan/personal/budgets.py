@@ -48,7 +48,7 @@ def policy(db=None, owner=None):
 
 def daily_reserved(db, owner, day):
     total = Decimal(0)
-    for row in db.execute('SELECT body FROM extraction_jobs WHERE owner=? UNION ALL SELECT body FROM conversation_jobs WHERE owner=?', (owner, owner)):
+    for row in db.execute('SELECT body FROM extraction_jobs WHERE owner=? UNION ALL SELECT body FROM conversation_jobs WHERE owner=? UNION ALL SELECT body FROM voice_operations WHERE owner=?', (owner, owner, owner)):
         job = json.loads(row[0])
         if day in job.get('budget_days', [job['created_at'][:10]]):
             # Legacy jobs have unknown cost; do not present them as free.

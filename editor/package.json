@@ -2,7 +2,7 @@
   "name": "dear-diane",
   "private": true,
   "version": "0.1.0",
-  "description": "Dear Diane — A workspace for research, code, and ideas.",
+  "description": "Dear Diane \u2014 A workspace for research, code, and ideas.",
   "author": "Dear Diane",
   "type": "module",
   "main": "dist-electron/main.js",
@@ -53,7 +53,10 @@
       "icon": "resources/icons/icon.icns",
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
-      "identity": null
+      "identity": null,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Diane uses the microphone only during a voice conversation you start."
+      }
     },
     "win": {
       "target": [

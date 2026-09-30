@@ -33,6 +33,10 @@ Open **http://127.0.0.1:4197/#personal**. The current browser build is already p
 - Paste/upload, review, calendar-file download and reminders work without Google accounts. Automatic extraction remains an explicit `DAN_PERSONAL_MODEL` opt-in and may incur provider charges; spending reservations and provider price ceilings apply as described below.
 - Use `--port 4198` if 4197 is occupied. A different port is a different browser origin, so unsent browser drafts do not move automatically.
 
+## Continuous voice
+
+Add `--voice` to the configured launcher command, then click the microphone in Personal. Four saved presets, interruption and automatic turns are available. See [voice setup, spending and acceptance](voice.md).
+
 ## Deferred phone and account setup
 
 The user deferred physical-phone testing. No phone, trusted HTTPS, developer account or OAuth registration is needed for the local Mac milestone. The steps below are retained for the later connected/phone stages.
