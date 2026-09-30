@@ -1,6 +1,12 @@
 # Changelog
 
 ## 2026-09-30
+- [fix] Settle Personal chat, extraction and voice against provider-reported USD costs. Persist per-attempt intent, generation ID and billing receipts; release unused holds, including between research/repair calls, without treating unknown charges as zero.
+- [feat] Reconcile pending generation IDs through read-only billing lookups; retain receipts through restart and attribute costs to the request-start UTC day. Show confirmed spend, active holds and unverified historical usage separately.
+- [fix] Cap new admission holds by remaining daily/per-task headroom instead of requiring a fixed $0.305152 minimum. Per-call cost ceilings prevent dispatch beyond the held amount.
+- [test] 121 personal backend and 393 frontend checks, build/bundle budgets, lint, browser 390px billing display and signed Mac package pass. Real synthetic chat/speech/transcription cost $0.0013454675 combined; all three receipt paths settle. Historical requests without saved billing IDs cannot be reconstructed automatically and retain explicitly unverified holds.
+
+## 2026-09-30
 - [feat] Show an updating voice transcript in the composer using bounded recognition snapshots every three seconds, with one preview request at a time. Drafts cannot trigger actions; final recognition remains authoritative.
 - [fix] Allow 2.4-second pauses and combine unsubmitted audio when speech resumes during recognition. Abort stale previews and microphone requests on interruption/end; retain the existing 30-second audio bound.
 - [fix] Separate connection status from action errors so successful polling clears Reconnecting while preserving drafts. Restart the local Mac host detached from the coding session after finding its former process had exited.

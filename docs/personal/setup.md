@@ -1,5 +1,12 @@
 # Personal-agent pilot setup
 
+## Spending is settled from provider receipts
+Completed chat/extraction and voice requests count the dollar cost reported by OpenRouter. Temporary holds protect the limit while a request is in progress; unused funds are released once confirmed, including between model calls. Admission can use the remaining headroom instead of requiring the old fixed per-message reservation.
+
+Activity → AI spending limits separates confirmed costs, in-progress holds and unverified charges. Older requests without saved generation IDs cannot be reconstructed automatically; their bounds remain explicitly unverified. They are not bills and are not silently reset. Search-provider fees, account fees and other app usage are outside this ledger.
+
+References: [OpenRouter transcription usage](https://openrouter.ai/blog/tutorials/transcription-on-openrouter/), [generation billing metadata](https://openrouter.ai/docs/api/api-reference/generations/get-generation).
+
 ## Web research from chat or voice
 
 Ask “Find two cozy dinner options in Central or Sheung Wan, HKD 1000 total for two; check menus and hours.” Search uses the existing Workspace provider configuration on the Mac (including `DAN_TAVILY_API_KEY`, when configured) and available fallbacks. No new search form is needed. Links appear under the reply; blocked or unreadable pages are reported as gaps.

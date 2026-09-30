@@ -91,7 +91,7 @@ class Voice:
             used = budgets.daily_reserved(db, owner, now()[:10])
             if policy['paused'] or used is None or cost > Decimal(policy['task_limit']) or used + cost > Decimal(policy['daily_limit']):
                 raise Conflict('Voice is paused by your AI spending limits.')
-            saved = {'created_at': now(), 'budget': {'reserved_usd': str(cost), 'basis': 'audio_catalog_estimate'}, 'kind': payload['kind']}
+            saved = {'created_at': now(), 'billing': [], 'budget': {'reserved_usd': str(cost), 'basis': 'audio_catalog_estimate'}, 'kind': payload['kind']}
             db.execute("INSERT INTO voice_operations VALUES (?,?,?,'attempted',?)", (owner, identity, digest, canonical(saved)))
         return None
 
@@ -118,6 +118,9 @@ class Voice:
 
     async def checked_call(self, owner, identity, path, model, payload, ceiling):
         settings = config()
+        from .billing import Receipts
+        receipts = Receipts(self.store, 'voice_operations', owner, identity)
+        attempt = None
         try:
             async with httpx.AsyncClient(timeout=60) as client:
                 # Audio endpoints do not document chat's enforced max_price controls.
@@ -131,18 +134,29 @@ class Voice:
                         raise Conflict('Audio pricing changed. Voice is paused until its configuration is reviewed.')
                     _PRICE_CHECKS[model] = (time.monotonic(), max(Decimal(str(e['pricing']['prompt'])) for e in endpoints))
                 self.authorize(owner, identity)
+                with self.store.connection() as db:
+                    saved = json.loads(db.execute('SELECT body FROM voice_operations WHERE owner=? AND id=?', (owner, identity)).fetchone()[0])
+                attempt = receipts.begin(saved['budget']['reserved_usd'])
                 async with client.stream('POST', settings['base_url'] + path, headers={'Authorization': 'Bearer ' + settings['api_key']}, json={'model': model, **payload}) as response:
+                    receipts.record(attempt, {'generation_id': response.headers.get('x-generation-id')})
                     response.raise_for_status()
                     data = bytearray()
                     async for chunk in response.aiter_bytes():
                         data.extend(chunk)
                         if len(data) > 4 * 1024 * 1024:
                             raise ValueError('The audio response was too large.')
+                    if path == '/audio/transcriptions':
+                        try:
+                            receipts.record(attempt, {'cost_usd': json.loads(data).get('usage', {}).get('cost')})
+                        except (ValueError, TypeError, AttributeError):
+                            pass
                     return bytes(data)
         except httpx.TimeoutException:
             raise ValueError('The voice service timed out. You can keep typing.') from None
         except (httpx.HTTPError, KeyError, ArithmeticError):
             raise ValueError('The voice service is unavailable. You can keep typing.') from None
+        finally:
+            receipts.change(lambda body: body.update(billing_closed=True))
 
     async def transcribe(self, owner, identity, data):
         config(); validate_audio(data)

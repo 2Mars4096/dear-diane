@@ -18,7 +18,7 @@ from .extraction import extraction_brief, validate_extraction
 from .extraction_queue import ExtractionQueue
 from .store import PersonalStore
 from .reminders import Reminders
-from .budgets import completion_options
+from .budgets import completion_options, CallAllowance
 
 
 def extraction_model():
@@ -37,15 +37,22 @@ class PersonalRunner:
         self.task = None
         self.reminder_task = None
         self.conversation_task = None
+        self.billing_task = None
 
     def start(self):
         if os.environ.get('DAN_PERSONAL_ENABLED', '0').lower() in {'1', 'true', 'yes'}:
+            from .billing import run_reconciliation
+            self.billing_task = asyncio.create_task(run_reconciliation())
             from .conversation import run_conversations
             self.conversation_task = asyncio.create_task(run_conversations(self.app))
             self.task = asyncio.create_task(self.run())
             self.reminder_task = asyncio.create_task(self.run_reminders())
 
     async def close(self):
+        if self.billing_task:
+            self.billing_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self.billing_task
         if self.conversation_task:
             self.conversation_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -128,7 +135,9 @@ class PersonalRunner:
                 queue.finish(job, error=str(exc), state='blocked')
                 return
             provider = build_gateway_backed_live_provider(job['model'], api_key=config['api_key'], base_url=config['base_url'])
-            adapter = BriefCellAdapter(extraction_brief(source, job['locale']), job['model'], provider, completion_options=options, max_input_bytes=job['budget']['max_input_bytes'], before_completion=lambda: queue.authorize_spend(job))
+            from .billing import ModelReceipts
+            allowance = CallAllowance(job['budget'])
+            adapter = BriefCellAdapter(extraction_brief(source, job['locale']), job['model'], provider, completion_options=options, max_input_bytes=job['budget']['max_input_bytes'], before_completion=lambda: queue.authorize_spend(job), billing=ModelReceipts(queue.store, 'extraction_jobs', job, allowance), charge_completion=allowance.charge)
             async def execute():
                 return await run_agent_backend(store, run.run_id, adapter=adapter, overrides={
                     'mutation_policy': {'mode': 'plan', 'permission': 'forbidden'}, 'tool_policy': {'allowed_tool_ids': []}})

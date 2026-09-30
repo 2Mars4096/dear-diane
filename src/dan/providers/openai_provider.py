@@ -774,6 +774,8 @@ class OpenAIProvider:
             provider_metadata={
                 "family": "openai_compatible",
                 "request_details": request_details,
+                "generation_id": getattr(resp, "id", None),
+                "cost_usd": str(getattr(getattr(resp, "usage", None), "cost", "")),
             },
         )
 

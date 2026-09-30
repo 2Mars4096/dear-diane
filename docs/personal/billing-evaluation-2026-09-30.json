@@ -1,0 +1,72 @@
+{
+  "status": {
+    "currency": "USD",
+    "settings": {
+      "revision": 0,
+      "paused": false,
+      "task_limit": "0.50",
+      "daily_limit": "2.00"
+    },
+    "host_task_limit": "0.50",
+    "host_daily_limit": "2.00",
+    "paused": false,
+    "task_limit": "0.50",
+    "daily_limit": "2.00",
+    "reserved_usd": "0.305152",
+    "input_price": "1.00",
+    "output_price": "5.00",
+    "max_input_bytes": 131072,
+    "max_output_tokens": 4096,
+    "max_model_calls": 2,
+    "basis": "conservative_reservation",
+    "price_control": "openrouter_max_price",
+    "actual_usd": "0.0013454675",
+    "held_usd": "0",
+    "unverified_usd": "0",
+    "accounted_usd": "0.0013454675",
+    "day": "2026-09-30",
+    "used_reservations_usd": "0.0013454675",
+    "remaining_usd": "1.9986545325",
+    "available": true
+  },
+  "calls": [
+    {
+      "kind": "chat",
+      "reserved_usd": "0.305152",
+      "receipts": [
+        {
+          "actual_usd": "0.0013017",
+          "day": "2026-09-30",
+          "hold_usd": "0.038593"
+        }
+      ]
+    },
+    {
+      "kind": "speech",
+      "reserved_usd": "0.05",
+      "receipts": [
+        {
+          "actual_usd": "0.00002108",
+          "day": "2026-09-30",
+          "hold_usd": "0.05"
+        }
+      ]
+    },
+    {
+      "kind": "transcription",
+      "reserved_usd": "0.005",
+      "receipts": [
+        {
+          "actual_usd": "0.0000226875",
+          "day": "2026-09-30",
+          "hold_usd": "0.005"
+        }
+      ]
+    }
+  ],
+  "notes": [
+    "Synthetic chat, synthesized speech and transcription; provider-reported costs, no user conversation data.",
+    "TTS cost reconciled by generation ID.",
+    "Old requests without saved billing IDs remain unverified holds; they are not presented as actual spend."
+  ]
+}

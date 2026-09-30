@@ -1,5 +1,8 @@
 # Todo
 
+- [x] Settle personal AI usage against actual provider receipts, release unused holds and reconcile voice billing — [7-8](plans/7-8-provider-billing.md).
+- [ ] Historical calls without generation IDs require provider billing records to resolve; never label their holds as actual spend.
+
 - [x] Add visible progressive voice transcription, more forgiving pauses/resumed audio, and automatic connection-warning recovery — [7-6](plans/7-6-live-voice.md).
 
 - [x] Connect Personal chat/voice to Workspace public search and page/PDF reading, with sources, bounded follow-up, Stop and shared model spending limits — [7-7](plans/7-7-workspace-capabilities.md).

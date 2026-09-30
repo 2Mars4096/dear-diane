@@ -28,7 +28,7 @@ class ExtractionQueue:
                 job = {'id': str(uuid.uuid4()), 'owner': owner, 'commitment_id': record_id,
                        'base_revision': revision + 1, 'source': capture['text'], 'source_hash': capture['sha256'],
                        'locale': capture['locale'], 'model': model, 'created_at': now(), 'max_model_calls': 2,
-                       'budget': reserve(db, owner), 'budget_days': [today], 'timeout_seconds': 60, 'max_output_tokens': 4096, 'run_id': None, 'error': ''}
+                       'billing': [], 'budget': reserve(db, owner), 'budget_days': [today], 'timeout_seconds': 60, 'max_output_tokens': 4096, 'run_id': None, 'error': ''}
                 record.update(revision=revision + 1, updated_at=now(), extraction={'status': 'queued', 'job_id': job['id'], 'model': model})
                 db.execute('INSERT INTO extraction_jobs(id,owner,commitment_id,state,body) VALUES (?,?,?,?,?)', (job['id'], owner, record_id, 'queued', canonical(job)))
                 db.execute('UPDATE commitments SET revision=?,body=? WHERE id=? AND owner=?', (record['revision'], canonical(record), record_id, owner))

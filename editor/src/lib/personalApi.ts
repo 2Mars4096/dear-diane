@@ -26,7 +26,7 @@ export interface Review {
 export interface ReminderNotice { id: string; revision: number; commitment_id: string; title: string; due_at: string; created_at: string; read: boolean; late: boolean }
 export interface ReminderChange { operation_id: string; expected_revision: number; action: 'schedule' | 'pause' | 'resume' | 'stop'; date?: string; time?: string; timezone?: string; offset?: string | null }
 export interface SpendingSettings { revision: number; task_limit: string; daily_limit: string; paused: boolean }
-export interface SpendingStatus { currency: string; task_limit: string; daily_limit: string; host_task_limit: string; host_daily_limit: string; paused: boolean; settings: SpendingSettings; reserved_usd: string; used_reservations_usd: string | null; remaining_usd: string | null; available: boolean; day: string }
+export interface SpendingStatus { actual_usd?: string; held_usd?: string; unverified_usd?: string; currency: string; task_limit: string; daily_limit: string; host_task_limit: string; host_daily_limit: string; paused: boolean; settings: SpendingSettings; reserved_usd: string; used_reservations_usd: string | null; remaining_usd: string | null; available: boolean; day: string }
 const root = '/api/personal';
 export const personalApi = {
   budget: () => requestJson<SpendingStatus>(`${root}/budget`),

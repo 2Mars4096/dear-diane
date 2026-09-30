@@ -58,7 +58,10 @@ export function ExtractionBudget() {
     {error && <p role="alert">{error}</p>}
     {budget ? <>
       <p>{budget.paused ? 'AI paused' : budget.available ? '' : 'AI limit reached'}</p>
-      <dl className="personal-summary"><dt>Today (UTC)</dt><dd>{budget.used_reservations_usd === null ? 'Earlier costs unknown' : `$${budget.used_reservations_usd} reserved`} / ${budget.daily_limit} USD</dd><dt>Next message</dt><dd>${budget.reserved_usd} USD reserved</dd></dl>
+      <dl className="personal-summary"><dt>Confirmed today (UTC)</dt><dd>${budget.actual_usd ?? '0'} / ${budget.daily_limit} USD</dd>
+        {Number(budget.held_usd || 0) > 0 && <><dt>In progress</dt><dd>${budget.held_usd} held</dd></>}
+        {(Number(budget.unverified_usd || 0) > 0 || budget.used_reservations_usd === null) && <><dt>Unverified</dt><dd>{Number(budget.unverified_usd || 0) > 0 ? `$${budget.unverified_usd} held` : 'Earlier costs unknown'}</dd></>}
+      </dl>
       {draft && <form onSubmit={event => { event.preventDefault(); void save(); }}><fieldset disabled={busy} className="personal-budget-fields">
         <div className="personal-date-fields"><label>Per-message limit (USD)<input type="number" required min="0" max={budget.host_task_limit} step="any" value={draft.task_limit} onChange={event => edit({task_limit: event.target.value})} /></label><label>Daily limit (USD)<input type="number" required min="0" max={budget.host_daily_limit} step="any" value={draft.daily_limit} onChange={event => edit({daily_limit: event.target.value})} /></label></div>
         <p>Host maximum: ${budget.host_task_limit} per message and ${budget.host_daily_limit} per day.</p>
@@ -66,7 +69,7 @@ export function ExtractionBudget() {
         <div className="personal-actions">{(dirty.current || error) && <button type="button" onClick={() => void reload()}>Reload saved limits</button>}<button className="personal-primary" disabled={!dirty.current} type="submit">{busy ? 'Saving limits…' : 'Save limits'}</button></div>
       </fieldset></form>}
       {saved && <p role="status">Spending limits saved.</p>}
-      <details><summary>How limits work</summary><p>Reservations are estimates, not bills. Failed or stopped attempts keep their reservation. Limits reset at midnight UTC and exclude account fees. Pause applies before the next model call.</p></details>
+      <details><summary>How limits work</summary><p>Confirmed spend comes from provider billing receipts. Temporary holds protect the limit while work is running; unused amounts are released once cost is known. Unverified requests keep a separate hold. Older requests without billing IDs cannot be reconstructed automatically. Limits reset at midnight UTC and exclude search and account fees.</p></details>
     </> : !error && <p role="status">Loading limits…</p>}
   </details>;
 }

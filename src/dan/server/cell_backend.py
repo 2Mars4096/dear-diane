@@ -16,7 +16,7 @@ from dan.worker.core.interfaces import CompletionResponse
 class BriefCellAdapter:
     backend_name = 'brief_cell'
 
-    def __init__(self, brief: WorkerBrief, model: str, provider: LLMProvider, *, timeout: float = 60, completion_options: dict | None = None, max_input_bytes: int = 131072, before_completion=None, max_model_calls: int = 2, charge_completion=None):
+    def __init__(self, brief: WorkerBrief, model: str, provider: LLMProvider, *, timeout: float = 60, completion_options: dict | None = None, max_input_bytes: int = 131072, before_completion=None, max_model_calls: int = 2, charge_completion=None, billing=None):
         if brief.tool_policy.allowed_tool_ids:
             raise ValueError('This adapter accepts tool-free briefs only')
         if isinstance(provider, RetryingLLMProvider):
@@ -29,6 +29,7 @@ class BriefCellAdapter:
             raise ValueError('A bounded brief permits one or two model calls')
         self.max_model_calls = max_model_calls
         self.charge_completion = charge_completion
+        self.billing = billing
 
     async def run(self, request, emit_event, runtime=None):
         adapter = self
@@ -49,6 +50,7 @@ class BriefCellAdapter:
                     raise ValueError('This extraction is no longer authorized to spend')
                 if adapter.charge_completion:
                     adapter.charge_completion(sum(len(message['content'].encode('utf-8')) for message in messages))
+                receipt = adapter.billing.begin(sum(len(message['content'].encode('utf-8')) for message in messages)) if adapter.billing else None
                 calls += 1
                 try:
                     response = await adapter.provider.complete(
@@ -57,6 +59,8 @@ class BriefCellAdapter:
                     )
                 except Exception:
                     raise ValueError('The configured model provider is unavailable') from None
+                if adapter.billing:
+                    adapter.billing.record(receipt, response.provider_metadata or {})
                 if response.tool_calls:
                     raise ValueError('The model requested a tool in a tool-free task')
                 for key, value in (response.usage or {}).items():

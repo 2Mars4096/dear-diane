@@ -25,12 +25,12 @@ These are original preset voices inspired by the requested qualities, not exact 
 ## Bounds, spending and retention
 
 - 30-second mono PCM16/16kHz segments, 2,000 characters spoken per reply, 4 MiB provider-response bound. Longer replies remain fully readable in chat. Silence alone does not submit a turn.
-- Each recognition call reserves $0.005 and synthesis reserves $0.05, sharing existing daily AI limits with conversation/extraction. The normal conversation reservation is additional. Defaults allow about five complete voice exchanges per UTC day when no other AI work has run; existing usage reduces this.
-- Audio uses catalog-checked cost estimates, not chat endpoint `max_price` enforcement. Provider invoices may differ. Failed/stopped/uncertain requests retain reservations; no automatic paid retry. Pause/caps are rechecked immediately before the paid call and on UTC rollover.
+- Each recognition call reserves $0.005 and synthesis reserves $0.05, sharing existing daily AI limits with conversation/extraction. The normal conversation reservation is additional. These are temporary holds. Completed operations settle to provider-reported cost; the number of exchanges depends on actual usage and unresolved holds.
+- Audio uses catalog-checked cost estimates, not chat endpoint `max_price` enforcement. Provider invoices may differ. Unknown attempted calls retain a separate hold until billing can be checked; no automatic paid retry. Pause/caps are rechecked immediately before the paid call and on UTC rollover.
 - Keys stay on the host. Raw microphone and synthesized audio are transient, not written to the database. The private SQLite voice journal retains request hashes, reservations and successful transcripts, including transcripts that never reach chat after an interruption. Existing backup/history retention applies.
 - Speech begins only after a microphone click. Browser echo cancellation is requested; noisy-room/speaker echo behavior still needs a human microphone test. Headphones can help with acoustic feedback.
 
-Each preview uses the existing $0.005 recognition reservation and private transcript journal. Only one preview runs at a time; late previews are ignored. These are periodic recognitions, not word-by-word streaming. Preview accuracy and speed depend on the speech provider. If you resume before a turn is submitted, the audio is combined within the 30-second bound.
+Each preview uses a temporary $0.005 recognition hold, settled to its provider-reported cost and private transcript journal. Only one preview runs at a time; late previews are ignored. These are periodic recognitions, not word-by-word streaming. Preview accuracy and speed depend on the speech provider. If you resume before a turn is submitted, the audio is combined within the 30-second bound.
 
 ## Verification (2026-09-30)
 

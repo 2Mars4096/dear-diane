@@ -28,16 +28,17 @@ def test_atomic_daily_admission_and_replay_survive_restart(tmp_path, monkeypatch
             return None
     with concurrent.futures.ThreadPoolExecutor(2) as pool:
         results = list(pool.map(submit, range(2)))
-    assert sum(result is not None for result in results) == 1
+    assert sum(result is not None for result in results) == 2
     winner = next(n for n, result in enumerate(results) if result is not None)
     restarted = PersonalStore(tmp_path)
     before = status(restarted, 'operator')
     assert enqueue(restarted, records[winner], winner) == results[winner]
     assert status(restarted, 'operator') == before
     assert before['available'] is False
-    assert Decimal(before['used_reservations_usd']) == Decimal(policy()['reserved_usd'])
+    assert Decimal(before['used_reservations_usd']) == Decimal('0.40')
     loser = 1 - winner
-    assert store.detail('operator', records[loser]['id'])['commitment']['revision'] == 1
+    assert store.detail('operator', records[loser]['id'])['commitment']['revision'] == 2
+    with pytest.raises(Conflict): enqueue(store, capture(store, 3), 3)
     assert status(restarted, 'another-owner')['used_reservations_usd'] == '0'
 
 
@@ -45,15 +46,16 @@ def test_stop_and_failure_do_not_refund_uncertain_cost(tmp_path):
     store = PersonalStore(tmp_path)
     record = capture(store, 1)
     queued = enqueue(store, record, 1)
-    before = status(store, 'operator')['used_reservations_usd']
     ExtractionQueue(store).stop('operator', record['id'], 'stop-budget-001', queued['revision'])
-    assert status(store, 'operator')['used_reservations_usd'] == before
+    assert status(store, 'operator')['used_reservations_usd'] == '0'  # Never dispatched.
     second = capture(store, 2)
     enqueue(store, second, 2)
     queue = ExtractionQueue(store)
     job = queue.claim()
+    from dan.personal.billing import Receipts
+    Receipts(store, 'extraction_jobs', 'operator', job['id']).begin('0.02')
     queue.finish(job, error='unknown outcome', state='failed')
-    assert Decimal(status(store, 'operator')['used_reservations_usd']) == Decimal(before) * 2
+    assert Decimal(status(store, 'operator')['used_reservations_usd']) == Decimal('0.02')
 
 
 def test_rollover_reserves_execution_day_and_current_limits(tmp_path, monkeypatch):

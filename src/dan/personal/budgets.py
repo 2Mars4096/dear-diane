@@ -1,7 +1,7 @@
 """Conservative USD reservations, committed atomically with extraction admission.
 
-Reservations are not provider invoices. Keep them after uncertain/stopped calls so
-retries cannot reclaim potentially spent money. UTC creation day owns each reserve.
+Reservations are temporary bounds, not charges. Provider receipts settle actual
+costs; only unverified attempts retain holds. Each call uses its UTC start day.
 """
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
 import json
@@ -47,15 +47,9 @@ def policy(db=None, owner=None):
 
 
 def daily_reserved(db, owner, day):
-    total = Decimal(0)
-    for row in db.execute('SELECT body FROM extraction_jobs WHERE owner=? UNION ALL SELECT body FROM conversation_jobs WHERE owner=? UNION ALL SELECT body FROM voice_operations WHERE owner=?', (owner, owner, owner)):
-        job = json.loads(row[0])
-        if day in job.get('budget_days', [job['created_at'][:10]]):
-            # Legacy jobs have unknown cost; do not present them as free.
-            if 'budget' not in job:
-                return None
-            total += Decimal(job['budget']['reserved_usd'])
-    return total
+    from .billing import totals
+    value = totals(db, owner, day)['accounted_usd']
+    return Decimal(value) if value is not None else None
 
 
 def reserve(db, owner):
@@ -63,13 +57,14 @@ def reserve(db, owner):
     if budget['paused']:
         raise Conflict('AI replies and extraction are paused in spending settings. Manual review and reminders remain available.')
     used = daily_reserved(db, owner, now()[:10])
-    cost = Decimal(budget['reserved_usd'])
-    if Decimal(budget['task_limit']) == 0 or cost > Decimal(budget['task_limit']):
-        raise Conflict('AI paused: its reserved cost exceeds the per-task budget. Manual review and reminders remain available.')
+    if Decimal(budget['task_limit']) == 0:
+        raise Conflict('AI paused: the per-task budget is zero. Manual review and reminders remain available.')
     if used is None:
         raise Conflict('AI paused: earlier extraction costs today are unknown. Retry after the next UTC day; manual review remains available.')
-    if Decimal(budget['daily_limit']) == 0 or used + cost > Decimal(budget['daily_limit']):
-        raise Conflict('AI paused: the daily reserved budget is exhausted. It resets at midnight UTC; manual review and reminders remain available.')
+    cost = min(Decimal(budget['reserved_usd']), Decimal(budget['task_limit']), Decimal(budget['daily_limit']) - used)
+    if cost <= 0:
+        raise Conflict('AI paused: the daily limit is covered by charges or unverified requests. It resets at midnight UTC; manual review and reminders remain available.')
+    budget['reserved_usd'] = str(cost)
     return budget
 
 
@@ -78,9 +73,11 @@ def status(store, owner):
     with store.connection() as db:
         budget = policy(db, owner)
         used = daily_reserved(db, owner, day)
-    return {**budget, 'day': day, 'used_reservations_usd': str(used) if used is not None else None,
+        from .billing import totals
+        charges = totals(db, owner, day)
+    return {**budget, **charges, 'day': day, 'used_reservations_usd': str(used) if used is not None else None,
             'remaining_usd': str(max(Decimal(0), Decimal(budget['daily_limit']) - used)) if used is not None else None,
-            'available': not budget['paused'] and used is not None and Decimal(budget['task_limit']) > 0 and Decimal(budget['daily_limit']) > 0 and Decimal(budget['reserved_usd']) <= Decimal(budget['task_limit']) and used + Decimal(budget['reserved_usd']) <= Decimal(budget['daily_limit'])}
+            'available': not budget['paused'] and used is not None and Decimal(budget['task_limit']) > 0 and Decimal(budget['daily_limit']) > 0 and used < Decimal(budget['daily_limit'])}
 
 
 def completion_options(budget, base_url, model=None):
@@ -122,13 +119,14 @@ def update_settings(store, owner, body: BudgetSettings):
 class CallAllowance:
     """Charge each attempted call's worst-case cost against its durable reservation.
 
-    UTF-8 bytes conservatively bound input tokens; output is charged at its full
-    requested ceiling even when the call fails. No refund or paid restart replay.
+    UTF-8 bytes conservatively bound input tokens; output is held at its full
+    requested ceiling until a provider receipt settles it. No paid restart replay.
     """
     def __init__(self, budget):
         self.budget = budget
         self.remaining = Decimal(budget['reserved_usd'])
         self.calls = 0
+        self.last_hold = None
 
     def charge(self, input_bytes):
         budget = self.budget
@@ -137,4 +135,10 @@ class CallAllowance:
         if self.calls >= budget['max_model_calls'] or cost > self.remaining:
             raise ValueError('This turn has reached its reserved AI spending limit')
         self.remaining -= cost
+        self.last_hold = cost
         self.calls += 1
+
+    def settle(self, actual):
+        if self.last_hold is not None:
+            self.remaining += self.last_hold - actual
+            self.last_hold = None

@@ -35,7 +35,11 @@ def test_reject_invalid_or_oversized_recordings(data):
 
 def test_transcription_replay_and_changed_input_never_repeat_paid_call(service, monkeypatch):
     calls = []
-    async def call(*args): calls.append(args); return b'{"text":"Please remember my meeting"}'
+    async def call(*args):
+        from dan.personal.billing import Receipts
+        Receipts(service.store, 'voice_operations', args[0], args[1]).begin('0.005')
+        calls.append(args)
+        return b'{"text":"Please remember my meeting"}'
     monkeypatch.setattr(service, 'checked_call', call)
     result = asyncio.run(service.transcribe('operator', 'audio-request-1', wav()))
     assert asyncio.run(service.transcribe('operator', 'audio-request-1', wav())) == result

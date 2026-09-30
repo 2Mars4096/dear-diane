@@ -93,7 +93,7 @@ class Conversation:
                 budget = budgets.reserve(db, owner)
                 budget.update(max_model_calls=4, call_accounting="aggregate_byte_ceiling")
                 value = {'id': str(uuid.uuid4()), 'owner': owner, 'text': body.text, 'timezone': body.timezone, 'sources': sources, 'voice_profile': body.voice_profile, 'interrupted_turn_id': body.interrupted_turn_id,
-                         'created_at': now(), 'model': model, 'budget': budget, 'budget_days': [now()[:10]]}
+                         'created_at': now(), 'billing': [], 'model': model, 'budget': budget, 'budget_days': [now()[:10]]}
                 db.execute("INSERT INTO conversation_jobs VALUES (?,?, 'queued',0,?)", (value['id'], owner, canonical(value)))
                 return {**value, 'state': 'queued'}
             return self.store._operation(db, owner, body.operation_id, body.model_dump(mode='json', exclude_none=True), apply)
@@ -303,11 +303,13 @@ async def process(app, service, job):
     if not service.authorize(job):
         return
     provider = build_gateway_backed_live_provider(job['model'], api_key=config['api_key'], base_url=config['base_url'])
+    from .billing import ModelReceipts
     allowance = budgets.CallAllowance(job['budget'])
+    receipts = ModelReceipts(service.store, 'conversation_jobs', job, allowance)
     try:
         async def stage(suffix, brief, calls=2):
             run = reserve_dispatch(app.state.chat_v2_store, key='personal-chat:'+job['id']+suffix, objective='Respond to the personal conversation', thread_id='_personal_conversation', metadata={'template': 'personal.conversation.v2'})
-            adapter = BriefCellAdapter(brief, job['model'], provider, timeout=120, completion_options=options, before_completion=lambda: service.authorize(job), max_model_calls=calls, charge_completion=allowance.charge)
+            adapter = BriefCellAdapter(brief, job['model'], provider, timeout=120, completion_options=options, before_completion=lambda: service.authorize(job), max_model_calls=calls, charge_completion=allowance.charge, billing=receipts)
             try:
                 return await run_agent_backend(app.state.chat_v2_store, run.run_id, adapter=adapter, overrides={'mutation_policy': {'mode':'plan','permission':'forbidden'}, 'tool_policy': {'allowed_tool_ids':[]}})
             except asyncio.CancelledError:

@@ -182,11 +182,12 @@ it('confirms original deletion and removes its unsent draft reference', async ()
 
 it('shows budget exhaustion while keeping manual capture available', async () => {
   vi.mocked(personalApi.capabilities).mockResolvedValue({enabled: true, model: 'fixture/model'});
-  vi.mocked(personalApi.budget).mockResolvedValue({currency: 'USD', host_task_limit: '0.50', host_daily_limit: '2.00', paused: false, settings: {revision: 0, task_limit: '0.50', daily_limit: '2.00', paused: false}, task_limit: '0.50', daily_limit: '2.00', reserved_usd: '0.305152', used_reservations_usd: '1.830912', remaining_usd: '0.169088', available: false, day: '2026-09-29'});
+  vi.mocked(personalApi.budget).mockResolvedValue({currency: 'USD', host_task_limit: '0.50', host_daily_limit: '2.00', paused: false, settings: {revision: 0, task_limit: '0.50', daily_limit: '2.00', paused: false}, task_limit: '0.50', daily_limit: '2.00', reserved_usd: '0.305152', actual_usd: '0.001', held_usd: '0', unverified_usd: '1.829912', used_reservations_usd: '1.830912', remaining_usd: '0.169088', available: false, day: '2026-09-29'});
   localStorage.setItem('dan.personal.unsent.v1', JSON.stringify({text: 'Still capture manually', operation: 'manual-budget-001', sources: []}));
   await mount();
   expect(host.textContent).toContain('AI limit reached');
-  expect(host.textContent).toContain('1.830912 reserved');
+  expect(host.textContent).toContain('Confirmed today (UTC)$0.001');
+  expect(host.textContent).toContain('1.829912 held');
   expect(button('Review details →').disabled).toBe(false);
 });
 
