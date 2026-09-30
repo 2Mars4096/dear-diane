@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-30
+- [fix] Restyle the session wheel with project-style cards, compact empty-position markers, and a selected-session preview; retain stable slots and directional controls. Browser checks cover light/dark, one/eight sessions, keyboard opening, and non-overlapping 320px/390px layouts.
+
+## 2026-09-30
 - [infra] Reinstall and launch the signed left-hand shortcut build; installed archive matches the prepared build, signature and app-owned backend/proxy health pass, and the previous bundle is retained for rollback.
 - [fix] Move the project-switcher shortcut from Cmd/Ctrl+Shift+P to Cmd/Ctrl+Shift+E for left-hand access; update visible and accessible shortcut labels.
 

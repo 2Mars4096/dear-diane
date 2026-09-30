@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Align the session wheel with project-card styling and verify keyboard/narrow-screen behavior — [4-1](plans/4-1-agent-workbench.md).
+
 - [x] Move project switching to left-hand Cmd/Ctrl+Shift+E — [4-1](plans/4-1-agent-workbench.md).
 
 - [x] Keep `docs/plans/` and specialized `docs/*-plans/` local and excluded from future commits; plan links refer to local working copies.
