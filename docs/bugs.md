@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- **Listening without transcripts (2026-09-30):** reported session had no logged transcription requests. Fixed an independently reproducible VAD weakness: strict uninterrupted onset rejected quieter speech and short syllables. Added stalled-frame/worklet error handling and post-setup resume. No evidence of an STT model change; exact physical-session cause still requires user microphone verification.
+
+
 - **Invisible fast voice draft (2026-09-30):** React could batch recognized text with the immediate admission clear. Commit nonempty drafts synchronously and clear after a paint opportunity; protect newer drafts and clean up animation frames. No admission delay is added.
 - **Reservation capability gap (2026-09-30):** Personal has research and local actions but no booking submission/call tool. Prompt now requests an official booking route rather than a reminder diversion; this is a handoff, not an implemented booking integration.
 

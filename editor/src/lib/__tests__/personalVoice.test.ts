@@ -247,3 +247,30 @@ it('reuses a slow preview covering all speech after the pause instead of restart
   expect(callbacks.transcript).toHaveBeenCalledWith('A quiet place please');
   expect(callbacks.transcript).toHaveBeenLastCalledWith('');
 });
+
+it('recognizes quiet syllables separated by short gaps instead of waiting forever', () => {
+  const begin = vi.fn(), end = vi.fn(), preview = vi.fn();
+  const detector = new VoiceActivity(48000, begin, end, preview);
+  for (let i = 0; i < 12; i++) {
+    detector.feed(new Float32Array(2048).fill(0.01));
+    detector.feed(new Float32Array(2048));
+  }
+  expect(begin).toHaveBeenCalledTimes(1);
+  expect(preview).toHaveBeenCalled();
+  for (let i = 0; i < 40; i++) detector.feed(new Float32Array(2048));
+  expect(end).toHaveBeenCalledTimes(1);
+});
+
+it('reports missing capture frames and releases the microphone', async () => {
+  session = new PersonalVoiceSession('warm', callbacks); await session.start();
+  await vi.advanceTimersByTimeAsync(6000);
+  expect(callbacks.error).toHaveBeenCalledWith(expect.stringContaining('No microphone audio'));
+  expect(stopTrack).toHaveBeenCalledTimes(1);
+});
+
+it('keeps ordinary silence open when the microphone is delivering frames', async () => {
+  session = new PersonalVoiceSession('warm', callbacks); await session.start();
+  for (let i = 0; i < 8; i++) { frames(0, 1); await vi.advanceTimersByTimeAsync(1000); }
+  expect(callbacks.error).not.toHaveBeenCalled();
+  expect(request).not.toHaveBeenCalled();
+});

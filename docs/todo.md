@@ -1,5 +1,8 @@
 # Todo
 
+- [x] Accept quieter, syllable-separated speech and detect stalled microphone capture; preserve Qwen STT.
+
+
 - [x] Paint fast voice drafts before clearing; improve reservation handoff and Composed phrasing.
 - [ ] Add a real reservation submission/calling integration; current Personal only researches booking routes.
 

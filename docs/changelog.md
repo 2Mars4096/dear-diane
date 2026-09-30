@@ -1,6 +1,12 @@
 # Changelog
 
 ## 2026-09-30
+- [fix] Lower voice onset/continuation thresholds and tolerate up to 100 ms gaps while collecting onset. Previously 180 ms of uninterrupted loud audio could exclude quiet, syllable-separated speech.
+- [fix] Resume audio after capture setup and report missing frames after five seconds or worklet failures, releasing the mic instead of staying on Listening. Qwen STT is unchanged.
+- [test] 20 voice/UI checks pass, including quiet syllables, missing capture and ordinary silence. User session logs showed no completed transcription requests; physical microphone cause remains unconfirmed.
+
+
+## 2026-09-30
 - [fix] Commit voice transcript text before clearing it after a browser paint; sending is not delayed. Cancel pending clears for new speech, session changes and unmount.
 - [fix] Instruct reservation requests to research official booking routes and prepare details instead of defaulting to reminders. No reservation submission capability is added.
 - [fix] Strengthen Composed British phrasing and measured sentence cadence; retain fixed Kokoro voice, with no claim of exact character replication.

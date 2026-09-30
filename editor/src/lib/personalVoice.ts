@@ -15,6 +15,7 @@ export class VoiceActivity {
   private leading: Float32Array[] = [];
   private chunks: Float32Array[] = [];
   private loud = 0;
+  private onsetQuiet = 0;
   private quiet = 0;
   private duration = 0;
   private previewAt = 0.6;
@@ -34,14 +35,18 @@ export class VoiceActivity {
     if (!this.speaking) {
       this.leading.push(frame);
       while (this.leading.length > Math.ceil(this.rate * 0.4 / frame.length)) this.leading.shift();
-      this.loud = rms > 0.015 ? this.loud + seconds : 0;
-      if (this.loud < 0.18) return;
+      if (rms > 0.008) { this.loud += seconds; this.onsetQuiet = 0; }
+      else {
+        this.onsetQuiet += seconds;
+        if (this.onsetQuiet > 0.1) this.loud = 0;
+      }
+      if (this.loud < 0.12) return;
       this.speaking = true; this.duration = 0; this.previewAt = 0.6; this.voiced = 0; this.previewedVoice = 0; this.lastPreview = 0; this.quiet = 0;
       this.chunks = this.leading; this.leading = []; this.previewAudio = undefined; this.begin();
     } else this.chunks.push(frame);
     this.duration += seconds;
-    this.quiet = rms > 0.012 ? 0 : this.quiet + seconds;
-    if (rms > 0.012) this.voiced += seconds;
+    this.quiet = rms > 0.006 ? 0 : this.quiet + seconds;
+    if (rms > 0.006) this.voiced += seconds;
     if (this.quiet >= 1.5 || this.duration >= 29) {
       const captured = this.chunks;
       this.chunks = []; this.speaking = false; this.loud = 0;
@@ -120,6 +125,8 @@ export class PersonalVoiceSession {
   private recognized = false;
   private recognition?: AbortController;
   private closed = false;
+  private captureWatch?: ReturnType<typeof setInterval>;
+  private lastFrame = 0;
   private turn?: string;
   private spokenTurn?: string;
   private interruptedTurn?: string;
@@ -148,8 +155,19 @@ export class PersonalVoiceSession {
           if (utterance === this.utterance && !this.closed) this.fail(error);
         });
       }, data => { void this.preview(data); });
-      this.capture.port.onmessage = event => { if (!this.closed) detector.feed(event.data); };
+      this.lastFrame = Date.now();
+      this.capture.port.onmessage = event => {
+        if (!this.closed) { this.lastFrame = Date.now(); detector.feed(event.data); }
+      };
+      this.capture.onprocessorerror = () => this.fail(new Error('Microphone capture stopped. Restart voice to reconnect.'));
+      this.captureWatch = setInterval(() => {
+        if (!this.closed && Date.now() - this.lastFrame > 5000) {
+          this.fail(new Error('No microphone audio is arriving. Check the selected microphone, then restart voice.'));
+        }
+      }, 1000);
       this.source.connect(this.capture); this.capture.connect(this.context.destination);
+      await this.context.resume();
+      if (this.closed) return;
       this.callbacks.status('Listening…');
       document.addEventListener('visibilitychange', this.visibility);
       window.addEventListener('pagehide', this.end);
@@ -279,7 +297,10 @@ export class PersonalVoiceSession {
     if (this.closed) return;
     this.closed = true; this.generation++; this.utterance++; this.request?.abort(); this.recognition?.abort();
     this.queuedPreview = undefined; this.previewRequest?.abort(); this.previewRequest = undefined; this.pendingAudio = undefined;
+    if (this.captureWatch !== undefined) clearInterval(this.captureWatch);
+    this.captureWatch = undefined;
     this.player?.stop(); this.player = undefined;
+    if (this.capture) this.capture.onprocessorerror = null;
     this.capture?.disconnect(); this.source?.disconnect();
     this.stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
     if (this.capture) this.capture.port.onmessage = null;
