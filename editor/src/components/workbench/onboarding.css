@@ -15,3 +15,6 @@
 
 .dan-onboarding .dan-setup-titles { display:flex; align-items:flex-start; gap:8px; font-size:12px; font-weight:400; }
 .dan-onboarding .dan-setup-titles input { width:auto; margin-top:3px; flex-shrink:0; }
+
+.dan-setup-notice { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 100; display: flex; align-items: center; gap: 16px; width: max-content; max-width: calc(100vw - 32px); padding: 12px 16px; background: var(--dan-wb-surface); color: var(--dan-wb-text); border: 1px solid var(--dan-wb-border); border-radius: 10px; box-shadow: 0 4px 16px #0002; font-size: 13px; }
+.dan-setup-notice button { text-decoration: underline; flex-shrink: 0; }

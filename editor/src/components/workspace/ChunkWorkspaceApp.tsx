@@ -14003,7 +14003,7 @@ export default function ChunkWorkspaceApp() {
       setThreads(latest);
       setActiveThread(current => { const match = latest.find(thread => thread.id === current?.id && thread.workflow_id === current?.workflowId); return current && match && match.title !== current.title ? { ...current, title: match.title } : current; });
     } catch {
-      setThreads([]);
+      // Keep the current session list during a transient connection failure.
     }
   }, []);
 
@@ -14027,7 +14027,7 @@ export default function ChunkWorkspaceApp() {
       setBackgroundTasksReady(true);
       return next;
     } catch {
-      setBackgroundTasks([]);
+      // Keep run identities and queue receipts until the next successful refresh.
       return [];
     }
   }, []);

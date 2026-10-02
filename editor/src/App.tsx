@@ -59,8 +59,7 @@ export default function App() {
     <div className="h-screen w-screen overflow-hidden">
       <Suspense
         fallback={
-          <div className="grid h-screen w-screen place-items-center bg-white text-sm text-gray-500 dark:bg-gray-950 dark:text-gray-400">
-            Loading Dear Diane
+          <div className="h-screen w-screen" role="status" aria-label="Restoring workspace">
           </div>
         }
       >
