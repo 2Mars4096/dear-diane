@@ -48,6 +48,7 @@ export function WorkbenchConversation({ messages, pending, loading, status, onQu
   let lastRequestIndex = messages.length - 1;
   while (lastRequestIndex >= 0 && messages[lastRequestIndex].role !== "user") lastRequestIndex -= 1;
   const lastRequestId = messages[lastRequestIndex]?.id;
+  const lastResponseId = messages.slice(lastRequestIndex + 1).filter(message => message.role === "assistant").at(-1)?.id;
   useEffect(() => {
     const selection = window.getSelection();
     if (selection && !selection.isCollapsed && scroller.current?.contains(selection.anchorNode)) return;
@@ -79,7 +80,8 @@ export function WorkbenchConversation({ messages, pending, loading, status, onQu
           {Boolean(message.runEvents?.length) && <Suspense fallback={null}><ActivitySummary events={message.runEvents!} active={Boolean(pending[message.id] && message.content)} live={liveActions[message.id]}>{message.runEvents!.map((event, index) => <EventDetail key={index} event={{ type: event.type, source_event_type: event.event_type, summary: event.summary, payload: (event.detail?.payload ?? event.detail ?? {}) as Record<string, unknown> }} />)}</ActivitySummary></Suspense>}
           {message.taskRunRef && ["failed", "blocked", "stopped", "needs_input"].includes(message.taskRunRef.status) && <div className="wb-message-state">{{failed:"Could not finish", blocked:"Needs your attention", stopped:"Stopped", needs_input:"Needs your input"}[message.taskRunRef.status]}</div>}
         </article>
-        {message.id === lastRequestId && (onEdit || onRegenerate || onFork) && <Suspense fallback={null}><RequestActions key={message.id} text={message.content} disabled={actionsDisabled} onEdit={onEdit ? (text) => onEdit(message.id, text) : undefined} onRegenerate={onRegenerate} onFork={onFork} /></Suspense>}</Fragment>)}
+        {message.id === lastRequestId && (onEdit || onRegenerate || onFork) && <Suspense fallback={null}><RequestActions key={message.id} text={message.content} disabled={actionsDisabled} onEdit={onEdit ? (text) => onEdit(message.id, text) : undefined} onRegenerate={onRegenerate} onFork={onFork} /></Suspense>}
+        {message.id === lastResponseId && lastRequestId && !pending[message.id] && (onEdit || onRegenerate || onFork) && <Suspense fallback={null}><RequestActions response text={messages[lastRequestIndex].content} disabled={actionsDisabled} onEdit={onEdit ? text => onEdit(lastRequestId, text) : undefined} onRegenerate={onRegenerate} onFork={onFork} /></Suspense>}</Fragment>)}
       </div>
     </div>
     {quote && <div className="wb-quote-action" onMouseDown={(event) => event.preventDefault()}><button onClick={() => { onQuote(quote, quoteMessageIds); setQuote(""); window.getSelection()?.removeAllRanges(); }}><CornerDownRight size={15} />Reply to selection</button>{onSidecar && <button onClick={() => { onSidecar(quote); setQuote(""); }}><MessageSquareText size={15} />Sidecar chat</button>}<button onClick={() => setQuote("")} aria-label="Dismiss selected quote">×</button></div>}

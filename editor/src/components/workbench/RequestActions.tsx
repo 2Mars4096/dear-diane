@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { GitFork, Pencil, RefreshCw } from "lucide-react";
 
-export function RequestActions({ text, disabled, onEdit, onRegenerate, onFork }: {
+export function RequestActions({ text, disabled, onEdit, onRegenerate, onFork, response = false }: {
+  response?: boolean;
   text: string; disabled?: boolean;
   onEdit?: (text: string) => Promise<void>;
   onRegenerate?: () => void; onFork?: () => void;
@@ -22,7 +23,7 @@ export function RequestActions({ text, disabled, onEdit, onRegenerate, onFork }:
     catch (error) { setError(error instanceof Error ? error.message : "Could not resend. Your edit is still here."); }
     finally { savingRef.current = false; setSaving(false); }
   }
-  return <div className="wb-request-actions" data-editing={editing}>
+  return <div className={`wb-request-actions${response ? " wb-response-actions" : ""}`} aria-label={response ? "Response actions" : "Request actions"} data-editing={editing}>
     {editing ? <form className="wb-request-edit" onSubmit={(event) => { event.preventDefault(); void save(); }}>
       <textarea ref={field} aria-label="Edit last message" value={draft} disabled={saving} rows={4} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => {
         if (event.nativeEvent.isComposing) return;

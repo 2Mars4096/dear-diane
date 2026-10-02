@@ -922,3 +922,6 @@
   .wb-sidebar-resize { position:absolute; top:0; right:0; bottom:0; width:6px; z-index:25; cursor:col-resize; touch-action:none; user-select:none; }
   .wb-sidebar-resize:hover,.wb-sidebar-resize:focus-visible,.wb-sidebar-resize:active { background:color-mix(in srgb,var(--wb-accent) 35%,transparent); outline:none; }
 }
+
+.wb-response-actions { justify-content:flex-start; }
+.wb-response-actions[data-editing=true] { margin-left:0; }
