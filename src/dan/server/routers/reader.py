@@ -56,3 +56,22 @@ def write_ocr(path: str, body: dict[str, Any]) -> dict[str, Any]:
     temporary.write_text(json.dumps({"path": path, "identity": identity, "pages": pages}, ensure_ascii=False))
     temporary.replace(target)
     return {"saved": len(pages), "identity": identity}
+
+
+from pydantic import BaseModel, Field
+
+
+class TranscriptionInput(BaseModel):
+    image: str = Field(max_length=8_000_100)
+    text: str = Field(default='', max_length=4000)
+
+
+@router.post('/api/reader/transcribe')
+async def transcribe_selection(body: TranscriptionInput):
+    from dan.server.reader_transcription import transcribe
+    try:
+        return await transcribe(body.image, body.text)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+    except RuntimeError as error:
+        raise HTTPException(503, str(error)) from None
