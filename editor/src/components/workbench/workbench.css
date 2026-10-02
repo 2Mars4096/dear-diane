@@ -925,3 +925,8 @@
 
 .wb-response-actions { justify-content:flex-start; }
 .wb-response-actions[data-editing=true] { margin-left:0; }
+
+.wb-work-details > summary .wb-thinking-label { flex-shrink:0; overflow:visible; }
+.wb-thinking-time { font-variant-numeric:tabular-nums; }
+.wb-thinking-progress { min-width:0; color:var(--wb-muted); }
+.wb-work-details[data-working] > summary::marker { color:var(--wb-accent); }
