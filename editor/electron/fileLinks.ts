@@ -25,11 +25,12 @@ export function resolveFileLink(href: string, root: string): string {
 }
 
 export function registerFileLinks(getWindow: (sender: Electron.WebContents) => BrowserWindow | null) {
-  ipcMain.handle('shell:fileLink', async (event, request: { href: string; root: string; menu?: boolean }) => {
+  ipcMain.handle('shell:fileLink', async (event, request: { href: string; root: string; menu?: boolean; resolveOnly?: boolean }) => {
     const window = getWindow(event.sender);
     if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw Error('Unsupported file link sender.');
     try {
       const target = resolveFileLink(request.href, request.root);
+      if (request.resolveOnly) return { ok: true, path: target };
       const stat = await fs.stat(target).catch(() => { throw Error(`File or folder not found: ${target}`); });
       if (!stat.isFile() && !stat.isDirectory()) throw Error('This link is not a regular file or folder.');
       const open = async () => { const error = await shell.openPath(target); if (error) throw Error(error); };
@@ -43,6 +44,10 @@ export function registerFileLinks(getWindow: (sender: Electron.WebContents) => B
       ];
       if (process.platform === 'darwin') {
         const cursor = await Promise.any(['/Applications/Cursor.app', path.join(os.homedir(), 'Applications/Cursor.app')].map(async candidate => { await fs.access(candidate); return candidate; })).catch(() => null);
+        items.push({ label: 'Open With…', click: run(async () => {
+          const choice = await dialog.showOpenDialog(window, { title: 'Open With', defaultPath: '/Applications', properties: ['openFile'], filters: [{ name: 'Applications', extensions: ['app'] }] });
+          if (!choice.canceled && choice.filePaths[0]) await exec('/usr/bin/open', ['-a', choice.filePaths[0], target]);
+        }) });
         if (cursor) items.push({ label: 'Open in Cursor', click: run(() => exec('/usr/bin/open', ['-a', cursor, target])) });
       }
       items.push({ type: 'separator' }, { label: 'Copy path', click: () => clipboard.writeText(target) });

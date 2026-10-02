@@ -1,27 +1,20 @@
-import { useState } from "react";
-import { ExternalLink, File } from "lucide-react";
+import { File } from "lucide-react";
 import type { ChatAttachment } from "../../types/chat";
-import { isElectron, nativeShell } from "../../lib/electronBridge";
 import { pathFileTarget } from "../../lib/fileTargets";
+import { openFile } from "../../lib/openFile";
 
 export function MessageAttachment({ attachment }: { attachment: ChatAttachment }) {
-  const [error, setError] = useState("");
-  const [opening, setOpening] = useState(false);
   const path = attachment.path?.trim() || "";
   const target = path ? pathFileTarget(path, attachment.filename) : null;
   const size = attachment.size == null ? "" : attachment.size >= 1048576 ? `${(attachment.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.ceil(attachment.size / 1024))} KB`;
   return <div className="wb-attachment">
-    {path ? <a className="wb-attachment-link" href={target?.url} target="_blank" rel="noopener noreferrer" title={`Open ${attachment.filename}`} aria-busy={opening} onClick={async event => {
-      if (!isElectron() || target?.source !== "local") return;
-      event.preventDefault();
-      if (opening) return;
-      setOpening(true); setError("");
-      try { if (!await nativeShell.openPath(path)) setError("Could not open this file. It may have moved or no app is available to open it."); }
-      catch { setError("Could not open this file. Check that it still exists."); }
-      finally { setOpening(false); }
-    }}><File size={14} aria-hidden="true" /><span>{attachment.filename}</span>{size && <small>{size}</small>}<ExternalLink size={12} aria-hidden="true" /></a>
+    {target ? <a className="wb-attachment-link" href={target.url} title={`Open ${attachment.filename}`} onClick={event => {
+      event.preventDefault(); openFile({ file: target });
+    }} onContextMenu={event => {
+      if (target.source !== 'local' || !window.electronAPI?.shell.fileLink) return;
+      event.preventDefault(); void window.electronAPI.shell.fileLink({ href: path, root: target.root || '', menu: true });
+    }}><File size={14} aria-hidden="true" /><span>{attachment.filename}</span>{size && <small>{size}</small>}</a>
       : <span className="wb-attachment-missing">{attachment.filename} · Original file unavailable</span>}
     {attachment.caption && <p className="wb-muted">{attachment.caption}</p>}
-    {error && <p role="alert">{error}</p>}
   </div>;
 }

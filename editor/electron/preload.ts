@@ -83,7 +83,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }) => ipcRenderer.invoke("fs:writeTempAttachment", payload),
   },
   shell: {
-    fileLink: (request: { href: string; root: string; menu?: boolean }) => ipcRenderer.invoke("shell:fileLink", request),
+    fileLink: (request: { href: string; root: string; menu?: boolean; resolveOnly?: boolean }) => ipcRenderer.invoke("shell:fileLink", request),
     openPath: (filePath: string) => ipcRenderer.invoke("shell:openPath", filePath),
     openExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url),
   },

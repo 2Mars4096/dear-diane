@@ -1,3 +1,4 @@
+import { openFile } from '../../lib/openFile';
 import { currentFileHost } from "../../lib/fileTargets";
 import { useMemo, useState, type MouseEvent } from "react";
 import katex from "katex";
@@ -470,7 +471,9 @@ export default function MarkdownRenderer({
     const href = link.getAttribute("data-file-link") || "";
     const root = workspaceRoot ?? event.currentTarget.closest<HTMLElement>("[data-workspace-root]")?.dataset.workspaceRoot ?? "";
     setFileError("");
-    if (currentFileHost() === "remote") {
+    if (!menu) {
+      openFile({ href, root });
+    } else if (currentFileHost() === "remote") {
       setFileError("This path is on the remote host. Open it through the project Files panel.");
     } else if (!window.electronAPI?.shell.fileLink) {
       setFileError("Open file and folder links in the updated Dear Diane desktop app.");

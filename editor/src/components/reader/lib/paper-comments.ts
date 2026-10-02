@@ -133,7 +133,7 @@ export function normalizePaperComments(
       : [];
     const createdAt = cleanDate(record.createdAt);
     const updatedAt = cleanDate(record.updatedAt);
-    if (!commentId || !quote || !pageNumber || !rects.length || !createdAt || !updatedAt) {
+    if (!commentId || !quote || !pageNumber || (!rects.length && !cleanAnchor(record.anchor)) || !createdAt || !updatedAt) {
       return [];
     }
     const anchor = cleanAnchor(record.anchor);

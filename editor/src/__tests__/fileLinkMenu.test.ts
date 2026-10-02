@@ -37,3 +37,9 @@ it('rejects requests outside the main app frame', async () => {
   await expect(handler({ sender: {}, senderFrame: {} }, { href: dir, root: '' })).rejects.toThrow('sender');
   expect(mock.openPath).not.toHaveBeenCalled();
 });
+
+it('resolves missing targets for sidecar errors without opening an external app', async () => {
+  const { dir, event, handler } = await fixture();
+  expect(await handler(event, { href: 'missing.tex:8', root: dir, resolveOnly: true })).toEqual({ ok: true, path: path.join(dir, 'missing.tex') });
+  expect(mock.openPath).not.toHaveBeenCalled();
+});

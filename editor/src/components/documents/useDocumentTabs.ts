@@ -4,7 +4,7 @@ import { closeMainTab, type MainTab } from '../workbench/mainTabState';
 import type { DocumentDraft, DocumentFile } from './documents';
 
 /** Workspace-owned lifetimes survive tool switches; closing releases only that tab. */
-export function useDocumentTabs() {
+export function useDocumentTabs(keyboard = true) {
   const [mainTabs, setMainTabs] = useState<MainTab[]>([{ id: 'chat', kind: 'chat', label: 'Chat' }]);
   const [activeMainTab, setActiveMainTab] = useState('chat');
   const [libraryReadings, setLibraryReadings] = useState<Record<string, { paper: Paper; session: ReadingSession }>>({});
@@ -56,6 +56,7 @@ export function useDocumentTabs() {
   };
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if (!keyboard) return;
       const mac = /Mac|iPhone|iPad/.test(navigator.platform);
       const modifiers = mac ? event.metaKey && event.ctrlKey && !event.altKey : event.ctrlKey && event.altKey && !event.metaKey;
       if (event.code !== 'KeyW' || !modifiers || event.shiftKey || event.repeat || event.isComposing || event.defaultPrevented || document.querySelector('dialog[open], [role=dialog][aria-modal=true]')) return;

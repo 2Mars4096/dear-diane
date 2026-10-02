@@ -5,7 +5,7 @@ import { readerActions, useReaderState } from "./readerStore";
 import type { ReaderFile } from "./ReaderView";
 
 /** Side panel "Notes" tab: write a note for the current selection and browse the PDF's highlights. */
-export function ReaderNotes({ file, header }: { file: ReaderFile; header?: ReactNode }) {
+export function ReaderNotes({ file, header, textDocument = false, onAsk }: { file: ReaderFile; header?: ReactNode; textDocument?: boolean; onAsk?: (text: string) => void }) {
   const state = useReaderState(file.path);
   const [text, setText] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
@@ -24,10 +24,10 @@ export function ReaderNotes({ file, header }: { file: ReaderFile; header?: React
         }} />
       <footer><button type="button" onClick={() => readerActions.setDraft(file.path, null)}>Cancel</button><button type="submit">{text.trim() ? "Save note" : "Highlight"}</button></footer>
     </form>}
-    {!sorted.length && !state.draft && <p className="wb-activity-empty wb-side-empty">Select text in the PDF and choose Comment to highlight it or add a note.</p>}
+    {!sorted.length && !state.draft && <p className="wb-activity-empty wb-side-empty">Select text in the file and choose Annotate selection or Comment to add a note.</p>}
     <ol className="wb-notes-list">{sorted.map((item) => <li key={item.commentId} data-stale={state.stale[item.commentId]}>
-      <button type="button" className="wb-notes-jump" onClick={() => readerActions.focus(file.path, item)} title="Show in the PDF">
-        <span>p. {item.pageNumber}{state.stale[item.commentId] === "missing" ? " · not found in this version" : ""}</span>
+      <button type="button" className="wb-notes-jump" onClick={() => readerActions.focus(file.path, item)} title="Show in the file">
+        <span>{textDocument ? "Passage" : `p. ${item.pageNumber}`}{state.stale[item.commentId] === "missing" ? " · not found in this version" : ""}</span>
         <q>{item.quote}</q>
       </button>
       {editing === item.commentId
@@ -36,6 +36,7 @@ export function ReaderNotes({ file, header }: { file: ReaderFile; header?: React
           </form>
         : item.text && <p>{item.text}</p>}
       <div className="wb-notes-actions">
+        {onAsk && <button type="button" onClick={() => onAsk(`File: ${file.path}\n${textDocument ? "" : `Page ${item.pageNumber}\n`}\n> ${item.quote}\n\n${item.text}`)}>Use in chat</button>}
         <button type="button" onClick={() => { setEditing(item.commentId); setEditText(item.text); }}><Pencil size={11} />{item.text ? "Edit" : "Add note"}</button>
         <button type="button" onClick={() => readerActions.removeComment(file.path, item.commentId)}><Trash2 size={11} />Delete</button>
       </div>

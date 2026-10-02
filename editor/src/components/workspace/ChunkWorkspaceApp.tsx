@@ -1,3 +1,4 @@
+import type { FileOpenRequest } from '../../lib/openFile';
 import { useSessionPreferences } from "../workbench/sessionPreferences";
 import type { SessionAction } from "../workbench/SessionMenu";
 import { fileName, normalizeRootPath } from "../../lib/workspacePaths";
@@ -165,6 +166,7 @@ import MarkdownRenderer from "../shared/MarkdownRenderer";
 const FollowupQueue = lazy(() => import("../workbench/FollowupQueue").then(module => ({ default: module.FollowupQueue })));
 const DanSettings = lazy(() => import("../workbench/DanSettings").then(module => ({ default: module.DanSettings })));
 const FileOpener = lazy(() => import("../documents/FileOpener"));
+const FileSidecar = lazy(() => import("../documents/FileSidecar"));
 const DocumentView = lazy(() => import("../documents/DocumentView"));
 const ReadingChat = lazy(() => import("../papers/ReadingChat").then(module => ({ default: module.ReadingChat })));
 const LiteraturePanel = lazy(() => import("../papers/LiteraturePanel"));
@@ -14636,7 +14638,16 @@ export default function ChunkWorkspaceApp() {
     const payload = withLeadSelection(buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode), selectedAgentId, leadProfiles);
     return { ...payload, profile_policy: { ...payload.profile_policy, native_workers: nativeWorkerProfiles } };
   };
+  const [fileRequest, setFileRequest] = useState<FileOpenRequest | null>(null);
+  useEffect(() => {
+    const receive = (event: Event) => { setFileRequest((event as CustomEvent<FileOpenRequest>).detail); openSideTab("document"); setPhonePage("chat"); setActivePane("work"); };
+    window.addEventListener("dan:open-file", receive);
+    return () => window.removeEventListener("dan:open-file", receive);
+  }, [openSideTab]);
   const openDocument = (file: DocumentFile) => {
+    setFileRequest({ file }); openSideTab("document"); setPhonePage("chat"); setActivePane("work");
+  };
+  const openLibraryDocument = (file: DocumentFile) => {
     registerDocument({ ...file, workspaceId: file.workspaceId || activeWorkspaceId || undefined, projectName: file.projectName || workspace?.name }); setActivePane("work"); setPhonePage("chat"); setShowConversationChunks(true);
   };
   const openPaperLibrary = () => {
@@ -14645,7 +14656,7 @@ export default function ChunkWorkspaceApp() {
   const openLibraryReading = async (paper: Paper) => {
     const { openPaper } = await import("../papers/workspace");
     setReaderSelection({ text: "", token: Date.now() });
-    await openPaper(paper, openDocument, setLibraryReadings, setMainTabs);
+    await openPaper(paper, openLibraryDocument, setLibraryReadings, setMainTabs);
   };
   const referencePapers = async (papers: Paper[]) => {
     const { makePaperReference } = await import("../papers/workspace");
@@ -14695,6 +14706,7 @@ export default function ChunkWorkspaceApp() {
       { id: "chat", label: readerFile ? "Reading" : "Chat" },
       ...(readerFile ? [{ id: "notes" as const, label: "Notes" }] : []),
       { id: "files", label: "Files" },
+      ...(fileRequest ? [{ id: "document" as const, label: "Document" }] : []),
       { id: "changes", label: "Changes" },
       { id: "literature", label: "Literature" },
       ...(activePreviewFileEntry || selectedBlueprintNode || selectedChunk || promptLogPreview ? [{ id: "preview" as const, label: "Preview" }] : []),
@@ -18405,7 +18417,7 @@ export default function ChunkWorkspaceApp() {
           >
             <div className="flex min-h-0 min-w-0 flex-col bg-white/90 dark:bg-slate-950">
 
-              <Suspense fallback={null}>{Object.entries(documents).filter(([id]) => id.startsWith("file:")).map(([id, file]) => <DocumentView key={id} file={file} active={id === activeMainTab} drafts={documentDrafts.current} onDirty={(path, dirty) => setDirtyDocuments(current => ({...current, [path]:dirty}))} />)}</Suspense>
+              <Suspense fallback={null}>{Object.entries(documents).filter(([id]) => id.startsWith("file:")).map(([id, file]) => <DocumentView key={id} file={file} active={id === activeMainTab} keyboard={visibleSideTab !== "document"} drafts={documentDrafts.current} onDirty={(path, dirty) => setDirtyDocuments(current => ({...current, [path]:dirty}))} />)}</Suspense>
               {mainTabs.some(tab => tab.id === "papers") && <div className="papers-tab" hidden={activeMainTab !== "papers"}><Suspense fallback={null}><PaperLibrary onOpen={openLibraryReading} onReference={papers => void referencePapers(papers)} /></Suspense></div>}
               {libraryReading && <Suspense fallback={null}><ReadingSessionBar id={libraryReading.session.id} onBrowse={openPaperLibrary} /></Suspense>}
               {activeMainTab === "papers" || activeMainTab.startsWith("file:") ? null : activeMainTab === "settings" ? <Suspense fallback={null}><DanSettings page onPapers={openPaperLibrary} onClose={() => closeTab("settings")} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} /></Suspense> : readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView key={readerFile.path} file={readerFile} onAsk={askFromReader} onNotes={() => openSideTab("notes")} /></Suspense> : <>
@@ -18737,6 +18749,7 @@ export default function ChunkWorkspaceApp() {
                 )}
               </aside>
             </PersistentPanel>
+          <PersistentPanel active={visibleSideTab === "document"} name="Document"><Suspense fallback={<p className="wb-side-empty">Opening file…</p>}><FileSidecar request={fileRequest} active={visibleSideTab === "document"} onAsk={text => { setComposerInputValue(input ? `${input}\n\n${text}` : text); setActiveMainTab(mainTabs.find(tab => tab.session?.id === activeThread?.id && tab.session?.workflowId === activeThread?.workflowId)?.id || "chat"); requestAnimationFrame(() => composerRef.current?.focus()); }} /></Suspense></PersistentPanel>
           <PersistentPanel active={visibleSideTab === "literature"} name="Literature"><Suspense fallback={<p className="wb-side-empty">Opening literature…</p>}><LiteraturePanel execution={sidecarExecution()} leadLabel={selectedAgentOption.shortLabel} onOpen={openLibraryReading} onDocument={openDocument} onBrowse={openPaperLibrary} /></Suspense></PersistentPanel>
           <PersistentPanel active={visibleSideTab === "processes"} name="Processes" key={`processes:${developmentRoot}`}><Suspense fallback={null}><ProcessesPanel cwd={developmentRoot} workspaceId={workspace?.id || ""} processes={processState.processes} error={processState.error} onChanged={() => void processState.refresh()} header={false} /></Suspense></PersistentPanel>
           <PersistentPanel active={visibleSideTab === "notes"} name="Notes" key={`notes:${readerFile?.path ?? ""}`} >{readerFile && <Suspense fallback={null}><ReaderNotes file={readerFile} header={false} /></Suspense>}</PersistentPanel>

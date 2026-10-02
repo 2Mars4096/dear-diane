@@ -1,11 +1,11 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { GitCompare, Check, ChevronDown, Activity, BookOpen, Library, Eye, FolderOpen, MessageSquareText, StickyNote, SquareTerminal, Users, X, type LucideIcon } from "lucide-react";
 
-export type SideTab = "chat" | "notes" | "files" | "preview" | "activity" | "team" | "processes" | "literature" | "changes";
+export type SideTab = "document" | "chat" | "notes" | "files" | "preview" | "activity" | "team" | "processes" | "literature" | "changes";
 export type SideTabItem = { id: SideTab; label: string; count?: number; live?: boolean };
 
-const ICONS: Record<SideTab, LucideIcon> = { chat: MessageSquareText, notes: StickyNote, files: FolderOpen, preview: Eye, activity: Activity, team: Users, processes: SquareTerminal, literature: Library, changes: GitCompare };
-const IDS: SideTab[] = ["chat", "notes", "files", "preview", "activity", "team", "processes", "literature", "changes"];
+const ICONS: Record<SideTab, LucideIcon> = { document: Eye, chat: MessageSquareText, notes: StickyNote, files: FolderOpen, preview: Eye, activity: Activity, team: Users, processes: SquareTerminal, literature: Library, changes: GitCompare };
+const IDS: SideTab[] = ["document", "chat", "notes", "files", "preview", "activity", "team", "processes", "literature", "changes"];
 const STORAGE_KEY = "dan.workbench.sideTab.v1";
 
 export function readLastSideTab(): SideTab {
@@ -19,6 +19,7 @@ export function rememberSideTab(tab: SideTab) {
 }
 
 const DESCRIPTIONS: Record<SideTab, string> = {
+  document: "Read and annotate files",
   changes: "Review changes since your last instruction",
   chat: "Talk with Diane",
   notes: "Notes and highlights for this document",

@@ -20,18 +20,20 @@ it('dispatches click and native context menu with the project root for either le
   window.electronAPI = { shell: { fileLink } } as unknown as NonNullable<Window['electronAPI']>;
   host.dataset.workspaceRoot = '/project'; root = createRoot(host);
   act(() => root.render(createElement(MarkdownRenderer, { content: '[folder](output/imagegen)' })));
+  const opened = vi.fn(); window.addEventListener('dan:open-file', opened);
   await act(async () => host.querySelector('a')!.click());
-  expect(fileLink).toHaveBeenLastCalledWith({ href: 'output/imagegen', root: '/project', menu: false });
+  expect((opened.mock.calls[0][0] as CustomEvent).detail).toEqual({ href: 'output/imagegen', root: '/project' });
+  expect(fileLink).not.toHaveBeenCalled(); window.removeEventListener('dan:open-file', opened);
   await act(async () => host.querySelector('a')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
   expect(fileLink).toHaveBeenLastCalledWith({ href: 'output/imagegen', root: '/project', menu: true });
 });
-it('shows missing-file errors and prevents local actions for remote links', async () => {
+it('shows native menu errors and prevents local menu actions for remote links', async () => {
   const fileLink = vi.fn().mockResolvedValue({ ok: false, error: 'File or folder not found' });
   window.electronAPI = { shell: { fileLink } } as unknown as NonNullable<Window['electronAPI']>;
   root = createRoot(host); act(() => root.render(createElement(MarkdownRenderer, { content: '[file](/missing)' })));
-  await act(async () => host.querySelector('a')!.click());
+  await act(async () => host.querySelector('a')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('not found');
   fileLink.mockClear(); const meta = document.createElement('meta'); meta.name = 'dan-remote-machine'; document.head.append(meta);
-  await act(async () => host.querySelector('a')!.click()); expect(fileLink).not.toHaveBeenCalled();
+  await act(async () => host.querySelector('a')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))); expect(fileLink).not.toHaveBeenCalled();
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('remote host');
 });
