@@ -35,7 +35,7 @@
   --color-slate-100:var(--wb-ink);
 }
 .dark .wb-shell .wb-project-sidebar { background:var(--wb-paper); }
-.wb-shell :is(.wb-native-settings-panel,.wb-project-menu,.wb-reader-comments,.wb-reader-note),
+.wb-shell :is(.wb-native-settings-panel,.wb-project-menu,.wb-session-menu,.wb-reader-comments,.wb-reader-note),
 .wb-switcher { background:var(--wb-raised); }
 .wb-shell :is(input,textarea,select) { color:var(--wb-ink); accent-color:var(--wb-accent); }
 .wb-shell :is(input,textarea)::placeholder { color:var(--wb-muted); opacity:1; }
@@ -306,7 +306,7 @@
 
 .wb-project-menu { position:fixed; inset:auto; margin:0; width:208px; padding:5px; border:1px solid var(--wb-line); border-radius:10px; background:var(--wb-paper); color:var(--wb-ink); box-shadow:0 8px 30px #0002; }
 .wb-project-menu button { display:flex; align-items:center; gap:10px; width:100%; border-radius:6px; padding:9px 10px; font-size:12px; text-align:left; }
-.wb-project-menu button:hover, .wb-project-menu button:focus-visible { background:var(--wb-soft); }
+.wb-project-menu button:hover, .wb-project-menu button:focus-visible { background:var(--wb-paper); }
 .wb-menu-separator { height:1px; background:var(--wb-line); margin:4px; }
 .wb-project-menu .wb-remove-action, .wb-remove-confirmation .wb-remove-action { color:#bc3030; background:#bc30300d; }
 .wb-project-menu .wb-remove-action:hover, .wb-remove-confirmation .wb-remove-action:hover { background:#bc30301c; }
@@ -873,9 +873,10 @@
 .wb-session-nav-row { display:flex; align-items:center; min-width:0; }
 .wb-session-nav-row > button:first-child { flex:1; min-width:0; margin-right:0; }
 .wb-session-nav-row > .wb-session-more { flex:0 0 26px; width:26px; margin-left:0; padding:6px; justify-content:center; }
-.wb-session-menu { position:fixed; z-index:1000; width:230px; max-width:calc(100vw - 16px); max-height:calc(100vh - 16px); overflow:auto; padding:5px; border:1px solid var(--wb-line, #777); border-radius:8px; background:var(--wb-paper, #f7f6f2); color:var(--wb-ink, #292724); box-shadow:0 8px 24px #0003; font-size:13px; }
-.wb-session-menu button { display:block; width:100%; border:0; border-radius:4px; background:transparent; color:inherit; text-align:left; padding:7px 9px; cursor:pointer; }
-.wb-session-menu button:hover,.wb-session-menu button:focus-visible { background:var(--wb-soft, #e7e5df); outline:2px solid var(--wb-accent, #777); outline-offset:-2px; }
+.wb-session-menu { position:fixed; z-index:1000; width:230px; max-width:calc(100vw - 16px); max-height:calc(100vh - 16px); overflow:auto; padding:5px; border:1px solid var(--wb-line, #777); border-radius:10px; background:var(--wb-raised); color:var(--wb-ink); box-shadow:0 8px 30px #0002; font-size:12px; }
+.wb-session-menu button { display:block; width:100%; border:0; border-radius:6px; background:transparent; color:inherit; text-align:left; padding:9px 10px; cursor:pointer; }
+.wb-session-menu button:hover,.wb-session-menu button:focus-visible { background:var(--wb-paper); }
+.wb-session-menu button:focus-visible,.wb-project-menu button:focus-visible { outline:2px solid var(--wb-accent); outline-offset:-2px; }
 .wb-session-menu button:disabled { opacity:.5; cursor:default; }
 .wb-session-menu hr { border:0; border-top:1px solid var(--wb-line, #ccc); margin:4px; }
 .wb-session-menu label,.wb-session-menu-label { display:block; padding:7px 9px; }
