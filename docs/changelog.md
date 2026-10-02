@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-10-03
+- [fix] Detect central scan gutters and OCR each side independently, mapping lines back to original page coordinates in left-page then right-page order. Add a saved Auto layout / One page / Two pages override; ignore OCR caches from the old layout version or another mode.
+- [fix] Replace Add to Ref with Ref and explicit Ask-primary styling. The former sibling selector incorrectly accented every action after Comment. Add a second toolbar row for scan controls in narrow readers.
+- [test] The supplied scan yields 27 OCR lines with zero crossing the gutter; browser checks verify secondary Comment/Ref colors, the saved Two pages override, and 390px toolbar fit.
+
+
+## 2026-10-03
+- [infra] Install Reading restart persistence and visible-name cleanup after idle/ownership checks. App PID 10934 owns backend PID 10965; strict signature, archive equality and direct/proxy health pass. Rollback: `/Applications/.DAN-previous-e83dd71f-e11e-4ac8-8372-84926e7a8291.app`.
+- [test] 429 frontend tests, 17 focused backend tests, production bundle budgets and Electron compilation pass. A dedicated persistent browser profile retains browser-file bytes through a full process restart; remount/reload checks cover native files, active selection, close persistence and old-history recovery.
+
+
+## 2026-10-03
+- [fix] Persist and restore Reading tabs, document selection/project metadata, library-session links, and original PDF chat context. Browser copies use local IndexedDB; pending writes guard unload. Recover older native file entries once from recent navigation history, and retain explicit closes.
+- [refactor] Put document-session persistence in its own bundle chunk; keep the main shell within its existing size budget.
+- [fix] Replace remaining visible DAN skill/browser guidance and polished display labels with Diane; keep existing integration/data identifiers compatible.
+- [docs] Confirm the reported GitGuardian Authentication Tuple is the historical `LLMAuthenticationError` import mapping from `9392bfbc`, deleted by `ddc8660a` on August 2. Both values are code identifiers, not credentials; no history rewrite or scanner suppression.
+- [infra] Install the PDF area-selection/anchored-ref release and launch successfully; archive identity, strict signature, direct/backend proxy health pass (backend PID 99303). Rollback: `/Applications/.DAN-previous-9583d959-f315-4a79-9e82-c7d19bdad5c0.app`.
+
+
+## 2026-10-02
+- [feat] Add Select area to the PDF reader: draw a rectangle without OCR, comment, save a reference, or stage a cropped PNG for chat. Native text remains text; OCR selections also supply the original image. Crop rendering is independent of reader zoom and bounded to 2400 pixels.
+- [feat] Let refs retain text/area highlights, coexist on the same page, and have editable labels. Hover previews and page navigation start at the saved location; existing whole-page refs remain supported.
+- [fix] Scroll anchored previews after the canvas becomes visible; scrolling while its loading state hid the canvas reset the position to zero.
+- [test] Browser checks cover passage previews, area selection on the supplied two-page scan, PNG upload/staging with a mocked endpoint, and reload persistence. 425 frontend tests pass, including crop-attachment payload and persistence regressions. Production build and bundle budgets pass. Browser checks also confirm normal page navigation after opening a ref and the narrow toolbar. No live model request or desktop reinstall.
+
+
 ## 2026-10-02
 - [docs] Group the verified release into seven feature commits: attachments, refresh recovery, run/queue reconciliation, streamed activity, private Codex storage, document tabs/navigation/resizing, and the Reading sidebar. Keep release tracking in a separate documentation commit.
 

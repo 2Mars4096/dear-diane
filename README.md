@@ -23,6 +23,9 @@ Install browser support in the backend Python environment with `pip install -e '
 
 ## Workbench
 
+- **Reading after restart:** open reading files and the selected document are restored, along with existing reading progress and chat links. Browser-picked copies stay on this device. Closing a file removes it from the saved Reading list.
+- **PDF selection and Refs:** select text or use **Select area** to box a scanned passage, equation, or figure without OCR. Choose **Ref** to keep a highlighted location; hover its tag to preview that passage and edit its label. **Ask** stages selected text or a cropped image for chat. Scanned spreads separate text at the gutter; use **Two pages** in the layout control if automatic detection misses it.
+
 - **Sidebar layout:** drag the right edge to resize; double-click to reset. Width and selected project/session are restored after refresh or restart.
 - **Workspace list:** sessions, open PDFs, files, Papers, and Settings share one sidebar list. Compact title rows keep project context in the header and hover text; pins stay on the same row. The project ellipsis menu beside the selector opens project editing and native-session import. The magnifier opens search. Cmd/Ctrl+Shift+E opens the shared project picker; Cmd/Ctrl+Shift+0 restores all projects and clears search. File drafts, unread state, and running work remain visible. The old project/recent/pinned lists and top tab row are replaced by this list.
 - **Recent-item shortcuts:** hold Cmd (Ctrl on Windows/Linux) to reveal numbers on eligible rows. Cmd/Ctrl+1 returns to the previous item; +2–9 selects older visits, including documents. Existing sessions provide initial destinations before you have visit history. Numbers and row order freeze until the modifier is released. Background updates do not reorder the list; shortcuts also work with the sidebar hidden.

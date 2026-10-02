@@ -1,5 +1,22 @@
 # Architecture
 
+## OCR spread geometry
+- `reader/lib/ocr-layout.ts` detects a central low-ink gutter from a reduced raster while discounting binding lines. `ocr-runner.ts` recognizes each crop separately and maps normalized spans back to the full PDF page; left-side text precedes right-side text.
+- Cached pages include layout version/mode. ReaderView rejects legacy caches, cancels outdated layout jobs, and prioritizes the currently visible page within the bounded OCR batch. The per-document layout override lives in `diane.reader.ocr-layout:<path>`. Original PDF bytes are unchanged.
+
+
+## Reading restart persistence
+- `documents/documentSession.ts` stores main reading tab descriptors and library-session context in `diane.documents.main.v1`; `useDocumentTabs` restores them without changing project/chat selection. Original reading workflow IDs preserve sidecar conversation identity.
+- Browser-picked bytes stay in the `diane-reading-files` IndexedDB database and receive fresh object URLs after restart. Pending copy saves guard unload. Native/remote paths rebuild preview URLs; library sessions reconnect through the existing reading API.
+- A one-time migration recovers absolute reading paths from `dan.workspaceVisits.v1` and original chat workflows from saved sidecar links. Existing annotation/ref/position keys remain unchanged. Optional document sidecar hooks do not write main reading state.
+
+
+## PDF selection references
+- `reader/AreaSelection.tsx` captures normalized rectangular page regions with pointer capture; Escape cancels. It does not depend on OCR.
+- `reader/lib/selection-image.ts` renders selected bounds directly to a PNG canvas, respecting page rotation and capping the longest output dimension at 2400 px. Reader Ask uploads through the existing attachment endpoint, then stages the image in main/sidecar chat; sending remains explicit.
+- Reference tags optionally store `PdfSelectionAnchor`; legacy whole-page tags still deduplicate by page, selected refs by ID. Reader/preview overlays share the saved rectangles, and preview scrolling waits for visible canvas layout.
+
+
 ## Desktop navigation and Reading
 - `electron/navigation.ts` routes app-command, swipe, recognized extra mouse buttons and browser navigation keys through preload's `dan:navigate` event. The Go menu provides system-level Back/Forward commands. Renderer history remains the bounded source of navigation targets.
 - WorkspaceNavigator renders recent open PDFs/files in a separate Reading section (five by default, expandable), independently of the project chat filter. Closing a file removes that open reading entry; documents remain in main tabs.

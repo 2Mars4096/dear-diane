@@ -1,5 +1,18 @@
 # Todo
 
+- [x] Fix OCR selections spanning both pages: detect/crop at the gutter, retain each page's reading order, invalidate old caches, and add layout override. Shorten Ref and make only Ask primary — [reader](UI-plans/3-reader-and-side-panel.md).
+- [ ] Install the OCR/selection-toolbar follow-up.
+
+
+- [x] Restore Reading entries after restart, including browser copies, library links, active document, and older recent-file history — [document workspace](plans/4-6-document-workspace.md).
+- [x] Install restart-persistence follow-up; signed archive matches and relaunched app/backend/proxy health pass.
+- [x] Use Diane in remaining visible skill/browser prompts; retain compatible package, environment, and storage identifiers.
+- [x] Investigate GitGuardian Authentication Tuple alert: historical import-map false positive, removed August 2; no credential on the flagged line. GitGuardian incident disposition remains external.
+
+
+- [x] PDF selections and anchored Refs: select scanned areas without OCR, stage cropped images in chat, and preview saved text/area highlights at their location — [reader](UI-plans/3-reader-and-side-panel.md). Installed and health-verified on October 3.
+
+
 - [x] Separate five recent open reading tabs from project chats with Show all; add native desktop Back/Forward event routing and Go menu.
 - [ ] User acceptance: test Logitech Back/Forward buttons after the native navigation update.
 

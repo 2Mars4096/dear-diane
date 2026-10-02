@@ -1,5 +1,18 @@
 # Known Issues & Failed Approaches
 
+- **Fixed 2026-10-03: OCR selection spans both printed pages.** Running the recognizer on an entire spread allowed one line box to bridge the gutter; global line ordering also interleaved the pages. Recognize separate raster regions and concatenate each region's lines in reading order. Reject legacy cached results so reopened PDFs get corrected geometry.
+- **Fixed 2026-10-03: two orange selection actions.** The CSS selector `button + button` accented every button after the first. Give Ask an explicit primary class; Comment and Ref remain secondary.
+
+
+- **Fixed 2026-10-03: Reading disappears after restart.** The sidebar derived entries from memory-only document tabs. Persist descriptors and active selection, reconnect library state, and save browser copies locally. Restore older absolute paths from visit history once; explicit closes then remain closed.
+- **Restart verification:** Playwright's default ephemeral profile disappears when its process closes; use a dedicated persistent profile for a real restart test. Browser-copy writes are asynchronous, so guard unload until the IndexedDB transaction completes.
+- **GitGuardian false positive (2026-10-03):** `src/dan/llm_core/__init__.py` in historical commit `9392bfbc` maps `LLMAuthenticationError` to a module path and attribute tuple. GitGuardian's generic Authentication Tuple detector can misinterpret the name containing “auth.” File removed by `ddc8660a` on 2026-08-02; no corresponding credential exists. Do not rotate unrelated credentials or rewrite repository history for this finding. Classify the historical incident as a false positive in GitGuardian.
+
+
+- **Fixed 2026-10-02: selected reference previews opened at page start.** Setting scroll position while the loading state hid the canvas clamped it to zero. Apply the anchor after the ready state makes the canvas visible. Browser regression verified. Center main-reader jumps on the selected region and cancel stale reference scroll requests so a subsequent page change wins.
+- **Reader validation (2026-10-02):** isolated browser fixtures must start with cleared ref storage; an already pinned preview can intercept simulated selection actions. The backend-shutdown test requires process inspection outside the filesystem sandbox. New persistence tests initially expected unnormalized dates and an explicit absent anchor; corrected those assertions.
+
+
 - **Mouse navigation follow-up 2026-10-02:** the prior test exercised Chromium Back events, but the user's Logitech did not navigate the installed app. Add native Electron input/IPC and menu paths. Physical device behavior remains unverified pending user check; app-specific Logi Options+ bindings may differ.
 - **Reading organization 2026-10-02:** PDFs/files were mixed into project session rows and opening a reading tab could switch project selection. Give reading tabs a separate five-item section above project chats; expanded overflow stays scrollable.
 - **Validation:** updated the old document-row test to assert reading paths instead of project ownership. Disposable Electron harness initially imported the npm executable path instead of the built-in electron module; corrected, then native bridge checks passed.
