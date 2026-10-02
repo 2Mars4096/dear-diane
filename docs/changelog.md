@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-10-03
+- [infra] Push the vision endpoint, OCR geometry, offline reader/layout, visible branding and documentation in separate commits. Install the signed app; app PID 49135 owns healthy backend PID 49178, direct/proxy health and OpenRouter readiness pass, signature/archive match, and test fixtures are absent. Rollback: `/Applications/.Diane-previous-fb5f43b8-f535-4fbb-8c88-c170adbb40e5.app`.
+- [fix] Apply six reviewed quote repairs by comment ID, preserving all comment bodies, page numbers, rectangles and creation timestamps. All six persist through app restart. Original records retained in the profile’s `updates/note-quotes-before-1790961499633.json`; an additional note created during the work remains preserved.
+
+## 2026-10-03
 - [feat] Transcribe scanned selections with OpenRouter Qwen3-VL 32B, falling back to GLM-4.6V. Send only selected raster strips in reading order plus the unreliable OCR hint; native PDF text bypasses the model. Preserve printed Unicode symbols and remove invisible control debris.
 - [fix] Save scanned comments immediately while quote transcription runs. Offline/pending quotes retain geometry and written comments across restart, retry on reconnect or request, and never clear in-progress typing or resurrect deleted notes.
 - [fix] Bundle Chinese OCR, keep word coordinates, recover missing visual lines, and invalidate old geometry caches. Remove Select area; Single Page / Two Pages now controls actual page arrangement. Fit the PDF when Notes reduces the middle pane.
