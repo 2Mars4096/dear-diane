@@ -36,8 +36,8 @@ const INLINE_CODE_STYLE_BY_KIND = {
     "dan-markdown-inline-snippet px-0.5 font-medium text-slate-700 dark:text-slate-200",
   url: "dan-markdown-inline-url rounded bg-sky-50/45 px-1 py-0.5 font-medium text-sky-800 underline decoration-sky-300 underline-offset-2 dark:bg-sky-950/25 dark:text-sky-100 dark:decoration-sky-700",
 };
-const MATH_PLACEHOLDER_RE = /(\u0000DAN_MD_\d+\u0000)/g;
-const MATH_PLACEHOLDER_PART_RE = /^\u0000DAN_MD_\d+\u0000$/;
+const MATH_PLACEHOLDER_RE = /(\u0000DIANE_MD_\d+\u0000)/g;
+const MATH_PLACEHOLDER_PART_RE = /^\u0000DIANE_MD_\d+\u0000$/;
 const PROSE_DOTTED_ABBREVIATIONS = new Set(["a.m", "e.g", "i.e", "n.b", "p.m", "p.s", "u.k", "u.s"]);
 const PROSE_CODELIKE_WORDS = new Set(["SaaS"]);
 const AUTO_CODE_TOKEN_RE =
@@ -419,7 +419,7 @@ export function renderMarkdownToHtml(
   const preserved: string[] = [];
   const preserve = (html: string) => {
     preserved.push(html);
-    return `\u0000DAN_MD_${preserved.length - 1}\u0000`;
+    return `\u0000DIANE_MD_${preserved.length - 1}\u0000`;
   };
 
   let text = source
@@ -438,7 +438,7 @@ export function renderMarkdownToHtml(
         : markedInstance;
   let html = instance.parse(text) as string;
   preserved.forEach((value, index) => {
-    html = html.replaceAll(`\u0000DAN_MD_${index}\u0000`, value);
+    html = html.replaceAll(`\u0000DIANE_MD_${index}\u0000`, value);
   });
   return sanitizeHtml(html);
 }

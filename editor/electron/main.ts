@@ -182,8 +182,8 @@ async function startBackend(): Promise<void> {
   backendOwnedByUs = true;
   backendReady = false;
 
-  console.log(`Using DAN_GRAPHS_DIR=${backendGraphsDir}`);
-  console.log(`Using DAN_WORKSPACE_ROOT=${workspaceRoot}`);
+  console.log(`Dear Diane data: ${backendGraphsDir}`);
+  console.log(`Dear Diane workspace: ${workspaceRoot}`);
   sendBackendStatus();
 
   proc.stdout?.on("data", (d: Buffer) => {
@@ -506,7 +506,7 @@ function validateWritePath(filePath: string): string {
   const normalRoot = root.endsWith(path.sep) ? root : root + path.sep;
   if (resolved !== root && !resolved.startsWith(normalRoot)) {
     throw new Error(
-      `Write path '${filePath}' resolves outside workspace root '${root}' and DAN_STRICT_SANDBOX=1 is enabled.`,
+      `Write path '${filePath}' resolves outside workspace root '${root}' and workspace confinement is enabled.`,
     );
   }
   return resolved;

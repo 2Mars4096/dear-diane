@@ -28,7 +28,7 @@ describe("MarkdownRenderer", () => {
     expect(html).toContain("dan-markdown-inline-file");
     expect(html).toContain(">GameLoop.gd</code>");
     expect(html).toContain("katex");
-    expect(html).not.toContain("DAN_MD_");
+    expect(html).not.toContain("DIANE_MD_");
   });
 
   it("keeps aligned math ampersands as alignment markers after entity escaping", () => {

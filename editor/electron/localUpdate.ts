@@ -44,8 +44,8 @@ export async function stageBundle(source: string, target: string, updatesDir: st
   const parent = path.dirname(target);
   await fs.access(parent, fs.constants.W_OK);
   const id = randomUUID();
-  const staged = path.join(parent, `.DAN-update-${id}.app`);
-  const backup = path.join(parent, `.DAN-previous-${id}.app`);
+  const staged = path.join(parent, `.Diane-update-${id}.app`);
+  const backup = path.join(parent, `.Diane-previous-${id}.app`);
   await fs.mkdir(updatesDir, { recursive: true, mode: 0o700 });
   try {
     await exec("/usr/bin/ditto", [info.path, staged]);
