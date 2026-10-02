@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-10-02
+- [infra] Push seven feature-focused commits plus tracking docs to main; install the verified signed desktop bundle at user request. Installed archive matches the build, strict signature passes, app PID 46879 owns healthy backend PID 46899, and desktop proxy health passes on port 45173. Setup remains ready; no automatic title POSTs occurred on launch.
+- [infra] Preserve chats/settings and rollback bundle `/Applications/.DAN-previous-e50968db-b9e1-4fa8-9963-72f081840563.app`. Source/Markdown/PDF sidecar, annotations, session/layout controls, activity timing, queue ordering, onboarding, and shutdown fixes are installed. Existing-session title backfill remains disabled.
+
+## 2026-10-02
 - [fix] Make OpenRouter title generation opt-in during setup, applying only to sessions created after consent. Existing installations do not transmit old chats on reinstall.
 - [test] Release review: 406 frontend tests, 19 focused backend tests, production build/bundle checks, and Electron compilation pass. Group code into seven commits covering sessions/layout, response actions, thinking time, setup/titles, follow-up ordering, process shutdown, and file sidecar/annotations.
 

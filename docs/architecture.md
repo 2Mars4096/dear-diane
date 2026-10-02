@@ -10,11 +10,11 @@
 
 - Lazy `SidebarResize` owns pointer capture, keyboard resizing, viewport bounds, and local width persistence (`dan.sidebarWidth.v1`), applying a sidebar CSS variable without rerendering the main shell on drag.
 
-## Prepared OpenRouter setup
+## OpenRouter setup
 
-- `OpenRouterSetup` gates workspace mounting on `/api/setup`, validates a newly entered key through local-only `/api/setup/openrouter`, and seeds a new built-in lead profile. Credentials reuse restricted server-side storage. `onboarding.css` uses the active palette before workspace code loads. Prepared and tested; installation pending.
+- `OpenRouterSetup` gates workspace mounting on `/api/setup`, validates a newly entered key through local-only `/api/setup/openrouter`, and seeds a new built-in lead profile. Credentials reuse restricted server-side storage. `onboarding.css` uses the active palette before workspace code loads. Verified and installed on 2026-10-02.
 
-## Prepared session title summaries
+## Session title summaries
 
 - `session_titles.py` summarizes only the first user request with a bounded configured-provider call. Session metadata tracks manual/generated provenance; automatic updates preserve ordering timestamps and recheck edits/deletion before writing. `SessionTitles` queues eligible summaries sequentially and refreshes the list. Automatic calls require an explicit setup opt-in timestamp and only consider sessions created afterward. Existing installations remain off; there is no automatic title backfill.
 

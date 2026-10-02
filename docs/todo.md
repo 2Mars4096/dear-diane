@@ -1,16 +1,16 @@
 # Todo
 
-- [x] Default file sidecar, in-panel opening failures, native file actions, and PDF/text annotations implemented and verified; reinstall now authorized — [4-6](plans/4-6-document-workspace.md).
+- [x] Default file sidecar, in-panel opening failures, native file actions, and PDF/text annotations installed and health-verified — [4-6](plans/4-6-document-workspace.md).
 
-- [x] Fix accepted steer/answer ordering, promoted reply identity, and awaited owned-process shutdown; verified, installation pending — [native workers](UI-plans/2-native-agent-workers.md).
+- [x] Fix accepted steer/answer ordering, promoted reply identity, and awaited owned-process shutdown; installed and health-verified — [native workers](UI-plans/2-native-agent-workers.md).
 
-- [x] Thinking duration and observed activity implemented/tested; installation pending — [4-13](plans/4-13-unified-workspace-navigation.md).
+- [x] Thinking duration and observed activity installed and verified — [4-13](plans/4-13-unified-workspace-navigation.md).
 
-- [ ] [4-14-openrouter-setup](plans/4-14-openrouter-setup.md) — first-run gate and key validation prepared/tested; final review/install pending.
+- [x] [4-14-openrouter-setup](plans/4-14-openrouter-setup.md) — first-run gate, key validation, and optional future-session titles installed and verified.
 
 - IC-043 pane layouts/shared composer and IC-044 floating Diane command bar are exploratory in the [idea cart](../.agents/idea-cart.md); not checked out.
 
-- [ ] First-request title summaries implemented/tested; automatic titles now opt-in for future sessions; existing-session transfers disabled — [4-13](plans/4-13-unified-workspace-navigation.md).
+- [x] First-request title summaries installed; opt-in for future sessions only, existing-session transfers disabled — [4-13](plans/4-13-unified-workspace-navigation.md).
 
 - [x] Restore response-end Edit/Regenerate/Fork controls — [4-13](plans/4-13-unified-workspace-navigation.md).
 
