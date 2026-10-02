@@ -1,4 +1,4 @@
-// Copies tesseract.js worker/core and the bundled English model into public/tesseract so the
+// Copies tesseract.js worker/core and the bundled English and Chinese models into public/tesseract so the
 // Reader can OCR scanned pages offline. Runs before dev/build; the folder is gitignored.
 import { copyFileSync, cpSync, mkdirSync, existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -13,8 +13,10 @@ const copies = [
   ["node_modules/tesseract.js-core/tesseract-core-lstm.wasm.js", "tesseract-core-lstm.wasm.js"],
   ["node_modules/tesseract.js-core/tesseract-core-lstm.wasm", "tesseract-core-lstm.wasm"],
 ];
-const langDir = join(root, "node_modules/@tesseract.js-data/eng/4.0.0_best_int");
-for (const name of readdirSync(langDir)) if (name.startsWith("eng.")) copies.push([join(langDir, name), name]);
+for (const language of ["eng", "chi_sim"]) {
+  const langDir = join(root, `node_modules/@tesseract.js-data/${language}/4.0.0_best_int`);
+  for (const name of readdirSync(langDir)) if (name.startsWith(`${language}.`)) copies.push([join(langDir, name), name]);
+}
 for (const [from, to] of copies) {
   const source = from.startsWith("/") ? from : join(root, from);
   if (!existsSync(source)) { console.warn(`copy-ocr-assets: missing ${from}`); continue; }

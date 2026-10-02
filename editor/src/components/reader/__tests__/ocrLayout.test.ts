@@ -19,7 +19,7 @@ describe('scanned spread layout',()=>{
   });
   it('rejects legacy and other-layout caches while retaining matching split-page OCR',()=>{
     const legacy={page_number:1,spans:[]};
-    const matching={page_number:2,spans:[],layout_version:2,layout_mode:'spread'};
+    const matching={page_number:2,spans:[],layout_version:3,layout_mode:'spread'};
     expect(currentOcrPages([legacy,matching,{...matching,page_number:3,layout_mode:'single'}],'spread')).toEqual([matching]);
     expect(currentOcrPages({},'auto')).toEqual([]);
   });

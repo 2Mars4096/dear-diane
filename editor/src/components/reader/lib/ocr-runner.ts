@@ -1,3 +1,4 @@
+import { scanLines } from "./scan-lines";
 import { detectOcrSplit, mapOcrRegion, OCR_LAYOUT_VERSION, type OcrLayout } from "./ocr-layout";
 // Runs tesseract.js in the browser against pages pdf.js renders, producing the same
 // line spans learning-assistant's server OCR produced. Assets come from public/tesseract.
@@ -13,7 +14,9 @@ async function worker(): Promise<Worker> {
     workerPromise = (async () => {
       const tesseract = await import("tesseract.js");
       const base = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/tesseract`;
-      return tesseract.createWorker("eng", 1, { workerPath: `${base}/worker.min.js`, corePath: base, langPath: base, gzip: true, logger: () => undefined }) as unknown as Promise<Worker>;
+      const engine = await tesseract.createWorker("chi_sim+eng", 1, { workerPath: `${base}/worker.min.js`, corePath: base, langPath: base, gzip: true, logger: () => undefined });
+      await engine.setParameters({ tessedit_pageseg_mode: tesseract.PSM.SINGLE_BLOCK });
+      return engine as unknown as Worker;
     })().catch((error) => { workerPromise = null; throw error; });
   }
   return workerPromise;
@@ -67,7 +70,17 @@ export async function ocrPage(document: PDFDocumentProxy, pageNumber: number, la
       try {
         cropContext.drawImage(canvas, left, 0, width, canvas.height, 0, 0, width, canvas.height);
         const result = await engine.recognize(crop, {}, { tsv: true });
-        spans.push(...mapOcrRegion(parseTesseractTsv(result.data.tsv ?? "").spans, left / canvas.width, width / canvas.width));
+        const detected = parseTesseractTsv(result.data.tsv ?? "", "word").spans;
+        const geometry = window.document.createElement("canvas");
+        geometry.width = Math.min(1000, width); geometry.height = Math.round(canvas.height * geometry.width / width);
+        const geometryContext = geometry.getContext("2d", { willReadFrequently: true });
+        let lines = detected;
+        if (geometryContext) {
+          geometryContext.drawImage(crop, 0, 0, geometry.width, geometry.height);
+          lines = scanLines(geometryContext.getImageData(0, 0, geometry.width, geometry.height), detected);
+        }
+        geometry.width = geometry.height = 1;
+        spans.push(...mapOcrRegion(lines, left / canvas.width, width / canvas.width));
       } finally { crop.width = crop.height = 1; }
     }
     return { page_number: pageNumber, spans, layout_version: OCR_LAYOUT_VERSION, layout_mode: layout, split };
@@ -75,5 +88,5 @@ export async function ocrPage(document: PDFDocumentProxy, pageNumber: number, la
 }
 
 export function ocrPageText(page: MaterialPdfOcrPage): string {
-  return page.spans.map((span) => span.text).join(" ").replace(/\s+/g, " ").trim();
+  return page.spans.filter(span => !span.geometryOnly).map((span) => span.text).join(" ").replace(/\s+/g, " ").trim();
 }

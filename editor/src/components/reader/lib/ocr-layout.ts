@@ -1,5 +1,5 @@
 import type { MaterialPdfOcrPage, PdfOcrTextSpan } from './pdf-ocr';
-export const OCR_LAYOUT_VERSION = 2;
+export const OCR_LAYOUT_VERSION = 3;
 export type OcrLayout = 'auto' | 'single' | 'spread';
 
 /** Find a central low-ink gutter. Ignore isolated binding lines and scan speckles. */

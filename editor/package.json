@@ -108,6 +108,7 @@
     ]
   },
   "dependencies": {
+    "@tesseract.js-data/chi_sim": "^1.0.0",
     "@tesseract.js-data/eng": "^1.0.0",
     "dompurify": "^3.3.3",
     "electron-updater": "^6.8.9",

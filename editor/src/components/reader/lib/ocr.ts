@@ -13,7 +13,7 @@ export function countWords(text: string): number {
 }
 
 export function shouldOcrPage(text: string): boolean {
-  return countWords(text) < OCR_SPARSE_WORD_THRESHOLD;
+  return text.trim().length === 0;
 }
 
 function normalizeWhitespace(text: string): string {
@@ -42,7 +42,7 @@ export function normalizeOcrSpan(value: unknown): PdfOcrTextSpan | null {
 }
 
 /** Group Tesseract TSV words into line spans with page-relative fractions. */
-export function parseTesseractTsv(tsv: string): { spans: PdfOcrTextSpan[]; text: string } {
+export function parseTesseractTsv(tsv: string, granularity: "line" | "word" = "line"): { spans: PdfOcrTextSpan[]; text: string } {
   const rows = tsv.trim().split(/\r?\n/);
   const hasHeader = rows[0]?.startsWith("level\t") ?? false;
   if (!hasHeader && !/^\d+\t/.test(rows[0] ?? "")) {
@@ -54,7 +54,7 @@ export function parseTesseractTsv(tsv: string): { spans: PdfOcrTextSpan[]; text:
   rows.slice(hasHeader ? 1 : 0).forEach((row) => {
     const fields = row.split("\t");
     if (fields.length < 12) return;
-    const [level, page, block, paragraph, line, , left, top, width, height, confidence] = fields.slice(0, 11).map(Number);
+    const [level, page, block, paragraph, line, wordNumber, left, top, width, height, confidence] = fields.slice(0, 11).map(Number);
     if (level === 1) {
       pageWidth = width;
       pageHeight = height;
@@ -62,7 +62,7 @@ export function parseTesseractTsv(tsv: string): { spans: PdfOcrTextSpan[]; text:
     }
     const word = fields.slice(11).join("\t").replace(/\s+/g, " ").trim();
     if (level !== 5 || !word || width <= 0 || height <= 0) return;
-    const key = `${page}:${block}:${paragraph}:${line}`;
+    const key = `${page}:${block}:${paragraph}:${line}${granularity === "word" ? `:${wordNumber}` : ""}`;
     const current = lines.get(key) ?? { bottom: top + height, confidenceTotal: 0, left, right: left + width, top, words: [] };
     current.left = Math.min(current.left, left);
     current.top = Math.min(current.top, top);
