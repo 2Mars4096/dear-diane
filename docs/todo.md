@@ -1,5 +1,13 @@
 # Todo
 
+- [x] Restore sidebar project actions and native-session import entry point — [4-13](plans/4-13-unified-workspace-navigation.md).
+
+- [x] Refine unified navigation controls, palette badges, and single-line rows; verified and installed 2026-10-02 — [4-13](plans/4-13-unified-workspace-navigation.md).
+
+- [x] [4-13-unified-workspace-navigation](plans/4-13-unified-workspace-navigation.md) — one list for sessions/documents, clear project labels, and native Cmd hints; verified and installed on 2026-10-01.
+
+- [x] [4-12-session-actions](plans/4-12-session-actions.md) — shared session menu, optional pins, one-row session tabs, and independent windows. Installed and launch-verified on 2026-10-01.
+
 - [x] Reinstall automatic recent-session navigation; lower Chat/document tabs preserved — [4-11](plans/4-11-workflow-friction.md).
 
 - [x] Install and verify the reviewed workflow/session-tabs build — [4-11](plans/4-11-workflow-friction.md).
@@ -31,7 +39,7 @@
 - [x] Fix Mac top-bar double-click expansion/restoration and center window controls; verified in isolated Electron — [4-1](plans/4-1-agent-workbench.md).
 - [x] Install the top-bar update; user interaction check remains pending — [4-1](plans/4-1-agent-workbench.md).
 
-Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-031/032 are now planned in [7-phone-personal-agent](plans/7-phone-personal-agent.md); remaining ideas stay exploratory.
+Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are implemented in [4-12](plans/4-12-session-actions.md) and removed from the active cart. IC-031/032 are now planned in [7-phone-personal-agent](plans/7-phone-personal-agent.md); remaining ideas stay exploratory.
 
 - [x] Reinstall and verify the Literature desktop update — [4-8](plans/4-8-literature-import.md).
 

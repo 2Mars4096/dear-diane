@@ -1,5 +1,18 @@
 # Known Issues & Failed Approaches
 
+- **Fixed 2026-10-02: mismatched menu surfaces.** The shared raised-surface selector included ProjectMenu but omitted SessionMenu, leaving its warm page background visible. Both menus now use the same palette surface and interaction styles.
+
+- **Fixed 2026-10-02: project actions became hard to find.** Moving the menu into the top-right header hid the expected import/edit entry point. Put it beside the sidebar project selector; verify Import native sessions and Edit project from that menu.
+
+- **Fixed 2026-10-02: independent project filters and noisy shortcuts.** Sidebar scope now follows the project picker; All projects clears scope/search with Cmd/Ctrl+Shift+0. Selecting a recent item outside the scope reveals all projects. Number badges use the selected palette’s neutral text, surface, and border roles. Initial JSX edit missed a closing expression brace; corrected before the build passed.
+
+- **Fixed 2026-10-01: unified navigation shortcuts.** Native Electron can emit Meta keydown with `metaKey=false`; recognize the modifier key itself before checking flags. Empty visit history previously had no destinations; initialize from a stable snapshot of existing sessions. Waiting for thread loading before recording visits lost fast session-to-file transitions; record selection immediately. Explicit project moves now have their own preference so old task roots cannot override them.
+- **Unified-navigation verification fixtures:** the native fixture needed a seeded workspace. Reload after a dist rebuild to avoid stale lazy-chunk hashes. A CSS `dark` class alone does not select the workbench surface palette; use saved appearance settings. Unsaved-file reload prompts must be handled explicitly. A minimal local PDF fixture replaced unavailable reportlab.
+
+- **Session-actions install (2026-10-01):** optional DMG packaging could not create the electron-builder cache lock under the sandbox. The app bundle was complete; signed it directly and used the existing staged installer. Installed signature/archive/backend/proxy checks pass.
+
+- **Fixed 2026-10-01: session menu and independent views.** The existing sidebar hover rule hid the new ellipsis entry; keep the shared menu trigger visible and move redundant archive/delete/log icons into it. Session tabs now restore their own identities and attachments, window selection uses sessionStorage, and draft writes merge saved session keys. Initial menu work exceeded the shell budget; lazy action helpers and removal of duplicate controls keep the original budget. Browser fixtures needed mutable thread responses, a usage accounts array, and a wait for React persistence; the native harness also needed to await asynchronous parent closure before counting windows. These checks used isolated fixtures and profiles.
+
 - **Session navigation revision 2026-09-30:** separate session and document rows duplicated conversation navigation. Replace the upper row with automatic sidebar recency; retain MainTabs. Browser verification initially found its test browser had closed; reopening the isolated fixture passed.
 
 - **Workflow review fixed 2026-09-30:** inline-block diff lines rendered horizontally; now use stacked lines and a full-width panel. Tab arrows retained old keyboard focus, closing the last tab retained the project selection, empty notification feeds missed first completions, and worker final bursts could exceed one event page. Regressions/browser checks cover these cases. Phone review feedback now closes the overlay and focuses the composer; launch-admission failure removes its unused worktree.

@@ -12,6 +12,8 @@
 - Agent identity comes from recorded backend/worker metadata. Diane, Codex, and Claude use the same event disclosure design; never infer that an unconnected worker is running.
 - Accessible dialogs trap focus, restore it on close, expose visible shortcuts, and support narrow screens without horizontal overflow.
 
-- Project/chat management defaults to a conventional sidebar with compact folder rows and indented chats. No oversized current-project card, scope tabs, or redundant settings bar. Carousel and wheel are optional accelerators. Project creation/editing uses a focused name/folder dialog.
+- Workspace navigation uses one sidebar list for sessions, PDFs, and open files, with single-line titles, no leading item icons, and project context in the header and hover text. Search opens from the magnifier; the project selector shares Cmd/Ctrl+Shift+E, and Cmd/Ctrl+Shift+0 restores all projects. Pins mark existing rows. Cmd/Ctrl+1–9 targets recent items and displays frozen number hints while held. No duplicate top tab row. Carousel and wheel remain optional accelerators. Project creation/editing uses a focused name/folder dialog.
 
 - Folder drop affordance is visible before interaction: dashed outline, folder icon, centered instruction, browse action, and an editable path inside the boundary.
+
+- Project and session menus share the palette surface role, border, shadow, typography, spacing, and hover/focus treatment.

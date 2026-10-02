@@ -1,6 +1,6 @@
 # Idea Cart
 
-Last reviewed: 2026-09-30
+Last reviewed: 2026-10-01
 
 ## Priority and expected gain
 
@@ -132,6 +132,11 @@ Review notes:
 - Links: `docs/business/meeting-mode-to-manufacturing-vision.md`
 
 ## Checkout Log
+
+### 2026-10-01
+- IC-040 -> implemented in [Plan 4-12](../docs/plans/4-12-session-actions.md): session tabs share the existing row; independent native/browser windows preserve selection and text drafts through reload. Closing views leaves running work intact.
+- IC-041 -> implemented in Plan 4-12: persistent optional Pin/Unpin, separate from automatic Cmd/Ctrl+1–9 recent visits.
+- IC-042 -> implemented in Plan 4-12: shared right-click/ellipsis menu with rename, move, unread/read, fork, copy ID/text, archive/restore, and archived-only deletion. Desktop/phone interaction checks pass. All three removed from active items.
 
 ### 2026-09-30
 - IC-034–037 -> [Plan 4-11](../docs/plans/4-11-workflow-friction.md), authorized for sequential implementation with minimal changes and reuse of the existing team mechanism. Removed from active cart. Browser-style session tabs added to the same plan by follow-up request. IC-038/039 remain carted.

@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-10-02
+- [infra] Reinstall the restored project menu and matching menu surfaces. Strict signature, matching archive, backend/proxy health, and isolated menu entry/style checks pass.
+- [fix] Match session and project menus with the same palette surface, borders, shadow, row spacing, typography, hover, and keyboard focus treatment. Light mode uses the same white surface role as the sidebar.
+- [fix] Restore the project action menu beside the sidebar selector so editing and native-session import are directly discoverable. Browser checks verify both dialogs open; 391 tests and build/bundle checks pass.
+- [infra] Install and launch the verified sidebar refinement after idle checks. Strict signature, matching bundle archive, and backend/proxy health pass; user data and rollback bundle retained.
+- [fix] Share the sidebar project selector with Cmd/Ctrl+Shift+E. Add All projects and Cmd/Ctrl+Shift+0 to clear project/search filters and reveal the list; recent-item selection outside the filter reveals its target.
+- [feat] Simplify sidebar rows to titles/status, removing leading icons and project subtitles while retaining project hover/header context. Remove the Papers/New project strip and shortcut footer; move project actions to the header and put search behind the magnifier. Number badges use palette text/surface/border roles.
+- [test] 391 frontend tests, production build/bundle limits, Electron compilation, and isolated desktop/phone browser checks pass. Browser checks cover shared selection, reset from search/hidden sidebar, and light/warm plus dark/teal appearance.
+
+## 2026-10-01
+- [infra] Reinstall the verified unified-navigation build at user request. Signature, matching archive hashes, and backend/proxy health pass; user data and previous bundle retained.
+
+## 2026-10-01
+- [feat] Unify sessions, PDFs, and open files in one sidebar list with project labels, search/filter, and inline pins. Remove the duplicate top tab row. Preserve document drafts, close protection, project management, archives, and independent windows.
+- [fix] Make Cmd/Ctrl+1–9 navigate recent workspace items from fresh history; show number badges while the modifier is held and freeze ordering/targets. Handle native Mac modifier events and rapid session/document transitions. Explicit project moves override inferred task roots.
+- [test] 391 frontend tests, production build/bundle budgets, and Electron compilation pass. Isolated native Electron verifies Cmd hints and session/file shortcuts; browser fixtures verify PDF rendering, filters, pins, hidden sidebar, dirty-close cancellation, draft preservation, and phone layout.
+- [infra] Install and launch the signed unified-navigation build after idle checks. Installed archive matches the verified build; strict signature and app-owned backend/proxy health pass. Previous bundle retained for rollback.
+
+## 2026-10-01
+- [infra] Install and launch the session-actions update in `/Applications/Dear Diane.app`. Idle checks pass; installed archive matches the prepared build, strict signature verification passes, and app-owned backend/proxy health is verified. Chats/settings retained; previous bundle saved for rollback.
+
+## 2026-10-01
+- [feat] Add shared session right-click/ellipsis actions: open in tab/window, pin/unpin, rename, move, unread/read, fork, copy ID/text, archive/restore, and archived-only deletion. Keep the single tab row and automatic recent shortcuts. Preserve per-session text/attachment drafts and per-window selection; route native window controls to the sender.
+- [test] 386 frontend tests, production build/bundle limits, Electron compilation, and isolated desktop/phone browser flows pass. An isolated native Electron run verifies new-window preload, parent closure, and external-URL rejection; browser reloads preserve independent selections/drafts. Installed app unchanged. IC-040–042 leave the active cart with completion receipts.
+
+## 2026-10-01
+- [docs] Cart IC-040–042: open sessions in another tab/window, optional pins independent of recent-session shortcuts, and a shared session action menu. Captured for later checkout; implementation has not started.
+
 ## 2026-09-30
 - [infra] Reinstall and launch automatic recent-session navigation. Signed archive matches the prepared build; app-owned backend and desktop proxy health pass. Chats/settings preserved and previous bundle retained for rollback.
 
