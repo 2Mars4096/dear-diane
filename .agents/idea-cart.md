@@ -1,6 +1,6 @@
 # Idea Cart
 
-Last reviewed: 2026-10-01
+Last reviewed: 2026-10-02
 
 ## Priority and expected gain
 
@@ -23,6 +23,30 @@ Review notes:
 - IC-026 remains low priority for near-term work. IC-028 retains high priority as a conditional gate.
 
 ## Active Items
+
+### IC-043 - Configurable panes with one shared composer
+- Status: carted
+- Priority: medium
+- Kind: idea
+- Scope: workspace layout and input routing
+- Point: Arrange work panes like terminal splits, including one row/two columns and two rows/two columns, while keeping one shared bottom composer.
+- Why: Compare and follow parallel sessions or documents without duplicating the input controls.
+- Constraints: The shared composer must clearly identify its target project/session; retain drafts when switching panes. Pane arrangement should not change session ownership or running work.
+- Checkout target: pane-layout and composer-routing design when selected.
+- Acceptance: Users can split, resize, focus, and close panes; the single composer reliably addresses the intended session with its existing run controls.
+- Source: 2026-10-02 user idea, Ghostty-style pane management. Capture only; no implementation authorized.
+
+### IC-044 - Floating Diane command bar
+- Status: carted
+- Priority: medium
+- Kind: idea
+- Scope: quick access and cross-session task control
+- Point: Offer a movable floating composer, summonable with a shortcut such as double-tap Option, to ask or assign work from one compact Spotlight-like bar.
+- Why: “Diane in the pocket”: one bar controls work without requiring the user to navigate every intermediate view.
+- Constraints: Show brief project/session and task context; include project switching and the session wheel, plus existing input/run controls. Keep the destination explicit before sending; preserve drafts when hiding or moving the bar. Assess in-app versus system-wide invocation and shortcut conflicts at checkout.
+- Checkout target: floating-composer interaction prototype when selected; share input routing with IC-043.
+- Acceptance: Summon, move, switch destination, send/queue/steer, and dismiss from the bar without losing context or input; detailed work remains accessible on demand.
+- Source: 2026-10-02 user idea, Spotlight and double-tap Option inspiration. Capture only; no implementation authorized.
 
 ### Workflow preferences for remaining IC-038–039
 - Optimize for the user’s smooth personal workflow; uniqueness is not a goal. Build on existing orchestration and parallel work.

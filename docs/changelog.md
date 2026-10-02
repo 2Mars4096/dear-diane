@@ -1,6 +1,37 @@
 # Changelog
 
 ## 2026-10-02
+- [fix] Make OpenRouter title generation opt-in during setup, applying only to sessions created after consent. Existing installations do not transmit old chats on reinstall.
+- [test] Release review: 406 frontend tests, 19 focused backend tests, production build/bundle checks, and Electron compilation pass. Group code into seven commits covering sessions/layout, response actions, thinking time, setup/titles, follow-up ordering, process shutdown, and file sidecar/annotations.
+
+## 2026-10-02
+- [feat] Open chat links, attachments, project files, and dropped/chosen files in the persistent Document sidecar. Failed reads remain there with retry; native right-click/ellipsis actions include macOS Open With.
+- [feat] Extend the PDF reader's selection/note storage and quote anchors to source and rendered Markdown, with persistent highlights, note editing/deletion, passage navigation, and explicit Use in chat staging. Preserve document drafts and unsaved-close guards.
+- [fix] Keep embedded reader notes within the sidecar at phone widths and show note actions without hover.
+- [test] 405 frontend tests pass (the process-lifecycle test reran with process-list permission); production build/bundle checks and Electron typecheck pass. Isolated browser verifies annotation creation, highlights, close/reopen persistence, chat staging, missing-file errors, Markdown, PDF rendering, and 390px layout. Not reinstalled, as requested.
+
+## 2026-10-02
+- [fix] Render accepted steering messages before the same-run answer, retain leased messages in Up next until acceptance, and link newly promoted replies before stream events arrive. Durable history is preserved.
+- [fix] Await desktop-owned backend tree cleanup on Quit, Stop, and Restart; capture descendants before reparenting and escalate survivors with PID/start-time checks. macOS window close continues background work; external backends remain untouched.
+- [test] 405 frontend tests, four backend queue-promotion tests, production build/bundle limits, and Electron compilation pass. Real disposable-process test covers a detached TERM-resistant child and an unrelated surviving process. Changes are not installed.
+
+## 2026-10-02
+- [feat] Add Thinking (XmYYs) with recorded activity beside it, including before answer text arrives. Prefer recorded run start over message time; retain completed duration when a finish timestamp exists. No estimated completion percentage.
+- [test] 393 frontend tests and production build/bundle limits pass, including fake-clock checks for elapsed timing, observed progress, and frozen completed duration. Timer changes are not installed yet alongside the pending onboarding/title build.
+- [feat] Prepare required OpenRouter first-run setup with local key verification/storage, retry states, API-use disclosure, and a default built-in OpenRouter lead. Existing configured profiles retain selections. Not installed yet.
+- [test] 17 focused backend tests, 391 frontend tests, build limits, and isolated missing/invalid/valid-key, default-profile, reload, and browser-key-storage checks pass.
+- [docs] Cart IC-043 configurable panes with a shared composer and IC-044 a summonable floating Diane command bar. Both remain exploratory; no implementation checkout.
+- [feat] Prepare first-request title summaries with custom-title protection, rename/deletion race checks, stable timestamps, and sequential background UI requests. Not installed pending explicit approval for first-request transmission to configured OpenRouter model.
+- [test] 11 focused backend tests, 391 frontend tests, and build/bundle limits pass. Live invented-text title generation passes with reasoning disabled; no private request live test ran.
+- [infra] Install verified response-end controls; signature/archive identity and backend/proxy health pass.
+- [fix] Show Edit request, Regenerate, and Fork below the latest completed response as well as the latest user message. Reuse existing request actions and running guards; response-side editing targets the original request.
+- [test] 391 frontend tests and build/bundle checks pass; browser checks cover visible response actions, original-request editing, cancellation, and forking.
+- [infra] Install verified sidebar resizing and project-scope persistence; signature/archive checks and backend/proxy health pass. All 391 frontend tests pass.
+- [feat] Add a draggable desktop sidebar edge with saved width, keyboard sizing, viewport bounds, and double-click reset. Persist the project filter per window with a last-used fallback for restart.
+- [test] Browser checks pass for drag/reload, keyboard/reset, phone layout, and project/session restoration after refresh and clearing window storage; production build/bundle limits pass.
+- [infra] Install the verified direct-delete update after idle checks; signature, archive identity, and backend/proxy health pass.
+- [feat] Expose Delete permanently on unarchived session menus with danger styling and a named confirmation. Disable during running work; remove view records only after the backend deletion succeeds. Existing endpoint deletes conversation, journal, and metadata files.
+- [test] 391 frontend tests, production build/bundle limits, and browser fixture checks for cancellation, confirmation, and absence after reload pass.
 - [infra] Reinstall the restored project menu and matching menu surfaces. Strict signature, matching archive, backend/proxy health, and isolated menu entry/style checks pass.
 - [fix] Match session and project menus with the same palette surface, borders, shadow, row spacing, typography, hover, and keyboard focus treatment. Light mode uses the same white surface role as the sidebar.
 - [fix] Restore the project action menu beside the sidebar selector so editing and native-session import are directly discoverable. Browser checks verify both dialogs open; 391 tests and build/bundle checks pass.

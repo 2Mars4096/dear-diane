@@ -1,5 +1,23 @@
 # Todo
 
+- [x] Default file sidecar, in-panel opening failures, native file actions, and PDF/text annotations implemented and verified; reinstall now authorized — [4-6](plans/4-6-document-workspace.md).
+
+- [x] Fix accepted steer/answer ordering, promoted reply identity, and awaited owned-process shutdown; verified, installation pending — [native workers](UI-plans/2-native-agent-workers.md).
+
+- [x] Thinking duration and observed activity implemented/tested; installation pending — [4-13](plans/4-13-unified-workspace-navigation.md).
+
+- [ ] [4-14-openrouter-setup](plans/4-14-openrouter-setup.md) — first-run gate and key validation prepared/tested; final review/install pending.
+
+- IC-043 pane layouts/shared composer and IC-044 floating Diane command bar are exploratory in the [idea cart](../.agents/idea-cart.md); not checked out.
+
+- [ ] First-request title summaries implemented/tested; automatic titles now opt-in for future sessions; existing-session transfers disabled — [4-13](plans/4-13-unified-workspace-navigation.md).
+
+- [x] Restore response-end Edit/Regenerate/Fork controls — [4-13](plans/4-13-unified-workspace-navigation.md).
+
+- [x] Resizable sidebar and persistent project scope/session restoration — [4-13](plans/4-13-unified-workspace-navigation.md).
+
+- [x] Direct permanent session deletion with danger styling and confirmation — [4-13](plans/4-13-unified-workspace-navigation.md).
+
 - [x] Restore sidebar project actions and native-session import entry point — [4-13](plans/4-13-unified-workspace-navigation.md).
 
 - [x] Refine unified navigation controls, palette badges, and single-line rows; verified and installed 2026-10-02 — [4-13](plans/4-13-unified-workspace-navigation.md).

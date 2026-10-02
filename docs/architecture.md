@@ -6,7 +6,17 @@
 - `native_workers/workspaces.py` owns isolated Git worktrees for Team delegation. Baseline trees include existing dirty/untracked work; apply checks source HEAD and touched-file fingerprints, preserves the source index, and retains owned worktrees. Shared work remains explicit; admission failures remove their unused new worktree.
 - `workspace_changes.py` records bounded local UTF-8 snapshots before V2 requests, with ten boundaries per project/session. `routers/workspace_changes.py` and lazy `ChangesPanel` provide review and draft feedback without changing source files or Git staging. Visible Changes refreshes automatically; hidden panels stop polling.
 - `WorkNotifications` detects task/worker state transitions across sessions and suppresses watched-session alerts. Successful empty feeds establish a baseline; requests use the shared timeout transport and do not overlap. Narrow Electron attention IPC displays notifications and routes clicks back to a session/worker; browser delivery uses granted Notification permission.
-- `WorkspaceNavigator` owns the single mixed item list, local visit history, initial shortcut destinations, and frozen Cmd/Ctrl+1–9 hints. `workspaceItems` deduplicates sessions and resolves project context for sessions/documents. The shell owns the shared project scope; sidebar and Cmd/Ctrl+Shift+E open the same picker. Cmd/Ctrl+Shift+0 clears scope/search and reveals the list. Compact rows retain project context in hover/accessibility text. ProjectMenu sits beside the sidebar selector and retains native-session import/edit/remove actions. History migrates from the earlier recent-session key; keyboard handling remains mounted with the sidebar hidden or while Notes is visible.
+- `WorkspaceNavigator` owns the single mixed item list, local visit history, initial shortcut destinations, and frozen Cmd/Ctrl+1–9 hints. `workspaceItems` deduplicates sessions and resolves project context for sessions/documents. The shell owns shared project scope, persisted per window with a localStorage fallback; sidebar and Cmd/Ctrl+Shift+E open the same picker. Cmd/Ctrl+Shift+0 clears scope/search and reveals the list. Compact rows retain project context in hover/accessibility text. ProjectMenu sits beside the sidebar selector and retains native-session import/edit/remove actions. History migrates from the earlier recent-session key; keyboard handling remains mounted with the sidebar hidden or while Notes is visible.
+
+- Lazy `SidebarResize` owns pointer capture, keyboard resizing, viewport bounds, and local width persistence (`dan.sidebarWidth.v1`), applying a sidebar CSS variable without rerendering the main shell on drag.
+
+## Prepared OpenRouter setup
+
+- `OpenRouterSetup` gates workspace mounting on `/api/setup`, validates a newly entered key through local-only `/api/setup/openrouter`, and seeds a new built-in lead profile. Credentials reuse restricted server-side storage. `onboarding.css` uses the active palette before workspace code loads. Prepared and tested; installation pending.
+
+## Prepared session title summaries
+
+- `session_titles.py` summarizes only the first user request with a bounded configured-provider call. Session metadata tracks manual/generated provenance; automatic updates preserve ordering timestamps and recheck edits/deletion before writing. `SessionTitles` queues eligible summaries sequentially and refreshes the list. Automatic calls require an explicit setup opt-in timestamp and only consider sessions created afterward. Existing installations remain off; there is no automatic title backfill.
 
 ## Session actions and windows
 
@@ -68,12 +78,14 @@
 - Update settings offer Install local update; checks prefer a prepared local build before GitHub. Provider errors are mapped to short messages without response headers or stacks.
 
 ## Document workspace
+- `lib/openFile.ts` carries file-open requests from chat links/attachments to the persistent `FileSidecar`; native `resolveOnly` resolves paths without launching an app. Browser/remote resolution never invokes the local shell. Ordinary file/drop openings use the sidecar; paper-library reading retains its main workspace.
+- `FileSidecar` reuses document lifetimes/drafts and the PDF reader, keeps file switching/errors local, and stages annotation context into the main composer only on user action. `TextAnnotations` uses reader comments, normalized quote/context anchors, and CSS highlights for source/Markdown; notes share the existing per-origin storage. Empty PDF rectangles are accepted only with a valid text anchor.
 - Lazy `components/documents/` modules connect global file drops and Open file to main tabs. Desktop preload resolves File objects to original paths; browsers retain local File/blob copies and download edits explicitly. Existing project files open through the same tab path.
 - Text draft/revision snapshots live in a workspace-owned ref across panel unmounts; dirty state guards tab close and page unload. PDFs reuse ReaderView; browser-only PDFs skip filesystem OCR cache.
 - `routers/documents.py` provides bounded strict UTF-8 reads and revision-checked atomic writes under the existing workspace-root resolver. Saves preserve file permissions; stale revisions fail without replacing content. External programs do not participate in the in-process save lock.
 
 ## Saved attachment links
-- `WorkbenchConversation` lazy-loads `MessageAttachment` to open persisted `ChatAttachment.path` through Electron `shell.openPath`, retaining the original filename as the link label. Browser use relies on `workspaceFilePreviewUrl`; the file is not loaded until opened.
+- `WorkbenchConversation` lazy-loads `MessageAttachment`; persisted paths use the shared file-open request to display in the sidecar, retaining the original filename. Local right-click retains native actions; remote targets use host previews. The file is loaded only when opened.
 
 ## Session identity and discovery
 - ChatStore derives placeholder names from the first nonempty user request for snapshots, native append journals, and legacy reads. Read-time recovery does not mutate saved history; existing meaningful titles remain stable. Empty projects have no implicit session, and restoration is scoped to their active thread selection.
@@ -305,3 +317,9 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 ### Provider selection and credentials
 - `native_workers/models.py` defines native/API compatibility, endpoint routing, model reasoning capabilities, and provider key resolution shared by leads and workers. Codex uses process-scoped Responses providers; Claude uses isolated provider-specific config directories and Anthropic-compatible endpoints.
 - `native_workers/provider_credentials.py` atomically stores host-local keys under `graphs/model_credentials/keys.json` with mode 0600. Local-only status/write routes never return key values. `ApiProviders.tsx` provides masked Settings entry and removal; model profiles store only provider/model/options.
+
+
+### Steering reply placement and desktop shutdown
+- `queuedTranscript.ts` projects accepted queue requests ahead of their delivering run's reply without changing saved message order. In-flight checkpoint leases remain in Up next; promoted continuations get an immediate run-linked assistant target.
+- `electron/backendShutdown.ts` captures app-owned backend descendants using PID, parent PID, and start time before termination; waits for graceful shutdown, then signals surviving identities. Quit is deferred until cleanup returns; Stop/Restart reuse it. No command-line or credential inspection is needed.
+- Closing all macOS windows leaves the desktop process and backend running. Full normal Quit stops the owned local tree, including captured descendants in separate process groups. Reused external backends, remote services, pre-existing orphans, OS force-kill, and power loss remain outside this hook.

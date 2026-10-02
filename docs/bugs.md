@@ -1,5 +1,23 @@
 # Known Issues & Failed Approaches
 
+- **Release review 2026-10-02:** avoid the previous title-transfer approval blocker by requiring an unchecked setup opt-in and excluding sessions older than consent. The full process-lifecycle regression requires process-list permission; all 406 frontend tests pass with that permission.
+
+- **Fixed in source 2026-10-02: chat file links bypassed in-app previews.** Route ordinary opens to the Document sidecar and reserve native launches for explicit menu actions. Missing/unsupported files remain visible as errors with retry.
+- **Sidecar validation 2026-10-02:** inherited reader-note positioning overlaid files below 1000px; override positioning/width within the sidecar and retain visible note actions. The first fixture command repeated the editor prefix from inside editor; corrected before browser checks. Vite hot reload reset a browser fixture during a pending assertion; reopened the file and confirmed persisted notes. The full-suite process test required `ps` permission and passed on its isolated rerun. Generated PDF rendered; optional OCR-cache requests returned 500 with no fixture backend, and local extraction/OCR remained usable.
+
+- **Fixed in source 2026-10-02: accepted steering looked unanswered.** The reported request had a Codex acceptance receipt, but subsequent output stayed in the assistant bubble above it. Project accepted requests before their same-run answer. Newly promoted replies also lacked their run link until a terminal event; attach it immediately. In-flight leases now remain in Up next.
+- **Fixed in source 2026-10-02: desktop quit did not await worker cleanup.** Direct backend SIGTERM could leave detached descendants. Capture the owned tree and wait/escalate by process identity; verify with disposable TERM-resistant descendants and unrelated processes. Initial sandboxed test failed because `ps` is restricted; the approved isolated test passes. Normal quit only; already orphaned descendants and force-kill remain limitations.
+
+- **Fixed in source 2026-10-02: Thinking had no elapsed feedback.** ActivitySummary previously required nonempty answer content and had no run timing. Render during pending work even before answer text; prefer recorded run start, fall back to message start, reset regenerated-message time, and stop the clock at recorded completion.
+
+- **Title-summary validation 2026-10-02:** automatic review blocked sending the actual first request to OpenRouter without destination-specific approval. Only invented text was tested. A 128-token call returned no title; disabling reasoning and allowing 256 output tokens produced a valid short title. Existing titles remain on unavailable/invalid output.
+
+- **Fixed 2026-10-02: response-end controls missing.** RequestActions was rendered only after the latest user message. Render it after the latest completed assistant response too, targeting the same original request and callbacks.
+
+- **Fixed 2026-10-02: project scope reset on refresh.** Session and active-project persistence already existed, but the unified-list filter was initialized to All projects every mount. Save it per window plus a last-used restart fallback. Sidebar width now persists independently. Initial resize effect returned the string from removeProperty; changed cleanup to return void before validation.
+
+- **Fixed 2026-10-02: permanent deletion hidden behind archive.** Expose the existing delete endpoint directly in the session menu. Delay local cleanup until deletion succeeds, retain named confirmation, and disable deletion during running work.
+
 - **Fixed 2026-10-02: mismatched menu surfaces.** The shared raised-surface selector included ProjectMenu but omitted SessionMenu, leaving its warm page background visible. Both menus now use the same palette surface and interaction styles.
 
 - **Fixed 2026-10-02: project actions became hard to find.** Moving the menu into the top-right header hid the expected import/edit entry point. Put it beside the sidebar project selector; verify Import native sessions and Edit project from that menu.

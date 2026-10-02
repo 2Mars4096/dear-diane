@@ -23,9 +23,12 @@ Install browser support in the backend Python environment with `pip install -e '
 
 ## Workbench
 
+- **Sidebar layout:** drag the right edge to resize; double-click to reset. Width and selected project/session are restored after refresh or restart.
 - **Workspace list:** sessions, open PDFs, files, Papers, and Settings share one sidebar list. Compact title rows keep project context in the header and hover text; pins stay on the same row. The project ellipsis menu beside the selector opens project editing and native-session import. The magnifier opens search. Cmd/Ctrl+Shift+E opens the shared project picker; Cmd/Ctrl+Shift+0 restores all projects and clears search. File drafts, unread state, and running work remain visible. The old project/recent/pinned lists and top tab row are replaced by this list.
 - **Recent-item shortcuts:** hold Cmd (Ctrl on Windows/Linux) to reveal numbers on eligible rows. Cmd/Ctrl+1 returns to the previous item; +2–9 selects older visits, including documents. Existing sessions provide initial destinations before you have visit history. Numbers and row order freeze until the modifier is released. Background updates do not reorder the list; shortcuts also work with the sidebar hidden.
-- **Item actions:** session right-click/ellipsis menus offer Open in workspace, Open in new window, pin, rename, move, unread/read, fork, copy ID/text, and archive. Restore and permanent deletion are in Archived chats. Files have a close button with unsaved-edit protection. Each window keeps its own selection and documents.
+- **Run feedback:** Thinking shows elapsed minutes/seconds and the latest observed activity, with recorded duration retained after completion.
+- **Response actions:** Edit request, Regenerate, and Fork are available below the latest completed answer as well as the request.
+- **Item actions:** session right-click/ellipsis menus offer Open in workspace, Open in new window, pin, rename, move, unread/read, fork, copy ID/text, and archive. Delete permanently is available directly with a named confirmation and is disabled during running work; archived sessions can also be restored. Files have a close button with unsaved-edit protection. Each window keeps its own selection and documents.
 - **Team:** expand a worker for paginated history, supported replies/resume, and Codex questions/one-time approvals. Single-question options answer in one click. After a restart, explicitly resume an interrupted worker. Native subagents observed from a lead retain that lead’s controls.
 - **Notifications:** Settings → Notifications has a completion/attention toggle. Alerts are quiet, suppress repeats and watched conversations, and open the relevant session. Browser use requires notification permission; keep the app/browser running.
 - **Changes:** choose Changes from the side-panel tool menu. Review project text edits since a prior request or manually marked boundary. The view refreshes automatically; Ask for changes stages selected diff text as feedback and focuses the composer. Git folders only; the latest ten bounded snapshots are kept, with excluded files listed.
@@ -37,11 +40,11 @@ Activity shows a short current-action label while working; expand **Work details
 
 Waiting follow-ups appear only in **Up next**, keeping the active reply in view. They enter the conversation when delivered.
 
-Session titles are set from the first request and stay stable across follow-ups.
+Session titles are set from the first request and stay stable across follow-ups. OpenRouter setup offers optional generated titles for future sessions; it is off by default and does not send existing chats for backfill. New installations require an OpenRouter API key, stored on the host.
 
 Click **Session · ID** above the conversation to copy its permanent ID. Paste it into **Search chats or session ID** to find that chat, or give it to a native agent to look up the other session when needed. Agents receive their own Dear Diane session identity and lookup instructions; this does not send messages between sessions.
 
-Click a filename in a past message to open its saved attachment in the default desktop app (images, videos, PDFs, Word documents, text, and other supported files). Browser users get a preview or download.
+Click a file link or attachment to open it in the sidecar beside your conversation. PDFs, text/Markdown, images, and media use their previews; unreadable or unsupported files show the error there. Right-click local links or use the file’s **…** menu for native actions, including **Open With…** on macOS. Select text in PDFs or text previews to annotate; **Use in chat** stages the passage and note for your next request. Notes persist across reopening.
 
 Use **Edit** below your latest message, then **Save & resend** to replace its answer while keeping attachments. Finish or stop an active reply before editing; **Cancel** leaves the conversation unchanged.
 
@@ -267,3 +270,10 @@ Published releases use `electron-updater`; **Check for updates** and **Download*
 The product is **Dear Diane** and the assistant is **Diane**. After installing the Python package, use `dear-diane --help`; existing `dan` commands still work. New desktop builds are named `Dear Diane.app`.
 
 Existing Python imports/package name (`dan`), `DAN_*` environment variables, backend IDs, browser storage keys, bundle ID (`com.dan.desktop`), remote services, and the desktop `Application Support/dan` profile remain stable so existing installations retain their chats, accounts, settings, and update identity. The repository remains `deep-agent-network`. Historical plans and logs retain their original names.
+
+
+### Background work and quitting
+
+On macOS, closing the window keeps Dear Diane and its current work running in the background. Use **Quit Dear Diane** to stop the app and its owned local backend/agent process tree. Shutdown waits briefly for cleanup, then terminates captured survivors. Separately started backends and remote services have their own lifecycles. Saved sessions remain available after quitting.
+
+Steer messages join the current run; accepted requests appear before that run's answer. Next messages start a separate follow-up after the current run ends. Messages awaiting delivery remain in **Up next**.
