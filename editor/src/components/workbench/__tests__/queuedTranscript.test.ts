@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { visibleQueuedTranscript } from "../queuedTranscript";
+import { attachFollowupReply, visibleQueuedTranscript } from "../queuedTranscript";
 import type { ChatMessage } from "../../../types/chat";
 import type { ChatV2TaskSnapshot } from "../../../lib/chatV2Api";
 const messages = [
@@ -38,4 +38,49 @@ it("hides withdrawn requests and orphaned acknowledgement replies", () => {
   expect(visibleQueuedTranscript(orphan, []).map(m => m.id)).toEqual(["u1", "a1"]);
   const streaming = [...messages.slice(0, 2), { id: "a9", role: "assistant", content: "Queued for checkpoint append at position 1.", taskRunRef: { runId: "r", status: "running" } }] as ChatMessage[];
   expect(visibleQueuedTranscript(streaming, []).map(m => m.id)).toEqual(["u1", "a1", "a9"]);
+});
+
+
+it("places the existing answer after accepted steering messages, preserving later turns", () => {
+  const history = [messages[0], {...messages[1], taskRunRef: {runId:"r1", status:"completed"}}, messages[2],
+    {id:"u3", role:"user", content:"Another steer"},
+    {id:"u4", role:"user", content:"Later turn"},
+    {id:"a4", role:"assistant", content:"Later answer", taskRunRef:{runId:"r4", status:"completed"}}] as ChatMessage[];
+  const snapshot = tasks("completed");
+  const item = snapshot[0].metadata!.queue_items![0];
+  item.lane = "append";
+  item.metadata = {...item.metadata, delivered_run_id:"r1"};
+  snapshot[0].metadata!.queue_items!.push({...item, id:"q2", metadata:{delivered_run_id:"r1", command_payload:{client_message_id:"u3"}}});
+  expect(visibleQueuedTranscript(history, snapshot).map(m=>m.id)).toEqual(["u1","u2","u3","a1","u4","a4"]);
+  expect(history.map(m=>m.id)).toEqual(["u1","a1","u2","u3","u4","a4"]);
+  expect(visibleQueuedTranscript(visibleQueuedTranscript(history, snapshot), snapshot)).toEqual(visibleQueuedTranscript(history, snapshot));
+});
+
+it("does not move the original answer for a waiting steer or a separately promoted Next", () => {
+  const history = [messages[0], {...messages[1], taskRunRef:{runId:"r1",status:"completed"}}, messages[2],
+    {...messages[3], content:"Next answer", taskRunRef:{runId:"r2",status:"completed"}}] as ChatMessage[];
+  const snapshot = tasks("completed");
+  snapshot[0].metadata!.queue_items![0].metadata!.delivered_run_id = "r2";
+  expect(visibleQueuedTranscript(history, snapshot).map(m=>m.id)).toEqual(["u1","a1","u2","a2"]);
+  snapshot[0].metadata!.queue_items![0].status = "queued";
+  expect(visibleQueuedTranscript(history.slice(0,3), snapshot).map(m=>m.id)).toEqual(["u1","a1"]);
+});
+
+it("links a promoted reply before the stream starts and reuses it on reconnect", () => {
+  const history = messages.slice(0,3);
+  const reply = {...messages[3], content:""};
+  const attached = attachFollowupReply(history, reply, "r2", "t");
+  expect(attached.at(-1)?.taskRunRef).toEqual({runId:"r2",taskId:"t",status:"running"});
+  const reconnected = attachFollowupReply(attached, attached.at(-1)!, "r2", "t");
+  expect(reconnected.filter(m=>m.taskRunRef?.runId === "r2")).toHaveLength(1);
+  expect(history).toHaveLength(3);
+});
+
+it("keeps a leased steer in Up next until acceptance, but reveals a promoted Next", () => {
+  const snapshot = tasks("injected");
+  const item = snapshot[0].metadata!.queue_items![0];
+  item.metadata!.admitted_run_id = "r1";
+  expect(visibleQueuedTranscript(messages, snapshot).map(m=>m.id)).toEqual(["u1","a1"]);
+  item.metadata!.continued_run_id = "r2";
+  expect(visibleQueuedTranscript(messages, snapshot).map(m=>m.id)).toEqual(["u1","a1","u2"]);
 });

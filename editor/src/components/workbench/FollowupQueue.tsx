@@ -26,7 +26,7 @@ export function FollowupQueue({rows, runId, canSteer, onTask, onRemoved}: {rows:
       </details>
       {row.kind === "followup" && row.runId === runId && row.lane !== "append" && <button className="wb-queue-steer" type="button" disabled={!canSteer || Boolean(sending)} title={canSteer ? "Send to the current run before the other waiting messages" : "Live steering is not available for this run"} onClick={()=>void steer(row)}>{sending===row.id ? "Sending…" : "Steer now"}</button>}
       {row.kind === "followup" && row.lane === "append" && <small className="wb-muted">{canSteer ? "Sending…" : "Queued"}</small>}
-      {row.kind === "followup" && row.runId && <button className="wb-queue-remove" type="button" aria-label="Remove from Up next" title="Remove from Up next" disabled={Boolean(sending)} onClick={()=>void act(row, "cancel")}><X size={12}/></button>}
+      {row.kind === "followup" && row.runId && <button className="wb-queue-remove" type="button" aria-label="Remove from Up next" title={row.status === "injected" ? "Delivery is in progress" : "Remove from Up next"} disabled={Boolean(sending) || row.status === "injected"} onClick={()=>void act(row, "cancel")}><X size={12}/></button>}
     </li>)}</ol>
     {error && <p role="alert">{error}</p>}
   </details>;

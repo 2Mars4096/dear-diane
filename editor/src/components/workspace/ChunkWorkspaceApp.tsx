@@ -4,7 +4,7 @@ import { fileName, normalizeRootPath } from "../../lib/workspacePaths";
 import { ensureProjectForRoot, saveWorkbenchProject, selectWorkbenchProject } from "../workbench/projects";
 import type { Paper } from "../papers/library";
 import type { DocumentFile } from "../documents/documents";
-import { visibleQueuedTranscript } from "../workbench/queuedTranscript";
+import { attachFollowupReply, queueItemIsWaiting, visibleQueuedTranscript } from "../workbench/queuedTranscript";
 import { ProjectMenu } from "../workbench/ProjectMenu";
 import { SidecarChat } from "../workbench/SidecarChat";
 import { LeadAgentMenu } from "../workbench/LeadAgentMenu";
@@ -9123,6 +9123,7 @@ function queueRowsFromTasks(tasks: ChatV2TaskSnapshot[], waitingOnly = false) {
     for (const item of task.metadata?.queue_items ?? []) {
       const status = item.status || "queued";
       if (terminalQueueStatuses.has(status.toLowerCase())) continue;
+      if (waitingOnly && !queueItemIsWaiting(item)) continue;
       const rawDetail = item.text.trim() || "Queued message";
       rows.push({
         id: `queue:${item.id}`,
@@ -9142,7 +9143,7 @@ function queueRowsFromTasks(tasks: ChatV2TaskSnapshot[], waitingOnly = false) {
   }
   // Up next lists waiting follow-up messages only: never the run's own task (which is
   // briefly "queued" before it starts), and never items already delivered.
-  if (waitingOnly) return rows.filter((row) => row.kind === "followup" && ["queued", "waiting_dependency"].includes(row.status.toLowerCase()));
+  if (waitingOnly) return rows.filter((row) => row.kind === "followup");
   return rows.slice(0, 8);
 }
 
@@ -16649,9 +16650,7 @@ export default function ChunkWorkspaceApp() {
     const visible = visibleQueuedTranscript(current, workPanelTasks, pendingAssistantIds);
     const trailing = visible.at(-1)?.role === "assistant" && !visible.at(-1)?.taskRunRef?.runId ? visible.at(-1) : undefined;
     const target = linked ?? trailing ?? makeMessage("assistant", "");
-    applyMessages((previous) => previous.some((message) => message.id === target.id)
-      ? previous.map((message) => message.id === target.id ? { ...message, content: "", runEvents: [], taskRunRef: { runId: activeRunId, taskId: activeRunningTask?.task_id, status: "running" } } : message)
-      : [...previous, target]);
+    applyMessages((previous) => attachFollowupReply(previous, target, activeRunId, activeRunningTask?.task_id));
     setPendingAssistantIds((previous) => ({ ...previous, [target.id]: true }));
     connectAgentStream(activeRunId, activeThread, target.id);
   }, [activeRunId, activeRunningTask, activeThread, applyMessages, connectAgentStream, loadingThreadId, workPanelTasks, pendingAssistantIds]);
