@@ -4191,7 +4191,7 @@ describe("workspace blueprint nodes", () => {
       "Oh I think you're right. But can you check the git history, and try to revert back when we had the dan super biology, and when we had the moving dots and networks, just check";
 
     expect(queueDisplayDetailForTest(rough)).toBe(
-      "Check git history for earlier DAN Super Biology and moving dots/network states.",
+      "Check git history for earlier Diane Super Biology and moving dots/network states.",
     );
     expect(queueDisplayDetailForTest(rough)).not.toBe(rough);
   });

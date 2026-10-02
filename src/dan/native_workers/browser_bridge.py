@@ -65,7 +65,7 @@ async def serve(directory: Path, workspace: str, run_id: str, permission: str, e
 
 def instructions(command: str, permission: str) -> str:
     return (
-        "\n\nDAN browser: a browser is available through this run-scoped command. "
+        "\n\nDiane browser: a browser is available through this run-scoped command. "
         "Use it when the user requests browser research, Google Scholar citations, or page interaction. "
         "This connection is ready to use: prefer it for a fresh browser task and keep using the same "
         "connection throughout. Do not ask the user to run setup commands or install another browser tool "

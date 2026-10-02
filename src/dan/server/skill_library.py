@@ -54,17 +54,17 @@ SKILL_LIBRARY: dict[str, dict[str, Any]] = {
     },
     "skill_creation": {
         "name": "Diane Skill Creation",
-        "description": "Default guidance for creating or adapting DAN-compatible SKILL.md skills",
+        "description": "Default guidance for creating or adapting Diane-compatible SKILL.md skills",
         "tags": ["skill", "skills", "authoring", "capability"],
         "inject_as": "system",
         "text": (
-            "Create or adapt DAN-compatible skills as concise SKILL.md folders.\n"
+            "Create or adapt Diane-compatible skills as concise SKILL.md folders.\n"
             "- Use YAML frontmatter with at least name and description; make the description "
             "clear about when the skill should trigger.\n"
             "- Keep SKILL.md focused on essential workflow guidance. Move large references, "
             "examples, templates, or assets into sibling references/, scripts/, or assets/ folders.\n"
             "- Prefer interoperable fields shared by Codex, Claude Code, Cursor, and Diane; "
-            "DAN-specific fields such as tags or attach_to_* are optional extensions.\n"
+            "Diane-specific fields such as tags or attach_to_* are optional extensions.\n"
             "- Treat imported external skills as source material first: preserve their intent, "
             "adapt only what is needed for Diane's brief-driven runtime, and record provenance.\n"
             "- Skills may guide behavior, standards, and review criteria, but they must not "

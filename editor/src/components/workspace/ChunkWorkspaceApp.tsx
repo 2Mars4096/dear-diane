@@ -881,7 +881,7 @@ function cleanQueueRequestText(text: string) {
     .replace(/\btry to\s+/gi, "")
     .replace(/\brevert back\b/gi, "review reverting")
     .replace(/\bdont\b/gi, "do not")
-    .replace(/\bdan super biology\b/gi, "DAN Super Biology")
+    .replace(/\bdan super biology\b/gi, "Diane Super Biology")
     .replace(/\bjust check\b[.?!]?$/i, "")
     .replace(/\s*,\s*$/g, "")
     .trim();
@@ -898,7 +898,7 @@ function specificQueueIntentSummary(rawText: string) {
   const text = rawText.toLowerCase();
   if (text.includes("git history") && /\brevert(?: back)?\b/.test(text)) {
     const targets: string[] = [];
-    if (/\bdan super biology\b/i.test(rawText)) targets.push("DAN Super Biology");
+    if (/\bdan super biology\b/i.test(rawText)) targets.push("Diane Super Biology");
     if (/\bmoving dots?\b/i.test(rawText) || /\bnetworks?\b/i.test(rawText)) {
       targets.push("moving dots/network states");
     }
