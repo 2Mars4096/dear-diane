@@ -17,7 +17,7 @@ export function queueItemIsWaiting(item: { status: string; metadata?: Record<str
 export function visibleQueuedTranscript(messages: ChatMessage[], tasks: ChatV2TaskSnapshot[], pending: Record<string, boolean> = {}) {
   const hidden = new Set<string>();
   const deliveredRequests = new Map<string, Set<string>>();
-  for (const task of tasks) for (const item of task.metadata?.queue_items ?? []) {
+  for (const task of tasks) for (const item of [...(task.metadata?.queue_items ?? []), ...(task.metadata?.queue_receipts ?? [])]) {
     const payload = item.metadata?.command_payload as Record<string, unknown> | undefined;
     const userId = typeof payload?.client_message_id === "string" ? payload.client_message_id : "";
     const assistantId = typeof payload?.client_assistant_id === "string" ? payload.client_assistant_id : "";
@@ -58,4 +58,17 @@ export function attachFollowupReply(messages: ChatMessage[], target: ChatMessage
   return messages.some(message => message.id === target.id)
     ? messages.map(message => message.id === target.id ? reply : message)
     : [...messages, reply];
+}
+
+/** Terminal receipts survive newer stream-only snapshots with older queue data. */
+export function withQueueReceipts(preferred: ChatV2TaskSnapshot, ...snapshots: ChatV2TaskSnapshot[]) {
+  const receipts = new Map((preferred.metadata?.queue_receipts ?? []).map(item => [item.id, item]));
+  for (const snapshot of snapshots) for (const item of snapshot.metadata?.queue_receipts ?? []) {
+    if (!receipts.has(item.id)) receipts.set(item.id, item);
+  }
+  if (!receipts.size) return preferred;
+  return { ...preferred, metadata: { ...preferred.metadata,
+    queue_receipts: [...receipts.values()],
+    queue_items: preferred.metadata?.queue_items?.filter(item => !receipts.has(item.id)),
+  } };
 }

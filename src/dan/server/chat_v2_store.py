@@ -266,6 +266,25 @@ class V2TaskRecord(BaseModel):
                     for item in self.queue_items
                     if item.status in {"queued", "injected"}
                 ],
+                # Transcript ordering needs terminal delivery receipts after an
+                # item leaves the active queue. Exclude large request contexts.
+                "queue_receipts": [
+                    {
+                        "id": item.id, "task_id": item.task_id, "lane": item.lane,
+                        "status": item.status, "position": item.position,
+                        "text": item.text if not (item.metadata.get("command_payload") or {}).get("client_message_id") else "",
+                        "updated_at": item.updated_at,
+                        "metadata": {
+                            "delivered_run_id": item.metadata.get("delivered_run_id"),
+                            "continued_run_id": item.metadata.get("continued_run_id"),
+                            "command_payload": {
+                                key: (item.metadata.get("command_payload") or {}).get(key)
+                                for key in ("client_message_id", "client_assistant_id")
+                            },
+                        },
+                    }
+                    for item in self.queue_items if item.status in {"completed", "cancelled"}
+                ],
                 "created_at": self.created_at,
                 "updated_at": self.updated_at,
             },

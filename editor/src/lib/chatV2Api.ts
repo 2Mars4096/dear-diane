@@ -41,6 +41,7 @@ export interface ChatV2TaskSnapshot {
     append_queue_length?: number;
     continue_queue_length?: number;
     queue_items?: ChatV2QueueItem[];
+    queue_receipts?: ChatV2QueueItem[];
     topic_key?: string;
     queue_key?: string;
     workspace_root?: string;

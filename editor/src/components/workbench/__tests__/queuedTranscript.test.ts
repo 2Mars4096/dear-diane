@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { attachFollowupReply, visibleQueuedTranscript } from "../queuedTranscript";
+import { attachFollowupReply, visibleQueuedTranscript, withQueueReceipts } from "../queuedTranscript";
 import type { ChatMessage } from "../../../types/chat";
 import type { ChatV2TaskSnapshot } from "../../../lib/chatV2Api";
 const messages = [
@@ -83,4 +83,23 @@ it("keeps a leased steer in Up next until acceptance, but reveals a promoted Nex
   expect(visibleQueuedTranscript(messages, snapshot).map(m=>m.id)).toEqual(["u1","a1"]);
   item.metadata!.continued_run_id = "r2";
   expect(visibleQueuedTranscript(messages, snapshot).map(m=>m.id)).toEqual(["u1","a1","u2"]);
+});
+
+it('orders an accepted reply using terminal receipts after the backend removes the active queue item', () => {
+ const snapshot = tasks('completed');
+ const receipt = snapshot[0].metadata.queue_items![0];
+ receipt.metadata = {...receipt.metadata, delivered_run_id:'r1'};
+ snapshot[0].metadata.queue_receipts = [receipt]; snapshot[0].metadata.queue_items = [];
+ const history = [messages[0],{...messages[1],taskRunRef:{runId:'r1',status:'running'}},messages[2]] as ChatMessage[];
+ expect(visibleQueuedTranscript(history,snapshot).map(m=>m.id)).toEqual(['u1','u2','a1']);
+});
+
+it('preserves delivery receipts when stream-only progress is newer than the server queue snapshot', () => {
+ const progress = tasks('queued')[0], server = tasks('completed')[0];
+ const receipt = server.metadata.queue_items![0]; receipt.metadata = {...receipt.metadata,delivered_run_id:'r1'};
+ server.metadata.queue_receipts = [receipt]; server.metadata.queue_items = [];
+ const merged = withQueueReceipts(progress, server);
+ expect(merged.metadata.queue_items).toEqual([]);
+ const history = [messages[0],{...messages[1],taskRunRef:{runId:'r1',status:'running'}},messages[2]] as ChatMessage[];
+ expect(visibleQueuedTranscript(history,[merged]).map(m=>m.id)).toEqual(['u1','u2','a1']);
 });

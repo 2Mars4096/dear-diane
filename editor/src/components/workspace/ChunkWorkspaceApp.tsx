@@ -1,3 +1,4 @@
+import { reconcileRunState } from '../workbench/reconcileRunState';
 import type { FileOpenRequest } from '../../lib/openFile';
 import { useSessionPreferences } from "../workbench/sessionPreferences";
 import type { SessionAction } from "../workbench/SessionMenu";
@@ -5,7 +6,7 @@ import { fileName, normalizeRootPath } from "../../lib/workspacePaths";
 import { ensureProjectForRoot, saveWorkbenchProject, selectWorkbenchProject } from "../workbench/projects";
 import type { Paper } from "../papers/library";
 import type { DocumentFile } from "../documents/documents";
-import { attachFollowupReply, queueItemIsWaiting, visibleQueuedTranscript } from "../workbench/queuedTranscript";
+import { attachFollowupReply, queueItemIsWaiting, visibleQueuedTranscript, withQueueReceipts } from "../workbench/queuedTranscript";
 import { ProjectMenu } from "../workbench/ProjectMenu";
 import { SidecarChat } from "../workbench/SidecarChat";
 import { LeadAgentMenu } from "../workbench/LeadAgentMenu";
@@ -3217,7 +3218,8 @@ function mergeTaskSnapshots(...groups: ChatV2TaskSnapshot[][]) {
   for (const group of groups) {
     for (const task of group) {
       if (!task.task_id) continue;
-      byId.set(task.task_id, preferredTaskSnapshot(byId.get(task.task_id), task));
+      const current = byId.get(task.task_id);
+      byId.set(task.task_id, withQueueReceipts(preferredTaskSnapshot(current, task), ...(current ? [current] : []), task));
     }
   }
   return [...byId.values()];
@@ -16500,9 +16502,9 @@ export default function ChunkWorkspaceApp() {
         }
       }
       if (isStillSelectedThread()) {
-        setStatus("running");
+        setStatus(executed.task?.status || "running");
       }
-      await persistMessages(thread, linkedMessages, "agent");
+      await persistMessages(thread, isStillSelectedThread() ? messagesRef.current : linkedMessages, "agent");
     },
     [
       activeNote,
@@ -16596,6 +16598,13 @@ export default function ChunkWorkspaceApp() {
     },
     [composerCaret, input, setComposerInputValue],
   );
+
+  useEffect(() => {
+    const current = messagesRef.current;
+    const settled = reconcileRunState(current, pendingAssistantIds, workPanelTasks);
+    if (settled.messages !== current) applyMessages(() => settled.messages);
+    if (settled.pending !== pendingAssistantIds) setPendingAssistantIds(settled.pending);
+  }, [messages, pendingAssistantIds, workPanelTasks, applyMessages]);
 
   useEffect(() => { attachedRunKeyRef.current = ""; }, [activeThread?.id]);
   useEffect(() => {
