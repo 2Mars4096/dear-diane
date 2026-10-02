@@ -5,6 +5,7 @@ import {
 } from "./lib/appearanceTheme";
 import { useSettingsStore } from "./store/useSettingsStore";
 
+const OpenRouterSetup = lazy(() => import("./components/workbench/OpenRouterSetup"));
 const ChunkWorkspaceApp = lazy(() => import("./components/workspace/ChunkWorkspaceApp"));
 
 const WORKSPACE_ROUTE = "workspace";
@@ -63,7 +64,7 @@ export default function App() {
           </div>
         }
       >
-        <ChunkWorkspaceApp />
+        <OpenRouterSetup><ChunkWorkspaceApp /></OpenRouterSetup>
       </Suspense>
     </div>
   );

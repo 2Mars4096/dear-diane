@@ -209,6 +209,16 @@ class ChatStore:
                 return compact[:80]
         return thread.title
 
+    @staticmethod
+    def needs_title_summary(thread: ChatThread, meta: dict[str, Any]) -> bool:
+        if meta.get("title_source") in {"manual", "generated"} or meta.get("archived"):
+            return False
+        first = next((" ".join(m.content.split()) for m in thread.messages if m.role == "user" and m.content.strip()), "")
+        if not first:
+            return False
+        title = thread.title.removesuffix(" (fork)")
+        return title in {first[:80], first[:50] + "..."} or ChatStore.initial_title(thread) != thread.title
+
     def _write_snapshot(self, thread: ChatThread) -> None:
         path = self._thread_path(thread.workflow_id, thread.id)
         path.write_text(
@@ -390,7 +400,7 @@ class ChatStore:
         return self._clone_thread(state.thread)
 
     def update_thread_title(
-        self, workflow_id: str, thread_id: str, title: str
+        self, workflow_id: str, thread_id: str, title: str, *, touch: bool = True
     ) -> bool:
         path = self._thread_path(workflow_id, thread_id)
         if not path.exists() or self._load_snapshot_from_path(path) is None:
@@ -404,13 +414,14 @@ class ChatStore:
                 "op": "update_thread",
                 "fields": {
                     "title": title,
-                    "updated_at": updated_at.isoformat(),
+                    **({"updated_at": updated_at.isoformat()} if touch else {}),
                 },
             },
         )
         if state is not None:
             state.thread.title = title
-            state.thread.updated_at = updated_at
+            if touch:
+                state.thread.updated_at = updated_at
             self._finalize_cached_thread_mutation(state, journal_count)
             return True
         self._maybe_compact_thread(workflow_id, thread_id, journal_count)
@@ -694,6 +705,7 @@ class ChatStore:
                     results.append({
                         "id": thread.id,
                         "title": thread.title,
+                        "title_needs_summary": self.needs_title_summary(thread, meta),
                         "workflow_id": thread.workflow_id,
                         "message_count": len(thread.messages),
                         "created_at": thread.created_at.isoformat(),

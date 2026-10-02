@@ -354,3 +354,42 @@ def remove_process(process_id: str):
     from dan.processes import manager
     _process_call(lambda: manager().remove(process_id))
     return {"removed": process_id}
+
+
+@router.get("/api/setup")
+def setup_status(request: Request):
+    from dan.native_workers.models import provider_key
+    try:
+        _local_provider_settings(request)
+        local = True
+    except HTTPException:
+        local = False
+    return {"ready": bool(provider_key('openrouter')), "local": local}
+
+
+@router.post("/api/setup/openrouter")
+async def connect_openrouter(body: ProviderKeyInput, request: Request):
+    import httpx
+    from dan.native_workers.provider_credentials import save_key
+    _local_provider_settings(request)
+    key = body.api_key.get_secret_value().strip()
+    if not key or len(key) > 4096 or any(char.isspace() for char in key):
+        raise HTTPException(400, 'Enter an OpenRouter API key without whitespace')
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get('https://openrouter.ai/api/v1/key', headers={'Authorization': f'Bearer {key}'})
+        if response.status_code in {401, 403}:
+            raise HTTPException(400, 'OpenRouter did not accept this key. Check it and try again.')
+        if response.status_code != 200:
+            raise HTTPException(502, 'OpenRouter is unavailable. Try again shortly.')
+        data = response.json()['data']
+        if data.get('is_management_key') or data.get('is_provisioning_key'):
+            raise HTTPException(400, 'Use a model API key, not a management key.')
+        if data.get('limit_remaining') is not None and data['limit_remaining'] <= 0:
+            raise HTTPException(400, 'This key has reached its spending limit. Add credit or update the limit in OpenRouter.')
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        raise HTTPException(502, 'Could not verify the key. Check your connection and try again.') from None
+    save_key('openrouter', key)
+    return {"ready": True, "local": True}

@@ -90,6 +90,7 @@ export interface ChatV2TaskRunRef {
 }
 
 export interface ChatV2ThreadSummary {
+  title_needs_summary?: boolean;
   id: string;
   title: string;
   workflow_id: string;

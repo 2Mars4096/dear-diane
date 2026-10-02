@@ -10,6 +10,7 @@ import { SidecarChat } from "../workbench/SidecarChat";
 import { LeadAgentMenu } from "../workbench/LeadAgentMenu";
 import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from "../workbench/NativeWorkers";
 import { EMPTY_PROFILE, leadExecutionProfile, modelSource, OPENROUTER_URL, withLeadSelection } from "../workbench/modelSelection";
+const SessionTitles = lazy(() => import("../workbench/SessionTitles"));
 const SidebarResize = lazy(() => import("../workbench/SidebarResize"));
 const WorkspaceNavigator = lazy(() => import("../workbench/WorkspaceNavigator"));
 const ChangesPanel = lazy(() => import("../workbench/ChangesPanel"));
@@ -14062,7 +14063,7 @@ export default function ChunkWorkspaceApp() {
     void refreshBackgroundTasks();
     const timer = window.setInterval(() => {
       void refreshBackgroundTasks();
-      if (document.querySelector('meta[name="dan-remote-machine"]')) void refreshThreads();
+      void refreshThreads();
     }, 10_000);
     return () => window.clearInterval(timer);
   }, [refreshBackgroundTasks, refreshThreads]);
@@ -17260,6 +17261,7 @@ export default function ChunkWorkspaceApp() {
           
         </div>
       </header>}
+      <Suspense fallback={null}><SessionTitles threads={threads} onUpdated={refreshThreads} /></Suspense>
       <Suspense fallback={null}><WorkspaceNavigator
         host={recentSessionHost} groups={sessionGroups} projects={workspaces} tabs={mainTabs} documents={documents} dirty={dirtyDocuments}
         active={activeMainTab.startsWith('file:') || activeMainTab.startsWith('pdf:') || ['papers','settings'].includes(activeMainTab) ? `tab:${activeMainTab}` : activeThread ? threadWorkspaceKey(activeThread.workflowId, activeThread.id) : ''}

@@ -79,6 +79,9 @@ async def update_chat_thread(
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
     if "title" in body:
+        meta = store.get_thread_meta(workflow_id, thread_id)
+        meta["title_source"] = "manual"
+        store.set_thread_meta(workflow_id, thread_id, meta)
         store.update_thread_title(workflow_id, thread_id, str(body.get("title") or ""))
         thread = store.get_thread(workflow_id, thread_id) or thread
     if "messages" in body:
@@ -116,3 +119,14 @@ async def delete_chat_thread(
     if not store.delete_thread(workflow_id, thread_id):
         raise HTTPException(status_code=404, detail="Thread not found")
     return {"status": "deleted"}
+
+
+@router.post("/api/chats/{workflow_id}/{thread_id}/title")
+async def summarize_chat_title(workflow_id: str, thread_id: str, request: Request) -> dict[str, Any]:
+    from dan.server.session_titles import name_session
+    try:
+        title = await name_session(_store(request), workflow_id, thread_id)
+        return {"title": title}
+    except Exception:
+        # Optional title generation never prevents opening or continuing the session.
+        return {"title": None}
