@@ -13252,7 +13252,7 @@ export default function ChunkWorkspaceApp() {
   const [sidecarSelection, setSidecarSelection] = useState({ text: "", token: 0 });
   const { mainTabs, setMainTabs, activeMainTab, setActiveMainTab, openTab, openDocument: registerDocument,
     closeTab, documents, documentDrafts, dirtyDocuments, setDirtyDocuments, setLibraryReadings,
-    libraryReading, readerFile } = useDocumentTabs();
+    libraryReading, readerFile, restored: documentsRestored, restoreError: documentRestoreError } = useDocumentTabs();
   const [paperSearch, setPaperSearch] = useState(false);
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
@@ -14621,9 +14621,9 @@ export default function ChunkWorkspaceApp() {
   const [fileRequest] = useState<FileOpenRequest | null>(null);
   const [fileOpenError, setFileOpenError] = useState<{ request: FileOpenRequest; message: string } | null>(null);
   const openDocument = useCallback((file: DocumentFile) => {
-    registerDocument({ ...file, workspaceId: file.workspaceId || activeWorkspaceId || undefined, projectName: file.projectName || workspace?.name });
+    registerDocument({ ...file, readingWorkflowId: file.readingWorkflowId || activeThread?.workflowId || workspace?.id || activeWorkspaceId || "_unassigned", workspaceId: file.workspaceId || activeWorkspaceId || undefined, projectName: file.projectName || workspace?.name });
     openSideTab(null); setActivePane("work"); setPhonePage("chat"); setShowConversationChunks(true);
-  }, [registerDocument, activeWorkspaceId, workspace?.name, openSideTab]);
+  }, [registerDocument, activeWorkspaceId, activeThread?.workflowId, workspace?.id, workspace?.name, openSideTab]);
   useEffect(() => {
     const receive = (event: Event) => {
       const request = (event as CustomEvent<FileOpenRequest>).detail;
@@ -18393,11 +18393,12 @@ export default function ChunkWorkspaceApp() {
 
               <div className="wb-tabbar"><Suspense fallback={null}><NavigationHistory active={mainTabs.find(tab => tab.id === activeMainTab)} onNavigate={visit => { const thread = visit.session && threads.find(item => item.id === visit.session?.id && item.workflow_id === visit.session.workflowId); if (thread) void openSession(thread, visit.session?.workspaceId, visit.session?.root, visit.id); else if (mainTabs.some(tab => tab.id === visit.id)) setActiveMainTab(visit.id); }} /></Suspense>
               {mainTabs.length > 1 && <Suspense fallback={null}><MainTabs tabs={mainTabs} active={activeMainTab} onSelect={id => { const tab = mainTabs.find(item => item.id === id); const thread = tab?.session && threads.find(item => item.id === tab.session?.id && item.workflow_id === tab.session.workflowId); if (thread) void openSession(thread, tab?.session?.workspaceId, tab?.session?.root, id); else setActiveMainTab(id); }} onClose={closeTab} /></Suspense>}</div>
+              {documentRestoreError && <p role="alert" className="dan-document-message">{documentRestoreError}</p>}
               {activeMainTab === 'file-error' && fileOpenError && <div role="alert" className="dan-document-message"><strong>Could not open file</strong><p>{fileOpenError.message}</p><button onClick={() => window.dispatchEvent(new CustomEvent('dan:open-file', { detail: fileOpenError.request }))}>Retry</button></div>}
               <Suspense fallback={null}>{Object.entries(documents).filter(([id]) => id.startsWith("file:")).map(([id, file]) => <DocumentView key={id} file={file} active={id === activeMainTab} keyboard={visibleSideTab !== "document"} annotate onAsk={text => { setComposerInputValue(text); setActiveMainTab(mainTabs.find(tab => tab.kind === 'chat')?.id || 'chat'); }} drafts={documentDrafts.current} onDirty={(path, dirty) => setDirtyDocuments(current => ({...current, [path]:dirty}))} />)}</Suspense>
               {mainTabs.some(tab => tab.id === "papers") && <div className="papers-tab" hidden={activeMainTab !== "papers"}><Suspense fallback={null}><PaperLibrary onOpen={openLibraryReading} onReference={papers => void referencePapers(papers)} /></Suspense></div>}
               {libraryReading && <Suspense fallback={null}><ReadingSessionBar id={libraryReading.session.id} onBrowse={openPaperLibrary} /></Suspense>}
-              {activeMainTab === "papers" || activeMainTab === "file-error" || activeMainTab.startsWith("file:") ? null : activeMainTab === "settings" ? <Suspense fallback={null}><DanSettings page onPapers={openPaperLibrary} onClose={() => closeTab("settings")} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} /></Suspense> : readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView key={readerFile.path} file={readerFile} onAsk={askFromReader} onNotes={() => openSideTab("notes")} /></Suspense> : <>
+              {!documentsRestored && activeMainTab.startsWith("pdf:") ? <p className="dan-document-message">Restoring reading session…</p> : activeMainTab === "papers" || activeMainTab === "file-error" || activeMainTab.startsWith("file:") ? null : activeMainTab === "settings" ? <Suspense fallback={null}><DanSettings page onPapers={openPaperLibrary} onClose={() => closeTab("settings")} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} /></Suspense> : readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView key={readerFile.path} file={readerFile} onAsk={askFromReader} onNotes={() => openSideTab("notes")} /></Suspense> : <>
               <div className="wb-conversation-heading"><div className="wb-conversation-actions">
                 {activeThread && <button title={`Copy session ID: ${activeThread.id}`} onClick={() => { void navigator.clipboard.writeText(activeThread.id).then(() => setStatus("Session ID copied"), () => setStatus(`Session ID: ${activeThread.id}`)); }}>Session <code>{activeThread.id}</code></button>}
                 {activeRunningTask && activeThread && <button className="wb-stop" onClick={() => void stopSessionRun({ id: activeThread.id, workflow_id: activeThread.workflowId, title: activeThread.title || "Active session", message_count: messages.length, created_at: "", updated_at: "" }, activeRunningTask)}><Square size={11} />Stop run</button>}
@@ -18733,7 +18734,7 @@ export default function ChunkWorkspaceApp() {
           <PersistentPanel active={visibleSideTab === "notes"} name="Notes" key={`notes:${readerFile?.path ?? ""}`} >{readerFile && <Suspense fallback={null}><ReaderNotes file={readerFile} header={false} /></Suspense>}</PersistentPanel>
           <PersistentPanel active={visibleSideTab === "chat"} name="Reading or chat" key={`chat:${readerFile?.path ?? `${activeThread?.workflowId}:${activeThread?.id}`}`}>
           {readerFile && <Suspense fallback={null}><ReadingChat key={`reader:${libraryReading?.session.id || readerFile.path}`} file={readerFile} reading={libraryReading}
-            workflowId={activeThread?.workflowId || workspace?.id || activeWorkspaceId || "_unassigned"}
+            workflowId={readerFile.readingWorkflowId || activeThread?.workflowId || workspace?.id || activeWorkspaceId || "_unassigned"}
             workspaceId={workspace?.id || ""} workspaceRoot={developmentRoot || workspaceRoot} selection={readerSelection}
             leadLabel={selectedAgentOption.shortLabel} execution={sidecarExecution()} header={false}
             onLink={link => { if (libraryReading) setLibraryReadings(current => ({ ...current, [activeMainTab]: { ...libraryReading, session: { ...libraryReading.session, link } } })); }}
