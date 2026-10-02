@@ -16151,6 +16151,7 @@ export default function ChunkWorkspaceApp() {
 
   const attachRunEventToAssistant = useCallback(
     (assistantId: string, event: RunEventPayload) => {
+      if (event.type === "model_text_delta") return;
       applyMessages((previous) =>
         previous.map((message) =>
           message.id === assistantId
@@ -16172,6 +16173,7 @@ export default function ChunkWorkspaceApp() {
     ) => {
       agentStreamRef.current?.close();
       attachedRunKeyRef.current = `${thread.id}:${runId}`;
+      let lastTaskRefresh = 0;
       agentStreamRef.current = connectChatV2AgentRunEvents(
         runId,
         (event) => {
@@ -16186,7 +16188,7 @@ export default function ChunkWorkspaceApp() {
               void refreshBackgroundTasks();
             }, delay);
           };
-          if (event.task_id) refreshThreadTasks();
+          if (event.task_id && (agentRunEventIsTerminal(event) || Date.now() - lastTaskRefresh > 1000)) { lastTaskRefresh = Date.now(); refreshThreadTasks(); }
           if (agentRunEventIsTerminal(event)) {
             setBackgroundTasks((previous) => applyRunEventToTaskSnapshots(previous, event));
             if (activeThreadRef.current?.id === thread.id) {
@@ -16194,7 +16196,7 @@ export default function ChunkWorkspaceApp() {
             }
           }
           if (activeThreadRef.current?.id !== thread.id) return;
-          setAgentEvents((previous) => [...previous, event].slice(-80));
+          if (event.type !== "model_text_delta") setAgentEvents((previous) => [...previous, event].slice(-80));
           attachRunEventToAssistant(assistantId, runEventPayloadFromAgentEvent(event));
           const action = !agentRunEventIsTerminal(event) ? liveActionText(event.summary) : "";
           if (action) setLiveActions((previous) => previous[assistantId] === action ? previous : { ...previous, [assistantId]: action });
