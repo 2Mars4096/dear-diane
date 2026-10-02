@@ -60,3 +60,10 @@ it('leaves literature PDF drops to the import panel', async () => {
   await drag('drop', false, 1, target);
   expect(resolve).not.toHaveBeenCalled(); expect(onOpen).not.toHaveBeenCalled();
 });
+
+it('leaves composer file drops to attachments instead of opening a preview', async () => {
+ const target=document.createElement('div'); target.dataset.composerDrop=''; host.append(target);
+ const resolve=vi.spyOn(nativeFs,'droppedFile');
+ await drag('dragenter',false,1,target); expect(host.querySelector('.dan-file-drop')).toBeNull();
+ await drag('drop',false,1,target); expect(resolve).not.toHaveBeenCalled(); expect(onOpen).not.toHaveBeenCalled();
+});

@@ -22,6 +22,7 @@ from dan.server.routers.reader import router as reader_router
 from dan.server.routers.remote import router as remote_router
 from dan.server.routers.workspace_changes import router as workspace_changes_router
 from dan.server.routers.documents import router as documents_router
+from dan.server.routers.attachments import router as attachments_router
 from dan.server.routers.papers import router as papers_router
 from dan.server.routers.literature import router as literature_router
 from dan.server.literature import ImportRunner
@@ -73,6 +74,7 @@ def create_app() -> FastAPI:
     app.include_router(remote_router)
     app.include_router(remote_registry_router)
     app.include_router(documents_router)
+    app.include_router(attachments_router)
     app.include_router(workspace_changes_router)
     app.include_router(papers_router)
     app.include_router(literature_router)

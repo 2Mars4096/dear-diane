@@ -65,7 +65,6 @@ import {
   FolderPlus,
   FolderOpen,
   GitBranch as GitBranchIcon,
-  Image as ImageIcon,
   Link as LinkIcon,
   Lightbulb,
   Loader2,
@@ -165,6 +164,7 @@ import MarkdownRenderer from "../shared/MarkdownRenderer";
 // Reader (pdf.js) loads on first use so it stays out of the workspace shell chunk.
 const FollowupQueue = lazy(() => import("../workbench/FollowupQueue").then(module => ({ default: module.FollowupQueue })));
 const DanSettings = lazy(() => import("../workbench/DanSettings").then(module => ({ default: module.DanSettings })));
+const AttachFiles = lazy(() => import("../workbench/AttachFiles"));
 const FileOpener = lazy(() => import("../documents/FileOpener"));
 const FileSidecar = lazy(() => import("../documents/FileSidecar"));
 const DocumentView = lazy(() => import("../documents/DocumentView"));
@@ -194,7 +194,7 @@ const ROOT_SUGGESTION_STORAGE_KEY = "dan.chunkWorkspace.roots.v1";
 const THREAD_WORKSPACE_STORAGE_KEY = "dan.chunkWorkspace.threadWorkspaces.v1";
 const SESSION_RESPONSE_SEEN_STORAGE_KEY = "dan.chunkWorkspace.sessionResponseSeen.v1";
 const COMPOSER_DRAFT_STORAGE_KEY = "dan.chunkWorkspace.composerDrafts.v1";
-const WORKSPACE_COMPOSER_MAX_SCREENSHOTS = 4;
+const WORKSPACE_COMPOSER_MAX_ATTACHMENTS = 4;
 const LAYOUT_STORAGE_KEY = "dan.chunkWorkspace.layout.v3";
 const UI_STATE_STORAGE_KEY = "dan.chunkWorkspace.uiState.v1";
 const AGENT_SELECTION_STORAGE_KEY = "dan.chunkWorkspace.agentSelection.v1";
@@ -1197,35 +1197,6 @@ function makeMessage(role: ChatMessage["role"], content: string): ChatMessage {
   };
 }
 
-function dataUrlFromFile(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(reader.error ?? new Error("Failed to read clipboard image"));
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        resolve(reader.result);
-        return;
-      }
-      reject(new Error("Unexpected clipboard image read result"));
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
-function extensionForImageMimeType(mimeType?: string) {
-  switch ((mimeType || "").toLowerCase()) {
-    case "image/jpeg":
-      return ".jpg";
-    case "image/webp":
-      return ".webp";
-    case "image/gif":
-      return ".gif";
-    case "image/png":
-    default:
-      return ".png";
-  }
-}
-
 function formatAttachmentSize(size?: number) {
   if (!Number.isFinite(size ?? NaN) || !size) return "";
   if (size < 1024) return `${size} B`;
@@ -1234,16 +1205,16 @@ function formatAttachmentSize(size?: number) {
 }
 
 function workspaceAttachmentOnlyPrompt(attachments: ComposerAttachmentDraft[]) {
-  if (attachments.length <= 1) return "Please review the attached screenshot.";
-  return "Please review the attached screenshots.";
+  if (attachments.length <= 1) return "Please review the attached file.";
+  return "Please review the attached files.";
 }
 
 function workspaceAttachmentDisplayText(attachments: ComposerAttachmentDraft[]) {
   if (attachments.length <= 1) {
-    const name = attachments[0]?.name || "Screenshot";
+    const name = attachments[0]?.name || "File";
     return `Attached ${name}`;
   }
-  return `Attached ${attachments.length} screenshots`;
+  return `Attached ${attachments.length} files`;
 }
 
 function workspaceAttachmentPayload(attachment: ComposerAttachmentDraft): Record<string, unknown> {
@@ -13319,6 +13290,9 @@ export default function ChunkWorkspaceApp() {
   const [agentEvents, setAgentEvents] = useState<ChatV2AgentRunEvent[]>([]);
   const [input, setInput] = useState("");
   const [composerReferences, setComposerReferences] = useState<Record<string, { text: string; title: string; workflowId: string; threadId: string; messageIds: string[] }>>({});
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
+  const [attachmentError, setAttachmentError] = useState("");
+  const attachmentBusyRef = useRef(false);
   const [attachmentDrafts, setAttachmentDrafts] = useState<Record<string, ComposerAttachmentDraft[]>>({});
   const attachmentKey = activeThread ? `${activeThread.workflowId}:${activeThread.id}` : 'new';
   const composerAttachments = attachmentDrafts[attachmentKey] || [];
@@ -16577,54 +16551,25 @@ export default function ChunkWorkspaceApp() {
     setComposerCaret(target.selectionStart ?? target.value.length);
   }, []);
 
-  const handleComposerPaste = useCallback(
-    (event: ClipboardEvent<HTMLTextAreaElement>) => {
-      const clipboard = event.clipboardData;
-      const imageFiles = Array.from(clipboard?.items ?? [])
-        .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
-        .map((item) => item.getAsFile())
-        .filter((file): file is File => Boolean(file));
-      if (imageFiles.length === 0) return;
-      event.preventDefault();
-      const remainingSlots = WORKSPACE_COMPOSER_MAX_SCREENSHOTS - composerAttachments.length;
-      if (remainingSlots <= 0) {
-        setStatus("Remove a screenshot before adding another");
-        return;
-      }
-      const filesToAttach = imageFiles.slice(0, remainingSlots);
-      setStatus("Adding screenshot");
-      void (async () => {
-        try {
-          const drafts = await Promise.all(
-            filesToAttach.map(async (file, index) => {
-              const mimeType = file.type || "image/png";
-              const fallbackName = `Screenshot ${index + 1}${extensionForImageMimeType(mimeType)}`;
-              const dataUrl = await dataUrlFromFile(file);
-              return {
-                id: crypto.randomUUID(),
-                kind: "figure" as const,
-                name: resolveAttachmentName(file.name || fallbackName, mimeType),
-                size: file.size,
-                mimeType,
-                source: "clipboard",
-                dataUrl,
-                file,
-              };
-            }),
-          );
-          const normalized = await normalizeAttachmentDrafts(drafts);
-          setComposerAttachments((previous) =>
-            [...previous, ...normalized].slice(0, WORKSPACE_COMPOSER_MAX_SCREENSHOTS),
-          );
-          setStatus(normalized.length === 1 ? "Screenshot attached" : "Screenshots attached");
-          requestAnimationFrame(() => composerRef.current?.focus());
-        } catch (error) {
-          setStatus(error instanceof Error ? error.message : "Screenshot paste failed");
-        }
-      })();
-    },
-    [composerAttachments.length, setComposerAttachments],
-  );
+  const addComposerFiles = useCallback((files: File[], source: string) => {
+    if (!files.length || attachmentBusyRef.current) return;
+    const remaining = WORKSPACE_COMPOSER_MAX_ATTACHMENTS - composerAttachments.length;
+    if (remaining <= 0) { setAttachmentError("Remove an attachment before adding another (maximum 4)."); return; }
+    attachmentBusyRef.current = true; setAttachmentBusy(true); setAttachmentError("");
+    void import("../../lib/attachFiles").then(async ({ prepareAttachments }) => {
+      const result = await prepareAttachments(files.slice(0, remaining), source);
+      setComposerAttachments(previous => [...previous, ...result.attachments].slice(0, WORKSPACE_COMPOSER_MAX_ATTACHMENTS));
+      setAttachmentError([...result.errors, ...(files.length > remaining ? ["Only the first files fit; maximum 4 attachments."] : [])].join(" "));
+      setStatus(result.attachments.length === 1 ? "File attached" : `${result.attachments.length} files attached`);
+    }).catch(error => setAttachmentError(error instanceof Error ? error.message : "Could not attach files."))
+      .finally(() => { attachmentBusyRef.current = false; setAttachmentBusy(false); });
+  }, [composerAttachments.length, setComposerAttachments]);
+  const handleComposerPaste = useCallback((event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.files);
+    const items = files.length ? files : Array.from(event.clipboardData.items).filter(item => item.kind === "file").map(item => item.getAsFile()).filter((file): file is File => !!file);
+    if (!items.length) return;
+    event.preventDefault(); addComposerFiles(items, "clipboard");
+  }, [addComposerFiles]);
 
   const removeComposerAttachment = useCallback((attachmentId: string) => {
     setComposerAttachments((previous) =>
@@ -16761,7 +16706,7 @@ export default function ChunkWorkspaceApp() {
     const draftBeforeSubmit = input;
     const prompt = input.trim();
     const sourceAttachments = composerAttachments;
-    if ((!prompt && sourceAttachments.length === 0) || sending) return;
+    if ((!prompt && sourceAttachments.length === 0) || sending || attachmentBusyRef.current) return;
     if (activePane === "notes" && sourceAttachments.length === 0 && notesComposerRequestsNewDraft(prompt)) {
       setComposerInputValue("");
       createDraftNote(prompt);
@@ -16872,7 +16817,12 @@ export default function ChunkWorkspaceApp() {
   );
 
   const renderWorkspaceComposer = () => (
-    <div className="wb-composer shrink-0 border-t border-slate-200/80 bg-white/95 p-3 shadow-[0_-1px_0_rgba(15,23,42,0.02)] dark:border-slate-800 dark:bg-slate-950">
+    <div data-composer-drop="" onDragOver={event => { if (Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "copy"; } }} onDrop={event => {
+      if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+      event.preventDefault(); event.stopPropagation();
+      if (Array.from(event.dataTransfer.items).some(item => item.webkitGetAsEntry?.()?.isDirectory)) { setAttachmentError("Choose files to attach, or drop a folder outside the composer to open a project."); return; }
+      addComposerFiles(Array.from(event.dataTransfer.files), "drop");
+    }} className="wb-composer shrink-0 border-t border-slate-200/80 bg-white/95 p-3 shadow-[0_-1px_0_rgba(15,23,42,0.02)] dark:border-slate-800 dark:bg-slate-950">
       <div className="flex flex-col gap-2">
         <WorkspaceComposerSuggestionPopup
           suggestions={composerSuggestions}
@@ -16880,6 +16830,8 @@ export default function ChunkWorkspaceApp() {
           onActiveIndexChange={setComposerSuggestionIndex}
           onSelect={applyComposerSuggestion}
         />
+        {attachmentBusy && <p role="status">Adding attachments…</p>}
+        {attachmentError && <p role="alert">{attachmentError}</p>}
         {composerAttachments.length > 0 && (
           <div className="flex min-h-16 flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50/80 p-2 dark:border-slate-800 dark:bg-slate-900/70">
             {composerAttachments.map((attachment) => {
@@ -16888,10 +16840,10 @@ export default function ChunkWorkspaceApp() {
               return (
                 <div
                   key={attachment.id}
-                  className="relative h-14 w-20 shrink-0 overflow-hidden rounded-md border border-slate-300 bg-slate-100 shadow-sm dark:border-slate-700 dark:bg-slate-950"
+                  className={`relative h-14 ${attachment.kind === "figure" ? "w-20" : "w-52"} shrink-0 overflow-hidden rounded-md border border-slate-300 bg-slate-100 shadow-sm dark:border-slate-700 dark:bg-slate-950`}
                   title={attachmentSize ? `${attachmentName} · ${attachmentSize}` : attachmentName}
                 >
-                  {attachment.dataUrl ? (
+                  {attachment.kind === "figure" && attachment.dataUrl ? (
                     <img
                       src={attachment.dataUrl}
                       alt={attachmentName}
@@ -16900,7 +16852,7 @@ export default function ChunkWorkspaceApp() {
                     />
                   ) : (
                     <div className="grid h-full w-full place-items-center text-slate-500 dark:text-slate-400">
-                      <ImageIcon size={18} />
+                      <FileText size={16} /><span className="max-w-full truncate px-2 pr-7 text-xs">{attachmentName}</span>
                     </div>
                   )}
                   <button
@@ -16937,6 +16889,7 @@ export default function ChunkWorkspaceApp() {
           className="max-h-32 min-h-11 w-full resize-none rounded-lg border border-slate-200 bg-slate-50/90 px-3 py-2.5 text-sm leading-6 outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:bg-white focus:shadow-sm dark:border-slate-800 dark:bg-slate-900"
         />
         <div className="flex flex-wrap items-center gap-2">
+          <Suspense fallback={null}><AttachFiles disabled={attachmentBusy || sending} onFiles={files => addComposerFiles(files, "picker")} /></Suspense>
           <div className="flex h-7 shrink-0 items-center gap-0.5 rounded-md border border-slate-200 bg-slate-100/70 p-0.5 shadow-inner dark:border-slate-800 dark:bg-slate-900">
             {(["steer", "queue"] as const).map((mode) => {
               const queueUnavailable = mode === "queue" && !hasActiveRun;

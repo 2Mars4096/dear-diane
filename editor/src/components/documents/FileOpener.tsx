@@ -29,7 +29,7 @@ export default function FileOpener({ onOpen, onFolder }: { onOpen: (file: Docume
     const files = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
     const over = (e: DragEvent) => { if (files(e)) { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; } };
     const enter = (e: DragEvent) => { if (files(e)) {
-      if ((e.target as HTMLElement)?.closest?.("[data-literature-drop]")) { setDragging(false); return; }
+      if ((e.target as HTMLElement)?.closest?.("[data-literature-drop], [data-composer-drop]")) { setDragging(false); return; }
       depth++;
       setBounds(document.querySelector('[data-main-drop-area]')?.getBoundingClientRect() ?? null);
       setDragging(!document.querySelector('dialog[open]'));
@@ -39,7 +39,7 @@ export default function FileOpener({ onOpen, onFolder }: { onOpen: (file: Docume
       depth = 0; setDragging(false);
       if (!files(e)) return;
       // Project Settings owns directory drops.
-      if ((e.target as HTMLElement)?.closest?.('.wb-folder-drop, .wb-remote-project-folder, [data-literature-drop]')) return;
+      if ((e.target as HTMLElement)?.closest?.('.wb-folder-drop, .wb-remote-project-folder, [data-literature-drop], [data-composer-drop]')) return;
       e.preventDefault(); e.stopPropagation();
       const items = Array.from(e.dataTransfer?.items ?? []);
       if (items.some(item => item.webkitGetAsEntry?.()?.isDirectory)) {
