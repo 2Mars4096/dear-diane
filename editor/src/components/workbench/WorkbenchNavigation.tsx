@@ -9,6 +9,11 @@ export interface NavigationProject {
   sessions: NavigationSession[];
 }
 interface Props {
+  projectRequest?: number;
+  projectScope?: string;
+  onAllProjects?: () => void;
+  itemLabel?: string;
+  itemProject?: string;
   projects: NavigationProject[];
   activeProjectId: string | null;
   activeSessionId: string | null;
@@ -61,10 +66,11 @@ export function WorkbenchNavigation(props: Props) {
   const open = (next: "projects" | "sessions") => {
     heldDirections.current.clear();
     restoreFocus.current = document.activeElement as HTMLElement;
-    setIndex(Math.max(0, props.projects.findIndex((item) => item.id === props.activeProjectId)));
+    setIndex(Math.max(0, props.projects.findIndex((item) => item.id === (props.projectScope !== "*" ? props.projectScope || props.activeProjectId : props.activeProjectId))));
     setSelectedSlot(Math.max(0, slots.indexOf(props.activeSessionId)));
     setMode(next);
   };
+  useEffect(() => { if (props.projectRequest) open("projects"); }, [props.projectRequest]);
   const close = () => { heldDirections.current.clear(); setMode(null); };
   useEffect(() => {
     const node = dialog.current;
@@ -82,7 +88,9 @@ export function WorkbenchNavigation(props: Props) {
         props.onToggleSidebar();
         return;
       }
+      if (event.defaultPrevented || event.isComposing || (document.querySelector("dialog[open], [role=dialog][aria-modal=true], [popover]:popover-open") && !mode)) return;
       if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey || event.repeat) return;
+      if (event.code === "Digit0" && props.onAllProjects) { event.preventDefault(); close(); props.onAllProjects(); return; }
       if (event.code !== "KeyE" && event.code !== "KeyS") return;
       event.preventDefault();
       if (!mode) open(event.code === "KeyE" ? "projects" : "sessions");
@@ -109,9 +117,9 @@ export function WorkbenchNavigation(props: Props) {
   return <>
     <div className="wb-navigation">
       <span className="wb-sidebar-toggle"><button onClick={props.onToggleSidebar} aria-label={props.sidebarOpen ? "Hide sidebar" : "Show sidebar"} title={`${props.sidebarOpen ? "Hide sidebar" : "Show sidebar"} (${modifier}B)`} aria-keyshortcuts="Meta+B Control+B" aria-expanded={props.sidebarOpen} aria-controls="wb-project-sidebar"><PanelLeft size={18} /></button></span>
-      <button onClick={() => open("projects")} title={`Switch project (${modifier}⇧E)`} aria-keyshortcuts="Meta+Shift+E Control+Shift+E"><Layers size={17} /><span>{project?.name || "Projects"}</span><span className="wb-shortcut">{modifier}⇧E</span></button>
+      <button onClick={() => open("projects")} title={`Switch project (${modifier}⇧E)`} aria-keyshortcuts="Meta+Shift+E Control+Shift+E"><Layers size={17} /><span>{props.itemProject || project?.name || "Projects"}</span><span className="wb-shortcut">{modifier}⇧E</span></button>
       <span className="wb-divider">/</span>
-      <button onClick={() => open("sessions")} title={`Switch session (${modifier}⇧S)`} aria-keyshortcuts="Meta+Shift+S Control+Shift+S"><span>{sessions.find((item) => item.id === props.activeSessionId)?.title || "Sessions"}</span><span className="wb-shortcut">{modifier}⇧S</span></button>
+      <button onClick={() => props.itemLabel ? props.onAllSessions() : open("sessions")} title={props.itemLabel ? "Show workspace items" : `Switch session (${modifier}⇧S)`} aria-keyshortcuts={props.itemLabel ? undefined : "Meta+Shift+S Control+Shift+S"}><span>{props.itemLabel || sessions.find((item) => item.id === props.activeSessionId)?.title || "Sessions"}</span>{!props.itemLabel && <span className="wb-shortcut">{modifier}⇧S</span>}</button>
       <button onClick={props.onNewSession} aria-label="New session" title="New session"><Plus size={18} /></button>
     </div>
     <dialog ref={dialog} className="wb-switcher" aria-labelledby="wb-switcher-title" onCancel={(event) => { event.preventDefault(); close(); }} onClick={(event) => { if (event.target === event.currentTarget) close(); }} onKeyUp={(event) => { heldDirections.current.delete(event.key.toLowerCase()); }} onKeyDown={(event) => {
@@ -172,7 +180,7 @@ export function WorkbenchNavigation(props: Props) {
             })}
             {!props.projects.length && <p>No projects yet. Create one to begin.</p>}
           </div>
-          <div className="wb-carousel-controls"><button onClick={() => move(-1)} disabled={index === 0} aria-label="Previous project"><ChevronLeft size={18} /></button><span title={preview?.name || "Projects"}>{preview?.name || "Projects"}</span><button onClick={() => move(1)} disabled={index >= props.projects.length - 1} aria-label="Next project"><ChevronRight size={18} /></button></div>
+          <div className="wb-carousel-controls">{props.onAllProjects && <button onClick={() => { close(); props.onAllProjects?.(); }} aria-pressed={props.projectScope === "*"} title={`All projects (${modifier}⇧0)`} aria-keyshortcuts="Meta+Shift+0 Control+Shift+0">All projects <span className="wb-shortcut">{modifier}⇧0</span></button>}<button onClick={() => move(-1)} disabled={index === 0} aria-label="Previous project"><ChevronLeft size={18} /></button><span title={preview?.name || "Projects"}>{preview?.name || "Projects"}</span><button onClick={() => move(1)} disabled={index >= props.projects.length - 1} aria-label="Next project"><ChevronRight size={18} /></button></div>
         </> : <div className="wb-wheel">
           <div className="wb-wheel-center" aria-live="polite"><span className="wb-project-number">SESSION {String(selectedSlot + 1).padStart(2, "0")}</span><strong>{selected?.title || "Room for your next conversation"}</strong><span className="wb-wheel-status">{selected ? selected.id === props.activeSessionId ? "Current session" : "Ready to resume" : "No session in this position"}</span><button disabled={!selected} onClick={() => commit()}>Open session <span aria-hidden="true">↵</span></button></div>
           {slots.map((id, position) => {

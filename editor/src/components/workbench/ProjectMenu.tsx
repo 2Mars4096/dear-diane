@@ -13,7 +13,7 @@ export function ProjectMenu({ name, onNewChat, onEdit, onImport, onRemove }: {
   const close = () => { menu.current?.hidePopover(); trigger.current?.focus(); };
   const dismiss = () => { confirmation.current?.close(); trigger.current?.focus(); };
   return <>
-    <button ref={trigger} className="wb-project-new-chat" title="Project actions" aria-label={`Actions for ${name}`} aria-haspopup="menu" aria-expanded={open} onClick={() => {
+    <button ref={trigger} className="wb-project-new-chat" title={`Project actions: ${name}`} aria-label={`Actions for ${name}`} aria-haspopup="menu" aria-expanded={open} onClick={() => {
       if (open) { close(); return; }
       const box = trigger.current!.getBoundingClientRect();
       const panel = menu.current!;

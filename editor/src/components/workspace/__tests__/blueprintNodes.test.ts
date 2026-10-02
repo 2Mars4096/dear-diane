@@ -5946,3 +5946,9 @@ it("never lists a run's own queued task in Up next", async () => {
   const fresh = { task_id: "t", thread_id: "s", status: "queued", phase: "queued", latest_progress: "", latest_artifact_refs: [], blocker: "", trace_refs: [], metadata: {} } as never;
   expect(queueRowsFromTasksForTest([fresh], true)).toEqual([]);
 });
+
+it('honors an explicit project move while retaining old task evidence', () => {
+  const summary={id:'moved',workflow_id:'old',title:'Moved session',created_at:'',updated_at:'',message_count:1};
+  const groups=buildSessionGroupsForTest({threads:[summary],workspaces:[{id:'old',name:'Old',pinnedPaths:['/old'],activeThreadId:null,openThreadIds:[]},{id:'new',name:'New',pinnedPaths:['/new'],activeThreadId:null,openThreadIds:[]}],threadQuery:'',threadWorkspaces:{'old:moved':'old'},explicitWorkspaces:{'old:moved':'new'},taskWorkspaceByThreadId:new Map([['moved','old']]),taskWorkspaceRootByThreadId:new Map([['moved','/old']])});
+  expect(groups.find(group=>group.workspaceId==='new')?.threads.map(thread=>thread.id)).toEqual(['moved']);
+});

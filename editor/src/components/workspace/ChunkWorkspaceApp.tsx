@@ -1,3 +1,5 @@
+import { useSessionPreferences } from "../workbench/sessionPreferences";
+import type { SessionAction } from "../workbench/SessionMenu";
 import { fileName, normalizeRootPath } from "../../lib/workspacePaths";
 import { ensureProjectForRoot, saveWorkbenchProject, selectWorkbenchProject } from "../workbench/projects";
 import type { Paper } from "../papers/library";
@@ -8,7 +10,7 @@ import { SidecarChat } from "../workbench/SidecarChat";
 import { LeadAgentMenu } from "../workbench/LeadAgentMenu";
 import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from "../workbench/NativeWorkers";
 import { EMPTY_PROFILE, leadExecutionProfile, modelSource, OPENROUTER_URL, withLeadSelection } from "../workbench/modelSelection";
-const RecentSessions = lazy(() => import("../workbench/RecentSessions"));
+const WorkspaceNavigator = lazy(() => import("../workbench/WorkspaceNavigator"));
 const ChangesPanel = lazy(() => import("../workbench/ChangesPanel"));
 const WorkNotifications = lazy(() => import("../workbench/WorkNotifications"));
 import { TeamPanel, TeamStrip, useTeamWorkers } from "../workbench/TeamProgress";
@@ -162,12 +164,10 @@ const FollowupQueue = lazy(() => import("../workbench/FollowupQueue").then(modul
 const DanSettings = lazy(() => import("../workbench/DanSettings").then(module => ({ default: module.DanSettings })));
 const FileOpener = lazy(() => import("../documents/FileOpener"));
 const DocumentView = lazy(() => import("../documents/DocumentView"));
-const MainTabs = lazy(() => import("../workbench/MainTabs").then(module => ({ default: module.MainTabs })));
 const ReadingChat = lazy(() => import("../papers/ReadingChat").then(module => ({ default: module.ReadingChat })));
 const LiteraturePanel = lazy(() => import("../papers/LiteraturePanel"));
 const PaperLibrary = lazy(() => import("../papers/PaperLibrary").then(module => ({ default: module.PaperLibrary })));
 const PaperSearch = lazy(() => import("../papers/PaperLibrary").then(module => ({ default: module.PaperSearch })));
-const PaperSidebar = lazy(() => import("../papers/PaperLibrary").then(module => ({ default: module.PaperSidebar })));
 const ReadingSessionBar = lazy(() => import("../papers/PaperLibrary").then(module => ({ default: module.ReadingSessionBar })));
 const ReaderView = lazy(() => import("../reader/ReaderView").then((module) => ({ default: module.ReaderView })));
 const ProcessesPanel = lazy(() => import("../workbench/ProcessesPanel").then((module) => ({ default: module.ProcessesPanel })));
@@ -182,6 +182,9 @@ const CODEX_BACKEND = "codex";
 const SUPER_TUI_PROFILE = "super_tui";
 const NOTES_STORAGE_KEY = "dan.chunkWorkspace.notes.v1";
 const NOTE_CONTENT_CACHE_STORAGE_KEY = "dan.chunkWorkspace.noteContentCache.v1";
+const SessionMenu = lazy(() => import("../workbench/SessionMenu"));
+function historyReplaceSessionUrl() { const url = new URL(location.href); url.searchParams.delete('session'); url.searchParams.delete('workflow'); window.history.replaceState(null, '', url); }
+function rememberThreadSelection(key: string, value: string) { window.sessionStorage.setItem(key, value); window.localStorage.setItem(key, value); }
 const LAST_THREAD_STORAGE_KEY = "dan.chunkWorkspace.lastThread.v1";
 const ROOT_SUGGESTION_STORAGE_KEY = "dan.chunkWorkspace.roots.v1";
 const THREAD_WORKSPACE_STORAGE_KEY = "dan.chunkWorkspace.threadWorkspaces.v1";
@@ -963,14 +966,6 @@ interface BlueprintTimelineConversationItem {
 }
 
 type BlueprintTimelineItem = BlueprintTimelineNodeItem | BlueprintTimelineConversationItem;
-
-interface SessionSwipeState {
-  key: string;
-  pointerId: number;
-  startX: number;
-  thread: ChatV2ThreadSummary;
-  archived: boolean;
-}
 
 interface LayoutPreferences {
   showSessionRail: boolean;
@@ -3575,6 +3570,7 @@ function buildSessionGroups(args: {
   }>;
   threadQuery: string;
   threadWorkspaces: Record<string, string>;
+  explicitWorkspaces?: Record<string, string>;
   taskWorkspaceByThreadId: Map<string, string>;
   taskWorkspaceRootByThreadId: Map<string, string>;
 }) {
@@ -3608,6 +3604,8 @@ function buildSessionGroups(args: {
   };
 
   const resolvedWorkspaceId = (thread: ChatV2ThreadSummary) => {
+    const explicit = args.explicitWorkspaces?.[threadWorkspaceKey(thread.workflow_id,thread.id)];
+    if (explicit && workspaceById.has(explicit)) return explicit;
     const recoveredRoot = recoveredProjectRoot(thread);
     const taskWorkspaceId = args.taskWorkspaceByThreadId.get(thread.id) ?? "";
     if (taskWorkspaceId && workspaceById.has(taskWorkspaceId) && workspaceIdMatchesRecoveredRoot(taskWorkspaceId, recoveredRoot)) {
@@ -13233,7 +13231,12 @@ export default function ChunkWorkspaceApp() {
     initialUiState.selectedChunkId,
   );
   const [selectedBlueprintNodeId, setSelectedBlueprintNodeId] = useState<string | null>(null);
+  const [workspaceProjectScope, setWorkspaceProjectScope] = useState("*");
+  const [projectPickerRequest, setProjectPickerRequest] = useState(0);
   const [recentSessionHost, setRecentSessionHost] = useState<HTMLDivElement | null>(null);
+  const { preferences: sessionPreferences, update: updateSessionPreferences } = useSessionPreferences();
+  const [sessionMenu, setSessionMenu] = useState<{ thread: ChatV2ThreadSummary; x: number; y: number } | null>(null);
+  const closeSessionMenu = useCallback(() => setSessionMenu(null), []);
   const [threads, setThreads] = useState<ChatV2ThreadSummary[]>([]);
   const [workbenchSettings, setWorkbenchSettings] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
@@ -13308,7 +13311,12 @@ export default function ChunkWorkspaceApp() {
   const [agentEvents, setAgentEvents] = useState<ChatV2AgentRunEvent[]>([]);
   const [input, setInput] = useState("");
   const [composerReferences, setComposerReferences] = useState<Record<string, { text: string; title: string; workflowId: string; threadId: string; messageIds: string[] }>>({});
-  const [composerAttachments, setComposerAttachments] = useState<ComposerAttachmentDraft[]>([]);
+  const [attachmentDrafts, setAttachmentDrafts] = useState<Record<string, ComposerAttachmentDraft[]>>({});
+  const attachmentKey = activeThread ? `${activeThread.workflowId}:${activeThread.id}` : 'new';
+  const composerAttachments = attachmentDrafts[attachmentKey] || [];
+  const setComposerAttachments = useCallback((next: ComposerAttachmentDraft[] | ((previous: ComposerAttachmentDraft[]) => ComposerAttachmentDraft[])) => {
+    setAttachmentDrafts(previous => ({ ...previous, [attachmentKey]: typeof next === 'function' ? next(previous[attachmentKey] || []) : next }));
+  }, [attachmentKey]);
   const [composerCaret, setComposerCaret] = useState(0);
   const [composerSuggestionIndex, setComposerSuggestionIndex] = useState(0);
   const [composerSuggestionSuppressedFor, setComposerSuggestionSuppressedFor] = useState<string | null>(null);
@@ -13372,7 +13380,6 @@ export default function ChunkWorkspaceApp() {
   );
   const [wireGuardStatus, setWireGuardStatus] = useState<WorkspaceWireGuardStatus | null>(null);
   const [wireGuardLoading, setWireGuardLoading] = useState(false);
-  const [sessionSwipeOffsets, setSessionSwipeOffsets] = useState<Record<string, number>>({});
 
   const allWorkspaces = useWorkspaceStore((state) => state.workspaces);
   const workspaces = useMemo(() => allWorkspaces.filter((item) => !item.removedFromDan), [allWorkspaces]);
@@ -13402,8 +13409,6 @@ export default function ChunkWorkspaceApp() {
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const composerDraftsRef = useRef<Record<string, string>>(initialComposerDrafts);
   const noteEditorRef = useRef<HTMLTextAreaElement | null>(null);
-  const sessionSwipeRef = useRef<SessionSwipeState | null>(null);
-  const suppressSessionClickRef = useRef<string | null>(null);
   const noteContentCacheRef = useRef<Record<string, NoteCacheEntry>>(
     readStoredNoteContentCache(),
   );
@@ -13440,7 +13445,7 @@ export default function ChunkWorkspaceApp() {
 
   const commitComposerDraft = useCallback(
     (thread: ThreadIdentity | null | undefined, value: string) => {
-      const next = composerDraftsWithValue(composerDraftsRef.current, thread, value);
+      const next = composerDraftsWithValue(readStoredComposerDrafts(), thread, value);
       if (next === composerDraftsRef.current) return;
       composerDraftsRef.current = next;
       persistComposerDrafts(next);
@@ -13462,6 +13467,7 @@ export default function ChunkWorkspaceApp() {
 
   const loadComposerDraftForThread = useCallback(
     (thread: ThreadIdentity | null | undefined) => {
+      composerDraftsRef.current = readStoredComposerDrafts();
       const draft = composerDraftForThread(composerDraftsRef.current, thread);
       setInput(draft);
       setComposerCaret(draft.length);
@@ -14011,11 +14017,21 @@ export default function ChunkWorkspaceApp() {
 
   const refreshThreads = useCallback(async () => {
     try {
-      setThreads((await listChatV2Threads()).filter(thread => !["_dan_reading", "_dan_imports"].includes(thread.workflow_id)));
+      const latest = (await listChatV2Threads()).filter(thread => !["_dan_reading", "_dan_imports"].includes(thread.workflow_id));
+      setThreads(latest);
+      setActiveThread(current => { const match = latest.find(thread => thread.id === current?.id && thread.workflow_id === current?.workflowId); return current && match && match.title !== current.title ? { ...current, title: match.title } : current; });
     } catch {
       setThreads([]);
     }
   }, []);
+
+  useEffect(() => {
+    const sync = () => { void refreshThreads(); setThreadWorkspaces(readStoredThreadWorkspaces()); setSessionResponseSeen(readStoredSessionResponseSeen()); };
+    window.addEventListener('focus', sync);
+    const storage = (event: StorageEvent) => { if (event.key === THREAD_WORKSPACE_STORAGE_KEY || event.key === SESSION_RESPONSE_SEEN_STORAGE_KEY) sync(); };
+    window.addEventListener('storage', storage);
+    return () => { window.removeEventListener('focus', sync); window.removeEventListener('storage', storage); };
+  }, [refreshThreads]);
 
   const mergeBackgroundTasks = useCallback((nextTasks: ChatV2TaskSnapshot[]) => {
     if (nextTasks.length === 0) return;
@@ -14080,14 +14096,14 @@ export default function ChunkWorkspaceApp() {
 
   const clearStoredThreadSelection = useCallback((thread: ThreadIdentity) => {
     try {
-      const saved = JSON.parse(window.localStorage.getItem(LAST_THREAD_STORAGE_KEY) || "null") as
+      const saved = JSON.parse((window.sessionStorage.getItem(LAST_THREAD_STORAGE_KEY) || window.localStorage.getItem(LAST_THREAD_STORAGE_KEY)) || "null") as
         | { threadId?: string; workflowId?: string }
         | null;
       if (savedThreadSelectionMatches(saved, thread)) {
-        window.localStorage.removeItem(LAST_THREAD_STORAGE_KEY);
+        window.localStorage.removeItem(LAST_THREAD_STORAGE_KEY); window.sessionStorage.removeItem(LAST_THREAD_STORAGE_KEY);
       }
     } catch {
-      window.localStorage.removeItem(LAST_THREAD_STORAGE_KEY);
+      window.localStorage.removeItem(LAST_THREAD_STORAGE_KEY); window.sessionStorage.removeItem(LAST_THREAD_STORAGE_KEY);
     }
   }, []);
 
@@ -14113,15 +14129,17 @@ export default function ChunkWorkspaceApp() {
   useEffect(() => {
     const saved = (() => {
       try {
-        return JSON.parse(window.localStorage.getItem(LAST_THREAD_STORAGE_KEY) || "null") as
+        return JSON.parse((window.sessionStorage.getItem(LAST_THREAD_STORAGE_KEY) || window.localStorage.getItem(LAST_THREAD_STORAGE_KEY)) || "null") as
           | { threadId?: string; workflowId?: string }
           | null;
       } catch {
         return null;
       }
     })();
-    const targetThreadId = workspace ? workspace.activeThreadId : saved?.threadId;
-    const targetWorkflowId = workspace?.activeThreadId ? undefined : saved?.workflowId;
+    const destination = new URLSearchParams(window.location.search);
+    const ownSelection = window.sessionStorage.getItem(LAST_THREAD_STORAGE_KEY);
+    const targetThreadId = destination.get('session') || (ownSelection ? saved?.threadId : workspace ? workspace.activeThreadId : saved?.threadId);
+    const targetWorkflowId = destination.get('workflow') || (ownSelection ? saved?.workflowId : workspace?.activeThreadId ? undefined : saved?.workflowId);
     const archivedTarget = findThreadTarget(threads, targetThreadId, targetWorkflowId);
     if (archivedTarget?.archived) {
       clearStoredThreadSelection(archivedTarget);
@@ -14154,6 +14172,8 @@ export default function ChunkWorkspaceApp() {
         if (sessionSelectionSeqRef.current !== selectionSeq) return;
         const restoredMessages = await restoreFullNativeMessages(thread.messages.length > 0 ? thread.messages : history.messages);
         const restoredWorkspaceId =
+          sessionPreferences[threadWorkspaceKey(thread.workflow_id, thread.id)]?.workspaceId ||
+          readStoredThreadWorkspaces()[threadWorkspaceKey(thread.workflow_id, thread.id)] ||
           (workspace?.activeThreadId === thread.id ? workspace.id : "") ||
           workspaceIdForTasks(history.tasks, workspaces);
         if (restoredWorkspaceId) {
@@ -14180,6 +14200,9 @@ export default function ChunkWorkspaceApp() {
           title: thread.title,
         };
         setActiveThread(restoredThread);
+        updateSessionPreferences(threadWorkspaceKey(thread.workflow_id, thread.id), { unread: false });
+        setMainTabs(tabs => tabs.map(tab => tab.id === 'chat' ? { ...tab, label: thread.title, session: { id: thread.id, workflowId: thread.workflow_id, workspaceId: restoredWorkspaceId } } : tab));
+        if (new URLSearchParams(location.search).has('session')) historyReplaceSessionUrl();
         loadComposerDraftForThread(restoredThread);
         setMessages(restoredMessages);
         messagesRef.current = restoredMessages;
@@ -14192,7 +14215,7 @@ export default function ChunkWorkspaceApp() {
             mode: "agent",
           }).then(refreshThreads);
         }
-        window.localStorage.setItem(
+        rememberThreadSelection(
           LAST_THREAD_STORAGE_KEY,
           JSON.stringify({ threadId: thread.id, workflowId: thread.workflow_id }),
         );
@@ -14608,7 +14631,7 @@ export default function ChunkWorkspaceApp() {
     return { ...payload, profile_policy: { ...payload.profile_policy, native_workers: nativeWorkerProfiles } };
   };
   const openDocument = (file: DocumentFile) => {
-    registerDocument(file); setActivePane("work"); setPhonePage("chat"); setShowConversationChunks(true);
+    registerDocument({ ...file, workspaceId: file.workspaceId || activeWorkspaceId || undefined, projectName: file.projectName || workspace?.name }); setActivePane("work"); setPhonePage("chat"); setShowConversationChunks(true);
   };
   const openPaperLibrary = () => {
     openTab({ id: "papers", kind: "papers", label: "Papers" }); setActivePane("work"); setPhonePage("chat"); setShowConversationChunks(true);
@@ -14622,7 +14645,7 @@ export default function ChunkWorkspaceApp() {
     const { makePaperReference } = await import("../papers/workspace");
     setComposerReferences(current => ({ ...current, [referenceKey]: makePaperReference(papers, activeThread?.workflowId, activeThread?.id) }));
     setMainTabs(tabs => tabs.some(tab => tab.id === "chat") ? tabs : [{ id: "chat", kind: "chat", label: "Chat" }, ...tabs]);
-    setActiveMainTab("chat"); setPhonePage("chat");
+    setActiveMainTab(mainTabs.find(tab => tab.session?.id === activeThread?.id && tab.session?.workflowId === activeThread?.workflowId)?.id || "chat"); setPhonePage("chat");
     window.setTimeout(() => composerRef.current?.focus(), 0);
   };
   const openReader = (entry: WorkspaceFileEntry) => {
@@ -14634,7 +14657,7 @@ export default function ChunkWorkspaceApp() {
   // Opening or starting a chat always brings the conversation tab back to the front.
   useEffect(() => {
     setMainTabs((tabs) => tabs.some((tab) => tab.id === "chat") ? tabs : [{ id: "chat", kind: "chat", label: "Chat" }, ...tabs]);
-    setActiveMainTab("chat");
+    setActiveMainTab(mainTabs.find(tab => tab.session?.id === activeThread?.id && tab.session?.workflowId === activeThread?.workflowId)?.id || "chat");
   }, [activeThread?.id]);
   // ⌘⌥B / Ctrl+Alt+B toggles the side panel, mirroring ⌘B for the project sidebar.
   useEffect(() => {
@@ -14820,27 +14843,28 @@ export default function ChunkWorkspaceApp() {
     [devFiles],
   );
   const workspaceSlots = useMemo(() => workspaces.slice(0, 9), [workspaces]);
+  const explicitWorkspaces = useMemo(() => Object.fromEntries(Object.entries(sessionPreferences).flatMap(([key,value]) => value.workspaceId ? [[key,value.workspaceId]] : [])), [sessionPreferences]);
   const sessionGroups = useMemo(
     () =>
       buildSessionGroups({
         threads,
         workspaces: allWorkspaces,
-        threadQuery,
-        threadWorkspaces,
+        threadQuery: "",
+        threadWorkspaces, explicitWorkspaces,
         taskWorkspaceByThreadId,
         taskWorkspaceRootByThreadId,
       }),
-    [taskWorkspaceByThreadId, taskWorkspaceRootByThreadId, threadQuery, threadWorkspaces, threads, allWorkspaces],
+    [taskWorkspaceByThreadId, taskWorkspaceRootByThreadId, threadWorkspaces, explicitWorkspaces, threads, allWorkspaces],
   );
   const workbenchProjects = useMemo(() => {
-    const groups = buildSessionGroups({ threads, workspaces: allWorkspaces, threadQuery: "", threadWorkspaces, taskWorkspaceByThreadId, taskWorkspaceRootByThreadId });
+    const groups = buildSessionGroups({ threads, workspaces: allWorkspaces, threadQuery: "", threadWorkspaces, explicitWorkspaces, taskWorkspaceByThreadId, taskWorkspaceRootByThreadId });
     return workspaces.map((item) => ({
       id: item.id, name: item.name || workspaceDisplayName(item), root: item.pinnedPaths[0] || "",
       sessions: groups.filter((group) => !group.archived && group.workspaceId === item.id)
         .flatMap((group) => group.threads).filter((thread) => !thread.archived)
         .map((thread) => ({ id: threadWorkspaceKey(thread.workflow_id, thread.id), title: thread.title, createdAt: thread.created_at })),
     }));
-  }, [threads, workspaces, allWorkspaces, threadWorkspaces, taskWorkspaceByThreadId, taskWorkspaceRootByThreadId]);
+  }, [threads, workspaces, allWorkspaces, threadWorkspaces, explicitWorkspaces, taskWorkspaceByThreadId, taskWorkspaceRootByThreadId]);
   const rootOptions = useMemo(
     () =>
       mergeRootSuggestions(
@@ -15162,6 +15186,7 @@ export default function ChunkWorkspaceApp() {
       const targetWorkspace = workspaces.find((item) => item.id === targetWorkspaceId);
       setThreadWorkspaces((previous) => ({
         ...previous,
+        ...readStoredThreadWorkspaces(),
         [threadWorkspaceKey(workflowId, threadId)]: targetWorkspaceId,
       }));
       updateWorkspace(targetWorkspaceId, {
@@ -15679,6 +15704,8 @@ export default function ChunkWorkspaceApp() {
       };
       if (sessionSelectionSeqRef.current !== selectionSeq) return;
       setActiveThread(next);
+      setMainTabs(tabs => [...tabs.filter(tab => tab.id !== 'chat'), { id: 'chat', kind: 'chat', label: next.title, session: { id: next.id, workflowId: next.workflowId, workspaceId: targetWorkspaceId || undefined } }]);
+      setActiveMainTab('chat');
       loadComposerDraftForThread(next);
       bindThreadToWorkspace(next.workflowId, next.id, targetWorkspaceId);
       if (targetWorkspaceId) {
@@ -15687,7 +15714,7 @@ export default function ChunkWorkspaceApp() {
           [`workspace:${targetWorkspaceId}`]: false,
         }));
       }
-      window.localStorage.setItem(
+      rememberThreadSelection(
         LAST_THREAD_STORAGE_KEY,
         JSON.stringify({ threadId: next.id, workflowId: next.workflowId }),
       );
@@ -15719,11 +15746,21 @@ export default function ChunkWorkspaceApp() {
   ]);
 
   const openSession = useCallback(
-    async (summary: ChatV2ThreadSummary, workspaceId?: string | null, workspaceRoot?: string) => {
+    async (summary: ChatV2ThreadSummary, workspaceId?: string | null, workspaceRoot?: string, tabId?: string) => {
       if (summary.archived) {
         setStatus("Restore session to view it");
         return;
       }
+      workspaceId = sessionPreferences[threadWorkspaceKey(summary.workflow_id, summary.id)]?.workspaceId || threadWorkspaces[threadWorkspaceKey(summary.workflow_id, summary.id)] || workspaceId;
+      workspaceRoot = workspaces.find(item => item.id === workspaceId)?.pinnedPaths[0] || workspaceRoot;
+      const targetTab = tabId || mainTabs.find(tab => tab.session?.id === summary.id && tab.session.workflowId === summary.workflow_id)?.id || (mainTabs.find(tab => tab.id === activeMainTab)?.kind === 'chat' ? activeMainTab : 'chat');
+      const nextTab = { id: targetTab, kind: 'chat' as const, label: summary.title || 'Chat', session: { id: summary.id, workflowId: summary.workflow_id, workspaceId: workspaceId || undefined, root: workspaceRoot } };
+      setMainTabs(tabs => {
+        const saved = tabs.map(tab => tab.kind === 'chat' && tab.id === activeMainTab && activeThread ? { ...tab, label: activeThread.title || tab.label, session: { id: activeThread.id, workflowId: activeThread.workflowId, workspaceId: activeWorkspaceId || undefined } } : tab);
+        return saved.some(tab => tab.id === targetTab) ? saved.map(tab => tab.id === targetTab ? nextTab : tab) : [...saved, nextTab];
+      });
+      setActiveMainTab(targetTab);
+      updateSessionPreferences(threadWorkspaceKey(summary.workflow_id, summary.id), { unread: false });
       const optimisticWorkspaceId = workspaceId || (workspaceRoot ? workspaceIdForRoot(workspaceRoot) : "");
       if (optimisticWorkspaceId) {
         setActiveWorkspace(optimisticWorkspaceId);
@@ -15797,7 +15834,7 @@ export default function ChunkWorkspaceApp() {
             mode: "agent",
           }).then(refreshThreads);
         }
-        window.localStorage.setItem(
+        rememberThreadSelection(
           LAST_THREAD_STORAGE_KEY,
           JSON.stringify({ threadId: thread.id, workflowId: thread.workflow_id }),
         );
@@ -15818,6 +15855,7 @@ export default function ChunkWorkspaceApp() {
       }
     },
     [
+      mainTabs, activeMainTab, activeThread, activeWorkspaceId, setMainTabs, setActiveMainTab, threadWorkspaces, sessionPreferences, updateSessionPreferences,
       bindThreadToWorkspace,
       loadComposerDraftForThread,
       markSessionResponseSeen,
@@ -15829,26 +15867,18 @@ export default function ChunkWorkspaceApp() {
     ],
   );
 
-  const viewSessionProgress = useCallback(
-    async (thread: ChatV2ThreadSummary, workspaceId?: string | null, workspaceRoot?: string) => {
-      if (thread.archived) {
-        setStatus("Restore session to view progress");
-        return;
-      }
-      setActivePane("work");
-      setPhonePage("chat");
-      setShowConversationChunks(true);
-      setSelectedChunkId(null);
-      setSelectedBlueprintNodeId(null);
-      if (activeThread?.id === thread.id) {
-        return;
-      }
-      await openSession(thread, workspaceId, workspaceRoot);
-    },
-    [activeThread?.id, openSession],
-  );
+  // Tab selection and neighbour activation after close both restore the tab's session.
+  useEffect(() => {
+    const tab = mainTabs.find(item => item.id === activeMainTab);
+    const target = tab?.session;
+    if (target && (target.id !== activeThread?.id || target.workflowId !== activeThread?.workflowId)) {
+      const thread = threads.find(item => item.id === target.id && item.workflow_id === target.workflowId);
+      if (thread) void openSession(thread, target.workspaceId, target.root, tab!.id);
+    }
+  }, [activeMainTab]); // Selection only: background refreshes must never steal focus.
 
   const switchWorkbenchProject = useCallback((id: string) => {
+    setWorkspaceProjectScope(id);
     const selected = selectWorkbenchProject(id, threads);
     if (!selected) return;
     setPhonePage("chat");
@@ -15973,6 +16003,14 @@ export default function ChunkWorkspaceApp() {
       setStatus(archived ? "Archiving session" : "Restoring session");
       try {
         await archiveChatV2Thread(thread.workflow_id, thread.id, archived);
+        if (archived) {
+          updateSessionPreferences(threadWorkspaceKey(thread.workflow_id, thread.id), { pinned: false, unread: false });
+          setMainTabs(tabs => {
+            const next = tabs.filter(tab => !(tab.session?.id === thread.id && tab.session.workflowId === thread.workflow_id));
+            return next.length ? next : [{ id: 'chat', kind: 'chat', label: 'Chat' }];
+          });
+          if (mainTabs.find(tab => tab.id === activeMainTab)?.session?.id === thread.id) setActiveMainTab(mainTabs.find(tab => tab.session?.id !== thread.id)?.id || 'chat');
+        }
         await refreshThreads();
         setStatus(archived ? "Session archived" : "Session restored");
       } catch {
@@ -15981,7 +16019,7 @@ export default function ChunkWorkspaceApp() {
       }
     },
     [
-      activeThread?.id,
+      activeThread?.id, mainTabs, activeMainTab, setMainTabs, setActiveMainTab, updateSessionPreferences,
       clearActiveSessionView,
       clearStoredThreadSelection,
       refreshThreads,
@@ -16059,58 +16097,6 @@ export default function ChunkWorkspaceApp() {
     } finally { setDeletingArchived(false); }
   };
 
-  const beginSessionSwipe = useCallback(
-    (
-      event: PointerEvent<HTMLDivElement>,
-      thread: ChatV2ThreadSummary,
-      archived: boolean,
-    ) => {
-      const actionTarget = (event.target as HTMLElement).closest("[data-session-action]");
-      if (actionTarget || event.button !== 0 || event.pointerType === "mouse") return;
-      const key = threadWorkspaceKey(thread.workflow_id, thread.id);
-      sessionSwipeRef.current = {
-        key,
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        thread,
-        archived,
-      };
-      event.currentTarget.setPointerCapture(event.pointerId);
-    },
-    [],
-  );
-
-  const moveSessionSwipe = useCallback((event: PointerEvent<HTMLDivElement>) => {
-    const swipe = sessionSwipeRef.current;
-    if (!swipe || swipe.pointerId !== event.pointerId) return;
-    const rawDelta = event.clientX - swipe.startX;
-    const offset = swipe.archived
-      ? Math.max(0, Math.min(88, rawDelta))
-      : Math.min(0, Math.max(-88, rawDelta));
-    if (Math.abs(offset) < 4) return;
-    event.preventDefault();
-    setSessionSwipeOffsets((previous) => ({ ...previous, [swipe.key]: offset }));
-  }, []);
-
-  const endSessionSwipe = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      const swipe = sessionSwipeRef.current;
-      if (!swipe || swipe.pointerId !== event.pointerId) return;
-      const offset = sessionSwipeOffsets[swipe.key] ?? 0;
-      sessionSwipeRef.current = null;
-      setSessionSwipeOffsets((previous) => {
-        const next = { ...previous };
-        delete next[swipe.key];
-        return next;
-      });
-      if (Math.abs(offset) >= 56) {
-        suppressSessionClickRef.current = swipe.key;
-        void archiveSession(swipe.thread, !swipe.archived);
-      }
-    },
-    [archiveSession, sessionSwipeOffsets],
-  );
-
   const ensureThread = useCallback(
     async (prompt: string) => {
       if (activeThread) return activeThread;
@@ -16129,7 +16115,7 @@ export default function ChunkWorkspaceApp() {
       if (sessionSelectionSeqRef.current === selectionSeq) {
         setActiveThread(next);
         bindThreadToWorkspace(next.workflowId, next.id, targetWorkspaceId);
-        window.localStorage.setItem(
+        rememberThreadSelection(
           LAST_THREAD_STORAGE_KEY,
           JSON.stringify({ threadId: next.id, workflowId: next.workflowId }),
         );
@@ -16616,7 +16602,7 @@ export default function ChunkWorkspaceApp() {
         }
       })();
     },
-    [composerAttachments.length],
+    [composerAttachments.length, setComposerAttachments],
   );
 
   const removeComposerAttachment = useCallback((attachmentId: string) => {
@@ -16708,27 +16694,49 @@ export default function ChunkWorkspaceApp() {
   const forkConversation = useCallback(async () => {
     if (!activeThread || activeRunId) return;
     const source = messagesRef.current;
-    const lastRequest = [...source].reverse().find((message) => message.role === "user");
     const workspaceId =
       threadWorkspaces[threadWorkspaceKey(activeThread.workflowId, activeThread.id)] || workspace?.id || activeWorkspaceId || "";
     try {
       setStatus("Forking conversation");
-      const created = await createChatV2Thread(activeThread.workflowId, {
-        title: `${activeThread.title || "Conversation"} (fork)`,
-        mode: "agent",
-        parent_thread_id: activeThread.id,
-        branch_point_message_id: lastRequest?.id,
-        branch_type: "explore",
-      });
-      const workflowId = created.workflow_id || activeThread.workflowId;
-      await saveChatV2Thread(workflowId, created.id, { messages: source, mode: "agent" });
+      const { forkSession } = await import('../workbench/sessionActions');
+      const created = await forkSession({ ...activeThread, workflow_id: activeThread.workflowId }, source);
+      const workflowId = created.workflow_id;
       if (workspaceId) bindThreadToWorkspace(workflowId, created.id, workspaceId);
       await refreshThreads();
-      await openSession({ id: created.id, workflow_id: workflowId, title: created.title, message_count: source.length, created_at: created.created_at, updated_at: created.updated_at }, workspaceId);
+      await openSession(created, workspaceId);
     } catch (error) {
       setStatus(error instanceof Error ? `Fork failed: ${error.message}` : "Fork failed");
     }
   }, [activeRunId, activeThread, activeWorkspaceId, bindThreadToWorkspace, openSession, refreshThreads, threadWorkspaces, workspace?.id]);
+
+  const menuKey = sessionMenu ? threadWorkspaceKey(sessionMenu.thread.workflow_id, sessionMenu.thread.id) : '';
+  const menuUnread = Boolean(sessionPreferences[menuKey]?.unread || sessionHasNewReadyResponse(tasksByThreadId.get(sessionMenu?.thread.id || '') || [], sessionResponseSeen[menuKey]));
+  const sessionMenuAction = async (action: SessionAction, value?: string) => {
+    if (!sessionMenu) return;
+    const thread = sessionMenu.thread;
+    const key = menuKey;
+    const projectId = threadWorkspaces[key] || '';
+    if (action === 'log') { await openSessionPromptLog(thread);
+    } else if (action === 'tab') {
+      await openSession(thread, projectId); setPhonePage('chat');
+    } else {
+      const { performSessionAction } = await import('../workbench/sessionActions');
+      await performSessionAction(action, value, thread, {
+        pinned: Boolean(sessionPreferences[key]?.pinned),
+        unread: menuUnread,
+        running: runningTaskByThreadId.has(thread.id),
+        preference: patch => updateSessionPreferences(key, patch),
+        markRead: () => markSessionResponseSeen(thread, tasksByThreadId.get(thread.id) || []),
+        renameActive: title => { if (activeThread?.id === thread.id && activeThread.workflowId === thread.workflow_id) setActiveThread({ ...activeThread, title }); },
+        refresh: refreshThreads,
+        move: id => { updateSessionPreferences(key, { workspaceId:id }); removeThreadFromWorkspaceSlots(thread.id); bindThreadToWorkspace(thread.workflow_id, thread.id, id); if (activeThread?.id === thread.id) setActiveWorkspace(id); },
+        loadFallback: async () => (await loadSuperDanThreadHistory(thread.id, thread.title, thread.updated_at)).messages,
+        restore: restoreFullNativeMessages,
+        openFork: async created => { if (projectId) bindThreadToWorkspace(created.workflow_id, created.id, projectId); await refreshThreads(); await openSession(created, projectId, undefined, `session:${created.workflow_id}:${created.id}`); },
+        archive: () => archiveSession(thread, !thread.archived), remove: () => deleteArchivedSession(thread),
+      });
+    }
+  };
 
   const submit = useCallback(async (modeOverride?: ComposerSubmitMode) => {
     const draftBeforeSubmit = input;
@@ -16792,6 +16800,7 @@ export default function ChunkWorkspaceApp() {
     activePane,
     activeRunPlacement,
     composerAttachments,
+    setComposerAttachments,
     createDraftNote,
     devFiles,
     hasActiveRun,
@@ -17205,160 +17214,6 @@ export default function ChunkWorkspaceApp() {
     };
   }, []);
 
-  const registerSessionGroup = (group: SessionGroup) => {
-    if (group.workspaceId) return group.workspaceId;
-    const id = createWorkspace(group.name, "chat", false);
-    // A filtered sidebar may show only part of the recovered project's history.
-    const complete = buildSessionGroups({ threads, workspaces: allWorkspaces, threadQuery: "", threadWorkspaces, taskWorkspaceByThreadId, taskWorkspaceRootByThreadId })
-      .flatMap((item) => item.subgroups ?? [item]).find((item) => item.id === group.id) ?? group;
-    updateWorkspace(id, { pinnedPaths: group.id.startsWith("project-root:") && group.root ? [group.root] : [], openThreadIds: complete.threads.map((thread) => thread.id) });
-    setThreadWorkspaces((previous) => ({ ...previous, ...Object.fromEntries(complete.threads.map((thread) => [threadWorkspaceKey(thread.workflow_id, thread.id), id])) }));
-    return id;
-  };
-
-  const renderSessionThreadRows = (group: SessionGroup) =>
-    group.threads.map((thread) => {
-      const threadRunningTask = runningTaskByThreadId.get(thread.id);
-      const threadIsRunning = Boolean(threadRunningTask);
-      const threadTasks = tasksByThreadId.get(thread.id) ?? [];
-      const sessionDisplay = sessionCardDisplay(thread, threadTasks);
-      const archived = Boolean(thread.archived || group.archived);
-      const active = !archived && activeThread?.id === thread.id;
-      const sessionKey = threadWorkspaceKey(thread.workflow_id, thread.id);
-      const hasNewReadyResponse = Boolean(
-        !archived &&
-          !active &&
-          sessionHasNewReadyResponse(threadTasks, sessionResponseSeen[sessionKey]),
-      );
-      const swipeOffset = sessionSwipeOffsets[sessionKey] ?? 0;
-      return (
-        <div
-          key={sessionKey}
-          className="relative overflow-hidden rounded-lg"
-          onPointerDown={(event) => beginSessionSwipe(event, thread, archived)}
-          onPointerMove={moveSessionSwipe}
-          onPointerUp={endSessionSwipe}
-          onPointerCancel={endSessionSwipe}
-        >
-          <div
-            className={cx(
-              "pointer-events-none absolute inset-y-0 flex items-center px-3 text-[10px] font-semibold uppercase tracking-[0.14em]",
-              // Only shown while the row is swiped; rows are transparent at rest.
-              !swipeOffset && "invisible",
-              archived
-                ? "left-0 text-slate-500 dark:text-slate-400"
-                : "right-0 text-slate-500 dark:text-slate-400",
-            )}
-          >
-            {archived ? "Restore" : "Archive"}
-          </div>
-          <div
-            className={cx(
-              "group/session relative flex w-full min-w-0 items-start gap-1 overflow-hidden rounded-lg border transition",
-              threadIsRunning && "dan-session-live-card",
-              active
-                ? "border-slate-900 bg-white text-slate-950 shadow-sm dark:border-slate-100 dark:bg-slate-900 dark:text-slate-100"
-                : "border-transparent bg-slate-50 text-slate-600 hover:border-slate-200 hover:bg-white hover:shadow-sm dark:bg-slate-950/40 dark:text-slate-300 dark:hover:border-slate-800 dark:hover:bg-slate-900",
-            )}
-            data-active={active || undefined}
-            style={{
-              transform: swipeOffset ? `translateX(${swipeOffset}px)` : undefined,
-            }}
-          >
-            <button
-              type="button"
-              onClick={(event) => {
-                if (suppressSessionClickRef.current === sessionKey) {
-                  suppressSessionClickRef.current = null;
-                  event.preventDefault();
-                  return;
-                }
-                if (archived) {
-                  setStatus("Restore session to view it");
-                  return;
-                }
-                void openSession(thread, group.workspaceId, group.root);
-                setPhonePage("chat");
-              }}
-              className="flex min-w-0 flex-1 items-start gap-2 px-2.5 py-2 text-left"
-              title={sessionDisplay.detail}
-            >
-              {hasNewReadyResponse && (
-                <span
-                  aria-hidden="true"
-                  className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500"
-                />
-              )}
-              <span className="min-w-0 flex-1">
-                <span className="dan-rail-card-title block truncate">{sessionDisplay.title}</span>
-              </span>
-            </button>
-            <div className="flex shrink-0 items-center gap-0.5 py-1 pr-1">
-              {!archived && (
-                <button
-                  type="button"
-                  data-session-action
-                  onClick={() => void openSessionPromptLog(thread)}
-                  title="View prompt log"
-                  aria-label="View prompt log"
-                  className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
-                >
-                  <ScrollText size={12} />
-                </button>
-              )}
-              {archived && (
-                <button
-                  type="button"
-                  data-session-action
-                  onClick={() => void deleteArchivedSession(thread)}
-                  title="Delete permanently"
-                  aria-label="Delete session permanently"
-                  className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-300"
-                >
-                  <Trash2 size={12} />
-                </button>
-              )}
-              <button
-                type="button"
-                data-session-action
-                onClick={() => void archiveSession(thread, !archived)}
-                title={archived ? "Restore session" : "Archive session"}
-                aria-label={archived ? "Restore session" : "Archive session"}
-                className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
-              >
-                {archived ? <ChevronRight size={12} /> : <Archive size={12} />}
-              </button>
-              {threadIsRunning && (
-                <>
-                  <button
-                    type="button"
-                    data-session-action
-                    data-session-live
-                    onClick={() => void viewSessionProgress(thread, group.workspaceId, group.root)}
-                    title="View progress"
-                    aria-label="View progress"
-                    className="dan-session-live-button grid h-6 w-6 place-items-center rounded-md text-blue-500 transition hover:bg-blue-50 hover:text-blue-700 dark:text-blue-300 dark:hover:bg-blue-950/40 dark:hover:text-blue-100"
-                  >
-                    <Activity size={12} className="dan-session-live-icon" />
-                  </button>
-                  <button
-                    type="button"
-                    data-session-action
-                    data-session-live
-                    onClick={() => void stopSessionRun(thread, threadRunningTask)}
-                    title="Stop running session"
-                    aria-label="Stop running session"
-                    className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-300"
-                  >
-                    <Square size={11} />
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      );
-    });
 
   return (
     <div
@@ -17373,6 +17228,10 @@ export default function ChunkWorkspaceApp() {
       {paperSearch && <Suspense fallback={null}><PaperSearch onOpen={openLibraryReading} onBrowse={openPaperLibrary} onClose={() => setPaperSearch(false)} /></Suspense>}
       {activePane === "work" && <header className="wb-header">
         <WorkbenchNavigation
+          projectRequest={projectPickerRequest} projectScope={workspaceProjectScope}
+          onAllProjects={() => { setWorkspaceProjectScope("*"); setThreadQuery(""); setSessionShelfScope("all"); setShowSessionRail(true); setPhonePage("sessions"); }}
+          itemLabel={mainTabs.find(tab => tab.id === activeMainTab && tab.kind !== 'chat')?.label}
+          itemProject={workspaces.find(project => project.id === documents[activeMainTab]?.workspaceId)?.name || documents[activeMainTab]?.projectName}
           sidebarOpen={renderSessionRail}
           onToggleSidebar={() => { setShowSessionRail(!renderSessionRail); setPhonePage(renderSessionRail ? "chat" : "sessions"); }}
           projects={workbenchProjects}
@@ -17385,22 +17244,28 @@ export default function ChunkWorkspaceApp() {
           }}
           onNewSession={() => { void startNewSession(); setPhonePage("chat"); }}
           onNewProject={() => { setCreatingProject(true); setWorkbenchSettings(true); }}
-          onAllSessions={() => { setThreadQuery(""); setShowSessionRail(true); setPhonePage("sessions"); }}
+          onAllSessions={() => { setWorkspaceProjectScope("*"); setThreadQuery(""); setShowSessionRail(true); setPhonePage("sessions"); }}
         />
         <div className="wb-header-actions">
           <Suspense fallback={null}><FileOpener onOpen={openDocument} onFolder={openDroppedProject} /></Suspense>
           <button aria-label={sideTab ? "Hide side panel" : "Show side panel"} title={`${sideTab ? "Hide side panel" : "Show side panel"} (${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘⌥B" : "Ctrl+Alt+B"})`} aria-keyshortcuts="Meta+Alt+B Control+Alt+B" aria-pressed={Boolean(sideTab)} onClick={() => openSideTab(sideTab ? null : lastSideTab)}><PanelRight size={17} /></button>
           <button aria-label="Notes" title="Notes" onClick={() => { setActivePane("notes"); setPhonePage("note-preview"); }}><NotebookPen size={17} /></button>
-          <button aria-label="Workspace settings" title="Workspace settings" aria-pressed={workbenchSettings} onClick={() => { setCreatingProject(false); setWorkbenchSettings(true); }}><MoreHorizontal size={18} /></button>
+          
         </div>
       </header>}
-      {activePane === "work" && <Suspense fallback={null}><RecentSessions
-        host={recentSessionHost}
-        active={activeThread && !loadingThreadId ? { ...activeThread, title: activeThread.title || "New session", project: workspace?.name || "Project", workspaceId: activeWorkspaceId || "", root: developmentRoot } : null}
-        titles={Object.fromEntries(threads.map(thread => [`${thread.workflow_id}:${thread.id}`, thread.title]))}
-        excluded={threads.filter(thread => thread.archived).map(thread => `${thread.workflow_id}:${thread.id}`)}
-        onSelect={session => { const summary = threads.find(thread => thread.id === session.id && thread.workflow_id === session.workflowId) || { id: session.id, workflow_id: session.workflowId, title: session.title, message_count: 0, created_at: "", updated_at: "" }; void openSession(summary, session.workspaceId, session.root); openTab({ id: "chat", kind: "chat", label: "Chat" }); setPhonePage("chat"); }}
-      /></Suspense>}
+      <Suspense fallback={null}><WorkspaceNavigator
+        host={recentSessionHost} groups={sessionGroups} projects={workspaces} tabs={mainTabs} documents={documents} dirty={dirtyDocuments}
+        active={activeMainTab.startsWith('file:') || activeMainTab.startsWith('pdf:') || ['papers','settings'].includes(activeMainTab) ? `tab:${activeMainTab}` : activeThread ? threadWorkspaceKey(activeThread.workflowId, activeThread.id) : ''}
+        projectActions={workspace && <ProjectMenu name={workspace.name || 'Project'} onNewChat={() => { void startNewSession(); setPhonePage('chat'); }} onEdit={() => { setCreatingProject(false); setWorkbenchSettings(true); }} onImport={() => setImportNativeSessions({ id: workspace.id, root: workspace.pinnedPaths[0] || '' })} onRemove={() => { for (const thread of threads.filter(thread => threadWorkspaces[threadWorkspaceKey(thread.workflow_id,thread.id)] === workspace.id)) clearStoredThreadSelection(thread); sessionSelectionSeqRef.current += 1; clearActiveSessionView('Project removed from Dear Diane'); hideWorkspace(workspace.id); }} />}
+        project={workspaceProjectScope} onOpenProjects={() => setProjectPickerRequest(value => value + 1)} onQuery={setThreadQuery}
+        query={threadQuery} archived={sessionShelfScope === 'archived'} preferences={sessionPreferences}
+        running={[...runningTaskByThreadId.keys()]} unread={threads.filter(thread => sessionHasNewReadyResponse(tasksByThreadId.get(thread.id) || [], sessionResponseSeen[threadWorkspaceKey(thread.workflow_id,thread.id)])).map(thread => thread.id)}
+        onSelect={item => { if (workspaceProjectScope !== "*" && item.projectId !== workspaceProjectScope) setWorkspaceProjectScope("*"); if (item.thread) void openSession(item.thread, item.projectId || undefined, item.root); else if (item.tabId) { setActiveMainTab(item.tabId); if (item.projectId) setActiveWorkspace(item.projectId); } setActivePane('work'); setPhonePage('chat'); }}
+        onMenu={(item,x,y) => { if (item.thread) setSessionMenu({ thread:item.thread,x,y }); }} onClose={closeTab}
+        onArchive={thread => void archiveSession(thread, !thread.archived)}
+        onStop={thread => void stopSessionRun(thread, runningTaskByThreadId.get(thread.id))}
+      /></Suspense>
+      {sessionMenu && <Suspense fallback={null}><SessionMenu session={sessionMenu.thread} x={sessionMenu.x} y={sessionMenu.y} title={sessionMenu.thread.title || ''} archived={Boolean(sessionMenu.thread.archived)} pinned={Boolean(sessionPreferences[menuKey]?.pinned)} unread={menuUnread} running={runningTaskByThreadId.has(sessionMenu.thread.id)} projects={workspaces} onAction={sessionMenuAction} onClose={closeSessionMenu} /></Suspense>}
       {importNativeSessions && <Suspense fallback={null}><ImportNativeSessions workspace={importNativeSessions.root} workspaceId={importNativeSessions.id} onClose={() => setImportNativeSessions(null)} onImport={async (thread) => { bindThreadToWorkspace(thread.workflow_id, thread.id, importNativeSessions.id); await refreshThreads(); }} /></Suspense>}
       {activePane === "work" && workbenchSettings && <Suspense fallback={null}><ProjectSettings
         name={creatingProject ? "" : workspace?.name || "Project"}
@@ -18499,53 +18364,8 @@ export default function ChunkWorkspaceApp() {
           {renderSessionRail && <aside id="wb-project-sidebar" className="dan-phone-page dan-session-page wb-session-shelf wb-project-sidebar">
             <div className="wb-panel-heading"><span>Diane</span></div>
             <button className="wb-sidebar-new" onClick={() => { void startNewSession(); setShowConversationChunks(true); setPhonePage("chat"); }}><Plus size={16} />New chat</button>
-            <Suspense fallback={null}><PaperSidebar onOpen={openLibraryReading} onBrowse={openPaperLibrary} /></Suspense>
-            <label className="wb-shelf-search"><Search size={15} /><input aria-label="Search sessions" placeholder="Search chats or session ID" value={threadQuery} onChange={(event) => setThreadQuery(event.target.value)} /></label>
-            <div ref={setRecentSessionHost} />
-            <div className="wb-projects-heading"><span>{sessionShelfScope === "archived" ? "Archived chats" : "Projects"}</span><button title="New project" aria-label="New project" onClick={() => { setCreatingProject(true); setWorkbenchSettings(true); }}><Plus size={15} /></button></div>
-            <div className="wb-shelf-list">
-              {sessionGroups.flatMap((group) => group.subgroups ?? [group]).filter((group) => sessionShelfScope === "archived" ? group.archived : !group.archived).map((group) => {
-                if (group.unassigned) return <section key={group.id} aria-label="Other chats">
-                  <div className="wb-projects-heading"><span>Other chats</span></div>
-                  {renderSessionThreadRows({ ...group, threads: [...group.threads].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || a.id.localeCompare(b.id)) })}
-                </section>;
-                const collapsed = !threadQuery.trim() && (collapsedThreadGroups[group.id] ?? (group.workspaceId !== activeWorkspaceId));
-                return <div key={group.id} className="wb-sidebar-project">
-                  <div className="wb-project-row" data-active={group.workspaceId === activeWorkspaceId || undefined}>
-                    <button aria-expanded={!collapsed} onClick={() => setCollapsedThreadGroups((previous) => ({ ...previous, [group.id]: !collapsed }))}><ChevronRight size={13} className={collapsed ? "" : "rotate-90"} /><Folder size={15} /><span>{workspaces.find((item) => item.id === group.workspaceId)?.name || group.name}</span></button>
-                    {!group.archived && <button className="wb-project-new-chat" aria-label={`New chat in ${group.name}`} title="New chat in project" onClick={() => { setCollapsedThreadGroups((previous) => ({ ...previous, [group.id]: false })); void startNewSession(registerSessionGroup(group)); setShowConversationChunks(true); setPhonePage("chat"); }}><Plus size={14} /></button>}
-                    {!group.archived && <ProjectMenu name={workspaces.find((item) => item.id === group.workspaceId)?.name || group.name}
-                      onNewChat={() => { void startNewSession(registerSessionGroup(group)); setShowConversationChunks(true); setPhonePage("chat"); }}
-                      onEdit={() => {
-                        const id = registerSessionGroup(group);
-                        setActiveWorkspace(id);
-                        if (group.threads[0]) void openSession(group.threads[0], id, group.root);
-                        setCreatingProject(false); setWorkbenchSettings(true);
-                      }}
-                      onImport={() => {
-                        const id = registerSessionGroup(group);
-                        const project = useWorkspaceStore.getState().workspaces.find((item) => item.id === id);
-                        const root = project?.pinnedPaths[0] || group.root || "";
-                        setImportNativeSessions({ id, root });
-                      }}
-                      onRemove={() => {
-                        const id = registerSessionGroup(group);
-                        for (const thread of group.threads) clearStoredThreadSelection(thread);
-                        if (id === activeWorkspaceId || group.threads.some((thread) => thread.id === activeThread?.id)) {
-                          sessionSelectionSeqRef.current += 1;
-                          clearActiveSessionView("Project removed from Dear Diane");
-                        }
-                        hideWorkspace(id);
-                      }} />}
-                  </div>
-                  {!collapsed && <div className="wb-project-chats">{renderSessionThreadRows({ ...group, threads: [...group.threads].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || a.id.localeCompare(b.id)) })}
-                    {!group.threads.length && <p className="wb-shelf-empty">{threadQuery.trim() ? "No matching chats" : "No chats yet"}</p>}
-                  </div>}
-                </div>;
-              })}
-              {sessionGroups.every((group) => sessionShelfScope === "archived" ? !group.archived : group.archived) && <p className="wb-shelf-empty">{threadQuery.trim() ? "No matching chats" : sessionShelfScope === "archived" ? "No archived chats" : "Create a project to get started"}</p>}
-            </div>
-            <div className="wb-sidebar-footer"><Suspense fallback={null}><UsagePanel /></Suspense>{sessionShelfScope === "archived" && <><button className="wb-delete-archived" disabled={deletingArchived || !threads.some((thread) => thread.archived)} onClick={() => void deleteAllArchivedSessions()}><Trash2 size={15} />{deletingArchived ? "Deleting archived chats…" : "Delete all archived chats"}</button>{archiveDeleteProgress && <p role="status" className="wb-archive-delete-progress">{archiveDeleteProgress}</p>}</>}<button onClick={() => { setSessionShelfScope(sessionShelfScope === "archived" ? "all" : "archived"); }}><Archive size={15} />{sessionShelfScope === "archived" ? "Back to projects" : "Archived chats"}</button><button onClick={openSettingsTab}><MoreHorizontal size={15} />Settings</button></div>
+            <div className="wb-items-host" ref={setRecentSessionHost} />
+            <div className="wb-sidebar-footer"><Suspense fallback={null}><UsagePanel /></Suspense>{sessionShelfScope === "archived" && <><button className="wb-delete-archived" disabled={deletingArchived || !threads.some((thread) => thread.archived)} onClick={() => void deleteAllArchivedSessions()}><Trash2 size={15} />{deletingArchived ? "Deleting archived chats…" : "Delete all archived chats"}</button>{archiveDeleteProgress && <p role="status" className="wb-archive-delete-progress">{archiveDeleteProgress}</p>}</>}<button onClick={() => { setSessionShelfScope(sessionShelfScope === "archived" ? "all" : "archived"); }}><Archive size={15} />{sessionShelfScope === "archived" ? "Back to workspace" : "Archived chats"}</button><button onClick={openSettingsTab}><MoreHorizontal size={15} />Settings</button></div>
           </aside>}
           {!isPhoneViewport && !renderFileExplorer && (
             <CollapsedPaneRail
@@ -18575,7 +18395,7 @@ export default function ChunkWorkspaceApp() {
             className="dan-phone-page grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] md:order-3"
           >
             <div className="flex min-h-0 min-w-0 flex-col bg-white/90 dark:bg-slate-950">
-              {mainTabs.length > 1 && <Suspense fallback={null}><MainTabs tabs={mainTabs.map((tab) => tab.id === "chat" ? { ...tab, label: activeThread?.title || "New chat" } : { ...tab, label: `${tab.label}${dirtyDocuments[documents[tab.id]?.path] ? " •" : ""}` })} active={activeMainTab} onSelect={setActiveMainTab} onClose={closeTab} /></Suspense>}
+
               <Suspense fallback={null}>{Object.entries(documents).filter(([id]) => id.startsWith("file:")).map(([id, file]) => <DocumentView key={id} file={file} active={id === activeMainTab} drafts={documentDrafts.current} onDirty={(path, dirty) => setDirtyDocuments(current => ({...current, [path]:dirty}))} />)}</Suspense>
               {mainTabs.some(tab => tab.id === "papers") && <div className="papers-tab" hidden={activeMainTab !== "papers"}><Suspense fallback={null}><PaperLibrary onOpen={openLibraryReading} onReference={papers => void referencePapers(papers)} /></Suspense></div>}
               {libraryReading && <Suspense fallback={null}><ReadingSessionBar id={libraryReading.session.id} onBrowse={openPaperLibrary} /></Suspense>}
@@ -18925,15 +18745,15 @@ export default function ChunkWorkspaceApp() {
           {!readerFile && !activeThread && <aside className="wb-activity-panel"><p className="wb-activity-empty wb-side-empty">Start a conversation to open a side chat about it.</p></aside>}
           </PersistentPanel>
           <PersistentPanel active={visibleSideTab === "activity"} name="Activity"> <aside className="wb-activity-panel"><WorkbenchActivity events={agentEvents} /></aside></PersistentPanel>
-          <PersistentPanel active={visibleSideTab === "changes"} name="Changes" key={`changes:${developmentRoot}:${activeThread?.id}`}><Suspense fallback={null}><ChangesPanel active={visibleSideTab === "changes"} root={developmentRoot} thread={activeThread?.id || ""} onComment={text => { setComposerInputValue(input ? `${input}\n\n${text}` : text); setActiveMainTab("chat"); setPhonePage("chat"); if (isPhoneViewport) openSideTab(null); requestAnimationFrame(() => composerRef.current?.focus()); }} /></Suspense></PersistentPanel>
+          <PersistentPanel active={visibleSideTab === "changes"} name="Changes" key={`changes:${developmentRoot}:${activeThread?.id}`}><Suspense fallback={null}><ChangesPanel active={visibleSideTab === "changes"} root={developmentRoot} thread={activeThread?.id || ""} onComment={text => { setComposerInputValue(input ? `${input}\n\n${text}` : text); setActiveMainTab(mainTabs.find(tab => tab.session?.id === activeThread?.id && tab.session?.workflowId === activeThread?.workflowId)?.id || "chat"); setPhonePage("chat"); if (isPhoneViewport) openSideTab(null); requestAnimationFrame(() => composerRef.current?.focus()); }} /></Suspense></PersistentPanel>
           <PersistentPanel active={visibleSideTab === "team"} name="Team"> <TeamPanel header={false} workers={team.workers} selectedWorker={notificationWorker} error={team.error} onChange={team.update} onStop={(worker) => void team.stop(worker)} onClose={() => setTeamPanel(false)} /></PersistentPanel>
           </aside>
 
         </section>
       )}
-      <Suspense fallback={null}><WorkNotifications tasksReady={backgroundTasksReady} tasks={sessionStatusTasks} activeThread={activeThread?.id || ""} watching={activePane === "work" && activeMainTab === "chat"} onOpen={(id, worker) => {
+      <Suspense fallback={null}><WorkNotifications tasksReady={backgroundTasksReady} tasks={sessionStatusTasks} activeThread={activeThread?.id || ""} watching={activePane === "work" && mainTabs.find(tab => tab.id === activeMainTab)?.kind === "chat"} onOpen={(id, worker) => {
         const summary = threads.find(thread => thread.id === id);
-        if (summary) void openSession(summary).then(() => { setActiveMainTab("chat"); setPhonePage("chat"); if (worker) { openSideTab("team"); setNotificationWorker(worker); } else if (isPhoneViewport) openSideTab(null); });
+        if (summary) void openSession(summary).then(() => { setActiveMainTab(mainTabs.find(tab => tab.session?.id === activeThread?.id && tab.session?.workflowId === activeThread?.workflowId)?.id || "chat"); setPhonePage("chat"); if (worker) { openSideTab("team"); setNotificationWorker(worker); } else if (isPhoneViewport) openSideTab(null); });
       }} /></Suspense>
       <nav
         className={cx(
