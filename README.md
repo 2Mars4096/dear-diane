@@ -277,3 +277,11 @@ Existing Python imports/package name (`dan`), `DAN_*` environment variables, bac
 On macOS, closing the window keeps Dear Diane and its current work running in the background. Use **Quit Dear Diane** to stop the app and its owned local backend/agent process tree. Shutdown waits briefly for cleanup, then terminates captured survivors. Separately started backends and remote services have their own lifecycles. Saved sessions remain available after quitting.
 
 Steer messages join the current run; accepted requests appear before that run's answer. Next messages start a separate follow-up after the current run ends. Messages awaiting delivery remain in **Up next**.
+
+Chat supports file attachments through the paperclip, drag-and-drop into the composer, or clipboard file items (up to four files, 20 MB each). Browser and remote attachments are saved on the execution host. After setup succeeds, refreshing retains the workspace while connection checks run in the background.
+
+Diane uses separate Codex session storage while reusing your selected account. Existing Diane chats continue from their saved history in a private native session; importing a Codex chat copies its conversation history. Old entries already visible in Codex remain there.
+
+Files open in main-pane tabs alongside chats. Use Back/Forward (including mapped mouse buttons) to revisit chats and files, and drag the divider to resize an open side pane.
+
+The sidebar’s Reading section lists up to five recent open PDFs/files, with Show all for the rest, separately from project chats. Desktop Back/Forward is also available from the Go menu.

@@ -1,5 +1,19 @@
 # Todo
 
+- [x] Separate five recent open reading tabs from project chats with Show all; add native desktop Back/Forward event routing and Go menu.
+- [ ] User acceptance: test Logitech Back/Forward buttons after the native navigation update.
+
+- [x] Main-pane document tabs, Back/Forward mouse navigation, resizable side tools, header/menu cleanup and streaming activity deduplication — [document workspace](plans/4-6-document-workspace.md).
+- [x] Install and health-verify pane/navigation update after idle checks; signature and archive match.
+
+- [x] Isolate Diane Codex sessions and migrate legacy continuations through saved history; preserve account selection, child tracking, imports and usage — [native workers](UI-plans/2-native-agent-workers.md).
+- [x] Activate Codex isolation with an idle restart; backend/proxy/setup health pass.
+
+- [x] Settle stale Thinking indicators from terminal task polling and preserve current messages on execution save — [native workers](UI-plans/2-native-agent-workers.md).
+
+- [x] General chat attachments, terminal queue receipts, and refresh without a replacement setup screen implemented and regression-tested — [files](plans/4-6-document-workspace.md), [workers](UI-plans/2-native-agent-workers.md), [setup](plans/4-14-openrouter-setup.md).
+- [x] Install attachment, queue receipt, refresh, and failed-run fixes after idle checks; signature, archive, backend/proxy health, and reported-session browser checks pass.
+
 - [x] Default file sidecar, in-panel opening failures, native file actions, and PDF/text annotations installed and health-verified — [4-6](plans/4-6-document-workspace.md).
 
 - [x] Fix accepted steer/answer ordering, promoted reply identity, and awaited owned-process shutdown; installed and health-verified — [native workers](UI-plans/2-native-agent-workers.md).

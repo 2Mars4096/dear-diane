@@ -1,6 +1,57 @@
 # Changelog
 
 ## 2026-10-02
+- [docs] Group the verified release into seven feature commits: attachments, refresh recovery, run/queue reconciliation, streamed activity, private Codex storage, document tabs/navigation/resizing, and the Reading sidebar. Keep release tracking in a separate documentation commit.
+
+## 2026-10-02
+- [infra] Install and relaunch Reading/native-navigation update after idle checks. App PID 79620 owns healthy backend PID 79636; signature and archive equality pass. Rollback: `/Applications/.DAN-previous-97735d4c-7f6d-45b1-bf36-5707f7a6fbdc.app`.
+- [test] 420 frontend tests, production bundle budgets and Electron compilation pass. Native event-routing fixture passes; physical Logitech acceptance remains pending.
+
+## 2026-10-02
+- [feat] Separate Reading from project chats: show the five most recently selected open PDFs/files above the project selector, with Show all/Show less and a bounded scroll area. Reading selections preserve the current project filter and active project.
+- [fix] Add Electron navigation IPC for native browser keys, app commands, swipe events and recognized extra mouse buttons, plus a macOS Go menu. Support BrowserBack/Forward and non-editing Cmd+Arrow in the renderer alongside existing shortcuts.
+- [test] Native Electron fixture verifies keyboard/app-command/swipe/mouse events cross preload into the page once; Go menu exists. This verifies native routing, not the user's physical Logitech driver configuration.
+
+## 2026-10-02
+- [infra] Install the verified main-file-tab, Back/Forward, side-divider and streaming-activity update after idle checks. Old app/backend exited; new app PID 72418 owns healthy backend PID 72437. Signature and archive equality pass; rollback retained at `/Applications/.DAN-previous-f76b2d98-73b0-4576-8348-b0bd10006618.app`.
+- [test] Browser navigation checks cover synthetic Forward and native browser Back mouse events; resize checks cover 380→534 px, reload persistence, keyboard sizing, and phone exclusion.
+
+## 2026-10-02
+- [feat] Open files as main-pane tabs beside chats, preserving document drafts, annotations, native actions and opening-error retry. Restore the main tab bar; remove the redundant Document/Running header for the optional document side pane.
+- [feat] Add a persistent draggable side-pane divider with viewport bounds, keyboard sizing, double-click reset and phone exclusion. Keep side-tool menus above embedded PDF toolbars.
+- [feat] Add Back/Forward beside tabs, tracking chat/file navigation through browser history, keyboard shortcuts and mouse back/forward buttons.
+- [fix] Keep response text deltas out of work-history rows and limit streaming task-list refreshes to once per second, with immediate terminal refreshes.
+- [test] 419 frontend tests and production build/bundle limits pass. Browser checks confirm main file tabs, back/forward, pane drag from 380 to 534 px, reload persistence, keyboard sizing and phone layout.
+
+## 2026-10-02
+- [infra] Activate private Codex storage through an idle normal restart; old app/backend exit, new app PID 41701 and backend PID 41709 pass direct/proxy health and setup checks. Existing research work was not rerun.
+- [test] 80 backend tests pass across isolation, leads/workers, model selection, live transport, child observation, and usage. Actual Codex no-turn check confirms working account authentication, private thread creation, and exclusion from desktop databases. Existing desktop conversation records remain untouched.
+
+## 2026-10-02
+- [fix] Give Codex leads/workers Diane-owned homes, databases, logs and writer locks per selected account. Copy account/configuration inputs privately; preserve local credential refreshes and override inherited database/log destinations.
+- [fix] Continue old Diane Codex chats from saved conversation history in fresh private threads. Mark new continuations with an isolation scope, import external Codex chats as history, and migrate old workers from their saved task/result without reopening shared IDs.
+- [fix] Track Codex children and token/quota usage in the private store.
+- [test] 78 focused backend tests pass; actual Codex app-server accepts the existing account, creates an empty private thread, excludes the shared research thread from its list, and leaves the desktop databases without the new thread. No model turn was submitted.
+
+## 2026-10-02
+- [docs] Identify the research-session writer conflict from Codex logs and the live lock-file holder: ChatGPT desktop’s Codex process resumed the exact thread 23 seconds before Diane. No process or thread was stopped or changed.
+
+## 2026-10-02
+- [infra] Install the signed attachment/queue/refresh/failed-run fixes under the earlier reinstall authorization after confirming no active work. Normal quit removed the old owned backend; relaunched app PID 23268 owns healthy backend PID 23289. Signature and archive equality pass; rollback retained at `/Applications/.DAN-previous-8ab64557-3862-42d0-b6b4-bb7d6936e1e0.app`.
+- [test] 419 frontend and 12 focused backend tests pass, plus production bundle budgets and Electron compilation. An isolated browser against the installed app verifies the reported session shows its writer-conflict failure, has zero active Thinking indicators, and restores after refresh without a setup form. No research request was rerun.
+
+## 2026-10-02
+- [fix] Reconcile pending replies against terminal task snapshots when the final stream event is missed. Stop stale Thinking timers, show failed/blocked/stopped status, and explain Codex writer conflicts without retrying or taking over another connection.
+- [fix] Persist the current selected transcript after run execution instead of an earlier queued copy, preserving settled replies and streamed content.
+- [test] Four new regressions cover missed terminal events, run identity, partial answers, stable repeated polling, and terminal saved replies; production build/bundle budgets pass. The reported run failed in six seconds; the 40-minute display was stale UI state.
+
+## 2026-10-02
+- [feat] Attach ordinary files through the chat paperclip, drop, or file clipboard items; preserve native paths and upload browser/remote bytes to the execution host. Enforce four attachments and 20 MB per file, with partial-success errors and session-scoped drafts.
+- [fix] Include compact completed/cancelled queue receipts in task snapshots and retain them across stream merges, so delivered follow-ups display before their answer after refresh.
+- [fix] Remember verified setup readiness, preserve the workspace through background setup checks, and show connection retry/reconnect notices in place. Retain session lists and task receipts during transient polling failures; remove the full-screen loading title.
+- [test] 415 frontend tests (including three setup lifecycle tests), 12 focused backend tests, and production build/bundle budgets pass. Source changes are not installed; existing running work remains active.
+
+## 2026-10-02
 - [infra] Push seven feature-focused commits plus tracking docs to main; install the verified signed desktop bundle at user request. Installed archive matches the build, strict signature passes, app PID 46879 owns healthy backend PID 46899, and desktop proxy health passes on port 45173. Setup remains ready; no automatic title POSTs occurred on launch.
 - [infra] Preserve chats/settings and rollback bundle `/Applications/.DAN-previous-e50968db-b9e1-4fa8-9963-72f081840563.app`. Source/Markdown/PDF sidecar, annotations, session/layout controls, activity timing, queue ordering, onboarding, and shutdown fixes are installed. Existing-session title backfill remains disabled.
 

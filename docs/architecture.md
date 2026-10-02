@@ -1,5 +1,26 @@
 # Architecture
 
+## Desktop navigation and Reading
+- `electron/navigation.ts` routes app-command, swipe, recognized extra mouse buttons and browser navigation keys through preload's `dan:navigate` event. The Go menu provides system-level Back/Forward commands. Renderer history remains the bounded source of navigation targets.
+- WorkspaceNavigator renders recent open PDFs/files in a separate Reading section (five by default, expandable), independently of the project chat filter. Closing a file removes that open reading entry; documents remain in main tabs.
+
+## Pane sizing and navigation
+- `workbench/SidePanelResize.tsx` owns the side-pane width preference and pointer/keyboard divider; ResizeObserver bounds preserve the main column. Desktop only.
+- `workbench/NavigationHistory.tsx` maps selected tabs/chat identities to browser history and handles Back/Forward buttons, keyboard navigation and mouse buttons 3/4. Controls share the main tab strip.
+- File open events resolve into workspace-owned document tabs, with a main-pane failure/retry tab. Optional side tools retain their persistent frame; response deltas update answer text without consuming activity-history rows.
+
+## Private Codex sessions
+- `native_workers/codex_home.py` derives `graphs/native_accounts/codex/<source-home-hash>` per selected account. Launches set `CODEX_HOME`, `CODEX_SQLITE_HOME`, and explicit `sqlite_home`/`log_dir` overrides; desktop rollouts/databases/locks are never linked or copied.
+- Account/configuration files are private atomic copies (0600); source-change digests preserve credentials refreshed locally. Skills remain shared instructions. Existing file-backed account login is reused; keyring-only accounts need a file-backed login in the private home.
+- Lead state and worker records carry `session_scope=diane-v1`. Legacy leads start fresh with Diane history; legacy workers recover from saved prompt/result. External Codex imports use transcript context. Native children and usage readers include the private home.
+- Config behavior checked against [OpenAI configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference) and actual local app-server.
+
+## Chat attachments and refresh continuity
+- `lib/attachFiles.ts` prepares bounded generic file drafts; `workbench/AttachFiles.tsx` supplies the picker. Composer-owned drops attach files, while outer drops retain document preview behavior.
+- `server/routers/attachments.py`: `POST /api/chat-attachments` streams raw bytes (20 MiB maximum) into private uniquely named files beside the graph directory; percent-encoded `X-Filename` preserves display names. Local native files retain their existing paths; browser/remote attachments upload to the execution host.
+- Task snapshots keep terminal delivery IDs in `metadata.queue_receipts`, separately from active `queue_items`. Transcript merges preserve these receipts without copying full request contexts.
+- `OpenRouterSetup` stores a readiness boolean after a verified setup response. Returning clients mount the workspace immediately, with background setup errors shown in a retry notice; first-run clients remain gated. No credentials are cached in browser storage.
+
 ## Worker continuity and workspace review
 
 - NativeTeam retains worker identity/profile and original execution policies on explicit resume. Public worker records expose supported controls without profiles; paginated event cursors recover complete history, draining queued pages after completion. Codex Team workers use app-server for questions and one-time approvals; observed native children remain lead-controlled.
@@ -323,3 +344,5 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - `queuedTranscript.ts` projects accepted queue requests ahead of their delivering run's reply without changing saved message order. In-flight checkpoint leases remain in Up next; promoted continuations get an immediate run-linked assistant target.
 - `electron/backendShutdown.ts` captures app-owned backend descendants using PID, parent PID, and start time before termination; waits for graceful shutdown, then signals surviving identities. Quit is deferred until cleanup returns; Stop/Restart reuse it. No command-line or credential inspection is needed.
 - Closing all macOS windows leaves the desktop process and backend running. Full normal Quit stops the owned local tree, including captured descendants in separate process groups. Reused external backends, remote services, pre-existing orphans, OS force-kill, and power loss remain outside this hook.
+
+- `workbench/reconcileRunState.ts` reconciles assistant pending flags and saved run references from terminal task snapshots by exact task/run identity. It preserves partial content, keeps polling stable, and explains writer conflicts without taking over the other connection.
