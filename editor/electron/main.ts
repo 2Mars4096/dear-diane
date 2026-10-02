@@ -12,6 +12,7 @@ import {
   waitForBackendHealthOrRelease,
 } from "./backendHealth";
 import { buildBackendLaunchEnv } from "./backendLaunch";
+import { stopBackendTree } from "./backendShutdown";
 import { registerFileLinks } from "./fileLinks";
 import { registerDesktopUpdates } from "./desktopUpdates";
 import { prepareWindowAppearance, WINDOW_BACKGROUND } from "./windowAppearance";
@@ -635,7 +636,7 @@ ipcMain.handle("backend:getStatus", async () => {
 
 ipcMain.handle("backend:restart", async () => {
   if (backendProcess && backendOwnedByUs) {
-    backendProcess.kill();
+    await stopBackendTree(backendProcess);
     backendProcess = null;
   }
   backendReady = false;
@@ -651,7 +652,7 @@ ipcMain.handle("backend:restart", async () => {
 
 ipcMain.handle("backend:stop", async () => {
   if (backendProcess && backendOwnedByUs) {
-    backendProcess.kill();
+    await stopBackendTree(backendProcess);
     backendProcess = null;
   }
   backendReady = false;
@@ -705,7 +706,13 @@ if (!hasSingleInstanceLock) {
   });
 }
 
-app.on("will-quit", () => {
+let shutdownComplete = false;
+let shutdownPending = false;
+app.on("will-quit", (event) => {
+  if (shutdownComplete) return;
+  event.preventDefault();
+  if (shutdownPending) return;
+  shutdownPending = true;
   for (const [, watcher] of fileWatchers) watcher.close();
   fileWatchers.clear();
 
@@ -713,10 +720,17 @@ app.on("will-quit", () => {
     prodServer.close();
     prodServer = null;
   }
-  if (backendProcess && backendOwnedByUs) {
-    backendProcess.kill();
-    backendProcess = null;
-  }
+  void (async () => {
+    try {
+      if (backendProcess && backendOwnedByUs) await stopBackendTree(backendProcess);
+      backendProcess = null;
+      shutdownComplete = true;
+      app.quit();
+    } catch (error) {
+      shutdownPending = false;
+      dialog.showErrorBox("Shutdown incomplete", `Could not stop Diane's processes. Try quitting again.\n\n${String(error)}`);
+    }
+  })();
 });
 
 app.on("window-all-closed", () => {
