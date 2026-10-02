@@ -5,7 +5,7 @@ import type { MainTab } from "./mainTabState";
 export { closeMainTab, type MainTab } from "./mainTabState";
 
 /** Tab bar for the main column: the conversation plus any open documents, all closable. */
-export function MainTabs({ tabs, active, onSelect, onClose }: { tabs: MainTab[]; active: string; onSelect: (id: string) => void; onClose: (id: string) => void }) {
+export function MainTabs({ tabs, active, onSelect, onClose, shortcuts = {} }: { shortcuts?: Record<string, number>; tabs: MainTab[]; active: string; onSelect: (id: string) => void; onClose: (id: string) => void }) {
   const mac = /Mac|iPhone|iPad/.test(navigator.platform);
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
@@ -18,12 +18,21 @@ export function MainTabs({ tabs, active, onSelect, onClose }: { tabs: MainTab[];
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [active, mac, onClose, tabs.length]);
-  return <div className="wb-main-tabs" role="tablist" aria-label="Open tabs">
+  return <div className="wb-main-tabs" role="tablist" aria-label="Open tabs" onKeyDown={event => {
+    if ((event.target as HTMLElement).getAttribute('role') !== 'tab' || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const index = tabs.findIndex(tab => tab.id === active);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    onSelect(tabs[next].id);
+    const button = event.currentTarget.querySelectorAll<HTMLButtonElement>('[role=tab]')[next];
+    button?.focus(); button?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }}>
     {tabs.map((tab) => <div key={tab.id} className="wb-main-tab" data-active={tab.id === active || undefined}>
-      <button type="button" role="tab" aria-selected={tab.id === active} title={tab.title ?? tab.label} onClick={() => onSelect(tab.id)}
+      <button type="button" role="tab" tabIndex={tab.id === active ? 0 : -1} aria-selected={tab.id === active} title={tab.title ?? tab.label} onClick={() => onSelect(tab.id)}
         onAuxClick={(event) => { if (event.button === 1) onClose(tab.id); }}>
         {tab.kind === "papers" ? <BookOpen size={13} aria-hidden="true" /> : (tab.kind === "pdf" || tab.kind === "file") ? <FileText size={13} aria-hidden="true" /> : tab.kind === "settings" ? <Settings size={13} aria-hidden="true" /> : <MessageSquareText size={13} aria-hidden="true" />}
         <span>{tab.label}</span>
+        {tab.session && shortcuts[`${tab.session.workflowId}:${tab.session.id}`] && <kbd className="wb-session-shortcut">{shortcuts[`${tab.session.workflowId}:${tab.session.id}`]}</kbd>}
       </button>
       {tabs.length > 1 && <button type="button" className="wb-main-tab-close" aria-label={`Close ${tab.label}`} title={`Close tab (${mac ? "⌃⌘W" : "Ctrl+Alt+W"})`} aria-keyshortcuts={tab.id === active ? mac ? "Control+Meta+W" : "Control+Alt+W" : undefined} onClick={() => onClose(tab.id)}><X size={12} /></button>}
     </div>)}

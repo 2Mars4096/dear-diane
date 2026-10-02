@@ -1,4 +1,4 @@
-export type MainTab = { id: string; kind: "chat" | "pdf" | "file" | "settings" | "papers"; label: string; title?: string };
+export type MainTab = { id: string; kind: "chat" | "pdf" | "file" | "settings" | "papers"; label: string; title?: string; session?: { id: string; workflowId: string; workspaceId?: string; root?: string } };
 
 /** Closing the active tab activates its neighbour; the last tab cannot be closed. */
 export function closeMainTab(tabs: MainTab[], active: string, id: string): { tabs: MainTab[]; active: string } {

@@ -49,3 +49,11 @@ it('releases browser object URLs and reading ownership exactly once', () => {
   act(() => root.render(null));
   expect(revoke).toHaveBeenCalledTimes(2); expect(close).toHaveBeenCalledTimes(2);
 });
+it('closes the final file into a chat placeholder without losing the dirty-close guard', () => {
+  const file=pathDocument('/last.txt');
+  act(()=>tabs.openDocument(file));act(()=>tabs.closeTab('chat'));
+  expect(tabs.mainTabs).toHaveLength(1);
+  act(()=>tabs.setDirtyDocuments({[file.path]:true}));const confirm=vi.fn(()=>false);vi.stubGlobal('confirm',confirm);
+  act(()=>tabs.closeTab('file:/last.txt'));expect(tabs.documents['file:/last.txt']).toBeTruthy();
+  confirm.mockReturnValue(true);act(()=>tabs.closeTab('file:/last.txt'));expect(tabs.mainTabs).toEqual([{id:'chat',kind:'chat',label:'Chat'}]);expect(tabs.documents).toEqual({});
+});

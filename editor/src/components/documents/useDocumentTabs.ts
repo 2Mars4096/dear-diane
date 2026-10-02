@@ -39,7 +39,7 @@ export function useDocumentTabs() {
     openTab({ id, kind: pdf ? 'pdf' : 'file', label: file.name, title: file.path });
   }, [openTab]);
   const closeTab = (id: string) => {
-    if (mainTabs.length <= 1 || !mainTabs.some(tab => tab.id === id)) return;
+    if (!mainTabs.some(tab => tab.id === id) || (mainTabs.length === 1 && mainTabs[0].kind === 'chat')) return;
     const file = documents[id];
     if (file && dirtyDocuments[file.path] && !window.confirm(`Discard unsaved edits to ${file.name}?`)) return;
     file?.onClose?.();
@@ -50,9 +50,19 @@ export function useDocumentTabs() {
     }
     setDocuments(current => { const next = { ...current }; delete next[id]; return next; });
     setLibraryReadings(current => { const next = { ...current }; delete next[id]; return next; });
-    const next = closeMainTab(mainTabs, activeMainTab, id);
+    const closableTabs: MainTab[] = mainTabs.length === 1 ? [...mainTabs, { id:'chat', kind:'chat', label:'Chat' }] : mainTabs;
+    const next = closeMainTab(closableTabs, activeMainTab, id);
     setMainTabs(next.tabs); setActiveMainTab(next.active);
   };
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+      const modifiers = mac ? event.metaKey && event.ctrlKey && !event.altKey : event.ctrlKey && event.altKey && !event.metaKey;
+      if (event.code !== 'KeyW' || !modifiers || event.shiftKey || event.repeat || event.isComposing || event.defaultPrevented || document.querySelector('dialog[open], [role=dialog][aria-modal=true]')) return;
+      event.preventDefault(); closeTab(activeMainTab);
+    };
+    window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler);
+  }, [activeMainTab, closeTab]);
   return { mainTabs, setMainTabs, activeMainTab, setActiveMainTab, openTab, openDocument, closeTab,
     documents, documentDrafts, dirtyDocuments, setDirtyDocuments, libraryReadings, setLibraryReadings,
     libraryReading: libraryReadings[activeMainTab], readerFile: activeMainTab.startsWith('pdf:') ? documents[activeMainTab] ?? null : null };

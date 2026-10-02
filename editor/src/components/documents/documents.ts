@@ -1,7 +1,7 @@
 import type { FileTarget } from '../../lib/fileTargets';
 export { pathFileTarget as pathDocument } from '../../lib/fileTargets';
 export type DocumentDraft = { text: string; saved: string; revision: string };
-export type DocumentFile = FileTarget & { onClose?: () => void };
+export type DocumentFile = FileTarget & { onClose?: () => void; workspaceId?: string; projectName?: string };
 export function documentKind(name: string): 'pdf' | 'image' | 'audio' | 'video' | 'text' {
   const ext = name.split('.').pop()?.toLowerCase() ?? '';
   if (ext === 'pdf') return 'pdf';
