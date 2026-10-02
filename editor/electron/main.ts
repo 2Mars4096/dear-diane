@@ -1,3 +1,4 @@
+import { sessionWindowDestination } from "./sessionWindows";
 import { app, Notification, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, shell } from "electron";
 import path from "node:path";
 import fs, { type FSWatcher } from "node:fs";
@@ -22,8 +23,8 @@ app.setName("Dear Diane");
 
 let mainWindow: BrowserWindow | null = null;
 let revealMainWindow: (() => void) | null = null;
-registerFileLinks(() => mainWindow);
-registerWindowControls(() => mainWindow);
+registerFileLinks(sender => BrowserWindow.fromWebContents(sender));
+registerWindowControls(sender => BrowserWindow.fromWebContents(sender));
 let tray: Tray | null = null;
 
 const isDev = !app.isPackaged;
@@ -370,8 +371,9 @@ function startProductionServer(distDir: string): Promise<number> {
   });
 }
 
-function createWindow() {
-  mainWindow = new BrowserWindow({
+const windowReveals = new Map<BrowserWindow, () => void>();
+function createWindow(destination?: string) {
+  const window = new BrowserWindow({
     show: false,
     backgroundColor: WINDOW_BACKGROUND,
     width: 1400,
@@ -389,18 +391,22 @@ function createWindow() {
       webviewTag: true,
     },
   });
-  revealMainWindow = prepareWindowAppearance(mainWindow);
-
-  if (isDev) {
-    mainWindow.loadURL(VITE_DEV_URL);
-    mainWindow.webContents.openDevTools({ mode: "detach" });
-  } else {
-    mainWindow.loadURL(`http://127.0.0.1:${prodServerPort}`);
-  }
-
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-    revealMainWindow = null;
+  const reveal = prepareWindowAppearance(window);
+  windowReveals.set(window, reveal);
+  if (!mainWindow) { mainWindow = window; revealMainWindow = reveal; }
+  const base = isDev ? VITE_DEV_URL : `http://127.0.0.1:${prodServerPort}`;
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    const target = sessionWindowDestination(url, base);
+    if (target) createWindow(target);
+    return { action: 'deny' };
+  });
+  void window.loadURL(destination || base);
+  window.on('closed', () => {
+    windowReveals.delete(window);
+    if (mainWindow === window) {
+      mainWindow = windowReveals.keys().next().value || null;
+      revealMainWindow = mainWindow ? windowReveals.get(mainWindow)! : null;
+    }
   });
 }
 
@@ -410,14 +416,15 @@ function showMainWindow() {
 }
 
 ipcMain.on("window:background", (event, color: unknown) => {
-  if (!mainWindow || event.sender !== mainWindow.webContents
-      || event.senderFrame !== mainWindow.webContents.mainFrame) return;
-  if (typeof color === "string" && /^#[\da-f]{6}$/i.test(color)) mainWindow.setBackgroundColor(color);
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window || !windowReveals.has(window) || event.senderFrame !== window.webContents.mainFrame) return;
+  if (typeof color === "string" && /^#[\da-f]{6}$/i.test(color)) window.setBackgroundColor(color);
 });
 
 const workAlerts = new Map<string, Notification>();
 ipcMain.handle("attention:show", (event, target: { thread?: unknown; worker?: unknown; title?: unknown }) => {
-  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return;
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window || !windowReveals.has(window) || event.senderFrame !== window.webContents.mainFrame) return;
   if (!target || typeof target.thread !== "string" || target.thread.length > 200 || typeof target.title !== "string" || !Notification.isSupported()) return;
   const thread = target.thread;
   const worker = typeof target.worker === "string" ? target.worker.slice(0, 200) : undefined;
@@ -461,9 +468,10 @@ ipcMain.handle("fs:droppedDirectory", async (_event, folderPath: unknown) => {
   }
 });
 
-ipcMain.handle("dialog:openDirectory", async () => {
-  if (!mainWindow) return null;
-  const result = await dialog.showOpenDialog(mainWindow, {
+ipcMain.handle("dialog:openDirectory", async (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window || !windowReveals.has(window)) return null;
+  const result = await dialog.showOpenDialog(window, {
     properties: ["openDirectory"],
   });
   if (result.canceled) return null;

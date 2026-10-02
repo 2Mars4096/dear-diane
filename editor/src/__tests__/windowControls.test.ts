@@ -44,3 +44,11 @@ it('restores a maximized window under the pointer when dragging starts', () => {
   expect(window.unmaximize).toHaveBeenCalledOnce();
   expect(window.setPosition).toHaveBeenCalledWith(190, 40);
 });
+it('uses the sending window for titlebar controls in a multiwindow app', () => {
+  const first = fixture().window;
+  const second = { ...first, webContents: { mainFrame: {} }, maximize: vi.fn() };
+  native.on.mockClear();
+  registerWindowControls(sender => (sender === second.webContents ? second : first) as any);
+  native.on.mock.calls[0][1]({ sender: second.webContents, senderFrame: second.webContents.mainFrame }, 'toggle');
+  expect(second.maximize).toHaveBeenCalledOnce(); expect(first.maximize).not.toHaveBeenCalled();
+});

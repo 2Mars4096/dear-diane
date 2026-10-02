@@ -24,9 +24,9 @@ export function resolveFileLink(href: string, root: string): string {
   return path.resolve(root, value);
 }
 
-export function registerFileLinks(getWindow: () => BrowserWindow | null) {
+export function registerFileLinks(getWindow: (sender: Electron.WebContents) => BrowserWindow | null) {
   ipcMain.handle('shell:fileLink', async (event, request: { href: string; root: string; menu?: boolean }) => {
-    const window = getWindow();
+    const window = getWindow(event.sender);
     if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw Error('Unsupported file link sender.');
     try {
       const target = resolveFileLink(request.href, request.root);
