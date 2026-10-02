@@ -1,7 +1,7 @@
 # Todo
 
 - [x] Fix OCR selections spanning both pages: detect/crop at the gutter, retain each page's reading order, invalidate old caches, and add layout override. Shorten Ref and make only Ask primary — [reader](UI-plans/3-reader-and-side-panel.md).
-- [ ] Install the OCR/selection-toolbar follow-up.
+- [x] Install the OCR/selection-toolbar follow-up; signature, archive equality and owned backend/proxy health pass.
 
 
 - [x] Restore Reading entries after restart, including browser copies, library links, active document, and older recent-file history — [document workspace](plans/4-6-document-workspace.md).

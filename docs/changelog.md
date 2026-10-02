@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-10-03
+- [infra] Push separate reader, Reading persistence, visible-branding and documentation commits; install the final signed desktop build. App PID 23902 owns backend PID 23925; strict signature, archive equality and direct/proxy health pass. Rollback: `/Applications/.DAN-previous-ca22631e-82c9-43a5-823b-89e276b4adbe.app`.
+- [test] Final verification: 433 frontend tests, production build, bundle budgets and Electron packaging pass. Temporary browser fixtures are excluded from the installed archive.
+
+## 2026-10-03
 - [fix] Detect central scan gutters and OCR each side independently, mapping lines back to original page coordinates in left-page then right-page order. Add a saved Auto layout / One page / Two pages override; ignore OCR caches from the old layout version or another mode.
 - [fix] Replace Add to Ref with Ref and explicit Ask-primary styling. The former sibling selector incorrectly accented every action after Comment. Add a second toolbar row for scan controls in narrow readers.
 - [test] The supplied scan yields 27 OCR lines with zero crossing the gutter; browser checks verify secondary Comment/Ref colors, the saved Two pages override, and 390px toolbar fit.
