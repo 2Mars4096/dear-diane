@@ -913,3 +913,12 @@
 .wb-items-project-actions { display:flex; align-items:center; flex-shrink:0; gap:2px; }
 .wb-items-project-actions .wb-project-new-chat { display:grid; place-items:center; width:25px; height:28px; border:0; border-radius:4px; background:transparent; color:var(--wb-muted); }
 .wb-items-project-actions .wb-project-new-chat:hover { background:var(--wb-soft); color:var(--wb-ink); }
+
+.wb-session-menu .wb-session-delete { color:var(--wb-danger); background:color-mix(in srgb,var(--wb-danger) 6%,var(--wb-raised)); }
+.wb-session-menu .wb-session-delete:hover,.wb-session-menu .wb-session-delete:focus-visible { background:color-mix(in srgb,var(--wb-danger) 12%,var(--wb-raised)); outline-color:var(--wb-danger); }
+
+@media (min-width:768px) {
+  .wb-project-sidebar { position:relative; width:var(--wb-sidebar-width,260px); }
+  .wb-sidebar-resize { position:absolute; top:0; right:0; bottom:0; width:6px; z-index:25; cursor:col-resize; touch-action:none; user-select:none; }
+  .wb-sidebar-resize:hover,.wb-sidebar-resize:focus-visible,.wb-sidebar-resize:active { background:color-mix(in srgb,var(--wb-accent) 35%,transparent); outline:none; }
+}

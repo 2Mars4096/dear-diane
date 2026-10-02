@@ -10,6 +10,7 @@ import { SidecarChat } from "../workbench/SidecarChat";
 import { LeadAgentMenu } from "../workbench/LeadAgentMenu";
 import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from "../workbench/NativeWorkers";
 import { EMPTY_PROFILE, leadExecutionProfile, modelSource, OPENROUTER_URL, withLeadSelection } from "../workbench/modelSelection";
+const SidebarResize = lazy(() => import("../workbench/SidebarResize"));
 const WorkspaceNavigator = lazy(() => import("../workbench/WorkspaceNavigator"));
 const ChangesPanel = lazy(() => import("../workbench/ChangesPanel"));
 const WorkNotifications = lazy(() => import("../workbench/WorkNotifications"));
@@ -13231,7 +13232,10 @@ export default function ChunkWorkspaceApp() {
     initialUiState.selectedChunkId,
   );
   const [selectedBlueprintNodeId, setSelectedBlueprintNodeId] = useState<string | null>(null);
-  const [workspaceProjectScope, setWorkspaceProjectScope] = useState("*");
+  const [workspaceProjectScope, setWorkspaceProjectScope] = useState(() => {
+    try { return sessionStorage.getItem('dan.projectScope.v1') || localStorage.getItem('dan.projectScope.v1') || '*'; } catch { return '*'; }
+  });
+  useEffect(() => { try { sessionStorage.setItem('dan.projectScope.v1', workspaceProjectScope); localStorage.setItem('dan.projectScope.v1', workspaceProjectScope); } catch { /* Keep selection in memory. */ } }, [workspaceProjectScope]);
   const [projectPickerRequest, setProjectPickerRequest] = useState(0);
   const [recentSessionHost, setRecentSessionHost] = useState<HTMLDivElement | null>(null);
   const { preferences: sessionPreferences, update: updateSessionPreferences } = useSessionPreferences();
@@ -16027,15 +16031,19 @@ export default function ChunkWorkspaceApp() {
     ],
   );
 
-  const deleteArchivedSession = useCallback(
+  const deleteSessionPermanently = useCallback(
     async (thread: ChatV2ThreadSummary) => {
-      if (!thread.archived) return;
+      if (runningTaskByThreadId.has(thread.id)) throw Error("Stop this session before deleting it.");
       const sessionTitle = thread.title?.replace(/\s+/g, " ").trim() || "Untitled session";
       const title = sessionTitle.length > 80 ? `${sessionTitle.slice(0, 79).trimEnd()}…` : sessionTitle;
       const confirmed = window.confirm(`Permanently delete "${title}"? This cannot be undone.`);
       if (!confirmed) return;
 
       setStatus("Deleting session");
+      await deleteChatV2Thread(thread.workflow_id, thread.id);
+      setMainTabs(tabs => { const next = tabs.filter(tab => !(tab.session?.id === thread.id && tab.session.workflowId === thread.workflow_id)); return next.length ? next : [{ id:"chat", kind:"chat", label:"Chat" }]; });
+      if (mainTabs.find(tab => tab.id === activeMainTab)?.session?.id === thread.id) setActiveMainTab(mainTabs.find(tab => tab.session?.id !== thread.id)?.id || "chat");
+      updateSessionPreferences(threadWorkspaceKey(thread.workflow_id, thread.id), { pinned:false, unread:false });
       setThreads((previous) =>
         previous.filter(
           (item) => !(item.id === thread.id && item.workflow_id === thread.workflow_id),
@@ -16050,7 +16058,6 @@ export default function ChunkWorkspaceApp() {
       }
 
       try {
-        await deleteChatV2Thread(thread.workflow_id, thread.id);
         await refreshThreads();
         setStatus("Session deleted");
       } catch {
@@ -16059,7 +16066,7 @@ export default function ChunkWorkspaceApp() {
       }
     },
     [
-      activeThread?.id,
+      activeThread?.id, runningTaskByThreadId, mainTabs, activeMainTab, setMainTabs, setActiveMainTab, updateSessionPreferences,
       clearActiveSessionView,
       clearStoredThreadSelection,
       refreshThreads,
@@ -16733,7 +16740,7 @@ export default function ChunkWorkspaceApp() {
         loadFallback: async () => (await loadSuperDanThreadHistory(thread.id, thread.title, thread.updated_at)).messages,
         restore: restoreFullNativeMessages,
         openFork: async created => { if (projectId) bindThreadToWorkspace(created.workflow_id, created.id, projectId); await refreshThreads(); await openSession(created, projectId, undefined, `session:${created.workflow_id}:${created.id}`); },
-        archive: () => archiveSession(thread, !thread.archived), remove: () => deleteArchivedSession(thread),
+        archive: () => archiveSession(thread, !thread.archived), remove: () => deleteSessionPermanently(thread),
       });
     }
   };
@@ -18362,6 +18369,7 @@ export default function ChunkWorkspaceApp() {
             </CollapsedPaneRail>
           )}
           {renderSessionRail && <aside id="wb-project-sidebar" className="dan-phone-page dan-session-page wb-session-shelf wb-project-sidebar">
+            {!isPhoneViewport && <Suspense fallback={null}><SidebarResize /></Suspense>}
             <div className="wb-panel-heading"><span>Diane</span></div>
             <button className="wb-sidebar-new" onClick={() => { void startNewSession(); setShowConversationChunks(true); setPhonePage("chat"); }}><Plus size={16} />New chat</button>
             <div className="wb-items-host" ref={setRecentSessionHost} />
