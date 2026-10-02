@@ -89,6 +89,7 @@ export function normalizePaperReferenceTags(
     const raw = record.selection as Partial<PdfSelectionAnchor> | undefined;
     const rects = Array.isArray(raw?.rects) ? raw.rects.map(cleanRect).filter((r): r is NonNullable<typeof r> => !!r).slice(0, 40) : [];
     const selection: PdfSelectionAnchor | undefined = rects.length ? {
+      ...(raw?.quoteSource === 'vision' ? { quoteSource: 'vision' as const, quoteModel: raw.quoteModel, originalQuote: raw.originalQuote } : {}),
       pageNumber, rects, quote: typeof raw?.quote === "string" ? raw.quote.slice(0, 700) : "Selected area",
       kind: raw?.kind === "area" ? "area" : "text",
       rotation: [0, 90, 180, 270].includes(raw?.rotation ?? -1) ? raw!.rotation! : 0,

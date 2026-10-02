@@ -1,4 +1,5 @@
-import { currentOcrPages, validOcrLayout, type OcrLayout } from "./lib/ocr-layout";
+import { transcribeSelection } from "./lib/transcribe-selection";
+import { currentOcrPages } from "./lib/ocr-layout";
 import type { ComposerAttachmentDraft } from "../../lib/composerAttachments";
 import { selectionImage } from "./lib/selection-image";
 import { prepareAttachments } from "../../lib/attachFiles";
@@ -26,7 +27,7 @@ type OcrState = { status: "idle" | "checking" | "running" | "done" | "error"; do
  */
 export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: (ask: ReaderAsk) => void; onNotes: () => void }) {
   const root = useRef<HTMLDivElement>(null);
-  const { comments, stale, focus: commentFocus } = useReaderState(file.path);
+  const { comments, draft, stale, focus: commentFocus } = useReaderState(file.path);
   const [pageNumber, setPageNumber] = useState(1);
   const [pageTexts, setPageTexts] = useState<Map<number, string>>(new Map());
   const [ocrPages, setOcrPages] = useState<MaterialPdfOcrPage[]>([]);
@@ -34,7 +35,6 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
   const [exporting, setExporting] = useState(false);
   const documentRef = useRef<PDFDocumentProxy | null>(null);
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
-  const [ocrLayout, setOcrLayout] = useState<OcrLayout>(() => { try { return validOcrLayout(localStorage.getItem(`diane.reader.ocr-layout:${file.path}`)); } catch { return "auto"; } });
   const visiblePage = useRef(pageNumber); visiblePage.current = pageNumber;
   const onDocument = useCallback((document: PDFDocumentProxy | null) => { documentRef.current = document; setPdfDocument(document); }, []);
 
@@ -68,7 +68,7 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
       let saved: MaterialPdfOcrPage[] = [];
       try {
         const response = file.url.startsWith("blob:") ? null : await fetch(`/api/reader/ocr?path=${encodeURIComponent(file.path)}`);
-        if (response?.ok) saved = currentOcrPages((await response.json()).pages, ocrLayout);
+        if (response?.ok) saved = currentOcrPages((await response.json()).pages, "auto");
       } catch { /* OCR cache is optional */ }
       const have = new Set(saved.map((page) => page.page_number));
       const pending = needed.filter((page) => !have.has(page)).sort((a, b) => Math.abs(a - visiblePage.current) - Math.abs(b - visiblePage.current));
@@ -80,7 +80,7 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
       for (const number of pending) {
         if (!isCurrent()) return;
         try {
-          const page = await ocrPage(document, number, ocrLayout);
+          const page = await ocrPage(document, number);
           if (!isCurrent()) return;
           results.push(page);
           setOcrPages([...results]);
@@ -99,7 +99,46 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
       if (isCurrent()) setOcr({ status: "error", done: 0, total: 0, message: error instanceof Error ? error.message : "Text extraction failed" });
     });
     return () => { cancelled = true; };
-  }, [file.path, file.url, pdfDocument, ocrLayout]);
+  }, [file.path, file.url, pdfDocument]);
+
+  const currentComments = useRef(comments); currentComments.current = comments;
+  const currentDraft = useRef(draft); currentDraft.current = draft;
+  const [repairStatus, setRepairStatus] = useState('');
+  const [repairEpoch, setRepairEpoch] = useState(0);
+  useEffect(() => {
+    if (!pdfDocument || !pageTexts.size || !navigator.onLine) return;
+    let cancelled = false;
+    const pending = currentComments.current.filter(note => !note.quoteSource && note.rects.length && pageTexts.has(note.pageNumber) && !pageTexts.get(note.pageNumber)?.trim());
+    if (!pending.length) return;
+    void (async () => {
+      let failed = 0;
+      for (let index = 0; index < pending.length; index++) {
+        if (cancelled) return;
+        setRepairStatus(`Updating scanned quotes ${index + 1}/${pending.length}…`);
+        const note = pending[index];
+        try {
+          const resolved = await transcribeSelection(pdfDocument, note);
+          if (cancelled) return;
+          readerActions.repairQuote(file.path, note.commentId, note.quote, resolved);
+        } catch { failed++; readerActions.finishQuote(file.path, note.commentId, null); }
+      }
+      if (!cancelled) setRepairStatus(failed ? `Could not update ${failed} scanned quote${failed === 1 ? '' : 's'}.` : '');
+    })();
+    return () => { cancelled = true; };
+  }, [file.path, pdfDocument, pageTexts, repairEpoch]);
+
+  useEffect(() => {
+    const retry = (event: Event) => {
+      if (event.type !== 'online' && (event as CustomEvent).detail !== file.path) return;
+      setRepairEpoch(value => value + 1);
+      const pending = currentDraft.current, document = documentRef.current;
+      if (pending?.quoteStatus && pending.draftId && document) {
+        void transcribeSelection(document, pending).then(result => readerActions.finishQuote(file.path, pending.draftId!, result), () => readerActions.finishQuote(file.path, pending.draftId!, null));
+      }
+    };
+    window.addEventListener('online', retry); window.addEventListener('diane:retry-quote', retry);
+    return () => { window.removeEventListener('online', retry); window.removeEventListener('diane:retry-quote', retry); };
+  }, [file.path]);
 
   // Re-find anchored highlights whose page text changed; redraw from the text layer.
   useEffect(() => {
@@ -135,9 +174,21 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
     // eslint-disable-next-line react-hooks/exhaustive-deps -- save is a stable local helper
   }, [comments, pageText]);
 
+  const resolveSelection = async (selection: PdfSelectionAnchor): Promise<PdfSelectionAnchor> => {
+    const document = documentRef.current;
+    if (!document) throw Error('The PDF is still loading.');
+    const page = await document.getPage(selection.pageNumber);
+    const content = await page.getTextContent();
+    const nativeText = content.items.map(item => 'str' in item ? item.str : '').join('');
+    if (nativeText.trim().length > 0 && selection.kind !== 'area') return selection;
+    const resolved = await transcribeSelection(document, selection);
+    if (documentRef.current !== document) throw Error('The document changed. Select the passage again.');
+    return resolved;
+  };
+
   const anchorFor = (selection: PdfSelectionAnchor): PaperCommentAnchor | null => {
     const text = pageText(selection.pageNumber);
-    if (selection.kind === "area" || !text) return null;
+    if (selection.quoteSource === "vision" || selection.kind === "area" || !text) return null;
     const located = locateVisualSelection(text, selection.quote);
     return located.status === "exact" ? { ...located.selection, pageFingerprint: fingerprintText(text) } : null;
   };
@@ -161,8 +212,16 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
   };
   // Comment hands the selection to the side panel's Notes tab, where the note is written.
   const comment = (selection: PdfSelectionAnchor) => {
-    readerActions.setDraft(file.path, { ...selection, anchor: anchorFor(selection) });
+    const scanned = selection.kind === 'area' || root.current?.querySelector<HTMLElement>(`[data-pdf-page="${selection.pageNumber}"]`)?.dataset.textLayer === 'ocr';
+    const draftId = crypto.randomUUID();
+    readerActions.setDraft(file.path, { ...selection, draftId, anchor: scanned ? null : anchorFor(selection),
+      ...(scanned ? { quote: 'Selected passage', originalQuote: selection.quote, quoteStatus: navigator.onLine ? 'pending' as const : 'deferred' as const } : {}) });
     onNotes();
+    const document = documentRef.current;
+    if (scanned && document && navigator.onLine) void transcribeSelection(document, selection).then(
+      result => readerActions.finishQuote(file.path, draftId, result),
+      () => readerActions.finishQuote(file.path, draftId, null),
+    );
   };
   const exportPdf = async () => {
     if (!comments.length || exporting) return;
@@ -184,6 +243,7 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
   const visibleComments = comments.filter((item) => stale[item.commentId] !== "missing");
 
   return <div className="wb-reader" ref={root}>
+    {repairStatus && <div role="status" className="wb-reader-ocr">{repairStatus}{repairStatus.startsWith('Could not') && <button onClick={() => setRepairEpoch(value => value + 1)}>Retry</button>}</div>}
     <div className="wb-reader-stage">
       <InteractivePdfViewer
         commentFocus={commentFocus}
@@ -191,6 +251,7 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
         currentPageLabel={`Page ${pageNumber}`}
         materialId={file.path}
         positionIdentity={file.path}
+        onResolveSelection={resolveSelection}
         onAskSelection={ask}
         onCommentSelection={comment}
         onDocument={onDocument}
@@ -200,10 +261,6 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
         sourceUrl={file.url}
         title={file.name}
         toolbarExtras={<>
-          {ocr.status !== "idle" && <select aria-label="Scanned text layout" title="Text layout for scanned pages" value={ocrLayout} onChange={event => {
-            const next = validOcrLayout(event.target.value); setOcrLayout(next);
-            try { localStorage.setItem(`diane.reader.ocr-layout:${file.path}`, next); } catch { /* Works for this visit. */ }
-          }}><option value="auto">Auto layout</option><option value="single">One page</option><option value="spread">Two pages</option></select>}
           {ocr.status === "running" && <span title="Recognizing text on scanned pages"><ScanText size={12} />OCR {ocr.done}/{ocr.total}</span>}
           {ocr.status === "error" && <span data-error title={ocr.message}><ScanText size={12} />OCR failed</span>}
           <button type="button" onClick={onNotes}><MessageSquareQuote size={13} />Notes{comments.length ? ` ${comments.length}` : ""}</button>

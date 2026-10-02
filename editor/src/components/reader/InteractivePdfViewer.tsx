@@ -1,4 +1,3 @@
-import { AreaSelection } from "./AreaSelection";
 import { selectionBounds } from "./lib/selection-image";
 import { pdfAssetBase } from "./lib/pdf-assets";
 // Ported from learning-assistant apps/web/app/materials/[materialId]/guide/interactive-pdf-viewer.tsx.
@@ -63,6 +62,7 @@ type InteractivePdfViewerProps = {
   positionIdentity: string;
   onAskSelection: (selection: SelectionAction) => string | null | Promise<string | null>;
   onCommentSelection: (selection: SelectionAction) => void;
+  onResolveSelection: (selection: SelectionAction) => Promise<SelectionAction>;
   onDocument?: (document: PDFDocumentProxy | null) => void; // Diane: lets the reader extract text / run OCR
   toolbarExtras?: ReactNode; // Diane: reader actions share the toolbar row with Refs
   onPageChange: (pageNumber: number) => void;
@@ -101,9 +101,6 @@ type ReferencePeekProps = {
 const EMPTY_OCR_SPANS: PdfOcrTextSpan[] = [];
 
 type PdfPageProps = {
-  areaMode: boolean;
-  onArea: (selection: PdfSelectionAnchor) => void;
-  onCancelArea: () => void;
   references: PaperReferenceTag[];
   activeSelection: PdfSelectionAnchor | null;
   comments: PaperComment[];
@@ -226,7 +223,7 @@ function ReferencePeek({
 }
 
 function PdfPage({
-  areaMode, onArea, onCancelArea, references, activeSelection,
+  references, activeSelection,
   comments,
   containerSize,
   documentProxy,
@@ -278,7 +275,7 @@ function PdfPage({
   }, [stageRef]);
 
   const viewport = useMemo(() => {
-    const availableWidth = Math.max(240, containerSize.width - 48 - SCROLLBAR_ALLOWANCE);
+    const availableWidth = Math.max(80, containerSize.width - 48 - SCROLLBAR_ALLOWANCE);
     const availableHeight = Math.max(320, containerSize.height - 48 - SCROLLBAR_ALLOWANCE);
     if (!pageProxy) {
       const fallbackHeight = availableHeight;
@@ -291,7 +288,7 @@ function PdfPage({
     const naturalViewport = pageProxy.getViewport({ scale: 1 });
     const fitWidth = availableWidth / naturalViewport.width;
     const fitHeight = availableHeight / naturalViewport.height;
-    const fitScale = Math.max(0.2, Math.min(fitWidth, fitHeight));
+    const fitScale = Math.max(0.05, Math.min(fitWidth, fitHeight));
     const pdfViewport = pageProxy.getViewport({ scale: fitScale * zoom });
     return {
       height: pdfViewport.height,
@@ -361,6 +358,7 @@ function PdfPage({
             const targetWidth = Math.max(1, ocrSpan.width * pdfViewport.width);
             const targetHeight = Math.max(1, ocrSpan.height * pdfViewport.height);
             span.className = styles.ocrLine;
+            if (ocrSpan.geometryOnly) span.dataset.geometryOnly = "true";
             span.textContent = `${ocrSpan.text} `;
             span.style.left = `${ocrSpan.left * pdfViewport.width}px`;
             span.style.top = `${ocrSpan.top * pdfViewport.height}px`;
@@ -441,7 +439,6 @@ function PdfPage({
       />
       {[...references.flatMap(tag => tag.selection ? [{ id: tag.tagId, rects: tag.selection.rects }] : []),
         ...(activeSelection ? [{ id: "active-selection", rects: activeSelection.rects }] : [])].map(item => <svg key={item.id} aria-hidden="true" className={styles.commentHighlight} data-ref-highlight={item.id} viewBox="0 0 100 100" preserveAspectRatio="none"><path d={paperHighlightDisplayPath(item.rects) ?? ""} /></svg>)}
-      {areaMode && rendered && <AreaSelection onCancel={onCancelArea} onSelect={rect => onArea({ kind: "area", pageNumber, quote: "Selected area", rects: [rect], rotation: (pageProxy?.rotate ?? 0) as PdfSelectionAnchor["rotation"] })} />}
       {ocrSpans.length > 0 ? (
         <span className={styles.ocrStatus}>Image text ready</span>
       ) : null}
@@ -457,6 +454,7 @@ export function InteractivePdfViewer({
   positionIdentity,
   onAskSelection,
   onCommentSelection,
+  onResolveSelection,
   onDocument,
   onPageChange,
   ocrPages,
@@ -484,6 +482,8 @@ export function InteractivePdfViewer({
   const [containerSize, setContainerSize] = useState({ height: 0, width: 0 });
   const [pageCount, setPageCount] = useState(0);
   const [zoom, setZoom] = useState(1);
+  const [pageLayout, setPageLayout] = useState<'single' | 'two'>(() => { try { return localStorage.getItem('diane.reader.page-layout') === 'two' ? 'two' : 'single'; } catch { return 'single'; } });
+  const pageContainerSize = useMemo(() => pageLayout === 'two' ? { ...containerSize, width: (containerSize.width - 12) / 2 } : containerSize, [containerSize, pageLayout]);
   const positionRestoredRef = useRef(false);
   const savedPositionRef = useRef<PaperPdfPosition | null>(null);
   const zoomRef = useRef(zoom);
@@ -491,7 +491,6 @@ export function InteractivePdfViewer({
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [message, setMessage] = useState("Loading PDF…");
   const [selectionPrompt, setSelectionPrompt] = useState<SelectionPrompt | null>(null);
-  const [areaMode, setAreaMode] = useState(false);
   const [asking, setAsking] = useState(false);
   const navigationEpoch = useRef(0);
   const [referenceFocus, setReferenceFocus] = useState<PdfSelectionAnchor | null>(null);
@@ -515,12 +514,19 @@ export function InteractivePdfViewer({
     if (!stage) {
       return;
     }
+    let previousWidth = 0;
     const updateSize = () => {
       const bounds = stage.getBoundingClientRect();
       const nextSize = {
         height: Math.round(bounds.height),
         width: Math.round(bounds.width)
       };
+      if (previousWidth > 0 && nextSize.width < previousWidth - 40) {
+        const page = documentElementRef.current?.querySelector<HTMLElement>(`[data-pdf-page="${visiblePageRef.current}"]`);
+        if (page) zoomAnchorRef.current = { pageNumber: visiblePageRef.current, pageRatio: clamp((stage.scrollTop + stage.clientHeight / 2 - page.offsetTop) / Math.max(1, page.offsetHeight), 0, 1) };
+        setZoom(1); stage.scrollLeft = 0;
+      }
+      previousWidth = nextSize.width;
       setContainerSize((current) =>
         current.height === nextSize.height && current.width === nextSize.width
           ? current
@@ -779,7 +785,8 @@ export function InteractivePdfViewer({
       setSelectionPrompt(null);
       return;
     }
-    const quote = selection.toString().replace(/\s+/g, " ").trim();
+    const geometryOnly = Array.from(textLayer.querySelectorAll("[data-geometry-only]")).some(node => range.intersectsNode(node));
+    const quote = geometryOnly ? "Selected text" : selection.toString().replace(/\s+/g, " ").trim();
     if (quote.length < 1 || quote.length > 700) {
       setSelectionPrompt(null);
       return;
@@ -792,7 +799,7 @@ export function InteractivePdfViewer({
       setSelectionPrompt(null);
       return;
     }
-    const rects = Array.from(range.getClientRects()).flatMap((rect) => {
+    const rawRects = Array.from(range.getClientRects()).flatMap((rect) => {
       const left = clamp((rect.left - pageRect.left) / pageRect.width, 0, 1);
       const top = clamp((rect.top - pageRect.top) / pageRect.height, 0, 1);
       const right = clamp((rect.right - pageRect.left) / pageRect.width, 0, 1);
@@ -800,7 +807,15 @@ export function InteractivePdfViewer({
       if (right <= left || bottom <= top) return [];
       const rectAnchor = { height: bottom - top, left, top, width: right - left };
       return isPaperHighlightEdgeShadeArtifact(rectAnchor) ? [] : [rectAnchor];
-    }).slice(0, 40);
+    });
+    const rects: PdfSelectionAnchor['rects'] = [];
+    for (const rect of rawRects) {
+      const last = rects[rects.length - 1];
+      if (last && Math.abs(last.top - rect.top) < .003 && Math.abs(last.height - rect.height) < .004 && rect.left <= last.left + last.width + .015) {
+        const right = Math.max(last.left + last.width, rect.left + rect.width);
+        last.left = Math.min(last.left, rect.left); last.width = right - last.left;
+      } else rects.push({ ...rect });
+    }
     if (!rects.length) {
       setSelectionPrompt(null);
       return;
@@ -812,6 +827,7 @@ export function InteractivePdfViewer({
     setSelectionError(null);
     setSelectionPrompt({
       left: clamp(rangeRect.left - rootRect.left + rangeRect.width / 2, 54, rootRect.width - 54),
+      kind: geometryOnly ? "area" : "text",
       pageNumber: selectedPage,
       quote,
       rects,
@@ -827,7 +843,7 @@ export function InteractivePdfViewer({
     if (asking) return;
     setAsking(true);
     let error: string | null;
-    try { error = await onAskSelection(selectionPrompt); }
+    try { error = await onAskSelection(await onResolveSelection(selectionPrompt)); }
     catch (cause) { error = cause instanceof Error ? cause.message : "Could not prepare this selection."; }
     finally { setAsking(false); }
     if (error) {
@@ -839,12 +855,14 @@ export function InteractivePdfViewer({
     window.getSelection()?.removeAllRanges();
   };
 
-  const commentOnSelection = () => {
-    if (!selectionPrompt) return;
-    onCommentSelection(selectionPrompt);
-    setSelectionPrompt(null);
-    setSelectionError(null);
-    window.getSelection()?.removeAllRanges();
+  const commentOnSelection = async () => {
+    if (!selectionPrompt || asking) return;
+    setAsking(true); setSelectionError(null);
+    try {
+      onCommentSelection(selectionPrompt);
+      setSelectionPrompt(null); window.getSelection()?.removeAllRanges();
+    } catch (error) { setSelectionError(error instanceof Error ? error.message : 'Could not transcribe this selection.'); }
+    finally { setAsking(false); }
   };
 
   const reportVisiblePage = useCallback(() => {
@@ -1063,16 +1081,21 @@ export function InteractivePdfViewer({
     setPeekedReferenceId(tag.tagId);
   };
 
-  const keepSelection = () => {
-    if (!selectionPrompt) return;
-    const { left: _left, top: _top, ...selection } = selectionPrompt;
+  const keepSelection = async () => {
+    if (!selectionPrompt || asking) return;
+    setAsking(true); setSelectionError(null);
+    try {
+    const { left: _left, top: _top, ...picked } = selectionPrompt;
+    const selection = await onResolveSelection(picked);
     const tag: PaperReferenceTag = { createdAt: new Date().toISOString(), materialId,
       pageNumber: selection.pageNumber, selection, tagId: crypto.randomUUID(),
-      label: selection.kind === "area" ? `Area · p. ${selection.pageNumber}` : selection.quote.slice(0, 60),
+      label: selection.kind === "area" && !selection.quoteSource ? `Area · p. ${selection.pageNumber}` : selection.quote.slice(0, 60),
       lineId: referenceLines[0]?.lineId ?? DEFAULT_PAPER_REFERENCE_LINE_ID };
     setReferenceTags(current => [...current, tag].slice(-MAX_PAPER_REFERENCE_TAGS));
     setSelectionPrompt(null); window.getSelection()?.removeAllRanges();
     setReferenceTrayPinned(true); setReferenceTrayOpen(true); setPeekedReferenceId(tag.tagId);
+    } catch (error) { setSelectionError(error instanceof Error ? error.message : 'Could not transcribe this selection.'); }
+    finally { setAsking(false); }
   };
 
   useEffect(() => {
@@ -1179,7 +1202,6 @@ export function InteractivePdfViewer({
       setPeekedReferenceId(null);
       setReferenceTrayPinned(false);
       setReferenceTrayOpen(false);
-      setAreaMode(false);
       setSelectionPrompt(null);
     };
     document.addEventListener("keydown", closeOnEscape);
@@ -1237,7 +1259,12 @@ export function InteractivePdfViewer({
         >
           +
         </button>
-        <button className={styles.areaTool} aria-label={areaMode ? "Cancel area" : "Select area"} type="button" aria-pressed={areaMode} disabled={status !== "ready"} onClick={() => { setAreaMode(!areaMode); setSelectionPrompt(null); window.getSelection()?.removeAllRanges(); }} title="Drag a box around text, a figure, or any scanned area"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="1" fill="none" stroke="currentColor" strokeDasharray="3 2" /></svg><span>{areaMode ? "Cancel area" : "Select area"}</span></button>
+        <select className={styles.pageLayout} aria-label="Page layout" value={pageLayout} onChange={event => {
+          const next = event.target.value === 'two' ? 'two' : 'single';
+          setPageLayout(next); setSelectionPrompt(null);
+          try { localStorage.setItem('diane.reader.page-layout', next); } catch { /* Current visit only. */ }
+          requestAnimationFrame(() => requestAnimationFrame(() => navigatePage(pageNumber)));
+        }}><option value="single">Single Page</option><option value="two">Two Pages</option></select>
         {toolbarExtras ? <div className={styles.toolbarExtras}>{toolbarExtras}</div> : null}
         <button
           aria-expanded={referenceTrayOpen}
@@ -1404,22 +1431,15 @@ export function InteractivePdfViewer({
         ref={stageRef}
         tabIndex={0}
       >
-        <div className={styles.document} ref={documentElementRef}>
+        <div className={styles.document} data-layout={pageLayout} ref={documentElementRef}>
           {status === "ready" && documentProxy ? Array.from(
             { length: pageCount },
             (_, index) => (
               <PdfPage
-                areaMode={areaMode}
-                onCancelArea={() => setAreaMode(false)}
                 references={referenceTags.filter(tag => tag.pageNumber === index + 1)}
                 activeSelection={selectionPrompt?.pageNumber === index + 1 ? selectionPrompt : null}
-                onArea={selection => {
-                  setAreaMode(false); setSelectionError(null);
-                  const root = rootRef.current?.getBoundingClientRect();
-                  setSelectionPrompt({ ...selection, left: (root?.width ?? 300) / 2, top: Math.max(58, (root?.height ?? 200) - 70) });
-                }}
                 comments={comments.filter((comment) => comment.pageNumber === index + 1)}
-                containerSize={containerSize}
+                containerSize={pageContainerSize}
                 documentProxy={documentProxy}
                 key={index + 1}
                 onCaptureSelection={captureSelection}
@@ -1445,9 +1465,9 @@ export function InteractivePdfViewer({
           onMouseDown={(event) => event.preventDefault()}
           style={{ left: selectionPrompt.left, top: selectionPrompt.top }}
         >
-          <button onClick={commentOnSelection} type="button">Comment</button>
+          <button disabled={asking} onClick={() => void commentOnSelection()} type="button">Comment</button>
           <button className={styles.selectionPrimary} disabled={asking} onClick={() => void askAboutSelection()} type="button">{asking ? "Preparing…" : "Ask"}</button>
-          <button disabled={!referencesHydrated || asking} onClick={keepSelection} title="Save selection as a reference" type="button">Ref</button>
+          <button disabled={!referencesHydrated || asking} onClick={() => void keepSelection()} title="Save selection as a reference" type="button">Ref</button>
         </div>
       ) : null}
       {selectionError ? (

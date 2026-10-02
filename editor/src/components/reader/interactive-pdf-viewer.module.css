@@ -7,6 +7,7 @@
   --pdf-highlight: color-mix(in srgb, #f2c14e 55%, transparent);
   position: relative;
   width: 100%;
+  min-width: 0;
   height: 100%;
   display: grid;
   grid-template-rows: 44px minmax(0, 1fr);
@@ -734,19 +735,19 @@
 
 .referencePeek > header input { min-width: 0; width: 100%; border: 0; border-bottom: 1px solid var(--wb-line); background: transparent; color: inherit; font: inherit; font-size: .74rem; }
 
-.toolbar .areaTool { box-sizing: border-box; flex-shrink: 0; width: auto; padding: 0 8px; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: .7rem; }
-.toolbar .areaTool[aria-pressed="true"] { background: var(--wb-soft); outline: 1px solid var(--wb-accent); }
-@container (max-width: 640px) { .toolbar .areaTool { width: 28px; padding: 0 6px; } .areaTool span { display: none; } }
 
-.toolbarExtras select { max-width: 100px; height: 28px; border: 1px solid var(--wb-line); border-radius: 5px; color: var(--pdf-muted); background: var(--wb-paper); font: 500 .7rem/1 var(--font-ui); }
+.toolbar .pageLayout { max-width: 100px; height: 28px; border: 1px solid var(--wb-line); border-radius: 5px; color: var(--pdf-muted); background: var(--wb-paper); font: 500 .7rem/1 var(--font-ui); }
 .selectionActions button:disabled { opacity: .5; cursor: default; }
 
-/* Leave room for the scan-layout control in narrow reading panes. */
+/* Leave room for the page-layout control in narrow reading panes. */
 .viewer { grid-template-rows: auto minmax(0, 1fr); }
 .toolbar { min-height: 44px; }
 @container (max-width: 640px) {
   .toolbar { height: 76px; box-sizing: border-box; align-items: flex-start; padding-top: 3px; }
   .toolbar > span { margin-top: 9px; }
   .toolbar .referenceTrayToggle { top: auto; bottom: 4px; }
-  .toolbarExtras { left: 8px; right: 78px; bottom: 4px; }
+  .toolbar .pageLayout { position: absolute; left: 8px; bottom: 4px; }
+  .toolbarExtras { left: 120px; right: 78px; bottom: 4px; }
 }
+
+.document[data-layout="two"] { display: grid; grid-template-columns: repeat(2, max-content); justify-content: center; align-items: start; column-gap: 12px; }

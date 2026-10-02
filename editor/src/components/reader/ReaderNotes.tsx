@@ -11,12 +11,13 @@ export function ReaderNotes({ file, header, textDocument = false, onAsk }: { fil
   const [editing, setEditing] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
   const input = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => { if (state.draft) { setText(""); window.requestAnimationFrame(() => input.current?.focus()); } }, [state.draft]);
+  useEffect(() => { if (state.draft) { setText(""); window.requestAnimationFrame(() => input.current?.focus()); } }, [state.draft?.draftId]);
   const sorted = [...state.comments].sort((a, b) => a.pageNumber - b.pageNumber || (a.rects[0]?.top ?? 0) - (b.rects[0]?.top ?? 0));
   return <aside className="wb-activity-panel wb-reader-notes" aria-label="Notes">
     {header}
     {state.draft && <form className="wb-notes-composer" onSubmit={(event) => { event.preventDefault(); readerActions.addComment(file.path, state.draft!, text); }}>
-      <q>{state.draft.quote}</q>
+      <q>{state.draft.quoteStatus ? 'Selected passage' : state.draft.quote}</q>
+      {state.draft.quoteStatus && <small role="status">{state.draft.quoteStatus === 'pending' ? 'Transcribing quote… You can save your note now.' : 'Quote pending. Your note can be saved offline.'}{state.draft.quoteStatus === 'deferred' && <button type="button" onClick={() => window.dispatchEvent(new CustomEvent('diane:retry-quote', { detail: file.path }))}>Retry quote</button>}</small>}
       <textarea ref={input} value={text} placeholder="Add a note (optional)" aria-label="Note" onChange={(event) => setText(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Escape") readerActions.setDraft(file.path, null);
@@ -28,8 +29,9 @@ export function ReaderNotes({ file, header, textDocument = false, onAsk }: { fil
     <ol className="wb-notes-list">{sorted.map((item) => <li key={item.commentId} data-stale={state.stale[item.commentId]}>
       <button type="button" className="wb-notes-jump" onClick={() => readerActions.focus(file.path, item)} title="Show in the file">
         <span>{textDocument ? "Passage" : `p. ${item.pageNumber}`}{state.stale[item.commentId] === "missing" ? " · not found in this version" : ""}</span>
-        <q>{item.quote}</q>
+        <q>{item.quoteStatus ? "Selected passage" : item.quote}</q>
       </button>
+      {item.quoteStatus && <small>Quote pending · comment saved <button type="button" onClick={() => window.dispatchEvent(new CustomEvent('diane:retry-quote', { detail: file.path }))}>Retry quote</button></small>}
       {editing === item.commentId
         ? <form onSubmit={(event) => { event.preventDefault(); readerActions.editComment(file.path, item.commentId, editText); setEditing(null); }}>
             <textarea autoFocus value={editText} aria-label="Edit note" onChange={(event) => setEditText(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") setEditing(null); if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); readerActions.editComment(file.path, item.commentId, editText); setEditing(null); } }} />

@@ -14,6 +14,10 @@ export type PdfSelectionRect = {
 
 export type PdfSelectionAnchor = {
   kind?: "text" | "area";
+  quoteSource?: "vision";
+  quoteStatus?: "pending" | "deferred";
+  quoteModel?: string;
+  originalQuote?: string;
   pageNumber: number;
   quote: string;
   rects: PdfSelectionRect[];
@@ -140,6 +144,9 @@ export function normalizePaperComments(
     const anchor = cleanAnchor(record.anchor);
     return [{
       ...(anchor ? { anchor } : {}),
+      ...(["pending", "deferred"].includes(String(record.quoteStatus)) ? { quoteStatus: record.quoteStatus as "pending" | "deferred" } : {}),
+      ...(typeof record.originalQuote === 'string' ? { originalQuote: record.originalQuote.slice(0, 700) } : {}),
+      ...(record.quoteSource === "vision" ? { quoteSource: "vision" as const, quoteModel: String(record.quoteModel ?? '').slice(0, 100) } : {}),
       ...(record.kind === "area" ? { kind: "area" as const } : {}),
       commentId,
       createdAt,
