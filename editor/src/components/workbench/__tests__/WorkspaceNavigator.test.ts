@@ -40,14 +40,14 @@ it('shows each pinned session once and keeps pins independent from shortcut orde
     act(()=>h.host.querySelector<HTMLButtonElement>('[aria-label="Actions for a"]')!.click());expect(h.menu.mock.calls[0][0].key).toBe('p:a');
   }finally{h.cleanup();}
 });
-it('includes documents in recent switching, with project and unsaved state on the same row',()=>{
+it('includes reading tabs in recent switching with path and unsaved state',()=>{
   const h=harness();const file={...pathDocument('/research/note.md'),workspaceId:'p',projectName:'Research'};
   const extra={tabs:[{id:'file:/research/note.md',kind:'file' as const,label:'note.md'}],documents:{'file:/research/note.md':file},dirty:{[file.path]:true}};
   try{
     h.render('p:c',extra);h.render('tab:file:/research/note.md',extra);h.render('p:c',extra);h.down('1');
     expect(h.select.mock.calls.at(-1)?.[0].key).toBe('tab:file:/research/note.md');
     expect(h.host.querySelector('[data-item-key="tab:file:/research/note.md"]')?.textContent).toContain('Unsaved');
-    expect(h.host.querySelector('[data-item-key="tab:file:/research/note.md"] button')?.getAttribute('title')).toContain('Research');
+    expect(h.host.querySelector('[data-item-key="tab:file:/research/note.md"] button')?.getAttribute('title')).toContain('/research/note.md');
     expect(h.host.querySelector('.wb-item-meta')).toBeNull();
     act(()=>h.host.querySelector<HTMLButtonElement>('[aria-label="Close note.md"]')!.click());expect(h.close).toHaveBeenCalledWith('file:/research/note.md');
   }finally{h.cleanup();}
@@ -75,4 +75,20 @@ it('deduplicates recovered sessions and resolves file projects by the longest ma
 it('shows Mac hints on the modifier key event even before metaKey is set',()=>{
   const platform=vi.spyOn(navigator,'platform','get').mockReturnValue('MacIntel');const h=harness();
   try{h.render();act(()=>window.dispatchEvent(new KeyboardEvent('keydown',{key:'Meta',code:'MetaLeft'})));expect(h.host.querySelector('[data-item-key="p:b"] kbd')?.textContent).toBe('⌘1');act(()=>window.dispatchEvent(new KeyboardEvent('keyup',{key:'Meta'})));expect(h.host.querySelector('kbd')).toBeNull();}finally{h.cleanup();platform.mockRestore();}
+});
+it('keeps five recent reading tabs above project chats with an independent Show all control', () => {
+  const h = harness();
+  const tabs = Array.from({length:7}, (_,i) => ({ id:`pdf:/elsewhere/${i}.pdf`, kind:'pdf' as const, label:`Reading ${i}` }));
+  const documents = Object.fromEntries(tabs.map((tab,i) => [tab.id,pathDocument(`/elsewhere/${i}.pdf`)]));
+  try {
+    h.render('p:c', { tabs, documents, project:'p' });
+    expect(h.host.querySelectorAll('.wb-reading-list .wb-item-row')).toHaveLength(5);
+    expect(h.host.querySelectorAll('.wb-items-list .wb-item-row')).toHaveLength(3);
+    expect(h.host.querySelector('.wb-items-list')?.textContent).not.toContain('Reading');
+    const expand = h.host.querySelector<HTMLButtonElement>('.wb-reading-list header button')!;
+    act(() => expand.click());
+    expect(h.host.querySelectorAll('.wb-reading-list .wb-item-row')).toHaveLength(7);
+    act(() => h.host.querySelector<HTMLButtonElement>('.wb-reading-list .wb-item-select')!.click());
+    expect(h.select.mock.calls.at(-1)?.[0].kind).toBe('pdf');
+  } finally { h.cleanup(); }
 });

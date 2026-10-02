@@ -948,3 +948,9 @@
 .wb-tabbar { display:flex; flex-shrink:0; min-width:0; border-bottom:1px solid var(--wb-line); }
 .wb-tabbar .wb-main-tabs { flex:1; min-width:0; padding-left:0; border-bottom:0; }
 .wb-tabbar .wb-history { align-items:center; }
+
+.wb-reading-list { flex-shrink:0; padding:4px 0 10px; border-bottom:1px solid var(--wb-line); }
+.wb-reading-list header { display:flex; justify-content:space-between; align-items:center; padding:4px 10px; font-size:11px; color:var(--wb-muted); }
+.wb-reading-list header button { padding:3px; text-decoration:underline; }
+
+.wb-reading-list { max-height:42vh; overflow-y:auto; }

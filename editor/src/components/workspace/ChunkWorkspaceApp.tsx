@@ -17254,7 +17254,7 @@ export default function ChunkWorkspaceApp() {
         project={workspaceProjectScope} onOpenProjects={() => setProjectPickerRequest(value => value + 1)} onQuery={setThreadQuery}
         query={threadQuery} archived={sessionShelfScope === 'archived'} preferences={sessionPreferences}
         running={[...runningTaskByThreadId.keys()]} unread={threads.filter(thread => sessionHasNewReadyResponse(tasksByThreadId.get(thread.id) || [], sessionResponseSeen[threadWorkspaceKey(thread.workflow_id,thread.id)])).map(thread => thread.id)}
-        onSelect={item => { if (workspaceProjectScope !== "*" && item.projectId !== workspaceProjectScope) setWorkspaceProjectScope("*"); if (item.thread) void openSession(item.thread, item.projectId || undefined, item.root); else if (item.tabId) { setActiveMainTab(item.tabId); if (item.projectId) setActiveWorkspace(item.projectId); } setActivePane('work'); setPhonePage('chat'); }}
+        onSelect={item => { if (item.thread && workspaceProjectScope !== "*" && item.projectId !== workspaceProjectScope) setWorkspaceProjectScope("*"); if (item.thread) void openSession(item.thread, item.projectId || undefined, item.root); else if (item.tabId) { setActiveMainTab(item.tabId); } setActivePane('work'); setPhonePage('chat'); }}
         onMenu={(item,x,y) => { if (item.thread) setSessionMenu({ thread:item.thread,x,y }); }} onClose={closeTab}
         onArchive={thread => void archiveSession(thread, !thread.archived)}
         onStop={thread => void stopSessionRun(thread, runningTaskByThreadId.get(thread.id))}

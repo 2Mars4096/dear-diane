@@ -26,6 +26,7 @@ export default function WorkspaceNavigator({ host, groups, projects = [], tabs, 
   const baseline = useRef(new Map<string, number>());
   for (const item of items) if (!baseline.current.has(item.key)) baseline.current.set(item.key, item.timestamp);
   const [visits, setVisits] = useState(readVisits);
+  const [showAllReading, setShowAllReading] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [frozen, setFrozen] = useState<{ choices: string[]; order: string[] } | null>(null);
   const frozenRef = useRef<typeof frozen>(null);
@@ -76,9 +77,17 @@ export default function WorkspaceNavigator({ host, groups, projects = [], tabs, 
     const rank = (key: string) => { const index = frozen.order.indexOf(key); return index < 0 ? Infinity : index; };
     return rank(a.key) - rank(b.key);
   }) : ordered;
-  const visible = order.filter(item => Boolean(item.archived) === archived && (project === '*' || projectKey(item) === project) && (!text || `${item.title} ${item.project} ${item.path || ''} ${item.key}`.toLowerCase().includes(text)));
+  const reading = recency.filter(item => item.kind === 'pdf' || item.kind === 'file');
+  const visible = order.filter(item => item.kind !== 'pdf' && item.kind !== 'file' && Boolean(item.archived) === archived && (project === '*' || projectKey(item) === project) && (!text || `${item.title} ${item.project} ${item.path || ''} ${item.key}`.toLowerCase().includes(text)));
   const modifier = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+';
   return createPortal(<section className="wb-workspace-items" aria-label={archived ? 'Archived items' : 'Workspace items'}>
+    {!archived && reading.length > 0 && <section className="wb-reading-list" aria-label="Reading">
+      <header><span>Reading</span>{reading.length > 5 && <button onClick={() => setShowAllReading(!showAllReading)} aria-expanded={showAllReading}>{showAllReading ? 'Show less' : `Show all (${reading.length})`}</button>}</header>
+      {(showAllReading ? reading : reading.slice(0, 5)).map(item => <div key={item.key} className="wb-item-row" data-active={item.key === active || undefined} data-item-key={item.key}>
+        <button className="wb-item-select" title={item.path || item.title} aria-current={item.key === active ? 'page' : undefined} onClick={() => onSelect(item)}><span className="wb-item-title">{item.title}</span>{item.dirty && <span className="wb-item-state">Unsaved</span>}</button>
+        <button className="wb-item-action" aria-label={`Close ${item.title}`} onClick={() => item.tabId && onClose(item.tabId)}><X size={13} /></button>
+      </div>)}
+    </section>}
     <div className="wb-items-toolbar"><button className="wb-project-filter" onClick={onOpenProjects} aria-label="Filter items by project" aria-haspopup="dialog" title={`Select project (${modifier}⇧E)`}><span>{project === '*' ? 'All projects' : projects.find(item => item.id === project)?.name || 'Project'}</span><ChevronDown size={13} /></button><div className="wb-items-project-actions">{projectActions}<button className="wb-item-action" aria-label="Search workspace items" aria-expanded={searchOpen || Boolean(query)} onClick={() => { setSearchOpen(!searchOpen); if (searchOpen) onQuery?.(''); }}><Search size={14} /></button></div></div>
     {(searchOpen || query) && <label className="wb-shelf-search"><Search size={15} /><input autoFocus aria-label="Search workspace items" placeholder="Search sessions, files, projects" value={query} onChange={event => onQuery?.(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') { onQuery?.(''); setSearchOpen(false); } }} /></label>}
     <div className="wb-items-list">
