@@ -1,6 +1,13 @@
 # Changelog
 
 ## 2026-10-03
+- [feat] Transcribe scanned selections with OpenRouter Qwen3-VL 32B, falling back to GLM-4.6V. Send only selected raster strips in reading order plus the unreliable OCR hint; native PDF text bypasses the model. Preserve printed Unicode symbols and remove invisible control debris.
+- [fix] Save scanned comments immediately while quote transcription runs. Offline/pending quotes retain geometry and written comments across restart, retry on reconnect or request, and never clear in-progress typing or resurrect deleted notes.
+- [fix] Bundle Chinese OCR, keep word coordinates, recover missing visual lines, and invalidate old geometry caches. Remove Select area; Single Page / Two Pages now controls actual page arrangement. Fit the PDF when Notes reduces the middle pane.
+- [test] 437 frontend tests and six focused backend tests pass; production bundle limits pass. Browser checks verify zero model calls for native text, immediate offline save/reconnect quote update, actual two-page arrangement, and zero overlap/overflow beside Notes. Six existing scan quotes were transcribed, with two clipped initial characters checked locally against the source. Notes will be patched by ID without changing comment bodies.
+- [docs] Automatic review rejected a broad internal rename; its partial edits were undone. Prepare the phased, reversible [name migration](diane-name-migration.md). A nearby-context upload was also rejected; it was removed, and only selected pixels are sent.
+
+## 2026-10-03
 - [infra] Push separate reader, Reading persistence, visible-branding and documentation commits; install the final signed desktop build. App PID 23902 owns backend PID 23925; strict signature, archive equality and direct/proxy health pass. Rollback: `/Applications/.DAN-previous-ca22631e-82c9-43a5-823b-89e276b4adbe.app`.
 - [test] Final verification: 433 frontend tests, production build, bundle budgets and Electron packaging pass. Temporary browser fixtures are excluded from the installed archive.
 

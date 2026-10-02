@@ -1,9 +1,10 @@
 # Architecture
 
-## OCR spread geometry
-- `reader/lib/ocr-layout.ts` detects a central low-ink gutter from a reduced raster while discounting binding lines. `ocr-runner.ts` recognizes each crop separately and maps normalized spans back to the full PDF page; left-side text precedes right-side text.
-- Cached pages include layout version/mode. ReaderView rejects legacy caches, cancels outdated layout jobs, and prioritizes the currently visible page within the bounded OCR batch. The per-document layout override lives in `diane.reader.ocr-layout:<path>`. Original PDF bytes are unchanged.
-
+## Reader selection and transcription
+- Local Tesseract runs with Chinese/English models and word boxes, separately for each detected printed page. `scan-lines.ts` fills lines omitted by recognition without stretching known words; cache version 3 rejects older geometry.
+- `selection-image.ts` renders selected pixels directly from PDF coordinates, stacking selected strips in reading order for transcription. It rejects blank captures. `/api/reader/transcribe` uses server-side OpenRouter credentials with Qwen3-VL 32B and GLM-4.6V fallback, bounded requests and content-keyed result caching under `graphs/reader_transcriptions`. No surrounding unselected context is uploaded.
+- Comments save synchronously; quote status/model/original quote persist alongside geometry. Async completion merges only the quote into the current draft or saved note, retaining concurrent edits. Offline status persists; reconnect/retry resumes extraction. Existing scan notes can be upgraded by geometry without moving highlights.
+- Single Page / Two Pages is a display preference in `diane.reader.page-layout`; scan segmentation is automatic. Opening a narrower Notes pane resets the reader to Fit.
 
 ## Reading restart persistence
 - `documents/documentSession.ts` stores main reading tab descriptors and library-session context in `diane.documents.main.v1`; `useDocumentTabs` restores them without changing project/chat selection. Original reading workflow IDs preserve sidecar conversation identity.
@@ -12,7 +13,7 @@
 
 
 ## PDF selection references
-- `reader/AreaSelection.tsx` captures normalized rectangular page regions with pointer capture; Escape cancels. It does not depend on OCR.
+- Existing rectangular reference anchors remain readable; the separate Select area toolbar tool was removed at the user’s request.
 - `reader/lib/selection-image.ts` renders selected bounds directly to a PNG canvas, respecting page rotation and capping the longest output dimension at 2400 px. Reader Ask uploads through the existing attachment endpoint, then stages the image in main/sidecar chat; sending remains explicit.
 - Reference tags optionally store `PdfSelectionAnchor`; legacy whole-page tags still deduplicate by page, selected refs by ID. Reader/preview overlays share the saved rectangles, and preview scrolling waits for visible canvas layout.
 

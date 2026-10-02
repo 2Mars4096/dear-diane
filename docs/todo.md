@@ -1,5 +1,9 @@
 # Todo
 
+- [x] Add selected-crop vision transcription and offline-first comments; fix Chinese selection geometry, page arrangement and Notes resizing — [reader](UI-plans/3-reader-and-side-panel.md).
+- [ ] Install the reader follow-up and apply/verify six existing quote repairs, preserving comment bodies.
+- [ ] Complete internal Diane naming through the [reviewable migration](diane-name-migration.md); broad rename rejected by automatic review, partial edits undone.
+
 - [x] Fix OCR selections spanning both pages: detect/crop at the gutter, retain each page's reading order, invalidate old caches, and add layout override. Shorten Ref and make only Ask primary — [reader](UI-plans/3-reader-and-side-panel.md).
 - [x] Install the OCR/selection-toolbar follow-up; signature, archive equality and owned backend/proxy health pass.
 

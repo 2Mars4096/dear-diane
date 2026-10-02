@@ -1,5 +1,10 @@
 # Known Issues & Failed Approaches
 
+- **Fixed 2026-10-03: Chinese quotes became Latin noise.** English-only recognition and stretched line boxes produced unrelated selected strings. Use Chinese word boxes for selection and selected-pixel vision transcription for scan quotes. Native text bypasses OCR/model calls.
+- **Fixed 2026-10-03: async quote updates erased typing.** Notes previously reset the textarea whenever the draft object changed. A stable draft ID now scopes the reset; delayed quote updates preserve typing, saved edits and deletions.
+- **Validation failures:** a standalone PDF fixture omitted pdf.js `wasmUrl`, producing blank JBIG2 crops; configure bundled assets and reject blank crops. Stale browser module imports also retained the old crop function; full reload verified the changed code. Left-offset wrapped crops could be read out of order; stack selected strips before transcription.
+- **Naming review:** broad package/schema/storage replacement was rejected by automatic approval review; all partial rename changes were undone. Use the explicit migration plan before attempting that scope. Nearby unselected-context upload was rejected and removed.
+
 - **Fixed 2026-10-03: OCR selection spans both printed pages.** Running the recognizer on an entire spread allowed one line box to bridge the gutter; global line ordering also interleaved the pages. Recognize separate raster regions and concatenate each region's lines in reading order. Reject legacy cached results so reopened PDFs get corrected geometry.
 - **Fixed 2026-10-03: two orange selection actions.** The CSS selector `button + button` accented every button after the first. Give Ask an explicit primary class; Comment and Ref remain secondary.
 

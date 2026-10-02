@@ -24,7 +24,7 @@ Install browser support in the backend Python environment with `pip install -e '
 ## Workbench
 
 - **Reading after restart:** open reading files and the selected document are restored, along with existing reading progress and chat links. Browser-picked copies stay on this device. Closing a file removes it from the saved Reading list.
-- **PDF selection and Refs:** select text or use **Select area** to box a scanned passage, equation, or figure without OCR. Choose **Ref** to keep a highlighted location; hover its tag to preview that passage and edit its label. **Ask** stages selected text or a cropped image for chat. Scanned spreads separate text at the gutter; use **Two pages** in the layout control if automatic detection misses it.
+- **PDF selection and Refs:** select a passage and choose **Ref** to keep its highlighted location; hover its tag to preview the passage and edit its label. **Ask** stages selected text or an image crop for chat. Scan columns are detected automatically; **Single Page / Two Pages** changes the reading layout.
 
 - **Sidebar layout:** drag the right edge to resize; double-click to reset. Width and selected project/session are restored after refresh or restart.
 - **Workspace list:** sessions, open PDFs, files, Papers, and Settings share one sidebar list. Compact title rows keep project context in the header and hover text; pins stay on the same row. The project ellipsis menu beside the selector opens project editing and native-session import. The magnifier opens search. Cmd/Ctrl+Shift+E opens the shared project picker; Cmd/Ctrl+Shift+0 restores all projects and clears search. File drafts, unread state, and running work remain visible. The old project/recent/pinned lists and top tab row are replaced by this list.
@@ -272,7 +272,7 @@ Published releases use `electron-updater`; **Check for updates** and **Download*
 
 The product is **Dear Diane** and the assistant is **Diane**. After installing the Python package, use `dear-diane --help`; existing `dan` commands still work. New desktop builds are named `Dear Diane.app`.
 
-Existing Python imports/package name (`dan`), `DAN_*` environment variables, backend IDs, browser storage keys, bundle ID (`com.dan.desktop`), remote services, and the desktop `Application Support/dan` profile remain stable so existing installations retain their chats, accounts, settings, and update identity. The repository remains `deep-agent-network`. Historical plans and logs retain their original names.
+Existing Python imports/package name (`dan`), `DAN_*` environment variables, backend IDs, browser storage keys, bundle ID (`com.dan.desktop`), remote services, and the desktop `Application Support/dan` profile remain stable so existing installations retain their chats, accounts, settings, and update identity. The full internal rename is tracked in [the migration plan](docs/diane-name-migration.md).
 
 
 ### Background work and quitting
@@ -288,3 +288,5 @@ Diane uses separate Codex session storage while reusing your selected account. E
 Files open in main-pane tabs alongside chats. Use Back/Forward (including mapped mouse buttons) to revisit chats and files, and drag the divider to resize an open side pane.
 
 The sidebar’s Reading section lists up to five recent open PDFs/files, with Show all for the rest, separately from project chats. Desktop Back/Forward is also available from the Go menu.
+
+Scanned PDF comments save immediately, including offline. Selected pixels and the OCR hint are transcribed through OpenRouter using Qwen3-VL 32B (GLM-4.6V fallback); native text PDFs use their text directly. Pending quotes retry when connected, while your comment and highlight remain saved. **Single Page / Two Pages** changes the page arrangement; scan-column detection is automatic.
