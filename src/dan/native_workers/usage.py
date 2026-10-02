@@ -32,9 +32,9 @@ def _window_label(minutes: int | None) -> str:
 
 def codex_usage(home: Path) -> dict:
     """Latest rate limits recorded by any Codex session under this account's home."""
-    sessions = home / "sessions"
+    from .codex_home import private_home
     newest = None
-    if sessions.is_dir():
+    for sessions in (home / "sessions", private_home(home) / "sessions"):
         for path in sessions.glob("*/*/*/*.jsonl"):
             try:
                 stamp = path.stat().st_mtime

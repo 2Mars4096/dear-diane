@@ -15,6 +15,7 @@ def configured(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-router-secret")
     monkeypatch.delenv("DAN_OPENROUTER_API_KEY", raising=False)
     monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path / "graphs"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "account"))
     monkeypatch.setattr(catalog, "binary", lambda runtime: f"/bin/{runtime}")
     monkeypatch.setattr(catalog, "accounts", lambda: {runtime: {"default": {"env": {}}} for runtime in catalog.RUNTIMES})
     return {"provider": "openrouter", "model": "deepseek/deepseek-v4.1-flash", "effort": "medium"}

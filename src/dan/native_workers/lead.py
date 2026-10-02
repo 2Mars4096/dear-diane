@@ -12,6 +12,7 @@ import time
 
 from . import bridge, proc_bridge, browser_bridge
 from .service import NativeTeam, active_teams, describe
+from .codex_home import SCOPE, private_home
 
 _active_sessions: set[str] = set()
 
@@ -81,9 +82,10 @@ class NativeLeadAdapter:
             # Regenerate discards the last answer; resuming would keep it in the native session.
             if state_path.is_file() and not request.surface_context.get("regenerate"):
                 saved = json.loads(state_path.read_text())
-                profile["resume_session"] = saved.get("native_session_id", "")
+                if backend != "codex" or saved.get("session_scope") == SCOPE:
+                    profile["resume_session"] = saved.get("native_session_id", "")
             import_path = base / "native_imports" / f"{request.thread_id}.json"
-            if source_name == "native" and not profile.get("resume_session") and request.thread_id and Path(request.thread_id).name == request.thread_id and import_path.is_file():
+            if backend != "codex" and source_name == "native" and not profile.get("resume_session") and request.thread_id and Path(request.thread_id).name == request.thread_id and import_path.is_file():
                 source = json.loads(import_path.read_text())
                 if source.get("continuation") != "history" and source["backend"] == backend and source["account"] == profile.get("account", "default") and same_folder(source["workspace"], workspace):
                     profile["source_session"] = source["session_id"]
@@ -103,7 +105,7 @@ class NativeLeadAdapter:
                 selected = accounts()["codex"].get(profile.get("account", "default"), {})
                 home = selected.get("env", {}).get("CODEX_HOME")
                 if home:
-                    children = CodexChildren(team, Path(home))
+                    children = CodexChildren(team, private_home(home))
             prompt = _objective_with_surface_context(request)
             prompt += "\nTeam editing tasks use isolated Git worktrees by default. For shared read-only tasks or non-Git folders pass --shared-workspace. Inspect results, then use the team bridge apply action to integrate completed edits. Do not discard worker worktrees automatically. Install needed dependencies inside the owned worktree; ignored files and secrets are not copied."
             prompt += "\n\nYou are working in Dear Diane, a workspace for research, code, and ideas. Diane is the assistant name; retain your actual native runtime identity when reporting execution details."
@@ -235,7 +237,7 @@ class NativeLeadAdapter:
                     final = lead.records[record["worker_id"]]
                     if final.get("native_session_id"):
                         temporary_state = state_path.with_suffix(".tmp")
-                        temporary_state.write_text(json.dumps({"native_session_id": final["native_session_id"], "backend": backend, "history_fingerprints": [fingerprint(message) for message in request.history] + [fingerprint({"role": "assistant", "content": final["response"]})]}))
+                        temporary_state.write_text(json.dumps({"native_session_id": final["native_session_id"], "backend": backend, "session_scope": SCOPE if backend == "codex" else "native", "history_fingerprints": [fingerprint(message) for message in request.history] + [fingerprint({"role": "assistant", "content": final["response"]})]}))
                         temporary_state.replace(state_path)
             if children:
                 if record and lead:

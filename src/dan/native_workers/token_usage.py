@@ -468,10 +468,13 @@ def _stores() -> list[tuple[str, str, Path]]:
         for account, profile in profiles.items():
             env = profile.get("env", {})
             home = Path(env.get("CLAUDE_CONFIG_DIR" if backend == "claude" else "CODEX_HOME") or os.environ.get("CODEX_HOME" if backend == "codex" else "CLAUDE_CONFIG_DIR") or user_home() / default)
-            store = (home / ("projects" if backend == "claude" else "sessions")).resolve()
-            if store.is_dir() and store not in seen:
-                seen.add(store)
-                found.append((backend, account, home))
+            from .codex_home import private_home
+            homes = [home, private_home(home)] if backend == "codex" else [home]
+            for candidate in homes:
+                store = (candidate / ("projects" if backend == "claude" else "sessions")).resolve()
+                if store.is_dir() and store not in seen:
+                    seen.add(store)
+                    found.append((backend, account, candidate))
     return found
 
 

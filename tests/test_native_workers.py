@@ -10,11 +10,18 @@ from dan.native_workers.service import NativeTeam, read_workers
 from dan.native_workers.sessions import discover, messages
 
 
+@pytest.fixture(autouse=True)
+def isolated_codex_storage(monkeypatch, tmp_path):
+    monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path / "graphs"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "account"))
+
+
 def test_codex_account_isolation_and_flags(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime_catalog, "binary", lambda _: "/bin/codex")
     monkeypatch.setattr(runtime_catalog, "accounts", lambda: {"codex": {"work": {"env": {"CODEX_HOME": str(tmp_path)}}}})
     command, env = runtime_catalog.launch("codex", {"account": "work", "model": "model", "effort": "high", "fast": True}, "test task", str(tmp_path))
-    assert env["CODEX_HOME"] == str(tmp_path)
+    assert env["CODEX_HOME"] != str(tmp_path)
+    assert env["CODEX_SQLITE_HOME"] == env["CODEX_HOME"]
     assert 'service_tier="fast"' in command
     assert 'model_reasoning_effort="high"' in command
     assert "--ephemeral" not in command
@@ -123,21 +130,12 @@ def test_import_api_is_opt_in_and_creates_independent_chat(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_imported_codex_resumes_new_fork_only(monkeypatch, tmp_path):
-    launched = []
-    def launch(*args):
-        launched.append(args)
-        return [sys.executable, "-c", "print('{}')"], {}
-    monkeypatch.setattr("dan.native_workers.service.launch", launch)
-    async def fork(source, workspace, env):
-        assert source == "original"
-        return "new-fork"
-    monkeypatch.setattr("dan.native_workers.sessions.fork_codex", fork)
+async def test_codex_external_ids_require_history_import(monkeypatch, tmp_path):
+    monkeypatch.setattr("dan.native_workers.service.launch", lambda *args: (["unused"], {}))
     team = NativeTeam("parent", str(tmp_path), {"codex": {"enabled": True, "source_session": "original"}}, tmp_path / "workers")
-    await team.start("codex", "continue")
-    await asyncio.gather(*team.tasks.values())
-    assert launched[-1][-1] == "new-fork"
-    assert all(args[-1] != "original" for args in launched)
+    with pytest.raises(ValueError, match="conversation history"):
+        await team.start("codex", "continue")
+    assert not team.tasks
 
 
 @pytest.mark.asyncio
@@ -331,3 +329,22 @@ def test_default_claude_account_does_not_force_config_dir(monkeypatch):
     assert "CLAUDE_CONFIG_DIR" not in catalog.accounts()["claude"]["default"]["env"]
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/tmp/custom")
     assert catalog.accounts()["claude"]["default"]["env"] == {"CLAUDE_CONFIG_DIR": "/tmp/custom"}
+
+
+@pytest.mark.asyncio
+async def test_old_codex_worker_recovers_history_into_private_session(monkeypatch, tmp_path):
+    calls = []
+    def launch(backend, profile, prompt, workspace, session=''):
+        calls.append((session, prompt))
+        return [sys.executable, '-c', 'print(\'{"type":"thread.started","thread_id":"private-new"}\');print(\'{"type":"turn.completed"}\')'], {}
+    monkeypatch.setattr('dan.native_workers.service.launch', launch)
+    team = NativeTeam('parent', str(tmp_path), {'codex': {'enabled': True}}, tmp_path / 'workers')
+    team.records['old'] = {'worker_id': 'old', 'backend': 'codex', 'profile': {'enabled': True}, 'workspace_root': str(tmp_path), 'native_session_id': 'desktop-shared', 'prompt': 'Previous task', 'response': 'Previous result', 'status': 'completed'}
+    await team.start('codex', 'Continue safely', worker_id='old')
+    await asyncio.gather(*team.tasks.values())
+    assert calls[0][0] == ''
+    assert 'Previous task' in calls[0][1] and 'Previous result' in calls[0][1]
+    assert team.records['old']['native_session_id'] == 'private-new'
+    await team.start('codex', 'Next request', worker_id='old')
+    await asyncio.gather(*team.tasks.values())
+    assert calls[-1][0] == 'private-new'

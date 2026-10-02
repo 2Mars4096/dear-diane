@@ -186,8 +186,14 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
             cmd += ["--resume", session]
         return cmd + [objective], env
     if runtime == "codex":
+        from .codex_home import prepare_home
+        home = prepare_home(env.get("CODEX_HOME", str(user_home() / ".codex")))
+        env["CODEX_HOME"] = str(home)
+        env["CODEX_SQLITE_HOME"] = str(home)
         cmd = [executable, "exec"] + (["resume", session] if session else [])
         cmd += ["--json", "--skip-git-repo-check"]
+        # Explicit overrides also defeat a source config pointing to desktop state.
+        cmd += ["-c", f"sqlite_home={json.dumps(str(home))}", "-c", f"log_dir={json.dumps(str(home / 'log'))}", "-c", 'cli_auth_credentials_store="file"']
         if not session:
             cmd += ["--cd", workspace]
         # `exec resume` has no --sandbox flag, so set it through config on every turn.

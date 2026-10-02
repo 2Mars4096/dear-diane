@@ -70,6 +70,9 @@ class NativeTeam:
         if previous and previous.get("can_stop") is False:
             raise ValueError("This subagent is controlled by its lead")
         session = previous.get("native_session_id", "") if previous else str(profile.get("resume_session") or "")
+        from .codex_home import SCOPE
+        if backend == "codex" and previous and previous.get("session_scope") != SCOPE:
+            session = ""
         if previous and not session and backend != "dan":
             prompt = ("Recover the saved task below. Inspect existing files and completed actions before proceeding; "
                       "do not repeat external side effects without checking their outcome.\n\n"
@@ -101,9 +104,7 @@ class NativeTeam:
             source = selected_profile.get("source_session") if not previous else None
             if source:
                 if backend == "codex":
-                    from .sessions import fork_codex
-                    session = await fork_codex(source, workspace, env)
-                    command, env = launch(backend, selected_profile, prompt, workspace, session)
+                    raise ValueError("Import the Codex conversation history into a Diane chat before continuing it. Shared Codex threads cannot be resumed by Diane.")
                 elif backend == "claude":
                     command, env = launch(backend, selected_profile, prompt, workspace, source)
                     command += ["--fork-session"]
@@ -111,7 +112,10 @@ class NativeTeam:
                     raise ValueError("Headless forking is not available for this runtime")
             record = previous or {"worker_id": identity, **isolation, "parent_run_id": self.parent_id, "backend": backend,
                                   "profile": dict(profile), "workspace_root": workspace, "created_at": time.time(), "native_session_id": ""}
-            if session:
+            if backend == "codex":
+                record["session_scope"] = SCOPE
+                record["native_session_id"] = session
+            elif session:
                 record["native_session_id"] = session
             record.update(status="running", prompt=prompt, response="", error="", activity="Starting", actions=[{"text": "Starting", "at": time.time()}])
             self.records[record["worker_id"]] = record

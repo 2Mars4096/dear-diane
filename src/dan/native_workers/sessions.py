@@ -197,7 +197,7 @@ def add(found, backend, account, session_id, title, path, workspace, updated_at:
                   "title": title or session_id, "path": path, "workspace": workspace, "updated_at": updated_at,
                   "can_import": backend != "antigravity", "fork": True,
                   # Cursor editor chats cannot be resumed headlessly; the import is a transcript copy.
-                  "continuation": "history" if backend == "cursor" else "native",
+                  "continuation": "history" if backend in {"cursor", "codex"} else "native",
                   "reason": "Antigravity's documented fork is interactive; headless import is unavailable." if backend == "antigravity" else ""}
 
 

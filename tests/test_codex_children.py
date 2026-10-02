@@ -100,6 +100,7 @@ async def _run_adapter(monkeypatch, tmp_path):
     from dan.native_workers.lead import NativeLeadAdapter
     from dan.server.chat_v2_backend import AgentBackendRunRequest
     observer, paths, _ = setup(tmp_path)
+    monkeypatch.setattr('dan.native_workers.lead.private_home', lambda source: observer.reader.home)
     now = time.time() + 1
     write(paths['lead'], activity(now, 'first'), activity(now + 1, 'first', 'completed'))
     write(paths['first'], row(now + 1, {'type': 'task_complete', 'last_agent_message': 'Real child result'}))

@@ -112,3 +112,26 @@ async def test_bridge_can_delegate_to_dan_and_reject_disabled_workers(monkeypatc
 @pytest.mark.parametrize("name,runtime", [("native_codex","codex"),("claude","claude"),("antigravity","antigravity"),("cursor","cursor")])
 def test_backend_routing(tmp_path, name, runtime):
     assert select_agent_backend_adapter(request(tmp_path), backend_name=name).backend_name == runtime
+
+
+@pytest.mark.asyncio
+async def test_legacy_codex_lead_starts_private_session_with_saved_history(monkeypatch, tmp_path):
+    import hashlib
+    from dan.native_workers.codex_home import SCOPE
+    monkeypatch.setenv('DAN_GRAPHS_DIR', str(tmp_path / 'graphs'))
+    identity = json.dumps(['chat', str(tmp_path.resolve()), 'codex', 'default'])
+    state = tmp_path / 'graphs/native_lead_sessions' / (hashlib.sha256(identity.encode()).hexdigest() + '.json')
+    state.parent.mkdir(parents=True)
+    state.write_text(json.dumps({'native_session_id': 'shared-desktop-thread'}))
+    calls = []
+    def launch(runtime, profile, prompt, workspace, session=''):
+        calls.append((session, prompt))
+        return [sys.executable, '-c', 'print(\'{"type":"result","session_id":"private-thread","result":"done"}\')'], {}
+    monkeypatch.setattr('dan.native_workers.service.launch', launch)
+    req = request(tmp_path, history=[{'role': 'user', 'content': 'Existing conversation context'}])
+    adapter = NativeLeadAdapter('codex')
+    assert (await adapter.run(req, lambda event: None)).status == 'completed'
+    assert calls[0][0] == '' and 'Existing conversation context' in calls[0][1]
+    assert json.loads(state.read_text())['session_scope'] == SCOPE
+    await adapter.run(req, lambda event: None)
+    assert calls[-1][0] == 'private-thread'
