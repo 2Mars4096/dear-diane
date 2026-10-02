@@ -1,9 +1,11 @@
+import { cleanRect, type PdfSelectionAnchor } from "./paper-comments";
 export type PaperReferenceLine = {
   label: string;
   lineId: string;
 };
 
 export type PaperReferenceTag = {
+  selection?: PdfSelectionAnchor;
   createdAt: string;
   label: string;
   lineId: string;
@@ -60,7 +62,7 @@ export function normalizePaperReferenceTags(
     return [];
   }
 
-  const byPage = new Map<number, PaperReferenceTag>();
+  const byPage = new Map<string, PaperReferenceTag>();
   value.forEach((entry) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       return;
@@ -84,7 +86,15 @@ export function normalizePaperReferenceTags(
     if (!pageNumber || !tagId || !createdAt) {
       return;
     }
-    byPage.set(pageNumber, {
+    const raw = record.selection as Partial<PdfSelectionAnchor> | undefined;
+    const rects = Array.isArray(raw?.rects) ? raw.rects.map(cleanRect).filter((r): r is NonNullable<typeof r> => !!r).slice(0, 40) : [];
+    const selection: PdfSelectionAnchor | undefined = rects.length ? {
+      pageNumber, rects, quote: typeof raw?.quote === "string" ? raw.quote.slice(0, 700) : "Selected area",
+      kind: raw?.kind === "area" ? "area" : "text",
+      rotation: [0, 90, 180, 270].includes(raw?.rotation ?? -1) ? raw!.rotation! : 0,
+    } : undefined;
+    byPage.set(selection ? tagId : `page-${pageNumber}`, {
+      ...(selection ? { selection } : {}),
       createdAt,
       label: label || `Page ${pageNumber}`,
       lineId,

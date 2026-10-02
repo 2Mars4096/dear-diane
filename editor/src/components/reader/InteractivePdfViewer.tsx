@@ -1,3 +1,5 @@
+import { AreaSelection } from "./AreaSelection";
+import { selectionBounds } from "./lib/selection-image";
 import { pdfAssetBase } from "./lib/pdf-assets";
 // Ported from learning-assistant apps/web/app/materials/[materialId]/guide/interactive-pdf-viewer.tsx.
 // Changes: local import paths and a bundled pdf.js worker.
@@ -59,7 +61,7 @@ type InteractivePdfViewerProps = {
   currentPageLabel: string;
   materialId: string;
   positionIdentity: string;
-  onAskSelection: (selection: SelectionAction) => string | null;
+  onAskSelection: (selection: SelectionAction) => string | null | Promise<string | null>;
   onCommentSelection: (selection: SelectionAction) => void;
   onDocument?: (document: PDFDocumentProxy | null) => void; // Diane: lets the reader extract text / run OCR
   toolbarExtras?: ReactNode; // Diane: reader actions share the toolbar row with Refs
@@ -91,6 +93,7 @@ type ReferencePeekProps = {
   onClose: () => void;
   onOpen: () => void;
   onRemove: () => void;
+  onRename: (label: string) => void;
   tag: PaperReferenceTag;
 };
 
@@ -98,6 +101,11 @@ type ReferencePeekProps = {
 const EMPTY_OCR_SPANS: PdfOcrTextSpan[] = [];
 
 type PdfPageProps = {
+  areaMode: boolean;
+  onArea: (selection: PdfSelectionAnchor) => void;
+  onCancelArea: () => void;
+  references: PaperReferenceTag[];
+  activeSelection: PdfSelectionAnchor | null;
   comments: PaperComment[];
   containerSize: { height: number; width: number };
   documentProxy: PDFDocumentProxy;
@@ -125,8 +133,10 @@ function ReferencePeek({
   onClose,
   onOpen,
   onRemove,
+  onRename,
   tag
 }: ReferencePeekProps) {
+  const previewRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderTaskRef = useRef<RenderTask | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -171,7 +181,16 @@ function ReferencePeek({
       renderTaskRef.current?.cancel();
       renderTaskRef.current = null;
     };
-  }, [documentProxy, tag.pageNumber]);
+  }, [documentProxy, tag]);
+
+  useEffect(() => {
+    const preview = previewRef.current;
+    const canvas = canvasRef.current;
+    if (status !== "ready" || !preview || !canvas) return;
+    const bounds = tag.selection ? selectionBounds(tag.selection.rects) : null;
+    preview.scrollTop = bounds ? Math.max(0, bounds.top * parseFloat(canvas.style.height) - 48) : 0;
+    preview.scrollLeft = bounds ? Math.max(0, (bounds.left + bounds.width / 2) * parseFloat(canvas.style.width) - preview.clientWidth / 2) : 0;
+  }, [status, tag]);
 
   return (
     <aside
@@ -185,15 +204,20 @@ function ReferencePeek({
       <header>
         <div>
           <span>p. {tag.pageNumber}</span>
-          <strong>{tag.label}</strong>
+          <input key={tag.tagId} aria-label="Reference label" defaultValue={tag.label} maxLength={80}
+            onBlur={event => { const label = event.target.value.trim(); if (label && label !== tag.label) onRename(label); else event.target.value = tag.label; }}
+            onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); }} />
         </div>
         <div>
           <button onClick={onOpen} type="button">Open page</button>
           <button aria-label={`Remove ${tag.label} from references`} onClick={onRemove} type="button">Remove</button>
         </div>
       </header>
-      <div className={styles.referencePage} data-ready={status === "ready" ? "true" : "false"}>
-        <canvas aria-hidden="true" ref={canvasRef} />
+      <div ref={previewRef} className={styles.referencePage} data-ready={status === "ready" ? "true" : "false"}>
+        <div className={styles.referenceCanvas}>
+          <canvas aria-hidden="true" ref={canvasRef} />
+          {tag.selection && <svg className={styles.commentHighlight} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path d={paperHighlightDisplayPath(tag.selection.rects) ?? ""} /></svg>}
+        </div>
         {status === "loading" ? <span>Loading page…</span> : null}
         {status === "error" ? <span>Preview unavailable. Open the page instead.</span> : null}
       </div>
@@ -202,6 +226,7 @@ function ReferencePeek({
 }
 
 function PdfPage({
+  areaMode, onArea, onCancelArea, references, activeSelection,
   comments,
   containerSize,
   documentProxy,
@@ -414,6 +439,9 @@ function PdfPage({
         )}
         ref={textLayerRef}
       />
+      {[...references.flatMap(tag => tag.selection ? [{ id: tag.tagId, rects: tag.selection.rects }] : []),
+        ...(activeSelection ? [{ id: "active-selection", rects: activeSelection.rects }] : [])].map(item => <svg key={item.id} aria-hidden="true" className={styles.commentHighlight} data-ref-highlight={item.id} viewBox="0 0 100 100" preserveAspectRatio="none"><path d={paperHighlightDisplayPath(item.rects) ?? ""} /></svg>)}
+      {areaMode && rendered && <AreaSelection onCancel={onCancelArea} onSelect={rect => onArea({ kind: "area", pageNumber, quote: "Selected area", rects: [rect], rotation: (pageProxy?.rotate ?? 0) as PdfSelectionAnchor["rotation"] })} />}
       {ocrSpans.length > 0 ? (
         <span className={styles.ocrStatus}>Image text ready</span>
       ) : null}
@@ -463,6 +491,10 @@ export function InteractivePdfViewer({
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [message, setMessage] = useState("Loading PDF…");
   const [selectionPrompt, setSelectionPrompt] = useState<SelectionPrompt | null>(null);
+  const [areaMode, setAreaMode] = useState(false);
+  const [asking, setAsking] = useState(false);
+  const navigationEpoch = useRef(0);
+  const [referenceFocus, setReferenceFocus] = useState<PdfSelectionAnchor | null>(null);
   const [selectionError, setSelectionError] = useState<string | null>(null);
   const [referenceLines, setReferenceLines] = useState<PaperReferenceLine[]>([{
     label: "Saved",
@@ -748,7 +780,7 @@ export function InteractivePdfViewer({
       return;
     }
     const quote = selection.toString().replace(/\s+/g, " ").trim();
-    if (quote.length < 2 || quote.length > 700) {
+    if (quote.length < 1 || quote.length > 700) {
       setSelectionPrompt(null);
       return;
     }
@@ -788,11 +820,16 @@ export function InteractivePdfViewer({
     });
   }, []);
 
-  const askAboutSelection = () => {
+  const askAboutSelection = async () => {
     if (!selectionPrompt) {
       return;
     }
-    const error = onAskSelection(selectionPrompt);
+    if (asking) return;
+    setAsking(true);
+    let error: string | null;
+    try { error = await onAskSelection(selectionPrompt); }
+    catch (cause) { error = cause instanceof Error ? cause.message : "Could not prepare this selection."; }
+    finally { setAsking(false); }
     if (error) {
       setSelectionError(error);
       return;
@@ -854,10 +891,13 @@ export function InteractivePdfViewer({
   };
 
   const navigatePage = (nextPage: number) => {
-    if (nextPage < 1 || nextPage > pageCount || nextPage === pageNumber) {
+    if (nextPage < 1 || nextPage > pageCount) {
       return;
     }
-    reportedPageRef.current = null;
+    navigationEpoch.current += 1;
+    setReferenceFocus(null);
+    reportedPageRef.current = nextPage;
+    scrollToPage(nextPage, "auto");
     onPageChange(nextPage);
   };
 
@@ -998,13 +1038,14 @@ export function InteractivePdfViewer({
 
   const openReferencePage = (tag: PaperReferenceTag) => {
     navigatePage(tag.pageNumber);
+    setReferenceFocus(tag.selection ? { ...tag.selection } : { pageNumber: tag.pageNumber, quote: "", rects: [], rotation: 0 });
     setReferenceTrayPinned(false);
     setReferenceTrayOpen(false);
     setPeekedReferenceId(null);
   };
 
   const keepCurrentPage = () => {
-    const existing = referenceTags.find((tag) => tag.pageNumber === pageNumber);
+    const existing = referenceTags.find((tag) => tag.pageNumber === pageNumber && !tag.selection);
     const tag: PaperReferenceTag = {
       createdAt: new Date().toISOString(),
       label: currentPageLabel.trim() || `Page ${pageNumber}`,
@@ -1014,13 +1055,41 @@ export function InteractivePdfViewer({
       tagId: `page-${pageNumber}`
     };
     setReferenceTags((current) => [
-      ...current.filter((entry) => entry.pageNumber !== pageNumber),
+      ...current.filter((entry) => entry.pageNumber !== pageNumber || entry.selection),
       tag
     ].slice(-MAX_PAPER_REFERENCE_TAGS));
     setReferenceTrayPinned(true);
     setReferenceTrayOpen(true);
     setPeekedReferenceId(tag.tagId);
   };
+
+  const keepSelection = () => {
+    if (!selectionPrompt) return;
+    const { left: _left, top: _top, ...selection } = selectionPrompt;
+    const tag: PaperReferenceTag = { createdAt: new Date().toISOString(), materialId,
+      pageNumber: selection.pageNumber, selection, tagId: crypto.randomUUID(),
+      label: selection.kind === "area" ? `Area · p. ${selection.pageNumber}` : selection.quote.slice(0, 60),
+      lineId: referenceLines[0]?.lineId ?? DEFAULT_PAPER_REFERENCE_LINE_ID };
+    setReferenceTags(current => [...current, tag].slice(-MAX_PAPER_REFERENCE_TAGS));
+    setSelectionPrompt(null); window.getSelection()?.removeAllRanges();
+    setReferenceTrayPinned(true); setReferenceTrayOpen(true); setPeekedReferenceId(tag.tagId);
+  };
+
+  useEffect(() => {
+    if (!referenceFocus) return;
+    const epoch = navigationEpoch.current;
+    const frame = requestAnimationFrame(() => {
+      if (navigationEpoch.current !== epoch) return;
+      const page = documentElementRef.current?.querySelector<HTMLElement>(`[data-pdf-page="${referenceFocus.pageNumber}"]`);
+      const stage = stageRef.current;
+      if (!page || !stage) return;
+      const bounds = referenceFocus.rects.length ? selectionBounds(referenceFocus.rects) : null;
+      stage.scrollTo({ top: Math.max(0, page.offsetTop + (bounds ? (bounds.top + bounds.height / 2) * page.offsetHeight - stage.clientHeight / 2 : -24)),
+        left: bounds ? Math.max(0, page.offsetLeft + (bounds.left + bounds.width / 2) * page.offsetWidth - stage.clientWidth / 2) : 0 });
+      setReferenceFocus(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [referenceFocus, pageNumber]);
 
   const removeReferenceTag = (tagId: string) => {
     setReferenceTags((current) => current.filter((entry) => entry.tagId !== tagId));
@@ -1110,6 +1179,8 @@ export function InteractivePdfViewer({
       setPeekedReferenceId(null);
       setReferenceTrayPinned(false);
       setReferenceTrayOpen(false);
+      setAreaMode(false);
+      setSelectionPrompt(null);
     };
     document.addEventListener("keydown", closeOnEscape);
     return () => document.removeEventListener("keydown", closeOnEscape);
@@ -1166,6 +1237,7 @@ export function InteractivePdfViewer({
         >
           +
         </button>
+        <button className={styles.areaTool} aria-label={areaMode ? "Cancel area" : "Select area"} type="button" aria-pressed={areaMode} disabled={status !== "ready"} onClick={() => { setAreaMode(!areaMode); setSelectionPrompt(null); window.getSelection()?.removeAllRanges(); }} title="Drag a box around text, a figure, or any scanned area"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="1" fill="none" stroke="currentColor" strokeDasharray="3 2" /></svg><span>{areaMode ? "Cancel area" : "Select area"}</span></button>
         {toolbarExtras ? <div className={styles.toolbarExtras}>{toolbarExtras}</div> : null}
         <button
           aria-expanded={referenceTrayOpen}
@@ -1318,6 +1390,7 @@ export function InteractivePdfViewer({
               onClose={scheduleReferenceClose}
               onOpen={() => openReferencePage(peekedReference)}
               onRemove={() => removeReferenceTag(peekedReference.tagId)}
+              onRename={label => setReferenceTags(current => current.map(tag => tag.tagId === peekedReference.tagId ? { ...tag, label } : tag))}
               tag={peekedReference}
             />
           ) : null}
@@ -1336,6 +1409,15 @@ export function InteractivePdfViewer({
             { length: pageCount },
             (_, index) => (
               <PdfPage
+                areaMode={areaMode}
+                onCancelArea={() => setAreaMode(false)}
+                references={referenceTags.filter(tag => tag.pageNumber === index + 1)}
+                activeSelection={selectionPrompt?.pageNumber === index + 1 ? selectionPrompt : null}
+                onArea={selection => {
+                  setAreaMode(false); setSelectionError(null);
+                  const root = rootRef.current?.getBoundingClientRect();
+                  setSelectionPrompt({ ...selection, left: (root?.width ?? 300) / 2, top: Math.max(58, (root?.height ?? 200) - 70) });
+                }}
                 comments={comments.filter((comment) => comment.pageNumber === index + 1)}
                 containerSize={containerSize}
                 documentProxy={documentProxy}
@@ -1364,7 +1446,8 @@ export function InteractivePdfViewer({
           style={{ left: selectionPrompt.left, top: selectionPrompt.top }}
         >
           <button onClick={commentOnSelection} type="button">Comment</button>
-          <button onClick={askAboutSelection} type="button">Ask</button>
+          <button className={styles.selectionPrimary} disabled={asking} onClick={() => void askAboutSelection()} type="button">{asking ? "Preparing…" : "Ask"}</button>
+          <button disabled={!referencesHydrated || asking} onClick={keepSelection} title="Save selection as a reference" type="button">Ref</button>
         </div>
       ) : null}
       {selectionError ? (

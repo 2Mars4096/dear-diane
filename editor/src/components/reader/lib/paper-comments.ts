@@ -13,6 +13,7 @@ export type PdfSelectionRect = {
 };
 
 export type PdfSelectionAnchor = {
+  kind?: "text" | "area";
   pageNumber: number;
   quote: string;
   rects: PdfSelectionRect[];
@@ -71,7 +72,7 @@ function cleanUnit(value: unknown): number | null {
   return Math.min(1, Math.max(0, value));
 }
 
-function cleanRect(value: unknown): PdfSelectionRect | null {
+export function cleanRect(value: unknown): PdfSelectionRect | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
@@ -139,6 +140,7 @@ export function normalizePaperComments(
     const anchor = cleanAnchor(record.anchor);
     return [{
       ...(anchor ? { anchor } : {}),
+      ...(record.kind === "area" ? { kind: "area" as const } : {}),
       commentId,
       createdAt,
       materialId,

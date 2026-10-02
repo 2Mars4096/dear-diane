@@ -1,3 +1,4 @@
+import type { ComposerAttachmentDraft } from "../../lib/composerAttachments";
 import { useEffect, useState } from 'react';
 import { resolveFileRequest, type FileOpenRequest } from '../../lib/openFile';
 import { useDocumentTabs } from './useDocumentTabs';
@@ -6,7 +7,7 @@ import { ReaderView } from '../reader/ReaderView';
 import { ReaderNotes } from '../reader/ReaderNotes';
 import './documents.css';
 
-export default function FileSidecar({ request, active, onAsk }: { request: FileOpenRequest | null; active: boolean; onAsk: (text: string) => void }) {
+export default function FileSidecar({ request, active, onAsk }: { request: FileOpenRequest | null; active: boolean; onAsk: (text: string, attachment?: ComposerAttachmentDraft) => void }) {
   const { documents, mainTabs, activeMainTab, setActiveMainTab, openDocument, closeTab, documentDrafts, setDirtyDocuments } = useDocumentTabs(false);
   const [error, setError] = useState('');
   const [opening, setOpening] = useState(false);
@@ -42,7 +43,7 @@ export default function FileSidecar({ request, active, onAsk }: { request: FileO
     {error && <div role="alert" className="dan-document-message"><strong>Could not open file</strong><p>{request?.href || request?.file?.path}</p><p>{error}</p><button onClick={() => setAttempt(value => value + 1)}>Retry</button></div>}
     <div className="dan-file-sidecar-content" hidden={opening || !!error}>
       {Object.entries(documents).map(([id, entry]) => <div className="dan-side-document" key={id} hidden={id !== activeMainTab}>
-        {/\.pdf$/i.test(entry.name) ? <><ReaderView file={entry} onNotes={() => setNotes(true)} onAsk={ask => onAsk(`File: ${entry.path}\nPage ${ask.pageNumber}\n\n> ${ask.quote}\n\nContext: ${ask.pageText}`)} />{notes && id === activeMainTab && <ReaderNotes file={entry} onAsk={onAsk} />}</> :
+        {/\.pdf$/i.test(entry.name) ? <><ReaderView file={entry} onNotes={() => setNotes(true)} onAsk={ask => onAsk(`File: ${entry.path}\nPage ${ask.pageNumber}\n\n> ${ask.quote}\n\nContext: ${ask.pageText}`, ask.attachment)} />{notes && id === activeMainTab && <ReaderNotes file={entry} onAsk={onAsk} />}</> :
           <DocumentView file={entry} active={active && id === activeMainTab} drafts={documentDrafts.current} onDirty={(path, dirty) => setDirtyDocuments(current => ({ ...current, [path]: dirty }))} annotate onAsk={onAsk} />}
       </div>)}
       {!file && !opening && !error && <p className="dan-document-message">Open a file from the conversation or Files panel.</p>}

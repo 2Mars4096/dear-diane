@@ -10,6 +10,9 @@ export type PdfOcrTextSpan = {
 };
 
 export type MaterialPdfOcrPage = {
+  layout_version?: number;
+  layout_mode?: "auto" | "single" | "spread";
+  split?: number | null;
   page_number: number;
   spans: PdfOcrTextSpan[];
 };

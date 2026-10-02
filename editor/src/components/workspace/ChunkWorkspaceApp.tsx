@@ -13263,7 +13263,7 @@ export default function ChunkWorkspaceApp() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
-  const [readerSelection, setReaderSelection] = useState<{ text: string; token: number; context?: string }>({ text: "", token: 0 });
+  const [readerSelection, setReaderSelection] = useState<{ text: string; token: number; context?: string; attachment?: ComposerAttachmentDraft }>({ text: "", token: 0 });
   useEffect(() => { setReaderSelection({ text: "", token: Date.now() }); }, [readerFile?.path]);
   const [workbenchOutline, setWorkbenchOutline] = useState(false);
   const [deletingArchived, setDeletingArchived] = useState(false);
@@ -14677,7 +14677,7 @@ export default function ChunkWorkspaceApp() {
   useEffect(() => { if (sideTab === "notes" && !readerFile) openSideTab("chat"); }, [sideTab, readerFile, openSideTab]);
   const askFromReader = (ask: ReaderAsk) => {
     const where = ask.anchor ? ` (the passage appears after "…${ask.anchor.prefix.slice(-40)}" and before "${ask.anchor.suffix.slice(0, 40)}…")` : "";
-    setReaderSelection({ text: ask.quote, context: `Page ${ask.pageNumber}${where}: ${ask.pageText}`, token: Date.now() });
+    setReaderSelection({ attachment: ask.attachment, text: ask.quote, context: `Page ${ask.pageNumber}${where}: ${ask.pageText}`, token: Date.now() });
     openSideTab("chat");
   };
   const visibleSideTab = isPhoneViewport
@@ -18727,7 +18727,7 @@ export default function ChunkWorkspaceApp() {
                 )}
               </aside>
             </PersistentPanel>
-          <PersistentPanel active={visibleSideTab === "document"} name="Document"><Suspense fallback={<p className="wb-side-empty">Opening file…</p>}><FileSidecar request={fileRequest} active={visibleSideTab === "document"} onAsk={text => { setComposerInputValue(input ? `${input}\n\n${text}` : text); setActiveMainTab(mainTabs.find(tab => tab.session?.id === activeThread?.id && tab.session?.workflowId === activeThread?.workflowId)?.id || "chat"); requestAnimationFrame(() => composerRef.current?.focus()); }} /></Suspense></PersistentPanel>
+          <PersistentPanel active={visibleSideTab === "document"} name="Document"><Suspense fallback={<p className="wb-side-empty">Opening file…</p>}><FileSidecar request={fileRequest} active={visibleSideTab === "document"} onAsk={(text, attachment) => { if (attachment) setComposerAttachments(previous => [...previous, attachment]); setComposerInputValue(input ? `${input}\n\n${text}` : text); setActiveMainTab(mainTabs.find(tab => tab.session?.id === activeThread?.id && tab.session?.workflowId === activeThread?.workflowId)?.id || "chat"); requestAnimationFrame(() => composerRef.current?.focus()); }} /></Suspense></PersistentPanel>
           <PersistentPanel active={visibleSideTab === "literature"} name="Literature"><Suspense fallback={<p className="wb-side-empty">Opening literature…</p>}><LiteraturePanel execution={sidecarExecution()} leadLabel={selectedAgentOption.shortLabel} onOpen={openLibraryReading} onDocument={openDocument} onBrowse={openPaperLibrary} /></Suspense></PersistentPanel>
           <PersistentPanel active={visibleSideTab === "processes"} name="Processes" key={`processes:${developmentRoot}`}><Suspense fallback={null}><ProcessesPanel cwd={developmentRoot} workspaceId={workspace?.id || ""} processes={processState.processes} error={processState.error} onChanged={() => void processState.refresh()} header={false} /></Suspense></PersistentPanel>
           <PersistentPanel active={visibleSideTab === "notes"} name="Notes" key={`notes:${readerFile?.path ?? ""}`} >{readerFile && <Suspense fallback={null}><ReaderNotes file={readerFile} header={false} /></Suspense>}</PersistentPanel>

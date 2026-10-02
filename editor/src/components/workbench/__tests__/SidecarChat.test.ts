@@ -52,3 +52,21 @@ it('resumes a server-owned reading conversation and persists its run link before
     expect(api.createChatV2AgentRun).toHaveBeenCalledWith(expect.objectContaining({ workflow_id: '_dan_reading', thread_id: 'side' }));
   } finally { act(() => root.unmount()); host.remove(); localStorage.clear(); }
 });
+
+it('sends a selected PDF crop as an attachment with source context', async () => {
+  vi.clearAllMocks(); localStorage.clear();
+  const host = document.createElement('div'); document.body.append(host); const root = createRoot(host);
+  try {
+    await act(async () => root.render(createElement(SidecarChat, {
+      parentId: 'pdf', workflowId: 'project', workspaceId: 'project', workspaceRoot: '/work', context: [],
+      selection: { text: 'Selected area', token: 1, context: 'Selected image: /work/crop.png', attachment: { id: 'crop', kind: 'figure', name: 'crop.png', path: '/work/crop.png', mimeType: 'image/png' } },
+      purpose: { title: 'Reading', framing: 'Read this PDF', placeholder: '', empty: '' },
+      execution: { backend: 'claude' }, leadLabel: 'Claude', onClose: vi.fn(), onCreated: vi.fn(),
+    })));
+    const input = host.querySelector('textarea')!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Explain the marked paragraph'); input.dispatchEvent(new Event('input', { bubbles: true })); });
+    await act(async () => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Send')!.click());
+    expect(api.createChatV2AgentRun).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('/work/crop.png'), surface_context: expect.objectContaining({ appended_attachments: [expect.objectContaining({ kind: 'figure', path: '/work/crop.png' })] }) }));
+    expect(api.saveChatV2Thread).toHaveBeenCalledWith('project', 'side', expect.objectContaining({ messages: expect.arrayContaining([expect.objectContaining({ role: 'user', attachments: [expect.objectContaining({ path: '/work/crop.png' })] })]) }));
+  } finally { act(() => root.unmount()); host.remove(); localStorage.clear(); }
+});

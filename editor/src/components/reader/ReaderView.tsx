@@ -1,3 +1,7 @@
+import { currentOcrPages, validOcrLayout, type OcrLayout } from "./lib/ocr-layout";
+import type { ComposerAttachmentDraft } from "../../lib/composerAttachments";
+import { selectionImage } from "./lib/selection-image";
+import { prepareAttachments } from "../../lib/attachFiles";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, MessageSquareQuote, ScanText } from "lucide-react";
 import type { PDFDocumentProxy } from "pdfjs-dist/types/src/pdf";
@@ -10,7 +14,7 @@ import { extractPageTexts, ocrPage, ocrPageText, sparsePages } from "./lib/ocr-r
 import { rectsForQuote } from "./lib/text-layer";
 
 export type ReaderFile = { name: string; path: string; url: string };
-export type ReaderAsk = { quote: string; pageNumber: number; pageText: string; file: ReaderFile; anchor?: PaperCommentAnchor | null };
+export type ReaderAsk = { attachment?: ComposerAttachmentDraft; quote: string; pageNumber: number; pageText: string; file: ReaderFile; anchor?: PaperCommentAnchor | null };
 
 const PAGE_CONTEXT_LIMIT = 6000;
 type OcrState = { status: "idle" | "checking" | "running" | "done" | "error"; done: number; total: number; message?: string };
@@ -29,6 +33,10 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
   const [ocr, setOcr] = useState<OcrState>({ status: "idle", done: 0, total: 0 });
   const [exporting, setExporting] = useState(false);
   const documentRef = useRef<PDFDocumentProxy | null>(null);
+  const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
+  const [ocrLayout, setOcrLayout] = useState<OcrLayout>(() => { try { return validOcrLayout(localStorage.getItem(`diane.reader.ocr-layout:${file.path}`)); } catch { return "auto"; } });
+  const visiblePage = useRef(pageNumber); visiblePage.current = pageNumber;
+  const onDocument = useCallback((document: PDFDocumentProxy | null) => { documentRef.current = document; setPdfDocument(document); }, []);
 
   useEffect(() => {
     setPageNumber(1); setPageTexts(new Map()); setOcrPages([]); setOcr({ status: "idle", done: 0, total: 0 });
@@ -44,10 +52,12 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
   }, [ocrPages, pageTexts]);
 
   // Extract text once the document is open; OCR sparse pages (saved per file on the server).
-  const onDocument = useCallback((document: PDFDocumentProxy | null) => {
-    documentRef.current = document;
+  useEffect(() => {
+    const document = pdfDocument;
     if (!document) return;
-    const isCurrent = () => documentRef.current === document;
+    let cancelled = false;
+    const isCurrent = () => !cancelled && documentRef.current === document;
+    setOcrPages([]);
     void (async () => {
       setOcr({ status: "checking", done: 0, total: 0 });
       const texts = await extractPageTexts(document);
@@ -58,10 +68,10 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
       let saved: MaterialPdfOcrPage[] = [];
       try {
         const response = file.url.startsWith("blob:") ? null : await fetch(`/api/reader/ocr?path=${encodeURIComponent(file.path)}`);
-        if (response?.ok) saved = ((await response.json()).pages ?? []) as MaterialPdfOcrPage[];
+        if (response?.ok) saved = currentOcrPages((await response.json()).pages, ocrLayout);
       } catch { /* OCR cache is optional */ }
       const have = new Set(saved.map((page) => page.page_number));
-      const pending = needed.filter((page) => !have.has(page));
+      const pending = needed.filter((page) => !have.has(page)).sort((a, b) => Math.abs(a - visiblePage.current) - Math.abs(b - visiblePage.current));
       if (!isCurrent()) return;
       setOcrPages(saved);
       if (!pending.length) { setOcr({ status: "done", done: needed.length, total: needed.length }); return; }
@@ -70,7 +80,7 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
       for (const number of pending) {
         if (!isCurrent()) return;
         try {
-          const page = await ocrPage(document, number);
+          const page = await ocrPage(document, number, ocrLayout);
           if (!isCurrent()) return;
           results.push(page);
           setOcrPages([...results]);
@@ -88,7 +98,8 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
     })().catch((error: unknown) => {
       if (isCurrent()) setOcr({ status: "error", done: 0, total: 0, message: error instanceof Error ? error.message : "Text extraction failed" });
     });
-  }, [file.path, file.url]);
+    return () => { cancelled = true; };
+  }, [file.path, file.url, pdfDocument, ocrLayout]);
 
   // Re-find anchored highlights whose page text changed; redraw from the text layer.
   useEffect(() => {
@@ -126,12 +137,26 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
 
   const anchorFor = (selection: PdfSelectionAnchor): PaperCommentAnchor | null => {
     const text = pageText(selection.pageNumber);
-    if (!text) return null;
+    if (selection.kind === "area" || !text) return null;
     const located = locateVisualSelection(text, selection.quote);
     return located.status === "exact" ? { ...located.selection, pageFingerprint: fingerprintText(text) } : null;
   };
-  const ask = (selection: PdfSelectionAnchor): string | null => {
-    onAsk({ quote: selection.quote, pageNumber: selection.pageNumber, pageText: pageText(selection.pageNumber), file, anchor: anchorFor(selection) });
+  const ask = async (selection: PdfSelectionAnchor): Promise<string | null> => {
+    const document = documentRef.current;
+    let context = pageText(selection.pageNumber);
+    let attachment: ComposerAttachmentDraft | undefined;
+    const pageElement = root.current?.querySelector<HTMLElement>(`[data-pdf-page="${selection.pageNumber}"]`);
+    if (selection.kind === "area" || pageElement?.dataset.textLayer === "ocr") {
+      if (!document) return "The PDF is still loading.";
+      const blob = await selectionImage(document, selection);
+      if (documentRef.current !== document) return "The document changed. Select an area again.";
+      const result = await prepareAttachments([new File([blob], `${file.name.replace(/\.pdf$/i, "")}-p${selection.pageNumber}-selection.png`, { type: "image/png" })], "PDF selection");
+      if (result.errors.length || !result.attachments[0]) return result.errors.join("; ") || "Could not save the selected image.";
+      if (documentRef.current !== document) return "The document changed. Select an area again.";
+      attachment = result.attachments[0];
+      context = `Selected image: ${result.attachments[0].path}\nOpen this image to inspect the selected area. Source: ${file.path}, PDF page ${selection.pageNumber}.`;
+    }
+    onAsk({ attachment, quote: selection.quote, pageNumber: selection.pageNumber, pageText: context, file, anchor: anchorFor(selection) });
     return null;
   };
   // Comment hands the selection to the side panel's Notes tab, where the note is written.
@@ -175,6 +200,10 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
         sourceUrl={file.url}
         title={file.name}
         toolbarExtras={<>
+          {ocr.status !== "idle" && <select aria-label="Scanned text layout" title="Text layout for scanned pages" value={ocrLayout} onChange={event => {
+            const next = validOcrLayout(event.target.value); setOcrLayout(next);
+            try { localStorage.setItem(`diane.reader.ocr-layout:${file.path}`, next); } catch { /* Works for this visit. */ }
+          }}><option value="auto">Auto layout</option><option value="single">One page</option><option value="spread">Two pages</option></select>}
           {ocr.status === "running" && <span title="Recognizing text on scanned pages"><ScanText size={12} />OCR {ocr.done}/{ocr.total}</span>}
           {ocr.status === "error" && <span data-error title={ocr.message}><ScanText size={12} />OCR failed</span>}
           <button type="button" onClick={onNotes}><MessageSquareQuote size={13} />Notes{comments.length ? ` ${comments.length}` : ""}</button>

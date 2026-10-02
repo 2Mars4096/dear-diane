@@ -542,7 +542,8 @@
   gap: 2px;
   padding: 3px;
   border-radius: 22px;
-  background: var(--wb-ink);
+  background: var(--wb-paper);
+  border: 1px solid var(--wb-line);
   box-shadow: 0 4px 20px rgba(0,0,0,0.13);
   transform: translateX(-50%);
   animation: wb-arrive 140ms ease-out;
@@ -556,7 +557,7 @@
   border: 0;
   border-radius: 18px;
   background: transparent;
-  color: var(--wb-paper);
+  color: var(--wb-ink);
   cursor: pointer;
   font: 500 12px/1 var(--font-ui);
   white-space: nowrap;
@@ -564,15 +565,15 @@
 }
 
 .selectionActions button:hover {
-  background: color-mix(in srgb, var(--wb-paper) 16%, transparent);
+  background: var(--wb-soft);
 }
 
-.selectionActions button + button {
+.selectionActions .selectionPrimary {
   background: var(--wb-accent);
   color: var(--wb-paper);
 }
 
-.selectionActions button + button:hover {
+.selectionActions .selectionPrimary:hover {
   background: color-mix(in srgb, var(--wb-accent) 86%, var(--wb-paper));
 }
 
@@ -712,4 +713,40 @@
 @container (max-width: 420px) {
   .toolbar > span:not(.toolbarDivider) { font-size: 0.68rem; }
   .toolbarExtras { right: 64px; }
+}
+
+.areaSelection {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+.areaRectangle {
+  position: absolute;
+  border: 2px solid var(--wb-accent, #a07132);
+  background: rgb(220 170 65 / 18%);
+  pointer-events: none;
+}
+.referenceCanvas { position: relative; width: max-content; }
+.referenceCanvas canvas { display: block; }
+
+.referencePeek > header input { min-width: 0; width: 100%; border: 0; border-bottom: 1px solid var(--wb-line); background: transparent; color: inherit; font: inherit; font-size: .74rem; }
+
+.toolbar .areaTool { box-sizing: border-box; flex-shrink: 0; width: auto; padding: 0 8px; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: .7rem; }
+.toolbar .areaTool[aria-pressed="true"] { background: var(--wb-soft); outline: 1px solid var(--wb-accent); }
+@container (max-width: 640px) { .toolbar .areaTool { width: 28px; padding: 0 6px; } .areaTool span { display: none; } }
+
+.toolbarExtras select { max-width: 100px; height: 28px; border: 1px solid var(--wb-line); border-radius: 5px; color: var(--pdf-muted); background: var(--wb-paper); font: 500 .7rem/1 var(--font-ui); }
+.selectionActions button:disabled { opacity: .5; cursor: default; }
+
+/* Leave room for the scan-layout control in narrow reading panes. */
+.viewer { grid-template-rows: auto minmax(0, 1fr); }
+.toolbar { min-height: 44px; }
+@container (max-width: 640px) {
+  .toolbar { height: 76px; box-sizing: border-box; align-items: flex-start; padding-top: 3px; }
+  .toolbar > span { margin-top: 9px; }
+  .toolbar .referenceTrayToggle { top: auto; bottom: 4px; }
+  .toolbarExtras { left: 8px; right: 78px; bottom: 4px; }
 }
