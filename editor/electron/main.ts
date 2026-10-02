@@ -1,3 +1,4 @@
+import { registerNavigation, installNavigationMenu } from './navigation';
 import { sessionWindowDestination } from "./sessionWindows";
 import { app, Notification, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, shell } from "electron";
 import path from "node:path";
@@ -392,6 +393,7 @@ function createWindow(destination?: string) {
       webviewTag: true,
     },
   });
+  registerNavigation(window);
   const reveal = prepareWindowAppearance(window);
   windowReveals.set(window, reveal);
   if (!mainWindow) { mainWindow = window; revealMainWindow = reveal; }
@@ -671,6 +673,7 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(async () => {
+    installNavigationMenu();
     registerDesktopUpdates({
       window: () => mainWindow,
       graphs: () => process.env.DAN_GRAPHS_DIR || getPersistentGraphsDir(),

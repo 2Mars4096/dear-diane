@@ -12,11 +12,6 @@ import { SidecarChat } from "../workbench/SidecarChat";
 import { LeadAgentMenu } from "../workbench/LeadAgentMenu";
 import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from "../workbench/NativeWorkers";
 import { EMPTY_PROFILE, leadExecutionProfile, modelSource, OPENROUTER_URL, withLeadSelection } from "../workbench/modelSelection";
-const SessionTitles = lazy(() => import("../workbench/SessionTitles"));
-const SidebarResize = lazy(() => import("../workbench/SidebarResize"));
-const WorkspaceNavigator = lazy(() => import("../workbench/WorkspaceNavigator"));
-const ChangesPanel = lazy(() => import("../workbench/ChangesPanel"));
-const WorkNotifications = lazy(() => import("../workbench/WorkNotifications"));
 import { TeamPanel, TeamStrip, useTeamWorkers } from "../workbench/TeamProgress";
 import { PersistentPanel } from "../workbench/PersistentPanel";
 import { SideTabs, readLastSideTab, rememberSideTab, type SideTab, type SideTabItem } from "../workbench/SideTabs";
@@ -48,6 +43,15 @@ import {
   type SyntheticEvent,
   type WheelEvent,
 } from "react";
+const SessionTitles = lazy(() => import("../workbench/SessionTitles"));
+const NavigationHistory = lazy(() => import('../workbench/NavigationHistory'));
+const MainTabs = lazy(() => import('../workbench/MainTabs').then(module => ({ default: module.MainTabs })));
+const SidePanelResize = lazy(() => import('../workbench/SidePanelResize'));
+const SidebarResize = lazy(() => import("../workbench/SidebarResize"));
+const WorkspaceNavigator = lazy(() => import("../workbench/WorkspaceNavigator"));
+const ChangesPanel = lazy(() => import("../workbench/ChangesPanel"));
+const WorkNotifications = lazy(() => import("../workbench/WorkNotifications"));
+
 import {
   Activity,
   Archive,
@@ -14614,18 +14618,24 @@ export default function ChunkWorkspaceApp() {
     const payload = withLeadSelection(buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode), selectedAgentId, leadProfiles);
     return { ...payload, profile_policy: { ...payload.profile_policy, native_workers: nativeWorkerProfiles } };
   };
-  const [fileRequest, setFileRequest] = useState<FileOpenRequest | null>(null);
+  const [fileRequest] = useState<FileOpenRequest | null>(null);
+  const [fileOpenError, setFileOpenError] = useState<{ request: FileOpenRequest; message: string } | null>(null);
+  const openDocument = useCallback((file: DocumentFile) => {
+    registerDocument({ ...file, workspaceId: file.workspaceId || activeWorkspaceId || undefined, projectName: file.projectName || workspace?.name });
+    openSideTab(null); setActivePane("work"); setPhonePage("chat"); setShowConversationChunks(true);
+  }, [registerDocument, activeWorkspaceId, workspace?.name, openSideTab]);
   useEffect(() => {
-    const receive = (event: Event) => { setFileRequest((event as CustomEvent<FileOpenRequest>).detail); openSideTab("document"); setPhonePage("chat"); setActivePane("work"); };
-    window.addEventListener("dan:open-file", receive);
-    return () => window.removeEventListener("dan:open-file", receive);
-  }, [openSideTab]);
-  const openDocument = (file: DocumentFile) => {
-    setFileRequest({ file }); openSideTab("document"); setPhonePage("chat"); setActivePane("work");
-  };
-  const openLibraryDocument = (file: DocumentFile) => {
-    registerDocument({ ...file, workspaceId: file.workspaceId || activeWorkspaceId || undefined, projectName: file.projectName || workspace?.name }); setActivePane("work"); setPhonePage("chat"); setShowConversationChunks(true);
-  };
+    const receive = (event: Event) => {
+      const request = (event as CustomEvent<FileOpenRequest>).detail;
+      void import('../../lib/openFile').then(module => module.resolveFileRequest(request)).then(openDocument).catch(error => {
+        setFileOpenError({ request, message: error instanceof Error ? error.message : 'Could not open file.' });
+        openTab({ id:'file-error', kind:'file', label:'File opening error' }); openSideTab(null); setActivePane('work'); setPhonePage('chat');
+      });
+    };
+    window.addEventListener('dan:open-file', receive);
+    return () => window.removeEventListener('dan:open-file', receive);
+  }, [openDocument, openTab, openSideTab]);
+  const openLibraryDocument = openDocument;
   const openPaperLibrary = () => {
     openTab({ id: "papers", kind: "papers", label: "Papers" }); setActivePane("work"); setPhonePage("chat"); setShowConversationChunks(true);
   };
@@ -18381,10 +18391,13 @@ export default function ChunkWorkspaceApp() {
           >
             <div className="flex min-h-0 min-w-0 flex-col bg-white/90 dark:bg-slate-950">
 
-              <Suspense fallback={null}>{Object.entries(documents).filter(([id]) => id.startsWith("file:")).map(([id, file]) => <DocumentView key={id} file={file} active={id === activeMainTab} keyboard={visibleSideTab !== "document"} drafts={documentDrafts.current} onDirty={(path, dirty) => setDirtyDocuments(current => ({...current, [path]:dirty}))} />)}</Suspense>
+              <div className="wb-tabbar"><Suspense fallback={null}><NavigationHistory active={mainTabs.find(tab => tab.id === activeMainTab)} onNavigate={visit => { const thread = visit.session && threads.find(item => item.id === visit.session?.id && item.workflow_id === visit.session.workflowId); if (thread) void openSession(thread, visit.session?.workspaceId, visit.session?.root, visit.id); else if (mainTabs.some(tab => tab.id === visit.id)) setActiveMainTab(visit.id); }} /></Suspense>
+              {mainTabs.length > 1 && <Suspense fallback={null}><MainTabs tabs={mainTabs} active={activeMainTab} onSelect={id => { const tab = mainTabs.find(item => item.id === id); const thread = tab?.session && threads.find(item => item.id === tab.session?.id && item.workflow_id === tab.session.workflowId); if (thread) void openSession(thread, tab?.session?.workspaceId, tab?.session?.root, id); else setActiveMainTab(id); }} onClose={closeTab} /></Suspense>}</div>
+              {activeMainTab === 'file-error' && fileOpenError && <div role="alert" className="dan-document-message"><strong>Could not open file</strong><p>{fileOpenError.message}</p><button onClick={() => window.dispatchEvent(new CustomEvent('dan:open-file', { detail: fileOpenError.request }))}>Retry</button></div>}
+              <Suspense fallback={null}>{Object.entries(documents).filter(([id]) => id.startsWith("file:")).map(([id, file]) => <DocumentView key={id} file={file} active={id === activeMainTab} keyboard={visibleSideTab !== "document"} annotate onAsk={text => { setComposerInputValue(text); setActiveMainTab(mainTabs.find(tab => tab.kind === 'chat')?.id || 'chat'); }} drafts={documentDrafts.current} onDirty={(path, dirty) => setDirtyDocuments(current => ({...current, [path]:dirty}))} />)}</Suspense>
               {mainTabs.some(tab => tab.id === "papers") && <div className="papers-tab" hidden={activeMainTab !== "papers"}><Suspense fallback={null}><PaperLibrary onOpen={openLibraryReading} onReference={papers => void referencePapers(papers)} /></Suspense></div>}
               {libraryReading && <Suspense fallback={null}><ReadingSessionBar id={libraryReading.session.id} onBrowse={openPaperLibrary} /></Suspense>}
-              {activeMainTab === "papers" || activeMainTab.startsWith("file:") ? null : activeMainTab === "settings" ? <Suspense fallback={null}><DanSettings page onPapers={openPaperLibrary} onClose={() => closeTab("settings")} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} /></Suspense> : readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView key={readerFile.path} file={readerFile} onAsk={askFromReader} onNotes={() => openSideTab("notes")} /></Suspense> : <>
+              {activeMainTab === "papers" || activeMainTab === "file-error" || activeMainTab.startsWith("file:") ? null : activeMainTab === "settings" ? <Suspense fallback={null}><DanSettings page onPapers={openPaperLibrary} onClose={() => closeTab("settings")} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} /></Suspense> : readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView key={readerFile.path} file={readerFile} onAsk={askFromReader} onNotes={() => openSideTab("notes")} /></Suspense> : <>
               <div className="wb-conversation-heading"><div className="wb-conversation-actions">
                 {activeThread && <button title={`Copy session ID: ${activeThread.id}`} onClick={() => { void navigator.clipboard.writeText(activeThread.id).then(() => setStatus("Session ID copied"), () => setStatus(`Session ID: ${activeThread.id}`)); }}>Session <code>{activeThread.id}</code></button>}
                 {activeRunningTask && activeThread && <button className="wb-stop" onClick={() => void stopSessionRun({ id: activeThread.id, workflow_id: activeThread.workflowId, title: activeThread.title || "Active session", message_count: messages.length, created_at: "", updated_at: "" }, activeRunningTask)}><Square size={11} />Stop run</button>}
@@ -18466,7 +18479,8 @@ export default function ChunkWorkspaceApp() {
             </CollapsedPaneRail>
           )}
           <aside className={cx("wb-side-panel", isPhoneViewport && (phonePage === "files" || phonePage === "preview") && "wb-side-page")} hidden={!visibleSideTab} aria-label="Side panel">
-            {renderSideTabs()}
+            {!isPhoneViewport && visibleSideTab && <Suspense fallback={null}><SidePanelResize /></Suspense>}
+            {visibleSideTab !== "document" && renderSideTabs()}
             <PersistentPanel active={visibleSideTab === "files"} name="Files" key={`files:${developmentRoot}`}>
             <aside className="dan-phone-page dan-files-page flex min-h-0 w-[270px] shrink-0 flex-col border-r border-slate-200/80 bg-white/85 dark:border-slate-800 dark:bg-slate-950 md:order-2">
               <div className="flex h-10 shrink-0 items-center justify-between border-b border-slate-200/80 px-3 dark:border-slate-800">

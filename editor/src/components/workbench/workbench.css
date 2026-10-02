@@ -930,3 +930,21 @@
 .wb-thinking-time { font-variant-numeric:tabular-nums; }
 .wb-thinking-progress { min-width:0; color:var(--wb-muted); }
 .wb-work-details[data-working] > summary::marker { color:var(--wb-accent); }
+
+/* Side tool controls stay above embedded PDF toolbars. */
+.wb-side-tabs { z-index: 30; }
+.wb-side-body { position: relative; z-index: 0; }
+@media (min-width:761px) {
+  .wb-side-panel { position:relative; }
+  .wb-side-resize { position:absolute; left:-4px; top:0; bottom:0; width:8px; z-index:40; cursor:col-resize; touch-action:none; user-select:none; }
+  .wb-side-resize:hover,.wb-side-resize:focus-visible,.wb-side-resize:active { background:color-mix(in srgb,var(--wb-accent) 35%,transparent); outline:none; }
+}
+
+.wb-history { display:flex; gap:4px; padding:4px 10px; flex-shrink:0; background:var(--wb-paper); }
+.wb-history button { display:grid; place-items:center; width:28px; height:26px; border-radius:5px; color:var(--wb-muted); }
+.wb-history button:hover:not(:disabled) { background:var(--wb-soft); color:var(--wb-ink); }
+.wb-history button:disabled { opacity:.3; cursor:default; }
+
+.wb-tabbar { display:flex; flex-shrink:0; min-width:0; border-bottom:1px solid var(--wb-line); }
+.wb-tabbar .wb-main-tabs { flex:1; min-width:0; padding-left:0; border-bottom:0; }
+.wb-tabbar .wb-history { align-items:center; }

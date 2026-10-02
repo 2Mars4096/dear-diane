@@ -1,5 +1,9 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
+ipcRenderer.on('navigation:move', (_event, direction: number) => {
+  if (direction === -1 || direction === 1) window.dispatchEvent(new CustomEvent('dan:navigate', { detail: direction }));
+});
+
 // Keep the native surface behind the page matched during theme changes and teardown.
 window.addEventListener("DOMContentLoaded", () => {
   if (process.platform === "darwin") {
