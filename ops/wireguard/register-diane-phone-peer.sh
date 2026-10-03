@@ -3,7 +3,7 @@
 # Register the DAN phone Android WireGuard peer on the NY relay.
 #
 # Usage on the relay:
-#   sudo DAN_PHONE_PUBLIC_KEY="<public-key>" ./register-dan-phone-peer.sh
+#   sudo DAN_PHONE_PUBLIC_KEY="<public-key>" ./register-diane-phone-peer.sh
 #
 # Optional env overrides:
 #   WG_INTERFACE=wgny

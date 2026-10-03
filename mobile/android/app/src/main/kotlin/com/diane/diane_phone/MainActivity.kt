@@ -1,4 +1,4 @@
-package com.dan.dan_phone
+package com.diane.diane_phone
 
 import android.content.Intent
 import android.net.VpnService

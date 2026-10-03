@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.dan.dan_phone"
+    namespace = "com.diane.diane_phone"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
