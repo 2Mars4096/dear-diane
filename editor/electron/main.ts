@@ -440,9 +440,8 @@ ipcMain.handle("attention:show", (event, target: { thread?: unknown; worker?: un
 });
 
 function createTray() {
-  const icon = nativeImage.createFromDataURL(
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABHNCSVQICAgIfAhkiAAAADlJREFUOI1jYBhsgJGBgYGBgYHhPwMDA8P/////MzAwMDAQC5gYSABDwwBGIgxgZGAgCwxtA0YBAACbvxAJkHDJOAAAAABJRU5ErkJggg=="
-  );
+  const icon = nativeImage.createFromPath(path.join(__dirname, "icons", process.platform === "darwin" ? "trayTemplate.png" : "trayColor.png"));
+  if (process.platform === "darwin") icon.setTemplateImage(true);
   tray = new Tray(icon);
   const contextMenu = Menu.buildFromTemplate([
     { label: "Open Dear Diane", click: showMainWindow },
