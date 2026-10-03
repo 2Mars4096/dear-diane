@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-10-03
+- [fix] Replace the embedded tray PNG placeholder with a transparent 18pt Diane monogram, 1x/2x assets and macOS template rendering. Package a color icon for other platforms.
+- [feat] Generate Flowing D and Reading Companion icon concepts with built-in imagegen, retaining the approved ivory impasto palette; preserve the current app icon pending selection.
+
+## 2026-10-03
 - [refactor] Rename Python sources to `src/diane`, update static/dynamic imports, evaluation scripts and desktop module launch; install the `dear-diane` distribution with new `diane` commands and compatible command aliases.
 - [refactor] Rename DianeSettings, phone icon, WireGuard helper and Android Kotlin folders; align Flutter package imports and Kotlin namespace while preserving installed application identity and preferences. Rename local plan filenames and update source-path documentation.
 - [infra] Reinstall and verify the signed desktop build: app PID 50087 owns `diane.server` PID 50108; direct/proxy health, signature and archive equality pass. Existing profile retained. Rollback: `/Applications/.Diane-previous-c021443b-0373-497b-b364-41bb0d5d5ba5.app`.

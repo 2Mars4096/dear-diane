@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Fix blank menu-bar icon with a native monochrome template and generate two updated app-icon concepts; retain current app icon pending choice.
+
 - [x] Rename repository source files/folders and package imports to Diane; validate and commit by feature — [migration](diane-name-migration.md).
 
 - [x] Add selected-crop vision transcription and offline-first comments; fix Chinese selection geometry, page arrangement and Notes resizing — [reader](UI-plans/3-reader-and-side-panel.md).

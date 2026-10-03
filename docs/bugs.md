@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **Fixed 2026-10-03: blank menu bar icon.** The tray used an embedded PNG placeholder without template rendering. Use bundled, visible monochrome strokes with transparent background, 18pt/Retina representations and the macOS template flag.
+
 - **Android verification limitation (2026-10-03):** full APK check was stopped during slow Gradle dependency downloads before compilation. Flutter widget test passes; Kotlin namespace/manifest references are aligned, but an APK build is still unverified.
 - **Lockfile drift (2026-10-03):** validation found the existing `browser` extra missing from uv.lock. Regenerated it without upgrading existing locked packages; added Playwright and its dependencies.
 - **Source rename validation (2026-10-03):** sandbox restrictions blocked process inspection, loopback binding and Flutter SDK cache writes. Frontend/process/relay tests pass with those capabilities enabled. The local Python environment lacked hatchling, so the editable install used declared build isolation. Persisted identifiers are deliberately outside the source-path rename.
