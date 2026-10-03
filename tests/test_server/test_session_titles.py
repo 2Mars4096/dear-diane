@@ -1,9 +1,9 @@
 import asyncio
 from unittest.mock import AsyncMock
 from types import SimpleNamespace
-from dan.server.chat_store import ChatStore, ChatMessage
-from dan.server import session_titles
-from dan.server.routers.sessions import update_chat_thread
+from diane.server.chat_store import ChatStore, ChatMessage
+from diane.server import session_titles
+from diane.server.routers.sessions import update_chat_thread
 
 
 def seeded(tmp_path):

@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from dan.server.chat_v2 import (
+from diane.server.chat_v2 import (
     AgentRunCommand,
     AgentRunEvent,
     SurfaceTurn,
@@ -18,14 +18,14 @@ from dan.server.chat_v2 import (
     summarize_v2_bridge_context,
     triage_surface_turn,
 )
-from dan.server.chat_v2_async_core import (
+from diane.server.chat_v2_async_core import (
     admit_foreground_turn,
     build_task_board_snapshot,
     mark_background_run_started,
     parse_admission_command,
 )
-from dan.server.chat_v2_organism import map_organism_log_row_to_agent_event
-from dan.server.chat_v2_backend import (
+from diane.server.chat_v2_organism import map_organism_log_row_to_agent_event
+from diane.server.chat_v2_backend import (
     AgentBackendRunRequest,
     AgentBackendRunResult,
     CodexAgentBackendAdapter,
@@ -39,11 +39,11 @@ from dan.server.chat_v2_backend import (
     run_agent_backend,
     select_agent_backend_adapter,
 )
-from dan.server.chat_v2_scheduler_budget import (
+from diane.server.chat_v2_scheduler_budget import (
     scheduler_budget_metadata_update,
     scheduler_continuation_budget_decision,
 )
-from dan.server.chat_v2_store import (
+from diane.server.chat_v2_store import (
     AgentRunRecord,
     ChatV2Store,
     QueueItemRecord,
@@ -51,8 +51,8 @@ from dan.server.chat_v2_store import (
     _start_payload_from_queue_item,
     structured_operator_context,
 )
-from dan.server.chat_request import ChatMessageRequest
-from dan.server.routers import chat_v2 as chat_v2_router
+from diane.server.chat_request import ChatMessageRequest
+from diane.server.routers import chat_v2 as chat_v2_router
 
 
 def test_v2_operator_context_extracts_absolute_target_folder() -> None:

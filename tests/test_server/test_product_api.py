@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from dan.server.app import create_app
+from diane.server.app import create_app
 
 
 def test_retained_product_api_supports_work_notes_sessions_and_agent_runs(
@@ -75,7 +75,7 @@ def test_retained_product_api_supports_work_notes_sessions_and_agent_runs(
 
 def test_archived_only_delete_preserves_active_chats(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
-    from dan.server.app import create_app
+    from diane.server.app import create_app
     monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path))
     with TestClient(create_app()) as client:
         thread = client.post("/api/chats/project", json={"title": "Keep active"}).json()
@@ -89,7 +89,7 @@ def test_archived_only_delete_preserves_active_chats(tmp_path, monkeypatch):
 
 def test_sidecar_thread_keeps_parent_lineage_and_separate_messages(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
-    from dan.server.app import create_app
+    from diane.server.app import create_app
     monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path))
     with TestClient(create_app()) as client:
         parent = client.post("/api/chats/project", json={"title": "Main chat"}).json()

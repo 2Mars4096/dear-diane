@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from dan.processes import ProcessManager
+from diane.processes import ProcessManager
 
 
 def wait_for(predicate, seconds=5.0):
@@ -53,8 +53,8 @@ def test_finished_command_is_reported_exited_and_inputs_are_validated(tmp_path):
 
 
 def test_bridge_starts_processes_for_sandboxed_agents(tmp_path, monkeypatch):
-    from dan.native_workers import proc_bridge
-    import dan.processes as processes
+    from diane.native_workers import proc_bridge
+    import diane.processes as processes
     monkeypatch.setattr(processes, "manager", lambda: ProcessManager(tmp_path / "graphs"))
     queue = tmp_path / "queue"; queue.mkdir()
 

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-import dan.cli.dispatch as dispatch
-from dan.cli.dispatch import resolve_intent_signal, select_orchestrator
+import diane.cli.dispatch as dispatch
+from diane.cli.dispatch import resolve_intent_signal, select_orchestrator
 
 
 def test_dispatch_public_exports_keep_fallback_cue_lists_private() -> None:

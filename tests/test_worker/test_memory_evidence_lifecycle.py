@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from dan.worker.core.acquisition import LocalAcquisitionProvider
-from dan.worker.core.contracts import (
+from diane.worker.core.acquisition import LocalAcquisitionProvider
+from diane.worker.core.contracts import (
     AcquisitionPolicy,
     ExecutionRequest,
     MemoryExtractionMode,
@@ -12,10 +12,10 @@ from dan.worker.core.contracts import (
     MemorySnapshot,
     MemoryWrite,
 )
-from dan.worker.core.executor import WorkerCoreExecutor
-from dan.worker.core.interfaces import CompletionRequest, CompletionResponse
-from dan.worker.core.memory import InMemoryLifecycleProvider, build_memory_ref_id
-from dan.worker.core.model import WorkerDefinition
+from diane.worker.core.executor import WorkerCoreExecutor
+from diane.worker.core.interfaces import CompletionRequest, CompletionResponse
+from diane.worker.core.memory import InMemoryLifecycleProvider, build_memory_ref_id
+from diane.worker.core.model import WorkerDefinition
 
 
 class _RecordingCompletionProvider:

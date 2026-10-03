@@ -3,7 +3,7 @@ import json
 import sys
 
 import pytest
-from dan.native_workers.service import NativeTeam, active_teams, continue_worker, public_worker
+from diane.native_workers.service import NativeTeam, active_teams, continue_worker, public_worker
 
 
 @pytest.mark.asyncio
@@ -12,7 +12,7 @@ async def test_recovery_reuses_identity_policy_and_rejects_duplicate(monkeypatch
     def launch(backend, profile, prompt, workspace, session=''):
         calls.append((dict(profile), session))
         return [sys.executable, '-c', 'import time;time.sleep(20)'], {}
-    monkeypatch.setattr('dan.native_workers.service.launch', launch)
+    monkeypatch.setattr('diane.native_workers.service.launch', launch)
     base = tmp_path / 'workers'
     base.mkdir()
     row = dict(worker_id='w', parent_run_id='p', backend='claude', profile={'enabled': True, 'permission': 'plan', 'account': 'saved'}, workspace_root=str(tmp_path), created_at=1, native_session_id='native', status='running', prompt='Original task', response='Partial', error='')
@@ -37,8 +37,8 @@ def test_observed_children_never_expose_independent_controls():
 
 
 def test_history_paging_and_partial_last_line(monkeypatch, tmp_path):
-    from dan.server.routers.native_workers import worker_events
-    monkeypatch.setattr('dan.server.routers.native_workers.resolve_graphs_dir', lambda: tmp_path)
+    from diane.server.routers.native_workers import worker_events
+    monkeypatch.setattr('diane.server.routers.native_workers.resolve_graphs_dir', lambda: tmp_path)
     base = tmp_path / 'native_workers'; base.mkdir()
     (base / 'w.json').write_text(json.dumps(dict(worker_id='w', parent_run_id='p', status='completed', created_at=1)))
     (base / 'w.jsonl').write_text(''.join(json.dumps({'text': str(i)}) + '\n' for i in range(260)) + '{partial')
@@ -55,7 +55,7 @@ def test_history_paging_and_partial_last_line(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_interactive_answer_validates_and_does_not_escalate_session():
-    from dan.native_workers.codex_live import CodexLive
+    from diane.native_workers.codex_live import CodexLive
     client = CodexLive(None, lambda *args: None, True)
     sent = []
     async def send(row): sent.append(row)
@@ -72,8 +72,8 @@ async def test_interactive_answer_validates_and_does_not_escalate_session():
 
 
 def test_attention_marks_disconnected_workers_interrupted(monkeypatch, tmp_path):
-    from dan.server.routers.native_workers import worker_attention
-    monkeypatch.setattr('dan.server.routers.native_workers.resolve_graphs_dir', lambda: tmp_path)
+    from diane.server.routers.native_workers import worker_attention
+    monkeypatch.setattr('diane.server.routers.native_workers.resolve_graphs_dir', lambda: tmp_path)
     base = tmp_path / 'native_workers'; base.mkdir()
     (base / 'w.json').write_text(json.dumps(dict(worker_id='w', parent_run_id='offline', thread_id='chat', status='needs_input', created_at=1)))
     assert worker_attention()['workers'][0]['status'] == 'interrupted'

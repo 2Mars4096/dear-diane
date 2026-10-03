@@ -18,16 +18,16 @@ import threading
 from urllib.parse import quote
 from uuid import uuid4
 
-from dan.tools._browser_session import browser_scope
-from dan.tools.browser_open import browser_open
-from dan.tools.browser_inspect import browser_inspect
-from dan.tools.browser_fill import browser_fill
-from dan.tools.browser_click import browser_click
-from dan.tools.browser_extract import browser_extract
-from dan.tools.browser_download import browser_download
-from dan.tools.browser_tabs import browser_tabs
-from dan.tools.browser_wait import browser_wait
-from dan.tools.browser_screenshot import browser_screenshot
+from diane.tools._browser_session import browser_scope
+from diane.tools.browser_open import browser_open
+from diane.tools.browser_inspect import browser_inspect
+from diane.tools.browser_fill import browser_fill
+from diane.tools.browser_click import browser_click
+from diane.tools.browser_extract import browser_extract
+from diane.tools.browser_download import browser_download
+from diane.tools.browser_tabs import browser_tabs
+from diane.tools.browser_wait import browser_wait
+from diane.tools.browser_screenshot import browser_screenshot
 
 BIB = '@article{fixture2026,\n title={Browser Research Fixture},\n author={Example, A.},\n year={2026}\n}\n'
 
@@ -35,8 +35,8 @@ BIB = '@article{fixture2026,\n title={Browser Research Fixture},\n author={Examp
 async def run_in_app(base_url, request, backend, events):
     """Exercise the same admission/execution endpoint used by the GUI."""
     import urllib.request
-    from dan.server.chat_v2 import AgentRunEvent
-    from dan.server.chat_v2_backend import AgentBackendRunResult
+    from diane.server.chat_v2 import AgentRunEvent
+    from diane.server.chat_v2_backend import AgentBackendRunResult
     def call(path, payload=None):
         req = urllib.request.Request(base_url.rstrip("/") + path,
             data=json.dumps(payload).encode() if payload is not None else None,
@@ -184,8 +184,8 @@ async def run(args):
         except Exception as exc:
             result["scholar"] = {"status": "failed", "error": str(exc)}
     if args.native:
-        from dan.native_workers.lead import NativeLeadAdapter
-        from dan.server.chat_v2_backend import AgentBackendRunRequest
+        from diane.native_workers.lead import NativeLeadAdapter
+        from diane.server.chat_v2_backend import AgentBackendRunRequest
         native_root = workspace / f"native-{run_id}"
         native_root.mkdir()
         os.environ["DAN_GRAPHS_DIR"] = str(native_root / "graphs")

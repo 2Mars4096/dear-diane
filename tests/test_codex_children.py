@@ -2,8 +2,8 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 
-from dan.native_workers.codex_children import CodexChildren
-from dan.native_workers.service import NativeTeam
+from diane.native_workers.codex_children import CodexChildren
+from diane.native_workers.service import NativeTeam
 
 
 def row(at, payload):
@@ -97,16 +97,16 @@ def test_shared_session_directory_and_oversized_unrelated_record(tmp_path):
 async def _run_adapter(monkeypatch, tmp_path):
     import sys
     import time
-    from dan.native_workers.lead import NativeLeadAdapter
-    from dan.server.chat_v2_backend import AgentBackendRunRequest
+    from diane.native_workers.lead import NativeLeadAdapter
+    from diane.server.chat_v2_backend import AgentBackendRunRequest
     observer, paths, _ = setup(tmp_path)
-    monkeypatch.setattr('dan.native_workers.lead.private_home', lambda source: observer.reader.home)
+    monkeypatch.setattr('diane.native_workers.lead.private_home', lambda source: observer.reader.home)
     now = time.time() + 1
     write(paths['lead'], activity(now, 'first'), activity(now + 1, 'first', 'completed'))
     write(paths['first'], row(now + 1, {'type': 'task_complete', 'last_agent_message': 'Real child result'}))
-    monkeypatch.setattr('dan.native_workers.catalog.accounts', lambda: {'codex': {'default': {'env': {'CODEX_HOME': str(observer.reader.home)}}}})
+    monkeypatch.setattr('diane.native_workers.catalog.accounts', lambda: {'codex': {'default': {'env': {'CODEX_HOME': str(observer.reader.home)}}}})
     events = [{'type': 'thread.started', 'thread_id': 'lead'}, {'type': 'turn.completed'}]
-    monkeypatch.setattr('dan.native_workers.service.launch', lambda *args: ([sys.executable, '-c', '\n'.join(f'print({json.dumps(e)!r}, flush=True)' for e in events)], {}))
+    monkeypatch.setattr('diane.native_workers.service.launch', lambda *args: ([sys.executable, '-c', '\n'.join(f'print({json.dumps(e)!r}, flush=True)' for e in events)], {}))
     monkeypatch.setenv('DAN_GRAPHS_DIR', str(tmp_path / 'graphs'))
     request = AgentBackendRunRequest(task_id='task', run_id='run', thread_id='chat', workspace_root=str(tmp_path), objective='Review')
     result = await NativeLeadAdapter('codex').run(request, lambda _: None)

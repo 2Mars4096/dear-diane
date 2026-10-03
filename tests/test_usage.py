@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from dan.native_workers import usage
+from diane.native_workers import usage
 
 
 def test_codex_usage_reads_latest_rate_limits(tmp_path):

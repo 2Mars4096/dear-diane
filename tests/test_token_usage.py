@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from dan.native_workers import token_usage as tu
+from diane.native_workers import token_usage as tu
 
 
 def _claude_session(home: Path) -> Path:
@@ -137,7 +137,7 @@ def test_overview_combines_sessions_by_day_project_agent_and_stage(monkeypatch, 
 
 
 def test_takeaway_names_the_costliest_stage_and_one_action():
-    from dan.native_workers import token_usage
+    from diane.native_workers import token_usage
     report = {"by_stage": [{"key": "verify", "weight": 600}, {"key": "understand", "weight": 250}, {"key": "implement", "weight": 150}]}
     result = token_usage.takeaway(report)
     assert result["stage"] == "verify" and result["share"] == 0.6 and result["tokens"] == 600

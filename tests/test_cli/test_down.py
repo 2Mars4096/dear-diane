@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dan.cli import down as down_module
-from dan.cli import process_utils
+from diane.cli import down as down_module
+from diane.cli import process_utils
 
 
 def test_down_removes_stale_zombie_pid_file(

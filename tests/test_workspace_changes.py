@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 import pytest
-from dan.workspace_changes import capture, changes, snapshots
+from diane.workspace_changes import capture, changes, snapshots
 
 
 def git(root, *args):

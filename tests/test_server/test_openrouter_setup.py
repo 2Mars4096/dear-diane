@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
-from dan.server.routers.native_workers import setup_status, connect_openrouter, ProviderKeyInput
+from diane.server.routers.native_workers import setup_status, connect_openrouter, ProviderKeyInput
 
 
 def request(remote=False):
@@ -12,7 +12,7 @@ def request(remote=False):
 
 def test_existing_key_status_and_remote_setup_restriction(monkeypatch):
     monkeypatch.delenv('DAN_REMOTE_CONFIG',raising=False)
-    monkeypatch.setattr('dan.native_workers.models.provider_key',lambda _: 'secret')
+    monkeypatch.setattr('diane.native_workers.models.provider_key',lambda _: 'secret')
     assert setup_status(request()) == {'ready':True,'local':True}
     assert setup_status(request(True)) == {'ready':True,'local':False}
     with pytest.raises(HTTPException) as error:
@@ -24,7 +24,7 @@ def test_existing_key_status_and_remote_setup_restriction(monkeypatch):
 def test_validate_before_save(monkeypatch,status,data,expected):
     monkeypatch.delenv('DAN_REMOTE_CONFIG',raising=False)
     saved=[]
-    monkeypatch.setattr('dan.native_workers.provider_credentials.save_key',lambda *args:saved.append(args))
+    monkeypatch.setattr('diane.native_workers.provider_credentials.save_key',lambda *args:saved.append(args))
     client=AsyncMock()
     client.__aenter__.return_value=client
     client.get.return_value=SimpleNamespace(status_code=status,json=lambda:{'data':data})

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dan.worker.context_capsules import (
+from diane.worker.context_capsules import (
     build_tool_context_capsules,
     readiness_signal_from_capsules,
 )
-from dan.worker.scheduler import (
+from diane.worker.scheduler import (
     ArtifactPartition,
     SchedulerAction,
     SchedulerGuardrailState,
@@ -16,7 +16,7 @@ from dan.worker.scheduler import (
     evaluate_task_readiness_from_capsules,
     select_scheduler_proposal,
 )
-from dan.worker.specialized_agents import (
+from diane.worker.specialized_agents import (
     SpecializedAgentKind,
     specialized_agent_membrane,
 )
@@ -381,12 +381,12 @@ def test_artifact_partition_admission_serializes_overlapping_artifacts() -> None
         [
             ArtifactPartition(
                 partition_id="p:package",
-                artifact_paths=["src/dan"],
+                artifact_paths=["src/diane"],
                 expected_quality_gain=1.0,
             ),
             ArtifactPartition(
                 partition_id="p:module",
-                artifact_paths=["src/dan/worker/scheduler/policy.py"],
+                artifact_paths=["src/diane/worker/scheduler/policy.py"],
                 expected_quality_gain=1.0,
             ),
         ],

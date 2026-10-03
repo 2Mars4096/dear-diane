@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from dan.native_workers import catalog, skills
+from diane.native_workers import catalog, skills
 
 
 def make(root: Path, name: str, description="Does things"):
@@ -44,6 +44,6 @@ def test_claude_launch_adds_the_pool(monkeypatch, tmp_path):
     home, base = setup(monkeypatch, tmp_path)
     monkeypatch.setattr(catalog, "binary", lambda runtime: "/bin/claude")
     monkeypatch.setattr(catalog, "accounts", lambda: {"claude": {"default": {"env": {}}}})
-    monkeypatch.setattr("dan.server.paths.resolve_graphs_dir", lambda: str(base))
+    monkeypatch.setattr("diane.server.paths.resolve_graphs_dir", lambda: str(base))
     cmd, _ = catalog.launch("claude", {}, "hello", str(tmp_path))
     assert cmd[cmd.index("--add-dir") + 1] == str(base / "skill_pool/claude")

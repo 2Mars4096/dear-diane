@@ -1,4 +1,4 @@
-"""Tests for ``dan.server.paths.resolve_graphs_dir``."""
+"""Tests for ``diane.server.paths.resolve_graphs_dir``."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def test_resolve_graphs_dir_env_wins(monkeypatch, tmp_path: Path) -> None:
-    from dan.server import paths as paths_mod
+    from diane.server import paths as paths_mod
 
     target = tmp_path / "g"
     target.mkdir()
@@ -17,7 +17,7 @@ def test_resolve_graphs_dir_env_wins(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_resolve_graphs_dir_marker_file(monkeypatch, tmp_path: Path) -> None:
-    from dan.server import paths as paths_mod
+    from diane.server import paths as paths_mod
 
     monkeypatch.delenv("DAN_GRAPHS_DIR", raising=False)
     dan_home = tmp_path / ".dan"
@@ -30,7 +30,7 @@ def test_resolve_graphs_dir_marker_file(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_resolve_graphs_dir_default_relative(monkeypatch, tmp_path: Path) -> None:
-    from dan.server import paths as paths_mod
+    from diane.server import paths as paths_mod
 
     monkeypatch.delenv("DAN_GRAPHS_DIR", raising=False)
     monkeypatch.setattr(paths_mod.Path, "home", classmethod(lambda cls: tmp_path))
@@ -38,7 +38,7 @@ def test_resolve_graphs_dir_default_relative(monkeypatch, tmp_path: Path) -> Non
 
 
 def test_resolve_workspace_root_env_wins(monkeypatch, tmp_path: Path) -> None:
-    from dan.server import paths as paths_mod
+    from diane.server import paths as paths_mod
 
     target = tmp_path / "workspace"
     target.mkdir()
@@ -47,7 +47,7 @@ def test_resolve_workspace_root_env_wins(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_resolve_workspace_root_canonicalizes_legacy_project_env(monkeypatch) -> None:
-    from dan.server import paths as paths_mod
+    from diane.server import paths as paths_mod
 
     repo_root = Path(__file__).resolve().parents[2]
     monkeypatch.setenv(
@@ -61,7 +61,7 @@ def test_resolve_workspace_root_canonicalizes_legacy_project_env(monkeypatch) ->
 def test_resolve_graphs_dir_falls_back_when_cwd_missing(
     monkeypatch, tmp_path: Path
 ) -> None:
-    from dan.server import paths as paths_mod
+    from diane.server import paths as paths_mod
 
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -82,7 +82,7 @@ def test_resolve_graphs_dir_falls_back_when_cwd_missing(
 def test_resolve_workspace_root_falls_back_when_cwd_missing(
     monkeypatch, tmp_path: Path
 ) -> None:
-    from dan.server import paths as paths_mod
+    from diane.server import paths as paths_mod
 
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -101,7 +101,7 @@ def test_resolve_workspace_root_falls_back_when_cwd_missing(
 
 
 def test_server_main_seeds_resolved_graphs_dir(monkeypatch, tmp_path: Path) -> None:
-    import dan.server.__main__ as main_mod
+    import diane.server.__main__ as main_mod
 
     target = tmp_path / "stable-graphs"
     target.mkdir()
@@ -119,7 +119,7 @@ def test_server_main_seeds_resolved_graphs_dir(monkeypatch, tmp_path: Path) -> N
     main_mod.main()
 
     assert os.environ["DAN_GRAPHS_DIR"] == str(target)
-    assert called["app"] == "dan.server.app:app"
+    assert called["app"] == "diane.server.app:app"
     kwargs = called["kwargs"]
     assert kwargs["reload"] is False
     assert kwargs["reload_excludes"] is None
@@ -128,7 +128,7 @@ def test_server_main_seeds_resolved_graphs_dir(monkeypatch, tmp_path: Path) -> N
 def test_server_main_seeds_resolved_workspace_root(
     monkeypatch, tmp_path: Path
 ) -> None:
-    import dan.server.__main__ as main_mod
+    import diane.server.__main__ as main_mod
 
     graphs = tmp_path / "stable-graphs"
     graphs.mkdir()

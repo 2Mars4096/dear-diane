@@ -1,7 +1,7 @@
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from dan.server.routers import attachments
+from diane.server.routers import attachments
 
 
 def client(tmp_path, monkeypatch):

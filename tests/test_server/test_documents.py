@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from dan.server.routers.documents import router
+from diane.server.routers.documents import router
 
 
 def client():

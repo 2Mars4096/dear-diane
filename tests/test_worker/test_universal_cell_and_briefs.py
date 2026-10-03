@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dan.worker.brief import RoleSpec, WorkerBrief, render_brief_prompt, request_from_brief
-from dan.worker.cell import UNIVERSAL_CELL_SYSTEM_PROMPT, build_cell
-from dan.worker.contracts import output_shapes
-from dan.worker.contracts.templates import coding_brief, review_brief
-from dan.worker.core.contracts import OutputContract, ToolUseContract
-from dan.worker.core.executor import WorkerCoreExecutor
+from diane.worker.brief import RoleSpec, WorkerBrief, render_brief_prompt, request_from_brief
+from diane.worker.cell import UNIVERSAL_CELL_SYSTEM_PROMPT, build_cell
+from diane.worker.contracts import output_shapes
+from diane.worker.contracts.templates import coding_brief, review_brief
+from diane.worker.core.contracts import OutputContract, ToolUseContract
+from diane.worker.core.executor import WorkerCoreExecutor
 
 
 def test_universal_cell_keeps_task_specific_text_out_of_system_prompt() -> None:
@@ -23,7 +23,7 @@ def test_brief_renderer_owns_task_specific_prompt() -> None:
     brief = coding_brief(
         role=RoleSpec(role_label="builder", responsibility="change files"),
         task="Build the requested CLI feature.",
-        scope="src/dan/cli",
+        scope="src/diane/cli",
         pacing_policy={"safe_file_write_line_limit": 33},
         allowed_tool_ids=["file_read", "file_edit"],
         hard_constraints=["Keep argparse stable."],

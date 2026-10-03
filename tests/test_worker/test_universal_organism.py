@@ -5,12 +5,12 @@ import time
 
 import pytest
 
-from dan.worker.brief import RoleSpec
-from dan.worker.context_capsules import ContextCapsule, ReadinessSignal
-from dan.worker.contracts.templates import coding_brief, research_brief
-from dan.worker.core.executor import WorkerExecutionResult
-from dan.worker.organism_log import ORGANISM_LOG_SCHEMA, OrganismLogWriter, read_organism_log
-from dan.worker.organisms.universal_organism import (
+from diane.worker.brief import RoleSpec
+from diane.worker.context_capsules import ContextCapsule, ReadinessSignal
+from diane.worker.contracts.templates import coding_brief, research_brief
+from diane.worker.core.executor import WorkerExecutionResult
+from diane.worker.organism_log import ORGANISM_LOG_SCHEMA, OrganismLogWriter, read_organism_log
+from diane.worker.organisms.universal_organism import (
     OrganismDependency,
     OrganismEvent,
     OrganismPlan,

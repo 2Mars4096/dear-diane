@@ -3,8 +3,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from dan import _atomic_file
-from dan.notes_frontmatter import parse_yaml_frontmatter, yaml_list
+from diane import _atomic_file
+from diane.notes_frontmatter import parse_yaml_frontmatter, yaml_list
 
 
 def test_metadata_parser_retains_notes_and_paper_fields():

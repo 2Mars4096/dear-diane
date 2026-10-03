@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from dan.native_workers.service import NativeTeam
-from dan.server.chat_v2 import AgentRunCommand, build_v2_bridge_context
-from dan.server.chat_request import ChatMessageRequest
-from dan.server.chat_v2_store import ChatV2Store
+from diane.native_workers.service import NativeTeam
+from diane.server.chat_v2 import AgentRunCommand, build_v2_bridge_context
+from diane.server.chat_request import ChatMessageRequest
+from diane.server.chat_v2_store import ChatV2Store
 
 
 @pytest.fixture
@@ -41,7 +41,7 @@ for line in sys.stdin:
     script.chmod(0o700)
     def launch(*args):
         return [str(script)], {**os.environ, "RPC_LOG":str(log)}
-    monkeypatch.setattr("dan.native_workers.service.launch", launch)
+    monkeypatch.setattr("diane.native_workers.service.launch", launch)
     return log
 
 
@@ -121,8 +121,8 @@ def test_queue_steer_reuses_entry_and_preserves_other_waiting_messages(tmp_path)
 
 @pytest.mark.asyncio
 async def test_native_adapter_delivers_and_acknowledges_only_accepted_steer(tmp_path, monkeypatch, app_server):
-    from dan.native_workers.lead import NativeLeadAdapter
-    from dan.server.chat_v2_backend import run_agent_backend
+    from diane.native_workers.lead import NativeLeadAdapter
+    from diane.server.chat_v2_backend import run_agent_backend
     monkeypatch.setenv("DAN_GRAPHS_DIR",str(tmp_path/"graphs"))
     store,accepted=store_with_queue(tmp_path)
     second=store.get_task(accepted.task_id).queue_items[1]

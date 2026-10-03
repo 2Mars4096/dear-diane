@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from dan.cli import super_organism as super_cli
-from dan.cli.super_blueprint import (
+from diane.cli import super_organism as super_cli
+from diane.cli.super_blueprint import (
     UnsafeBlueprintUpdate,
     _legacy_nodes_and_edges,
     _permission_scope,
@@ -139,7 +139,7 @@ def test_super_event_logger_keeps_legacy_graph_event_and_adds_canonical_event(
 
 
 def test_super_blueprint_rejects_rewrite_of_active_legacy_task() -> None:
-    from dan.cli.super_blueprint import SuperBlueprintEventBridge
+    from diane.cli.super_blueprint import SuperBlueprintEventBridge
 
     bridge = SuperBlueprintEventBridge(
         task_id="run-1",
@@ -170,7 +170,7 @@ def test_super_blueprint_rejects_rewrite_of_active_legacy_task() -> None:
 def test_super_blueprint_separates_semantic_revisions_from_attempt_progress(
     monkeypatch,
 ) -> None:
-    from dan.cli import super_blueprint as bridge_module
+    from diane.cli import super_blueprint as bridge_module
 
     def blueprint(revision, tasks):
         return SimpleNamespace(
@@ -307,7 +307,7 @@ def test_super_blueprint_separates_semantic_revisions_from_attempt_progress(
 
 
 def test_super_blueprint_bridge_builds_canonical_contract_graph_and_attempt() -> None:
-    from dan.cli.super_blueprint import SuperBlueprintEventBridge
+    from diane.cli.super_blueprint import SuperBlueprintEventBridge
 
     bridge = SuperBlueprintEventBridge(
         task_id="run-1",
@@ -394,7 +394,7 @@ def test_super_blueprint_bridge_builds_canonical_contract_graph_and_attempt() ->
 def test_super_blueprint_strengthens_acceptance_without_weakening_existing_contract() -> (
     None
 ):
-    from dan.cli.super_blueprint import SuperBlueprintEventBridge
+    from diane.cli.super_blueprint import SuperBlueprintEventBridge
 
     bridge = SuperBlueprintEventBridge(
         task_id="run-criteria",

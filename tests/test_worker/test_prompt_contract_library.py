@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from hashlib import sha256
 
-from dan.worker.brief import RoleSpec, render_brief_prompt
-from dan.worker.contracts.prompt_context import PromptContext
-from dan.worker.contracts.sampling import resolve_sampling_policy
-from dan.worker.contracts.snippets import pacing_contract
-from dan.worker.contracts.templates import coding_brief, research_brief, review_brief, role_brief, scheduler_brief
+from diane.worker.brief import RoleSpec, render_brief_prompt
+from diane.worker.contracts.prompt_context import PromptContext
+from diane.worker.contracts.sampling import resolve_sampling_policy
+from diane.worker.contracts.snippets import pacing_contract
+from diane.worker.contracts.templates import coding_brief, research_brief, review_brief, role_brief, scheduler_brief
 
 
 def test_pacing_contract_does_not_invent_numeric_caps() -> None:

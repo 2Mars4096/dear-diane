@@ -4,8 +4,8 @@ from fastapi.testclient import TestClient
 
 
 def test_catalog_reads_dotenv_gateway_credentials_without_returning_them(monkeypatch, tmp_path):
-    from dan.server import app as server
-    from dan.native_workers import catalog
+    from diane.server import app as server
+    from diane.native_workers import catalog
     env_file = tmp_path / ".env"
     env_file.write_text("DAN_LLM_API_KEY=test-dotenv-secret\nDAN_LLM_BASE_URL=https://openrouter.ai/api/v1\n")
     for name in ("DAN_LLM_API_KEY", "DAN_LLM_BASE_URL", "DAN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"):

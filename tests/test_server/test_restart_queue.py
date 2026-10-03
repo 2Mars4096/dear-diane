@@ -2,11 +2,11 @@
 import asyncio
 import json
 
-from dan.server.chat_request import ChatMessageRequest
-from dan.server.chat_v2 import AgentRunCommand, build_v2_bridge_context
-from dan.server.chat_v2_backend import AgentBackendRunResult, run_agent_backend
-from dan.server.chat_v2_store import ChatV2Store
-from dan.server.routers import chat_v2 as router
+from diane.server.chat_request import ChatMessageRequest
+from diane.server.chat_v2 import AgentRunCommand, build_v2_bridge_context
+from diane.server.chat_v2_backend import AgentBackendRunResult, run_agent_backend
+from diane.server.chat_v2_store import ChatV2Store
+from diane.server.routers import chat_v2 as router
 
 
 def queued_store(tmp_path):
@@ -114,7 +114,7 @@ def test_restart_claim_is_idempotent(tmp_path):
 
 def test_app_lifespan_runs_recovery(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
-    from dan.server.app import create_app
+    from diane.server.app import create_app
 
     monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path))
     store, accepted, _ = queued_store(tmp_path)

@@ -5,9 +5,9 @@ import sys
 
 import pytest
 
-from dan.native_workers import catalog as runtime_catalog
-from dan.native_workers.service import NativeTeam, read_workers
-from dan.native_workers.sessions import discover, messages
+from diane.native_workers import catalog as runtime_catalog
+from diane.native_workers.service import NativeTeam, read_workers
+from diane.native_workers.sessions import discover, messages
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +41,7 @@ async def test_parallel_workers_are_scoped_and_capture_sessions(monkeypatch, tmp
     def launch(backend, profile, objective, workspace, session=""):
         code = 'import json,time; print(json.dumps({"type":"system","session_id":"native-123"}),flush=True); time.sleep(0.05); print(json.dumps({"type":"result","result":"done"}),flush=True)'
         return [sys.executable, "-c", code], {}
-    monkeypatch.setattr("dan.native_workers.service.launch", launch)
+    monkeypatch.setattr("diane.native_workers.service.launch", launch)
     team = NativeTeam("parent", str(tmp_path), {"claude": {"enabled": True}}, tmp_path / "workers")
     first = await team.start("claude", "first")
     second = await team.start("claude", "second")
@@ -58,7 +58,7 @@ async def test_parallel_workers_are_scoped_and_capture_sessions(monkeypatch, tmp
 
 @pytest.mark.asyncio
 async def test_stop_kills_worker_and_does_not_stop_sibling(monkeypatch, tmp_path):
-    monkeypatch.setattr("dan.native_workers.service.launch", lambda *a: ([sys.executable, "-c", "import time;time.sleep(20)"], {}))
+    monkeypatch.setattr("diane.native_workers.service.launch", lambda *a: ([sys.executable, "-c", "import time;time.sleep(20)"], {}))
     team = NativeTeam("parent", str(tmp_path), {"codex": {"enabled": True}}, tmp_path / "workers")
     first = await team.start("codex", "first")
     second = await team.start("codex", "second")
@@ -79,7 +79,7 @@ def test_session_discovery_matches_recorded_folder_and_keeps_sources(monkeypatch
     source = directory / "session.jsonl"
     source.write_text(json.dumps({"type": "user", "cwd": str(workspace), "message": {"role": "user", "content": "Earlier work"}}) + "\n")
     original = source.read_bytes()
-    monkeypatch.setattr("dan.native_workers.sessions.accounts", lambda: {"claude": {"work": {"env": {"CLAUDE_CONFIG_DIR": str(profile)}}}})
+    monkeypatch.setattr("diane.native_workers.sessions.accounts", lambda: {"claude": {"work": {"env": {"CLAUDE_CONFIG_DIR": str(profile)}}}})
     sources = discover(str(workspace))
     assert len(sources) == 1
     assert sources[0]["fork"] is True
@@ -94,7 +94,7 @@ async def test_imported_claude_context_always_forks(monkeypatch, tmp_path):
     def launch(*args):
         launched.append(args)
         return [sys.executable, "-c", "print('{}')"], {}
-    monkeypatch.setattr("dan.native_workers.service.launch", launch)
+    monkeypatch.setattr("diane.native_workers.service.launch", launch)
     team = NativeTeam("parent", str(tmp_path), {"claude": {"enabled": True, "source_session": "original"}}, tmp_path / "workers")
     commands = []
     async def run(record, command, env):
@@ -108,13 +108,13 @@ async def test_imported_claude_context_always_forks(monkeypatch, tmp_path):
 
 def test_import_api_is_opt_in_and_creates_independent_chat(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
-    from dan.server.app import create_app
+    from diane.server.app import create_app
     source_path = tmp_path / "session.jsonl"
     source_path.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": "Keep original"}}) + "\n")
     original = source_path.read_bytes()
     source = {"id": "found", "backend": "claude", "account": "default", "session_id": "original", "title": "Earlier work", "path": str(source_path), "workspace": str(tmp_path), "can_import": True, "fork": True}
     monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path / "graphs"))
-    monkeypatch.setattr("dan.server.routers.native_workers.discover", lambda _: [source])
+    monkeypatch.setattr("diane.server.routers.native_workers.discover", lambda _: [source])
     with TestClient(create_app()) as client:
         assert len(client.get("/api/native-sessions", params={"workspace": str(tmp_path)}).json()["sessions"]) == 1
         assert client.get("/api/chats").json()["threads"] == []
@@ -131,7 +131,7 @@ def test_import_api_is_opt_in_and_creates_independent_chat(monkeypatch, tmp_path
 
 @pytest.mark.asyncio
 async def test_codex_external_ids_require_history_import(monkeypatch, tmp_path):
-    monkeypatch.setattr("dan.native_workers.service.launch", lambda *args: (["unused"], {}))
+    monkeypatch.setattr("diane.native_workers.service.launch", lambda *args: (["unused"], {}))
     team = NativeTeam("parent", str(tmp_path), {"codex": {"enabled": True, "source_session": "original"}}, tmp_path / "workers")
     with pytest.raises(ValueError, match="conversation history"):
         await team.start("codex", "continue")
@@ -142,7 +142,7 @@ async def test_codex_external_ids_require_history_import(monkeypatch, tmp_path):
 @pytest.mark.parametrize("status,expected", [("WAITING", "needs_input"), ("ERROR", "failed"), ("SUCCESS", "completed")])
 async def test_antigravity_terminal_status_is_preserved(monkeypatch, tmp_path, status, expected):
     row = {"event": "result", "result": {"conversation_id": "agy-session", "status": status, "response": "result"}}
-    monkeypatch.setattr("dan.native_workers.service.launch", lambda *a: ([sys.executable, "-c", f"print({json.dumps(row)!r})"], {}))
+    monkeypatch.setattr("diane.native_workers.service.launch", lambda *a: ([sys.executable, "-c", f"print({json.dumps(row)!r})"], {}))
     team = NativeTeam("parent", str(tmp_path), {"antigravity": {"enabled": True}}, tmp_path / "workers")
     worker = await team.start("antigravity", "test")
     await asyncio.gather(*team.tasks.values())
@@ -150,7 +150,7 @@ async def test_antigravity_terminal_status_is_preserved(monkeypatch, tmp_path, s
 
 
 def test_describe_summarizes_native_actions():
-    from dan.native_workers.service import describe
+    from diane.native_workers.service import describe
     assert describe({"type": "item.started", "item": {"type": "command_execution", "command": "npm test"}}) == "Running npm test"
     assert describe({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "/a/b/app.py"}}]}}) == "Reading app.py"
     assert describe({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "WebFetch", "input": {"url": "https://example.com/x"}}]}}) == "Reading example.com"
@@ -159,7 +159,7 @@ def test_describe_summarizes_native_actions():
 
 
 def test_dan_modes_map_to_native_permissions(monkeypatch):
-    from dan.native_workers import catalog
+    from diane.native_workers import catalog
     monkeypatch.setattr(catalog, "binary", lambda runtime: f"/bin/{runtime}")
     monkeypatch.setattr(catalog, "accounts", lambda: {"codex": {"default": {"env": {}}}, "claude": {"default": {"env": {}}}})
     def command(runtime, permission, session=""):
@@ -174,7 +174,7 @@ def test_dan_modes_map_to_native_permissions(monkeypatch):
 
 
 def test_cursor_modes_resume_and_binary_detection(monkeypatch, tmp_path):
-    from dan.native_workers import catalog
+    from diane.native_workers import catalog
     monkeypatch.setattr(catalog, "binary", lambda runtime: "/bin/agent")
     monkeypatch.setattr(catalog, "accounts", lambda: {"cursor": {"default": {"env": {}}}})
     def command(permission, session=""):
@@ -200,7 +200,7 @@ def test_cursor_modes_resume_and_binary_detection(monkeypatch, tmp_path):
 
 
 def test_describe_cursor_tool_calls():
-    from dan.native_workers.service import describe
+    from diane.native_workers.service import describe
     assert describe({"type": "tool_call", "subtype": "started", "tool_call": {"readToolCall": {"args": {"path": "src/app.py"}}}}) == "Reading app.py"
     assert describe({"type": "tool_call", "subtype": "started", "tool_call": {"shellToolCall": {"args": {"command": "npm test"}}}}) == "Running npm test"
     assert describe({"type": "tool_call", "subtype": "completed", "tool_call": {"readToolCall": {}}}) == ""
@@ -208,7 +208,7 @@ def test_describe_cursor_tool_calls():
 
 def test_cursor_chat_import_reads_store_without_writing(monkeypatch, tmp_path):
     import json, sqlite3
-    from dan.native_workers import sessions
+    from diane.native_workers import sessions
     project = tmp_path / "project"; project.mkdir()
     user = tmp_path / "Cursor/User"
     for workspace_id, folder in [("w1", project.as_uri()), ("w2", "vscode-remote://ssh/elsewhere")]:
@@ -254,7 +254,7 @@ def test_native_import_has_no_size_limit(monkeypatch, tmp_path):
 
 def test_codex_discovery_skips_internal_threads(monkeypatch, tmp_path):
     import sqlite3
-    from dan.native_workers import sessions
+    from diane.native_workers import sessions
     home = tmp_path / ".codex"; home.mkdir()
     con = sqlite3.connect(home / "state_5.sqlite")
     con.execute("CREATE TABLE threads (id TEXT, cwd TEXT, title TEXT, rollout_path TEXT, archived INTEGER, thread_source TEXT)")
@@ -267,7 +267,7 @@ def test_codex_discovery_skips_internal_threads(monkeypatch, tmp_path):
 
 
 def test_claude_discovery_skips_subagent_transcripts(monkeypatch, tmp_path):
-    from dan.native_workers import sessions
+    from diane.native_workers import sessions
     home = tmp_path / ".claude"; project = home / "projects" / "p"; (project / "s1" / "subagents").mkdir(parents=True)
     row = lambda **extra: json.dumps({"type": "user", "cwd": str(tmp_path), "message": {"role": "user", "content": "Hi"}, **extra}) + "\n"
     (project / "s1.jsonl").write_text(row())
@@ -280,7 +280,7 @@ def test_claude_discovery_skips_subagent_transcripts(monkeypatch, tmp_path):
 
 def test_discovery_sorts_newest_first_across_runtimes(monkeypatch, tmp_path):
     import os, sqlite3
-    from dan.native_workers import sessions
+    from diane.native_workers import sessions
     codex = tmp_path / ".codex"; codex.mkdir()
     con = sqlite3.connect(codex / "state_5.sqlite")
     con.execute("CREATE TABLE threads (id TEXT, cwd TEXT, title TEXT, rollout_path TEXT, archived INTEGER, thread_source TEXT, recency_at INTEGER, updated_at INTEGER, created_at INTEGER)")
@@ -299,7 +299,7 @@ def test_discovery_sorts_newest_first_across_runtimes(monkeypatch, tmp_path):
 
 def test_shared_codex_store_is_listed_once(monkeypatch, tmp_path):
     import sqlite3
-    from dan.native_workers import sessions
+    from diane.native_workers import sessions
     main = tmp_path / ".codex"; main.mkdir()
     con = sqlite3.connect(main / "state_5.sqlite")
     con.execute("CREATE TABLE threads (id TEXT, cwd TEXT, title TEXT, rollout_path TEXT, archived INTEGER)")
@@ -313,7 +313,7 @@ def test_shared_codex_store_is_listed_once(monkeypatch, tmp_path):
 
 
 def test_personal_account_only_when_codex_home_differs(monkeypatch, tmp_path):
-    from dan.native_workers import catalog
+    from diane.native_workers import catalog
     (tmp_path / ".codex").mkdir()
     monkeypatch.setattr(catalog, "user_home", lambda: tmp_path)
     monkeypatch.setattr(catalog.Path, "home", staticmethod(lambda: tmp_path))
@@ -324,7 +324,7 @@ def test_personal_account_only_when_codex_home_differs(monkeypatch, tmp_path):
 
 
 def test_default_claude_account_does_not_force_config_dir(monkeypatch):
-    from dan.native_workers import catalog
+    from diane.native_workers import catalog
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     assert "CLAUDE_CONFIG_DIR" not in catalog.accounts()["claude"]["default"]["env"]
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/tmp/custom")
@@ -337,7 +337,7 @@ async def test_old_codex_worker_recovers_history_into_private_session(monkeypatc
     def launch(backend, profile, prompt, workspace, session=''):
         calls.append((session, prompt))
         return [sys.executable, '-c', 'print(\'{"type":"thread.started","thread_id":"private-new"}\');print(\'{"type":"turn.completed"}\')'], {}
-    monkeypatch.setattr('dan.native_workers.service.launch', launch)
+    monkeypatch.setattr('diane.native_workers.service.launch', launch)
     team = NativeTeam('parent', str(tmp_path), {'codex': {'enabled': True}}, tmp_path / 'workers')
     team.records['old'] = {'worker_id': 'old', 'backend': 'codex', 'profile': {'enabled': True}, 'workspace_root': str(tmp_path), 'native_session_id': 'desktop-shared', 'prompt': 'Previous task', 'response': 'Previous result', 'status': 'completed'}
     await team.start('codex', 'Continue safely', worker_id='old')

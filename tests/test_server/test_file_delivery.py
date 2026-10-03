@@ -4,7 +4,7 @@ from urllib.parse import quote, unquote
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from dan.server.routers.misc import router
+from diane.server.routers.misc import router
 
 
 @pytest.mark.parametrize('name', ['notes.pdf', 'Victor Klemperer - 第三帝国的语言 (2013, 商务印书馆).pdf', '阅读 "引文".pdf'])

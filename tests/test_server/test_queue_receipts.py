@@ -1,4 +1,4 @@
-from dan.server.chat_v2_store import V2TaskRecord, QueueItemRecord
+from diane.server.chat_v2_store import V2TaskRecord, QueueItemRecord
 
 
 def test_completed_delivery_survives_snapshot_without_leaking_request_context():

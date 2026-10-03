@@ -4,9 +4,9 @@ import sys
 
 import pytest
 
-from dan.native_workers.lead import NativeLeadAdapter, _active_sessions
-from dan.native_workers.service import NativeTeam, active_teams
-from dan.server.chat_v2_backend import AgentBackendRunRequest, AgentBackendRunResult, AgentBackendStopped, select_agent_backend_adapter
+from diane.native_workers.lead import NativeLeadAdapter, _active_sessions
+from diane.native_workers.service import NativeTeam, active_teams
+from diane.server.chat_v2_backend import AgentBackendRunRequest, AgentBackendRunResult, AgentBackendStopped, select_agent_backend_adapter
 
 
 def request(tmp_path, **kwargs):
@@ -22,7 +22,7 @@ async def test_lead_streams_and_resumes_same_account_only(monkeypatch, tmp_path,
         calls.append((runtime, profile, prompt, session))
         row = {"type": "result", "session_id": "fork-123", "result": "Answer"}
         return [sys.executable, "-c", f"print({json.dumps(row)!r})"], {}
-    monkeypatch.setattr("dan.native_workers.service.launch", launch)
+    monkeypatch.setattr("diane.native_workers.service.launch", launch)
     events = []
     adapter = NativeLeadAdapter(backend)
     req = request(tmp_path, history=[{"role":"user", "content":"Prior context"}], profile_policy={"lead_profile": {"account":"work", "model":"model", "effort":"high", "fast":True}})
@@ -51,7 +51,7 @@ async def test_changing_source_uses_separate_continuation_without_losing_native_
         native_id = "router-session" if profile.get("provider") == "openrouter" else "native-session"
         row = {"type": "result", "session_id": native_id, "result": "Answer"}
         return [sys.executable, "-c", f"print({json.dumps(row)!r})"], {}
-    monkeypatch.setattr("dan.native_workers.service.launch", launch)
+    monkeypatch.setattr("diane.native_workers.service.launch", launch)
     adapter = NativeLeadAdapter("claude")
     for source in ["native", "openrouter", "openrouter", "native"]:
         result = await adapter.run(request(tmp_path, profile_policy={"lead_profile": {"provider": source}}), lambda event: None)
@@ -62,7 +62,7 @@ async def test_changing_source_uses_separate_continuation_without_losing_native_
 @pytest.mark.asyncio
 async def test_stop_cleans_up_native_lead_and_bridge(monkeypatch, tmp_path):
     monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path / "graphs"))
-    monkeypatch.setattr("dan.native_workers.service.launch", lambda *args: ([sys.executable, "-c", "import time; time.sleep(30)"], {}))
+    monkeypatch.setattr("diane.native_workers.service.launch", lambda *args: ([sys.executable, "-c", "import time; time.sleep(30)"], {}))
     class Runtime:
         count = 0
         def raise_if_interrupted(self, checkpoint):
@@ -79,14 +79,14 @@ async def test_stop_cleans_up_native_lead_and_bridge(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_bridge_can_delegate_to_dan_and_reject_disabled_workers(monkeypatch, tmp_path):
-    from dan.native_workers import bridge
-    from dan.native_workers.service import current_team
+    from diane.native_workers import bridge
+    from diane.native_workers.service import current_team
     seen = []
     async def run(self, req, emit, runtime=None):
         seen.append(req)
         assert current_team.get() is None  # no recursive delegation
         return AgentBackendRunResult(status="completed", backend="super_dan", summary="Reviewed")
-    monkeypatch.setattr("dan.server.chat_v2_backend.SuperDanBackendAdapter._run", run)
+    monkeypatch.setattr("diane.server.chat_v2_backend.SuperDanBackendAdapter._run", run)
     team = NativeTeam("parent", str(tmp_path), {"dan":{"enabled":True,"model":"test"}}, tmp_path / "records")
     directory = tmp_path / "bridge"; directory.mkdir()
     server = asyncio.create_task(bridge.serve(directory, team))
@@ -117,7 +117,7 @@ def test_backend_routing(tmp_path, name, runtime):
 @pytest.mark.asyncio
 async def test_legacy_codex_lead_starts_private_session_with_saved_history(monkeypatch, tmp_path):
     import hashlib
-    from dan.native_workers.codex_home import SCOPE
+    from diane.native_workers.codex_home import SCOPE
     monkeypatch.setenv('DAN_GRAPHS_DIR', str(tmp_path / 'graphs'))
     identity = json.dumps(['chat', str(tmp_path.resolve()), 'codex', 'default'])
     state = tmp_path / 'graphs/native_lead_sessions' / (hashlib.sha256(identity.encode()).hexdigest() + '.json')
@@ -127,7 +127,7 @@ async def test_legacy_codex_lead_starts_private_session_with_saved_history(monke
     def launch(runtime, profile, prompt, workspace, session=''):
         calls.append((session, prompt))
         return [sys.executable, '-c', 'print(\'{"type":"result","session_id":"private-thread","result":"done"}\')'], {}
-    monkeypatch.setattr('dan.native_workers.service.launch', launch)
+    monkeypatch.setattr('diane.native_workers.service.launch', launch)
     req = request(tmp_path, history=[{'role': 'user', 'content': 'Existing conversation context'}])
     adapter = NativeLeadAdapter('codex')
     assert (await adapter.run(req, lambda event: None)).status == 'completed'

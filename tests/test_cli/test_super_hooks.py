@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from dan.cli.super_hooks import (
+from diane.cli.super_hooks import (
     SuperHookRuntime,
     SuperQueuePolicy,
     format_super_queue_status,

@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SRC_ROOT = REPO_ROOT / "src" / "dan"
+SRC_ROOT = REPO_ROOT / "src" / "diane"
 
 
 def _rel(path: Path) -> str:
@@ -28,17 +28,17 @@ def test_universal_cell_builder_is_only_imported_by_universal_organism_runner() 
         for node in ast.walk(tree):
             if not isinstance(node, ast.ImportFrom):
                 continue
-            if node.module != "dan.worker.cell":
+            if node.module != "diane.worker.cell":
                 continue
             if any(alias.name == "build_cell" for alias in node.names):
                 importers.append(_rel(path))
 
-    assert importers == ["src/dan/worker/organisms/universal_organism.py"]
+    assert importers == ["src/diane/worker/organisms/universal_organism.py"]
 
 
 def test_cli_cell_builder_and_specialization_allowlist_does_not_grow() -> None:
     allowed = {
-        "src/dan/cli/super_organism.py": {
+        "src/diane/cli/super_organism.py": {
             "_is_website_objective",
             "_supports_live_execution",
         }

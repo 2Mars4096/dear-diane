@@ -6,8 +6,8 @@ import sys
 
 import pytest
 
-from dan.native_workers import browser_bridge
-from dan.tools import _browser_session as sessions
+from diane.native_workers import browser_bridge
+from diane.tools import _browser_session as sessions
 
 
 class Browser:
@@ -36,7 +36,7 @@ class Browser:
 @pytest.fixture
 def browsers(monkeypatch):
     Browser.instances = []
-    monkeypatch.setattr("dan.tools.browser_control.PlaywrightBrowserController", Browser)
+    monkeypatch.setattr("diane.tools.browser_control.PlaywrightBrowserController", Browser)
     return Browser.instances
 
 
@@ -119,8 +119,8 @@ async def test_bridge_client_retrieves_citation_and_plan_rejects_actions(tmp_pat
 
 @pytest.mark.asyncio
 async def test_native_lead_can_use_copied_browser_client(monkeypatch, tmp_path, browsers):
-    from dan.native_workers.lead import NativeLeadAdapter
-    from dan.server.chat_v2_backend import AgentBackendRunRequest
+    from diane.native_workers.lead import NativeLeadAdapter
+    from diane.server.chat_v2_backend import AgentBackendRunRequest
     monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path / "graphs"))
     def launch(runtime, profile, prompt, workspace, session=""):
         command = next(line.removesuffix(" help") for line in prompt.splitlines()
@@ -133,7 +133,7 @@ async def test_native_lead_can_use_copied_browser_client(monkeypatch, tmp_path, 
             "print(json.dumps({'type':'result','session_id':'browser-demo','result':json.loads(b.stdout)['result']['text']}))"
         )
         return [sys.executable, "-c", script], {}
-    monkeypatch.setattr("dan.native_workers.service.launch", launch)
+    monkeypatch.setattr("diane.native_workers.service.launch", launch)
     events = []
     result = await NativeLeadAdapter("claude").run(AgentBackendRunRequest(
         task_id="task", run_id="run", thread_id="thread", workspace_root=str(tmp_path),
@@ -146,7 +146,7 @@ async def test_native_lead_can_use_copied_browser_client(monkeypatch, tmp_path, 
 
 
 def test_gui_request_exposes_browser_without_keyword_matching(tmp_path):
-    from dan.server.chat_v2_backend import AgentBackendRunRequest, _build_super_dan_args, _load_super_dan_cli
+    from diane.server.chat_v2_backend import AgentBackendRunRequest, _build_super_dan_args, _load_super_dan_cli
     cli = _load_super_dan_cli()
     req = AgentBackendRunRequest(task_id="task", run_id="run", workspace_root=str(tmp_path), objective="帮我查论文并导出引用")
     args = _build_super_dan_args(cli, req, workspace_root=tmp_path)
@@ -161,7 +161,7 @@ def test_gui_request_exposes_browser_without_keyword_matching(tmp_path):
 
 @pytest.mark.asyncio
 async def test_browser_tab_switch_is_exposed(monkeypatch):
-    from dan.tools.browser_tabs import browser_tabs
+    from diane.tools.browser_tabs import browser_tabs
     class Tabs:
         index = 0
         async def switch_tab(self, index):
@@ -179,8 +179,8 @@ async def test_browser_tab_switch_is_exposed(monkeypatch):
 @pytest.mark.asyncio
 async def test_closed_window_requires_navigation_before_restarting(monkeypatch):
     from types import SimpleNamespace
-    from dan.tools.browser_control import PlaywrightBrowserController
-    monkeypatch.setattr("dan.tools.browser_control.is_playwright_available", lambda: True)
+    from diane.tools.browser_control import PlaywrightBrowserController
+    monkeypatch.setattr("diane.tools.browser_control.is_playwright_available", lambda: True)
     ctrl = PlaywrightBrowserController()
     ctrl._page = SimpleNamespace(is_closed=lambda: True)
     closed = []
@@ -202,8 +202,8 @@ async def test_closed_window_requires_navigation_before_restarting(monkeypatch):
 @pytest.mark.asyncio
 async def test_closed_tab_uses_remaining_tab(monkeypatch):
     from types import SimpleNamespace
-    from dan.tools.browser_control import PlaywrightBrowserController
-    monkeypatch.setattr("dan.tools.browser_control.is_playwright_available", lambda: True)
+    from diane.tools.browser_control import PlaywrightBrowserController
+    monkeypatch.setattr("diane.tools.browser_control.is_playwright_available", lambda: True)
     ctrl = PlaywrightBrowserController()
     remaining = SimpleNamespace(is_closed=lambda: False)
     ctrl._page = SimpleNamespace(is_closed=lambda: True)

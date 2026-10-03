@@ -1,5 +1,5 @@
 [project]
-name = "dan"
+name = "dear-diane"
 version = "0.2.0"
 description = "Dear Diane — A workspace for research, code, and ideas."
 requires-python = ">=3.11"
@@ -29,23 +29,34 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/dan-project/dan"
-Repository = "https://github.com/dan-project/dan"
-Documentation = "https://github.com/dan-project/dan#readme"
-Changelog = "https://github.com/dan-project/dan/blob/main/docs/changelog.md"
-Issues = "https://github.com/dan-project/dan/issues"
+Homepage = "https://github.com/2Mars4096/dear-diane"
+Repository = "https://github.com/2Mars4096/dear-diane"
+Documentation = "https://github.com/2Mars4096/dear-diane#readme"
+Changelog = "https://github.com/2Mars4096/dear-diane/blob/main/docs/changelog.md"
+Issues = "https://github.com/2Mars4096/dear-diane/issues"
 
 [project.scripts]
-dear-diane = "dan.cli.main:main"
-dan = "dan.cli.main:main"
-dan-serve = "dan.server.__main__:main"
-dan-up = "dan.cli.up:main"
-dan-down = "dan.cli.down:main"
-dan-editor = "dan.cli.editor:main"
-dan-super-organism = "dan.cli.super_organism:main"
-dansuperorganism = "dan.cli.super_organism:main"
-dan-super-tui = "dan.cli.super_tui:main"
-dansupertui = "dan.cli.super_tui:main"
+dear-diane = "diane.cli.main:main"
+dan = "diane.cli.main:main"
+dan-serve = "diane.server.__main__:main"
+dan-up = "diane.cli.up:main"
+dan-down = "diane.cli.down:main"
+dan-editor = "diane.cli.editor:main"
+dan-super-organism = "diane.cli.super_organism:main"
+dansuperorganism = "diane.cli.super_organism:main"
+dan-super-tui = "diane.cli.super_tui:main"
+dansupertui = "diane.cli.super_tui:main"
+
+# Legacy command aliases above remain available during migration.
+diane = "diane.cli.main:main"
+diane-serve = "diane.server.__main__:main"
+diane-up = "diane.cli.up:main"
+diane-down = "diane.cli.down:main"
+diane-editor = "diane.cli.editor:main"
+diane-super-organism = "diane.cli.super_organism:main"
+dianesuperorganism = "diane.cli.super_organism:main"
+diane-super-tui = "diane.cli.super_tui:main"
+dianesupertui = "diane.cli.super_tui:main"
 
 [project.optional-dependencies]
 browser = ["playwright>=1.40"]
@@ -81,7 +92,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/dan"]
+packages = ["src/diane"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

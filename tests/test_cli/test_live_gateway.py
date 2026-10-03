@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import dan.cli.live_gateway as live_gateway
+import diane.cli.live_gateway as live_gateway
 
 
 def test_build_live_provider_resolves_directly_from_provider_registry(monkeypatch) -> None:

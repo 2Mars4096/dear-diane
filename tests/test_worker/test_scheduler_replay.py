@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dan.worker.scheduler import analyze_scheduler_replay_rows
+from diane.worker.scheduler import analyze_scheduler_replay_rows
 
 
 def test_analyze_scheduler_replay_rows_reports_lower_bounds_and_terminal_barrier() -> None:

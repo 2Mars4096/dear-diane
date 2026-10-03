@@ -5,7 +5,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 from pydantic import ValidationError
 
-from dan.task_blueprints import (
+from diane.task_blueprints import (
     AcceptanceCriterion,
     BlueprintEdge,
     BlueprintNode,

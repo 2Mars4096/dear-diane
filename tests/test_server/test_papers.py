@@ -5,9 +5,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from dan.server import paper_library as library
-from dan.server.chat_store import ChatStore
-from dan.server.routers.papers import router
+from diane.server import paper_library as library
+from diane.server.chat_store import ChatStore
+from diane.server.routers.papers import router
 
 
 @pytest.fixture

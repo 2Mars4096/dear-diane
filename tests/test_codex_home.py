@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from dan.native_workers.codex_home import prepare_home, private_home
+from diane.native_workers.codex_home import prepare_home, private_home
 
 
 def test_private_storage_copies_only_inputs_and_keeps_local_refresh(monkeypatch, tmp_path):
@@ -29,7 +29,7 @@ def test_private_storage_copies_only_inputs_and_keeps_local_refresh(monkeypatch,
 
 
 def test_launch_overrides_inherited_database_and_config(monkeypatch, tmp_path):
-    from dan.native_workers import catalog
+    from diane.native_workers import catalog
     source = tmp_path / 'desktop'; source.mkdir()
     (source / 'config.toml').write_text('sqlite_home="/shared/db"\nlog_dir="/shared/log"')
     monkeypatch.setenv('DAN_GRAPHS_DIR', str(tmp_path / 'graphs'))
@@ -44,7 +44,7 @@ def test_launch_overrides_inherited_database_and_config(monkeypatch, tmp_path):
 
 
 def test_usage_discovers_private_transcripts(monkeypatch, tmp_path):
-    from dan.native_workers import token_usage
+    from diane.native_workers import token_usage
     monkeypatch.setenv('DAN_GRAPHS_DIR', str(tmp_path / 'graphs'))
     source = tmp_path / 'desktop'
     home = private_home(source)

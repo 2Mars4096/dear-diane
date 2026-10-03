@@ -7,10 +7,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from dan.server import literature as intake, paper_library as library, paper_ingest as ingest
-from dan.server.chat_store import ChatStore
-from dan.server.chat_v2_store import ChatV2Store
-from dan.server.routers.literature import router
+from diane.server import literature as intake, paper_library as library, paper_ingest as ingest
+from diane.server.chat_store import ChatStore
+from diane.server.chat_v2_store import ChatV2Store
+from diane.server.routers.literature import router
 
 BIB = '@article{smith2024trade, title={Trade and Networks}, author={Smith, Anne}, year={2024}, doi={10.1234/trade}}'
 PDF = b'%PDF-1.4\nexample content'

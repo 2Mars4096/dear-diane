@@ -172,7 +172,7 @@ async function startBackend(): Promise<void> {
         env,
         stdio: ["ignore", "pipe", "pipe"],
       })
-    : spawn(findPython(), ["-m", "dan.server", "--no-reload"], {
+    : spawn(findPython(), ["-m", "diane.server", "--no-reload"], {
         cwd: workspaceRoot,
         env,
         stdio: ["ignore", "pipe", "pipe"],

@@ -6,9 +6,9 @@ from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from dan.remote.access import RemoteAccess
-from dan.remote.profiles import Profile, read_profiles, save_profile
-from dan.server.routers.remote import router
+from diane.remote.access import RemoteAccess
+from diane.remote.profiles import Profile, read_profiles, save_profile
+from diane.server.routers.remote import router
 
 
 def test_remote_boundary_covers_files_api_ws_origin_and_expiry():
@@ -72,7 +72,7 @@ def test_profile_persistence_validation_and_local_only_management(monkeypatch, t
     assert (tmp_path / "remote_connections/profiles.json").stat().st_mode & 0o777 == 0o600
     values = read_profiles()
     values["mini"].update(installed=True, execution={"boot_persistent": True})
-    from dan.remote.profiles import write_profiles
+    from diane.remote.profiles import write_profiles
     write_profiles(values)
     renamed = save_profile(p.model_copy(update={"name": "Another name"}))
     assert renamed["installed"] and renamed["execution"]["boot_persistent"]
@@ -95,7 +95,7 @@ def test_profile_persistence_validation_and_local_only_management(monkeypatch, t
 @pytest.mark.asyncio
 async def test_relay_streams_bidirectionally_and_closes():
     import asyncio
-    from dan.remote.relay import forward
+    from diane.remote.relay import forward
     async def echo(reader, writer):
         while chunk := await reader.read(100):
             writer.write(chunk)
@@ -120,7 +120,7 @@ async def test_relay_streams_bidirectionally_and_closes():
 
 
 def test_registry_merges_independent_device_edits(monkeypatch, tmp_path):
-    from dan.server.routers.remote_registry import router as registry
+    from diane.server.routers.remote_registry import router as registry
     monkeypatch.setenv("DAN_REMOTE_CONFIG", "enabled")
     monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path))
     monkeypatch.setenv("DAN_WORKSPACE_ROOT", str(tmp_path))
@@ -140,14 +140,14 @@ def test_registry_merges_independent_device_edits(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_bootstrap_only_provisions_provider_key_on_execution_host(monkeypatch, tmp_path):
     import httpx
-    from dan.remote import profiles
+    from diane.remote import profiles
     monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path))
     profile = Profile(id="mini", name="Mini", ssh_alias="mini", address="10.77.77.3")
     save_profile(profile)
     archive = tmp_path / "release.tar.gz"
     archive.write_bytes(b"test bundle")
     monkeypatch.setattr(profiles, "build_bundle", lambda: archive)
-    monkeypatch.setattr("dan.native_workers.models.openrouter_key", lambda: "provider-test-secret")
+    monkeypatch.setattr("diane.native_workers.models.openrouter_key", lambda: "provider-test-secret")
     calls = []
     async def command(args, *, data=None, timeout=30):
         if data:
@@ -166,7 +166,7 @@ async def test_bootstrap_only_provisions_provider_key_on_execution_host(monkeypa
 
 
 def test_service_paths_use_systemd_directive_syntax(monkeypatch, tmp_path):
-    from dan.remote import install
+    from diane.remote import install
     from pathlib import Path
     from types import SimpleNamespace
     home = tmp_path / "a home"
@@ -183,7 +183,7 @@ def test_service_paths_use_systemd_directive_syntax(monkeypatch, tmp_path):
 
 
 def test_manual_ssh_profiles_without_relay_and_create_collision(monkeypatch, tmp_path):
-    from dan.remote import profiles
+    from diane.remote import profiles
     monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path))
     monkeypatch.delenv("DAN_REMOTE_CONFIG", raising=False)
     profile = Profile(id="manual", name="Manual", ssh_alias="adam@server.example", ssh_port=2222,
@@ -213,7 +213,7 @@ def test_manual_ssh_profiles_without_relay_and_create_collision(monkeypatch, tmp
 
 def test_ssh_alias_suggestions_include_files_and_stay_local(monkeypatch, tmp_path):
     from pathlib import Path
-    from dan.remote import profiles
+    from diane.remote import profiles
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("DAN_REMOTE_CONFIG", raising=False)
     folder = tmp_path / ".ssh"
@@ -235,7 +235,7 @@ def test_ssh_alias_suggestions_include_files_and_stay_local(monkeypatch, tmp_pat
 @pytest.mark.asyncio
 async def test_manual_port_and_identity_reach_inspection_and_upload(monkeypatch, tmp_path):
     import httpx
-    from dan.remote import profiles
+    from diane.remote import profiles
     monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path))
     p = Profile(id="manual", name="Manual", ssh_alias="adam@server.example", address="10.77.77.3", ssh_port=2222, identity_file=str(tmp_path / "key with spaces"), ssh_via_relay=False)
     save_profile(p)
@@ -265,7 +265,7 @@ async def test_manual_port_and_identity_reach_inspection_and_upload(monkeypatch,
 
 @pytest.mark.asyncio
 async def test_ssh_inspection_does_not_inject_legacy_relay(monkeypatch):
-    from dan.remote import profiles
+    from diane.remote import profiles
     calls = []
     async def command(args, **kwargs):
         calls.append(args)

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from dan.worker.core.acquisition import LocalAcquisitionProvider
-from dan.worker.core.capabilities import CapabilityCostTier, CapabilityManifest
-from dan.worker.core.contracts import AcquisitionFamily, AcquisitionPolicy, AcquisitionSource, ExecutionRequest
-from dan.worker.core.executor import WorkerCoreExecutor
-from dan.worker.core.interfaces import CompletionRequest, CompletionResponse
-from dan.worker.core.model import WorkerDefinition
+from diane.worker.core.acquisition import LocalAcquisitionProvider
+from diane.worker.core.capabilities import CapabilityCostTier, CapabilityManifest
+from diane.worker.core.contracts import AcquisitionFamily, AcquisitionPolicy, AcquisitionSource, ExecutionRequest
+from diane.worker.core.executor import WorkerCoreExecutor
+from diane.worker.core.interfaces import CompletionRequest, CompletionResponse
+from diane.worker.core.model import WorkerDefinition
 
 
 class _RecordingCompletionProvider:

@@ -13,11 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from dan.cli.main import _SUBCOMMANDS
-from dan.cli import super_tui
-from dan.cli import super_organism
-from dan.providers import CompletionResult
-from dan.skills import invocation as skill_invocation
+from diane.cli.main import _SUBCOMMANDS
+from diane.cli import super_tui
+from diane.cli import super_organism
+from diane.providers import CompletionResult
+from diane.skills import invocation as skill_invocation
 
 
 def _write_event_log(path: Path, rows: list[dict]) -> None:
@@ -53,19 +53,19 @@ def _patch_tui_route(
 
 
 def test_unified_cli_registers_super_tui_without_changing_super_organism() -> None:
-    assert _SUBCOMMANDS["super-tui"] == ("dan.cli.super_tui", "main")
-    assert _SUBCOMMANDS["super-organism"] == ("dan.cli.super_organism", "main")
+    assert _SUBCOMMANDS["super-tui"] == ("diane.cli.super_tui", "main")
+    assert _SUBCOMMANDS["super-organism"] == ("diane.cli.super_organism", "main")
 
     pyproject = tomllib.loads(
         (Path(__file__).parents[2] / "pyproject.toml").read_text(encoding="utf-8")
     )
     scripts = pyproject["project"]["scripts"]
-    assert scripts["dan-super-tui"] == "dan.cli.super_tui:main"
-    assert scripts["dan-super-organism"] == "dan.cli.super_organism:main"
+    assert scripts["dan-super-tui"] == "diane.cli.super_tui:main"
+    assert scripts["dan-super-organism"] == "diane.cli.super_organism:main"
 
 
 def test_unified_cli_propagates_subcommand_exit_code(monkeypatch) -> None:
-    from dan.cli import main as main_cli
+    from diane.cli import main as main_cli
 
     module_name = "fake_dan_subcommand_for_test"
     monkeypatch.setitem(sys.modules, module_name, Namespace(main=lambda: 7))
@@ -1602,7 +1602,7 @@ def test_super_tui_async_write_followup_starts_independent_without_lane_prompt(
 
 
 def test_super_tui_forced_new_async_followup_does_not_surface_lane_question(tmp_path) -> None:
-    from dan.server.chat_v2_async_core import mark_background_run_started
+    from diane.server.chat_v2_async_core import mark_background_run_started
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -6149,7 +6149,7 @@ def test_super_tui_browser_tool_evidence_mentions_gui_preview() -> None:
 
 
 def test_super_tui_playwright_session_info_exposes_non_headless_preview(monkeypatch) -> None:
-    import dan.tools.browser_control as browser_control
+    import diane.tools.browser_control as browser_control
 
     monkeypatch.setattr(browser_control, "is_playwright_available", lambda: True)
     controller = browser_control.PlaywrightBrowserController(headless=False, profile="visible-demo")
@@ -6166,7 +6166,7 @@ def test_super_tui_playwright_launch_options_fallback_to_system_browser(
     monkeypatch,
     tmp_path,
 ) -> None:
-    import dan.tools.browser_control as browser_control
+    import diane.tools.browser_control as browser_control
 
     system_browser = tmp_path / "Google Chrome"
     system_browser.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -6745,7 +6745,7 @@ def test_super_tui_browser_probe_uses_browser_tool_loop_not_workspace_sources(
     capsys,
     monkeypatch,
 ) -> None:
-    from dan.worker.organisms import local_runtime
+    from diane.worker.organisms import local_runtime
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -6930,7 +6930,7 @@ def test_super_tui_browser_probe_recovers_empty_dynamic_page_before_answer(
     capsys,
     monkeypatch,
 ) -> None:
-    from dan.worker.organisms import local_runtime
+    from diane.worker.organisms import local_runtime
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -7173,7 +7173,7 @@ def test_super_tui_browser_probe_does_not_fallback_to_workspace_preview(
 async def test_super_tui_live_browser_manipulation_smoke() -> None:
     from urllib.parse import quote
 
-    from dan.tools.browser_control import PlaywrightBrowserController
+    from diane.tools.browser_control import PlaywrightBrowserController
 
     html = """
     <html>
@@ -7619,4 +7619,4 @@ def test_super_organism_parser_identity_is_unchanged() -> None:
     parser = super_organism.build_parser()
 
     assert parser.prog == "dan-super-organism"
-    assert _SUBCOMMANDS["super-organism"] == ("dan.cli.super_organism", "main")
+    assert _SUBCOMMANDS["super-organism"] == ("diane.cli.super_organism", "main")

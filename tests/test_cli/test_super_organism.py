@@ -9,12 +9,12 @@ from pathlib import Path
 
 import pytest
 
-import dan.cli.super_organism as super_cli
-from dan.cli.main import _SUBCOMMANDS
-from dan.providers import CompletionResult
-from dan.cli.super_organism import build_parser, main
-from dan.worker.core.contracts import OutputContract
-from dan.worker.core.structured_output import validate_structured_output
+import diane.cli.super_organism as super_cli
+from diane.cli.main import _SUBCOMMANDS
+from diane.providers import CompletionResult
+from diane.cli.super_organism import build_parser, main
+from diane.worker.core.contracts import OutputContract
+from diane.worker.core.structured_output import validate_structured_output
 
 
 def _fake_request_understanding_completion(messages, model) -> CompletionResult | None:
@@ -4717,7 +4717,7 @@ async def test_super_heartbeat_monitor_emits_idle_events() -> None:
 
 
 def test_unified_cli_registers_super_organism() -> None:
-    assert _SUBCOMMANDS["super-organism"] == ("dan.cli.super_organism", "main")
+    assert _SUBCOMMANDS["super-organism"] == ("diane.cli.super_organism", "main")
 
 
 def test_main_json_outputs_default_20_cell_report(tmp_path, capsys) -> None:

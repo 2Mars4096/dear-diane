@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dan.cli import up as up_module
+from diane.cli import up as up_module
 
 
 def test_resolve_bind_host_auto_binds_all_when_phone_present(monkeypatch) -> None:
@@ -47,7 +47,7 @@ def test_start_server_launches_minimal_server(monkeypatch, tmp_path) -> None:
     assert captured["command"] == [
         up_module.sys.executable,
         "-m",
-        "dan.server",
+        "diane.server",
         "--host",
         "127.0.0.1",
         "--port",

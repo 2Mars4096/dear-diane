@@ -9,17 +9,17 @@ import sys
 
 import pytest
 
-from dan import _atomic_file
-from dan.tools.file_write import file_write
-import dan.worker.organisms.local_runtime as local_runtime_module
-from dan.providers import CompletionResult
-from dan.worker.core.contracts import OutputContract
-from dan.worker.core.interfaces import CompletionRequest
-from dan.worker.organisms.local_runtime import (
+from diane import _atomic_file
+from diane.tools.file_write import file_write
+import diane.worker.organisms.local_runtime as local_runtime_module
+from diane.providers import CompletionResult
+from diane.worker.core.contracts import OutputContract
+from diane.worker.core.interfaces import CompletionRequest
+from diane.worker.organisms.local_runtime import (
     LocalOrganismToolRuntime,
     ToolLoopCompletionProvider,
 )
-from dan.worker.organisms.super_organism import (
+from diane.worker.organisms.super_organism import (
     DEFAULT_SUPER_ORGANISM_ACTIVE_CELL_CAP,
     DEFAULT_SUPER_ORGANISM_CELL_COUNT,
     SuperOrgan,
@@ -767,7 +767,7 @@ async def test_super_dan_shell_timeout_kills_child_processes(
     )
     command = f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)}"
 
-    from dan.tools.shell_command import shell_command
+    from diane.tools.shell_command import shell_command
 
     result = await shell_command(
         command=command,

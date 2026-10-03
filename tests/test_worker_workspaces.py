@@ -1,6 +1,6 @@
 import subprocess
 import pytest
-from dan.native_workers.workspaces import create, apply
+from diane.native_workers.workspaces import create, apply
 
 
 def git(root, *args):
@@ -46,13 +46,13 @@ def test_conflicting_source_edits_are_preserved(repo, tmp_path):
 @pytest.mark.asyncio
 async def test_team_launches_in_owned_worktree_and_resumes_there(repo, tmp_path, monkeypatch):
     import asyncio, sys
-    from dan.native_workers.service import NativeTeam
+    from diane.native_workers.service import NativeTeam
     seen = []
     def launch(backend, profile, prompt, workspace, session=''):
         seen.append((workspace, session))
         code = 'from pathlib import Path; import json; Path("a.txt").write_text("worker edit\\n"); print(json.dumps({"type":"result","session_id":"native","result":"done"}))'
         return [sys.executable, '-c', code], {}
-    monkeypatch.setattr('dan.native_workers.service.launch', launch)
+    monkeypatch.setattr('diane.native_workers.service.launch', launch)
     team = NativeTeam('parent', str(repo), {'claude': {'enabled': True}}, tmp_path / 'state/workers')
     row = await team.start('claude', 'Edit a', isolate=True)
     await asyncio.gather(*team.tasks.values())
@@ -67,7 +67,7 @@ async def test_team_launches_in_owned_worktree_and_resumes_there(repo, tmp_path,
 
 def test_apply_rejects_changes_after_review(repo, tmp_path):
     from pathlib import Path
-    from dan.native_workers.workspaces import preview
+    from diane.native_workers.workspaces import preview
     row = create(tmp_path / 'state/workers', 'reviewed', str(repo))
     (Path(row['workspace_root']) / 'a.txt').write_text('reviewed edit\n')
     reviewed = preview(row)
@@ -79,10 +79,10 @@ def test_apply_rejects_changes_after_review(repo, tmp_path):
 
 @pytest.mark.asyncio
 async def test_failed_launch_admission_removes_only_its_new_worktree(repo, tmp_path, monkeypatch):
-    from dan.native_workers.service import NativeTeam
+    from diane.native_workers.service import NativeTeam
     def unavailable(*args, **kwargs):
         raise ValueError('CLI is unavailable')
-    monkeypatch.setattr('dan.native_workers.service.launch', unavailable)
+    monkeypatch.setattr('diane.native_workers.service.launch', unavailable)
     team = NativeTeam('parent', str(repo), {'claude': {'enabled': True}}, tmp_path / 'state/workers')
     (repo / 'a.txt').write_text('user work\n')
     with pytest.raises(ValueError, match='CLI is unavailable'):

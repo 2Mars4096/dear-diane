@@ -2,9 +2,9 @@ from fastapi.testclient import TestClient
 
 
 def test_reader_ocr_roundtrip_and_staleness(tmp_path, monkeypatch):
-    from dan.server import app as app_module
+    from diane.server import app as app_module
     monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path / "graphs"))
-    from dan.server.routers import reader
+    from diane.server.routers import reader
     monkeypatch.setattr(reader, "resolve_graphs_dir", lambda: str(tmp_path / "graphs"))
     from fastapi import FastAPI
     api = FastAPI(); api.include_router(reader.router)
@@ -22,7 +22,7 @@ def test_reader_ocr_roundtrip_and_staleness(tmp_path, monkeypatch):
 
 def test_file_tree_skips_symlinks_that_leave_the_root(tmp_path):
     import asyncio
-    from dan.server.routers import misc
+    from diane.server.routers import misc
     root = tmp_path / "project"; (root / "docs").mkdir(parents=True); (root / "docs/a.md").write_text("x")
     outside = tmp_path / "outside"; (outside / "skill").mkdir(parents=True); (outside / "skill/SKILL.md").write_text("y")
     (root / "pool").mkdir(); (root / "pool/skill").symlink_to(outside / "skill", target_is_directory=True)

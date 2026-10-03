@@ -4,11 +4,11 @@ import json
 
 import pytest
 
-import dan.worker.organisms.local_runtime as local_runtime_module
-from dan.providers import CompletionResult
-from dan.worker.core.contracts import OutputContract
-from dan.worker.core.interfaces import CompletionRequest
-from dan.worker.organisms.local_runtime import (
+import diane.worker.organisms.local_runtime as local_runtime_module
+from diane.providers import CompletionResult
+from diane.worker.core.contracts import OutputContract
+from diane.worker.core.interfaces import CompletionRequest
+from diane.worker.organisms.local_runtime import (
     LocalOrganismToolRuntime,
     ToolLoopCompletionProvider,
 )

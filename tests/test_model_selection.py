@@ -4,8 +4,8 @@ import tomllib
 
 import pytest
 
-from dan.native_workers import catalog
-from dan.native_workers.models import (
+from diane.native_workers import catalog
+from diane.native_workers.models import (
     OPENROUTER_URL, ReasoningProvider, dan_model_policy, openrouter_key, source_catalog,
 )
 
@@ -41,7 +41,7 @@ def test_claude_gateway_does_not_change_native_login(configured, monkeypatch, tm
     monkeypatch.setenv("ANTHROPIC_API_KEY", "native-key")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "native-oauth")
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
-    monkeypatch.setattr("dan.native_workers.skills.build_pool", lambda *args: None)
+    monkeypatch.setattr("diane.native_workers.skills.build_pool", lambda *args: None)
     original = dict(os.environ)
     args, env = catalog.launch("claude", {**configured, "effort": ""}, "work", str(tmp_path))
     assert env["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
@@ -72,11 +72,11 @@ def test_unsupported_combinations_fail_before_spawn(configured, runtime, patch, 
 def test_source_catalog_is_secret_free_and_missing_key_does_not_fallback(configured, monkeypatch):
     assert "test-router-secret" not in json.dumps(source_catalog("codex"))
     monkeypatch.delenv("OPENROUTER_API_KEY")
-    monkeypatch.setattr("dan.cli.resolve_config", lambda: {"api_key": "wrong-provider-key", "base_url": "https://other.invalid"})
+    monkeypatch.setattr("diane.cli.resolve_config", lambda: {"api_key": "wrong-provider-key", "base_url": "https://other.invalid"})
     assert not openrouter_key()
     with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
         dan_model_policy(configured)
-    monkeypatch.setattr("dan.cli.resolve_config", lambda: {"api_key": "matching-key", "base_url": OPENROUTER_URL})
+    monkeypatch.setattr("diane.cli.resolve_config", lambda: {"api_key": "matching-key", "base_url": OPENROUTER_URL})
     assert openrouter_key() == "matching-key"
 
 
@@ -106,13 +106,13 @@ async def test_dan_reasoning_is_scoped_and_forwarded_for_completion_and_stream(c
 
 @pytest.mark.asyncio
 async def test_dan_team_forwards_the_same_model_choice(configured, monkeypatch, tmp_path):
-    from dan.native_workers.service import NativeTeam
-    from dan.server.chat_v2_backend import AgentBackendRunResult
+    from diane.native_workers.service import NativeTeam
+    from diane.server.chat_v2_backend import AgentBackendRunResult
     calls = []
     async def run(self, request, emit):
         calls.append(request)
         return AgentBackendRunResult(status="completed", backend="super_dan", summary="done")
-    monkeypatch.setattr("dan.server.chat_v2_backend.SuperDanBackendAdapter._run", run)
+    monkeypatch.setattr("diane.server.chat_v2_backend.SuperDanBackendAdapter._run", run)
     team = NativeTeam("parent", str(tmp_path), {"dan": {**configured, "enabled": True}}, tmp_path / "workers")
     worker = await team.start("dan", "work")
     await team.tasks[worker["worker_id"]]
@@ -121,7 +121,7 @@ async def test_dan_team_forwards_the_same_model_choice(configured, monkeypatch, 
 
 @pytest.mark.parametrize('source,model', [('openai', 'gpt-6-astra'), ('deepseek', 'deepseek-flash'), ('moonshot', 'kimi-k3')])
 def test_direct_provider_codex_route(configured, monkeypatch, tmp_path, source, model):
-    from dan.native_workers.models import API_PROVIDERS
+    from diane.native_workers.models import API_PROVIDERS
     spec = API_PROVIDERS[source]
     monkeypatch.setenv(spec['env'], 'direct-test-secret')
     args, env = catalog.launch('codex', {'provider': source, 'model': model, 'effort': 'high'}, 'work', str(tmp_path))
@@ -134,12 +134,12 @@ def test_direct_provider_codex_route(configured, monkeypatch, tmp_path, source, 
 
 @pytest.mark.parametrize('source,model', [('deepseek', 'deepseek-flash'), ('moonshot', 'kimi-k3')])
 def test_direct_claude_route(configured, monkeypatch, tmp_path, source, model):
-    from dan.native_workers.models import API_PROVIDERS
+    from diane.native_workers.models import API_PROVIDERS
     spec = API_PROVIDERS[source]
     monkeypatch.setenv(spec['env'], 'direct-test-secret')
     monkeypatch.setenv('ANTHROPIC_SMALL_FAST_MODEL', 'unrelated-model')
     monkeypatch.setenv('CLAUDE_CODE_EFFORT_LEVEL', 'low')
-    monkeypatch.setattr('dan.native_workers.skills.build_pool', lambda *args: None)
+    monkeypatch.setattr('diane.native_workers.skills.build_pool', lambda *args: None)
     args, env = catalog.launch('claude', {'provider': source, 'model': model, 'effort': 'high'}, 'work', str(tmp_path))
     assert env['ANTHROPIC_BASE_URL'] == spec['anthropic_url']
     assert env['ANTHROPIC_AUTH_TOKEN'] == 'direct-test-secret'
@@ -153,9 +153,9 @@ def test_direct_claude_route(configured, monkeypatch, tmp_path, source, model):
 def test_saved_credentials_private_redacted_and_removable(configured, monkeypatch, tmp_path):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from dan.server.routers.native_workers import router
-    from dan.native_workers.models import provider_key
-    from dan.native_workers.provider_credentials import _path
+    from diane.server.routers.native_workers import router
+    from diane.native_workers.models import provider_key
+    from diane.native_workers.provider_credentials import _path
     monkeypatch.delenv('DAN_REMOTE_CONFIG', raising=False)
     monkeypatch.setenv('DEEPSEEK_API_KEY', 'environment-fallback')
     app = FastAPI()
@@ -177,7 +177,7 @@ def test_saved_credentials_private_redacted_and_removable(configured, monkeypatc
 
 
 def test_direct_reasoning_options_and_compatibility(configured, monkeypatch):
-    from dan.native_workers.models import validate_model_source
+    from diane.native_workers.models import validate_model_source
     monkeypatch.setenv('DEEPSEEK_API_KEY', 'test-key')
     policy = dan_model_policy({'provider': 'deepseek', 'model': 'deepseek-flash', 'effort': 'max'})
     assert policy['base_url'] == 'https://api.deepseek.com'
