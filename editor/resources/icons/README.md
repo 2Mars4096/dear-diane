@@ -10,7 +10,7 @@ Source: `source-v7.png` (original generated resolution); generation prompt in `p
 
 Exports preserve the approved artwork, including its ivory tile and white outer margin. Resized with macOS `sips`; ICNS and ICO package PNG entries using Python's standard library. ICNS decoding verified with `iconutil`. No added runtime dependencies.
 
-The local macOS updater preserves the installed app's icon. New desktop packages use these assets; existing installations retain their icon through that updater.
+The local macOS updater preserves the installed app's icon. New desktop packages use these assets; existing installations retain their icon through that updater. The user-selected coral release was installed with an explicit staged-icon replacement and signature verification, so this installation now uses the coral artwork.
 
 ## Menu bar and new concepts
 
