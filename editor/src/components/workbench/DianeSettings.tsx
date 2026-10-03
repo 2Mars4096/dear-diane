@@ -10,7 +10,7 @@ import { useSettingsStore } from "../../store/useSettingsStore";
 import { NativeWorkerSettings, type WorkerProfiles } from "./NativeWorkers";
 import { PALETTE_ROLES, WORKBENCH_PALETTES, workbenchPalette } from "../../lib/workbenchPalette";
 
-export function DanSettings({ onClose, profiles, onProfilesChange, onPapers, page = false }: {
+export function DianeSettings({ onClose, profiles, onProfilesChange, onPapers, page = false }: {
   onPapers?: () => void;
   onClose: () => void; profiles: WorkerProfiles; onProfilesChange: (profiles: WorkerProfiles) => void; page?: boolean;
 }) {
