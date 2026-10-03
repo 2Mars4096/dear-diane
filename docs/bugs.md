@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- **Lockfile drift (2026-10-03):** validation found the existing `browser` extra missing from uv.lock. Regenerated it without upgrading existing locked packages; added Playwright and its dependencies.
+- **Source rename validation (2026-10-03):** sandbox restrictions blocked process inspection, loopback binding and Flutter SDK cache writes. Frontend/process/relay tests pass with those capabilities enabled. The local Python environment lacked hatchling, so the editable install used declared build isolation. Persisted identifiers are deliberately outside the source-path rename.
+
 - **Fixed 2026-10-03: Chinese quotes became Latin noise.** English-only recognition and stretched line boxes produced unrelated selected strings. Use Chinese word boxes for selection and selected-pixel vision transcription for scan quotes. Native text bypasses OCR/model calls.
 - **Fixed 2026-10-03: async quote updates erased typing.** Notes previously reset the textarea whenever the draft object changed. A stable draft ID now scopes the reset; delayed quote updates preserve typing, saved edits and deletions.
 - **Validation failures:** a standalone PDF fixture omitted pdf.js `wasmUrl`, producing blank JBIG2 crops; configure bundled assets and reject blank crops. Stale browser module imports also retained the old crop function; full reload verified the changed code. Left-offset wrapped crops could be read out of order; stack selected strips before transcription.

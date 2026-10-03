@@ -19,7 +19,7 @@ Inspect before choosing selectors. `browser_tabs(index=1)` activates an inspecte
 ## 1. Build a Universal Cell
 
 ```python
-from dan import build_cell
+from diane import build_cell
 
 cell = build_cell(
     model="gpt-5.4",
@@ -33,8 +33,8 @@ The cell contains invariant infrastructure only. Do not encode the task in `inst
 ## 2. Describe the role and brief
 
 ```python
-from dan.worker.brief import RoleSpec
-from dan.worker.contracts.templates import coding_brief
+from diane.worker.brief import RoleSpec
+from diane.worker.contracts.templates import coding_brief
 
 brief = coding_brief(
     role=RoleSpec(
@@ -67,7 +67,7 @@ Important `WorkerBrief` fields:
 Convert a brief to the cell-core request with:
 
 ```python
-from dan.worker.brief import request_from_brief
+from diane.worker.brief import request_from_brief
 
 request = request_from_brief(brief)
 ```
@@ -75,8 +75,8 @@ request = request_from_brief(brief)
 ## 3. Compose an organism plan
 
 ```python
-from dan.worker.contracts.templates import review_brief
-from dan.worker.organisms.universal_organism import (
+from diane.worker.contracts.templates import review_brief
+from diane.worker.organisms.universal_organism import (
     OrganismDependency,
     OrganismPlan,
     OrganismPolicy,
@@ -114,7 +114,7 @@ Use dependency edges and readiness predicates to express execution order. Do not
 ## 4. Execute
 
 ```python
-from dan.worker.organisms.universal_organism import execute_universal_organism
+from diane.worker.organisms.universal_organism import execute_universal_organism
 
 result = await execute_universal_organism(plan, executor=configured_executor)
 ```

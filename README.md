@@ -144,8 +144,8 @@ DAN_NOTES_WORKSPACE_ROOT=/absolute/path/to/notes
 Start the server:
 
 ```bash
-dan-up
-# or: dan serve --no-reload
+diane-up
+# or: diane serve --no-reload
 ```
 
 Start the browser GUI:
@@ -167,11 +167,11 @@ npm run electron:dev
 Run Dear Diane directly:
 
 ```bash
-dan super-organism --model "$DAN_LLM_MODEL" "Inspect this workspace and implement the requested change"
-dan super-tui
+diane super-organism --model "$DAN_LLM_MODEL" "Inspect this workspace and implement the requested change"
+diane super-tui
 ```
 
-Other retained commands are `dan serve`, `dan up`, `dan down`, and `dan editor`.
+Other retained commands are `diane serve`, `diane up`, `diane down`, and `diane editor`.
 
 ## Product surface
 
@@ -198,7 +198,7 @@ The mobile app consumes the same loopback/WireGuard-safe HTTP API. `/api/workspa
 ## Core Python API
 
 ```python
-from dan import build_cell
+from diane import build_cell
 
 cell = build_cell(model="gpt-5.4", role_label="implementer")
 assert cell.metadata["universal_cell"] is True
@@ -209,7 +209,7 @@ For typed briefs and organism plans, see [docs/llm-api-guide.md](docs/llm-api-gu
 ## Validation
 
 ```bash
-python -m compileall -q src/dan
+python -m compileall -q src/diane
 
 cd editor
 npm test
@@ -222,13 +222,13 @@ Focused Python tests live under `tests/test_worker`, `tests/test_cli`, `tests/te
 ## Repository map
 
 ```text
-src/dan/worker/          Universal Cell, briefs, contracts, scheduler, organism
-src/dan/worker/organisms Universal Organism, Dear Diane, local tool runtime
-src/dan/cli/             Retained server, Dear Diane, and TUI commands
-src/dan/server/          Work/Notes, sessions, and Agent V2 control plane
-src/dan/providers/       OpenAI, Anthropic, and Google provider adapters
-src/dan/tools/           Selectively loaded Dear Diane capabilities
-src/dan/skills/          Skill discovery and loading
+src/diane/worker/          Universal Cell, briefs, contracts, scheduler, organism
+src/diane/worker/organisms Universal Organism, Dear Diane, local tool runtime
+src/diane/cli/             Retained server, Dear Diane, and TUI commands
+src/diane/server/          Work/Notes, sessions, and Agent V2 control plane
+src/diane/providers/       OpenAI, Anthropic, and Google provider adapters
+src/diane/tools/           Selectively loaded Dear Diane capabilities
+src/diane/skills/          Skill discovery and loading
 editor/                  Work/Notes React + Electron app
 mobile/                  Optional Flutter phone app
 docs/plans/              Active numbered roadmap (1–7)
@@ -272,7 +272,7 @@ Published releases use `electron-updater`; **Check for updates** and **Download*
 
 The product is **Dear Diane** and the assistant is **Diane**. After installing the Python package, use `dear-diane --help`; existing `dan` commands still work. New desktop builds are named `Dear Diane.app`.
 
-Existing Python imports/package name (`dan`), `DAN_*` environment variables, backend IDs, browser storage keys, bundle ID (`com.dan.desktop`), remote services, and the desktop `Application Support/dan` profile remain stable so existing installations retain their chats, accounts, settings, and update identity. The full internal rename is tracked in [the migration plan](docs/diane-name-migration.md).
+Python imports now use `diane` (`src/diane`), and the distribution is `dear-diane`. Reinstall with `pip install -e .` after updating. Existing `DAN_*` environment variables, backend IDs, browser storage keys, bundle ID (`com.dan.desktop`), remote services, and the desktop `Application Support/dan` profile remain stable so existing installations retain their chats, accounts, settings, and update identity. The full internal rename is tracked in [the migration plan](docs/diane-name-migration.md).
 
 
 ### Background work and quitting

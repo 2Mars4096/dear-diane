@@ -1,6 +1,6 @@
 # Dear Diane internal-name migration
 
-Status: prepared for approval after automatic review rejected the broad replacement.
+Status: source-path rename implemented and desktop installed; runtime/profile migration remains separate.
 
 ## Names
 - Product: Dear Diane. Short name: Diane.
@@ -24,5 +24,17 @@ Status: prepared for approval after automatic review rejected the broad replacem
 - Frontend/backend tests, production bundle limits, signature and installed archive equality.
 - Normal push in separate commits; no history rewrite, destructive global replacement, or deletion of the old profile.
 
-## Review boundary
-The attempted broad replacement was stopped and its partial changes undone. No Python package, stored identifier, profile directory or bundle identity has been renamed in this release. The reader fixes and visible log/update naming cleanup are independent and can ship now.
+## Earlier review boundary (reader release)
+The attempted broad replacement was stopped and its partial changes undone. At that point, no Python package, stored identifier, profile directory or bundle identity had been renamed. The reader fixes and visible log/update naming cleanup are independent and can ship now.
+
+## Source-path rename (2026-10-03)
+- [x] Move `src/dan` to `src/diane`; update Python imports, dynamic module names, launcher and packaging references.
+- [x] Rename settings component, evaluation scripts, phone icon, WireGuard helper and Android Kotlin directories; update callers.
+- [x] Publish new `diane` CLI names; retain existing command aliases pointing at the new implementation.
+- [x] Validate Python tests, frontend tests/build, Flutter widget test and installed launch.
+- [ ] Complete optional Android APK build (dependency downloads in progress).
+- [x] Commit by feature; push after final documentation update.
+
+This step renames repository source paths. Runtime profiles, environment variables, schema IDs and historical worktrees stay compatible. Android uses the new Kotlin namespace with the existing application ID and preferences. Python callers must update imports to `diane`; old module imports are not retained as a second source folder.
+
+Validation: 855 Python tests pass across the main run and sandbox-capable rerun (four skipped); 437 frontend tests and one Flutter widget test pass. All 19 installed command entry points resolve. Source audit covers 187 Python modules; no tracked path contains the old name. Lockfile check and desktop health/signature/archive checks pass.

@@ -1,8 +1,10 @@
 # Todo
 
+- [x] Rename repository source files/folders and package imports to Diane; validate and commit by feature — [migration](diane-name-migration.md).
+
 - [x] Add selected-crop vision transcription and offline-first comments; fix Chinese selection geometry, page arrangement and Notes resizing — [reader](UI-plans/3-reader-and-side-panel.md).
 - [x] Install the reader follow-up and apply/verify six existing quote repairs; comment bodies/geometry unchanged, persisted quotes and app/backend health verified after restart.
-- [ ] Complete internal Diane naming through the [reviewable migration](diane-name-migration.md); broad rename rejected by automatic review, partial edits undone.
+- [ ] Complete runtime/profile Diane naming through the [reviewable migration](diane-name-migration.md); broad rename rejected by automatic review, partial edits undone.
 
 - [x] Fix OCR selections spanning both pages: detect/crop at the gutter, retain each page's reading order, invalidate old caches, and add layout override. Shorten Ref and make only Ask primary — [reader](UI-plans/3-reader-and-side-panel.md).
 - [x] Install the OCR/selection-toolbar follow-up; signature, archive equality and owned backend/proxy health pass.
@@ -152,7 +154,7 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
 
 - [x] [1-universal-cell](plans/1-universal-cell.md) — one typed, brief-driven execution cell.
 - [x] [2-universal-organism](plans/2-universal-organism.md) — one dependency-aware organism runtime.
-- [x] [3-super-dan](plans/3-super-dan.md) — general live runtime, tools, hooks, blueprints, and TUI.
+- [x] [3-super-dan](plans/3-super-diane.md) — general live runtime, tools, hooks, blueprints, and TUI.
 - [ ] [4-work-notes-gui](plans/4-work-notes-gui.md) — active Work/Notes UX refinement.
   - [x] [4-6-document-workspace](plans/4-6-document-workspace.md) — drop/open PDFs, editable text and Markdown tabs, media viewers, guarded Save, and browser-copy downloads.
   - [x] [4-4-agent-model-selection](plans/4-4-agent-model-selection.md) — independent harness/model-source/model choices; live Codex/Claude OpenRouter routing verified before SSH work.
@@ -174,8 +176,8 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
 
 ## Live evaluation
 
-- [x] [1-super-dan-capability](live-test-plans/1-super-dan-capability.md)
-- [x] [2-super-dan-flagship](live-test-plans/2-super-dan-flagship.md)
+- [x] [1-super-dan-capability](live-test-plans/1-super-diane-capability.md)
+- [x] [2-super-dan-flagship](live-test-plans/2-super-diane-flagship.md)
 - [ ] [3-human-assist](live-test-plans/3-human-assist.md)
 
 ## Backlog

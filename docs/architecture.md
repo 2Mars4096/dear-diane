@@ -1,5 +1,7 @@
 # Architecture
 
+- Python source lives in `src/diane`; distribution `dear-diane`, primary CLI `diane`. Legacy CLI aliases point to the same implementation. Android source namespace is `com.diane.diane_phone`; installed application IDs and persisted settings remain compatible.
+
 ## Reader selection and transcription
 - Local Tesseract runs with Chinese/English models and word boxes, separately for each detected printed page. `scan-lines.ts` fills lines omitted by recognition without stretching known words; cache version 3 rejects older geometry.
 - `selection-image.ts` renders selected pixels directly from PDF coordinates, stacking selected strips in reading order for transcription. It rejects blank captures. `/api/reader/transcribe` uses server-side OpenRouter credentials with Qwen3-VL 32B and GLM-4.6V fallback, bounded requests and content-keyed result caching under `graphs/reader_transcriptions`. No surrounding unselected context is uploaded.
@@ -84,8 +86,8 @@
 - `electron/windowAppearance.ts` gates initial reveal on both first paint and themed document load; tray and second-instance requests share that gate. HTML paints an opaque palette background; preload synchronizes palette changes to the native window through validated, main-frame-only IPC. Local services stop at `will-quit`, after windows close, preserving cancelled unloads.
 
 ## Shared metadata and durable writes
-- `dan.notes_frontmatter` provides the existing lightweight Hugo parser to Notes routes and the paper catalogue without importing a router. It is not a general YAML parser.
-- `dan._atomic_file` serves tools, runtime mutations, document editing, profiles, paper state, and the remote project registry. Existing workspace permissions are preserved; private state explicitly uses mode 0600 from temporary-file creation through replacement. Unique sibling temporaries, fsync, and failure cleanup are shared. The standalone SSH installer keeps its dependency-free writer.
+- `diane.notes_frontmatter` provides the existing lightweight Hugo parser to Notes routes and the paper catalogue without importing a router. It is not a general YAML parser.
+- `diane._atomic_file` serves tools, runtime mutations, document editing, profiles, paper state, and the remote project registry. Existing workspace permissions are preserved; private state explicitly uses mode 0600 from temporary-file creation through replacement. Unique sibling temporaries, fsync, and failure cleanup are shared. The standalone SSH installer keeps its dependency-free writer.
 
 ## JSON transport and library subscriptions
 - `lib/http.ts` owns JSON deadlines, caller abort propagation, header merging, and structured `ApiError` responses. API, papers, and SSH keep typed endpoint wrappers; ordinary requests default to 10 seconds, SSH inspection allows 45 seconds.
@@ -145,7 +147,7 @@
 
 ## Product stack
 
-Remote deployment: [6-remote-control](plans/6-remote-control.md) keeps the backend, native CLI processes, credentials, and durable records on the execution host. `dan.remote.profiles` saves private local connection records and installs versioned releases using SSH; `install` provisions systemd user services and checks boot lingering. `relay` transparently forwards TCP over an existing private network, so HTTP streams and WebSockets share the same path without a laptop-owned tunnel. Each host uses its own relay port/browser origin. Relay SSH alias/address are profile fields, not a hard-coded `ny` dependency.
+Remote deployment: [6-remote-control](plans/6-remote-control.md) keeps the backend, native CLI processes, credentials, and durable records on the execution host. `diane.remote.profiles` saves private local connection records and installs versioned releases using SSH; `install` provisions systemd user services and checks boot lingering. `relay` transparently forwards TCP over an existing private network, so HTTP streams and WebSockets share the same path without a laptop-owned tunnel. Each host uses its own relay port/browser origin. Relay SSH alias/address are profile fields, not a hard-coded `ny` dependency.
 
 `RemoteAccess` protects every HTTP/static/file/WebSocket route on configured remote servers: per-machine access key, signed expiring HttpOnly session cookie, exact Host/Origin checks, login throttling, and no wildcard remote CORS. Plain HTTP is restricted to existing private/VPN interfaces; this is not public HTTPS deployment. SSH setup endpoints reject remote browsers and nonlocal origins. Profiles and keys are stored in mode-0600 ignored files, never browser localStorage. SSH uses pinned existing host keys, no agent forwarding, and independent connections to avoid stalled shared control sockets.
 
@@ -177,25 +179,25 @@ There is one active agent product. Task families such as coding, research, desig
 
 ## Python layout
 
-- `src/dan/worker/cell.py` — fixed Universal Cell system prompt and `build_cell`.
-- `src/dan/worker/brief.py` — `RoleSpec`, `WorkerBrief`, prompt rendering, and execution-request conversion.
-- `src/dan/worker/contracts/` — sampling, output, failure, recovery, snippet, and prompt-context contracts.
-- `src/dan/worker/core/` — cell execution interfaces, capabilities, memory, acquisition, and structured output.
-- `src/dan/worker/scheduler/` — task/dependency contracts, deterministic policy, specialized scheduler worker, and replay analysis.
-- `src/dan/worker/organisms/universal_organism.py` — the only general organism runner.
-- `src/dan/worker/organisms/super_organism.py` — Super DAN plan/report composition.
-- `src/dan/worker/organisms/local_runtime.py` — local provider/tool loop for Super DAN.
-- `src/dan/task_blueprints.py` — protected semantic task contract and revisioned execution-attempt models.
-- `src/dan/providers/` — provider protocol, registry, retries, and OpenAI/Anthropic/Google adapters.
-- `src/dan/tools/` — selectively loaded capabilities. Optional dependencies must stay lazy.
-- `src/dan/sandbox/` — operational subprocess limits used by the retained shell tool; not an OS security boundary.
-- `src/dan/skills/` — skill discovery, selection, and loading.
-- `src/dan/server/` — durable stores, Agent V2 contracts/backends, and minimal FastAPI composition root.
-- `src/dan/cli/` — server lifecycle, Super DAN, hooks/blueprints, and TUI entry points.
+- `src/diane/worker/cell.py` — fixed Universal Cell system prompt and `build_cell`.
+- `src/diane/worker/brief.py` — `RoleSpec`, `WorkerBrief`, prompt rendering, and execution-request conversion.
+- `src/diane/worker/contracts/` — sampling, output, failure, recovery, snippet, and prompt-context contracts.
+- `src/diane/worker/core/` — cell execution interfaces, capabilities, memory, acquisition, and structured output.
+- `src/diane/worker/scheduler/` — task/dependency contracts, deterministic policy, specialized scheduler worker, and replay analysis.
+- `src/diane/worker/organisms/universal_organism.py` — the only general organism runner.
+- `src/diane/worker/organisms/super_organism.py` — Super DAN plan/report composition.
+- `src/diane/worker/organisms/local_runtime.py` — local provider/tool loop for Super DAN.
+- `src/diane/task_blueprints.py` — protected semantic task contract and revisioned execution-attempt models.
+- `src/diane/providers/` — provider protocol, registry, retries, and OpenAI/Anthropic/Google adapters.
+- `src/diane/tools/` — selectively loaded capabilities. Optional dependencies must stay lazy.
+- `src/diane/sandbox/` — operational subprocess limits used by the retained shell tool; not an OS security boundary.
+- `src/diane/skills/` — skill discovery, selection, and loading.
+- `src/diane/server/` — durable stores, Agent V2 contracts/backends, and minimal FastAPI composition root.
+- `src/diane/cli/` — server lifecycle, Super DAN, hooks/blueprints, and TUI entry points.
 
 ## Server composition
 
-`src/dan/server/app.py` mounts four routers:
+`src/diane/server/app.py` mounts four routers:
 
 - workspace/notes/health (`routers/misc.py`);
 - session CRUD (`routers/sessions.py`);
@@ -279,7 +281,7 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - `native_workers/models.py` separates the harness from its model source, validates supported OpenRouter combinations, resolves credentials server-side, and scopes DAN reasoning request options to one provider instance. Catalog `sources` describe support and configuration without credentials.
 - Codex receives a DAN-owned OpenRouter provider table through per-process `-c` overrides; its existing stdio app-server receives the matching `modelProvider` on start/resume. Claude receives a scoped gateway environment and an isolated config directory under `graphs/model_accounts/claude_openrouter/<account-hash>`, preserving native login state. Native lead continuation keys include non-native source identity; switching sources does not reuse the other source's native session.
 - Server CLI startup and `create_app()` load `.env` before resolving runtime paths/catalog credentials; existing process environment retains precedence.
-- `src/dan/native_workers/`: local account/capability catalog, parent-scoped subprocess service, session discovery and native fork preparation. Credentials stay server-side. CLI subprocesses receive isolated account environments; the server environment is unchanged.
+- `src/diane/native_workers/`: local account/capability catalog, parent-scoped subprocess service, session discovery and native fork preparation. Credentials stay server-side. CLI subprocesses receive isolated account environments; the server environment is unchanged.
 - A ContextVar binds `native_worker` to the current Super DAN parent run. The tool is only added to mutation-capable stages when workers are enabled. Start returns immediately; status waits at most ten seconds; parent completion/cancellation stops remaining children.
 - `graphs/native_workers/` stores worker JSON records and append-only JSONL events; `graphs/native_imports/` stores approved source references for newly created DAN chats. Sources are never moved or overwritten. Imported Codex/Claude continuations always fork.
 - `editor/src/components/reader/`: `InteractivePdfViewer.tsx` + CSS module and `lib/` are ported from learning-assistant's material guide (keep diffs minimal; DAN changes are commented). `ReaderView.tsx` wraps it for project PDFs (served by `/api/workspace-files/preview`), stores comments/refs/position in localStorage per path, and hands Ask to `SidecarChat` via its `purpose` prop. Loaded lazily; pdf.js worker is bundled with `?url`. `lib/ocr*.ts` run tesseract.js in the browser (assets from `public/tesseract`, copied by `scripts/copy-ocr-assets.mjs`), `lib/paper-anchors.ts` + `lib/text-layer.ts` re-find highlights, `lib/annotated-pdf.ts` exports highlights with pdf-lib; `server/routers/reader.py` stores OCR pages under `graphs/reader_ocr/` keyed by path and file identity.
@@ -295,7 +297,7 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 
 - Recovered session groups register into the local project store only when an action needs an ID. `createWorkspace(..., activate=false)` preserves the current selection; complete-group binding avoids losing chats when search filters are active. Group ownership falls back to folder matching across profiles.
 
-- `workbench/DanSettings.tsx` exposes profile-wide Notes appearance and native-worker preferences. Project menus own folder-scoped session imports; batch import retains failed selections and removes successful ones before retry.
+- `workbench/DianeSettings.tsx` exposes profile-wide Notes appearance and native-worker preferences. Project menus own folder-scoped session imports; batch import retains failed selections and removes successful ones before retry.
 
 - `workbench/LeadAgentMenu.tsx` discovers available lead runtimes. Separate persisted lead/team profiles provide account/model/effort/fast settings. `native_workers/lead.py` runs Codex/Claude/Antigravity leads, persists account/folder/thread-scoped native continuation IDs, forks imported sources, and streams normalized events. `native_workers/bridge.py` exposes run-scoped start/status/resume/stop through a temporary workspace file queue for CLI shell tools; enabled team members may include DAN. Children are leaves and inherit parent policy for DAN execution. Stop closes the lead, team, and bridge. Native follow-ups queue for the next turn.
 
