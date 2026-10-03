@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **Icon correction (2026-10-03):** removing only exterior white pixels left the ivory tile visibly framing the radio. Use a standalone radio cutout; corner-alpha checks alone cannot verify absence of a rim.
+
 - **Fixed 2026-10-03: white app-icon edges.** The approved presentation export had opaque white exterior padding. Replace it with a true-alpha export and verify transparent corners after resizing.
 
 - **Fixed 2026-10-03: blank menu bar icon.** The tray used an embedded PNG placeholder without template rendering. Use bundled, visible monochrome strokes with transparent background, 18pt/Retina representations and the macOS template flag.

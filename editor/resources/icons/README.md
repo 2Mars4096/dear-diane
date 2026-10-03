@@ -1,14 +1,14 @@
 # Dear Diane app icon
 
-Selected artwork: coral walkie-talkie on warm ivory impasto, approved by the user.
-Source: `source-walkie-talkie-transparent.png`; the previous white-margin export is retained as `source-walkie-talkie.png`.
+Selected artwork: coral walkie-talkie cutout with painted impasto texture, approved by the user.
+Source: `source-radio-cutout.png`; the previous white-margin export is retained as `source-walkie-talkie.png`.
 
 - `icon.png`: 1024px desktop source / Linux icon.
 - `icon.icns`: macOS icon, standard 16–1024px representations.
 - `icon.ico`: Windows icon with 16, 32, 48, 64, 128, and 256px PNG representations.
 - `../../public/favicon.png`: 64px browser icon.
 
-Exports preserve the approved artwork, including its ivory tile, with transparent exterior padding and corners. Resized with macOS `sips`; ICNS and ICO package PNG entries using Python's standard library. ICNS decoding verified with `iconutil`. No added runtime dependencies.
+Exports preserve the approved artwork, as a standalone radio silhouette with fully transparent surroundings and no ivory tile. Resized with macOS `sips`; ICNS and ICO package PNG entries using Python's standard library. ICNS decoding verified with `iconutil`. No added runtime dependencies.
 
 The local macOS updater preserves the installed app's icon. New desktop packages use these assets; existing installations retain their icon through that updater. The user-selected coral release was installed with an explicit staged-icon replacement and signature verification, so this installation now uses the coral artwork.
 
@@ -21,3 +21,5 @@ The menu bar uses `trayTemplate.png` and `trayTemplate@2x.png` (18pt/36px), a ma
 Final imagegen prompt: Export the selected left app icon as one square; preserve the coral radio, blue antenna, jade side button, three ivory speaker slots, golden control, ivory tile and impasto texture. Remove the separate menu mark and presentation space. Center with a small even white margin; no redesign or added elements.
 
 Background-removal prompt (built-in imagegen): Remove only the plain white exterior and outer shadow; preserve the ivory painted tile and coral radio. Real alpha transparency, clean antialiased tile boundary, no redesign or color changes.
+
+Cutout prompt (built-in imagegen): Remove the entire ivory tile. Keep only the coral radio, blue antenna, jade side button, gold knob and cream speaker slots. True alpha outside the radio silhouette; no frame, plate, rim or halo.

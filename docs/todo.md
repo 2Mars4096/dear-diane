@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Remove the full ivory icon tile and use the standalone painted radio silhouette.
+
 - [x] Remove white app-icon edges; preserve ivory tile and export transparent outer corners.
 
 - [x] Apply selected coral walkie-talkie artwork and matching menu-bar silhouette; export desktop/browser sizes.

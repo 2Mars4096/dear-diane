@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-10-03
+- [fix] Remove the entire ivory background tile, which still appeared as a white rim after exterior transparency. Export the painted radio alone as the Dock/browser icon.
+
+## 2026-10-03
 - [infra] Install and reopen the transparent-edge icon update. Resized asset alpha checks, production budgets, installed ICNS/archive equality, signature and app health pass (backend PID 10429).
 - [fix] Remove the white exterior rectangle from the selected app icon using a transparent imagegen export; regenerate desktop icon formats and favicon with alpha preserved.
 
