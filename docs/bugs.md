@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **Icon intent correction (2026-10-03):** removing the full tile was the wrong interpretation. User wants the white painted background retained, with only the outer rim removed. Use `source-radio-white.png`; do not use the radio-only cutout.
+
 - **Icon correction (2026-10-03):** removing only exterior white pixels left the ivory tile visibly framing the radio. Use a standalone radio cutout; corner-alpha checks alone cannot verify absence of a rim.
 
 - **Fixed 2026-10-03: white app-icon edges.** The approved presentation export had opaque white exterior padding. Replace it with a true-alpha export and verify transparent corners after resizing.

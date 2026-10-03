@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-10-03
+- [fix] Crop the existing white-painted source to its painted section, preserving the radio and background while removing exterior presentation margins. Export all app/browser icon sizes from this crop.
+- [fix] Restore the white painted app-icon background as requested. Remove the raised perimeter frame while preserving the radio and white face; regenerate desktop/browser exports.
+
+## 2026-10-03
 - [infra] Install the radio-only cutout at `/Applications/Dear Diane.app`, verify installed icon/archive/signature, and reopen successfully (healthy backend PID 16365). Commit and push the correction.
 - [fix] Remove the entire ivory background tile, which still appeared as a white rim after exterior transparency. Export the painted radio alone as the Dock/browser icon.
 

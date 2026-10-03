@@ -1,5 +1,9 @@
 # Todo
 
+- [x] Crop existing icon to painted area, retaining white textured background.
+
+- [x] Restore white icon background and remove only the raised outer rim.
+
 - [x] Remove the full ivory icon tile and use the standalone painted radio silhouette.
 
 - [x] Remove white app-icon edges; preserve ivory tile and export transparent outer corners.
