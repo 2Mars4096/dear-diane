@@ -1,5 +1,7 @@
 # Architecture
 
+- Selected app artwork is `source-walkie-talkie.png`; ICNS/ICO/PNG and favicon exports share it. `render-tray.swift` generates a separate 18pt monochrome radio silhouette for macOS.
+
 - Native tray assets are copied from `editor/resources/icons` to `dist-electron/icons` by the existing compile preparation script. macOS uses the 18pt template image and automatic Retina representation; other platforms use the color app icon.
 
 - Python source lives in `src/diane`; distribution `dear-diane`, primary CLI `diane`. Legacy CLI aliases point to the same implementation. Android source namespace is `com.diane.diane_phone`; installed application IDs and persisted settings remain compatible.

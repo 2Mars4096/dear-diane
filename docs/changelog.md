@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-10-03
+- [design] Apply the selected coral walkie-talkie to desktop icon exports and browser favicon, with a matching monochrome radio menu-bar mark. Preserve the original approved artwork as a source backup; add a reproducible native tray renderer.
+
+## 2026-10-03
 - [test] Electron verifies 18pt template rendering, 1x/2x representations and visible/transparent pixels. Install the signed tray fix; backend PID 85474 is healthy through direct/proxy endpoints, archive/signature checks pass, and all tray assets are present in the installed archive. Dock artwork remains v7 pending concept selection.
 - [fix] Replace the embedded tray PNG placeholder with a transparent 18pt Diane monogram, 1x/2x assets and macOS template rendering. Package a color icon for other platforms.
 - [feat] Generate Flowing D and Reading Companion icon concepts with built-in imagegen, retaining the approved ivory impasto palette; preserve the current app icon pending selection.
