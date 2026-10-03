@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-10-03
+- [infra] Install the radio-only cutout at `/Applications/Dear Diane.app`, verify installed icon/archive/signature, and reopen successfully (healthy backend PID 16365). Commit and push the correction.
 - [fix] Remove the entire ivory background tile, which still appeared as a white rim after exterior transparency. Export the painted radio alone as the Dock/browser icon.
 
 ## 2026-10-03
