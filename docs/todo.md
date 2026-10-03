@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Remove white app-icon edges; preserve ivory tile and export transparent outer corners.
+
 - [x] Apply selected coral walkie-talkie artwork and matching menu-bar silhouette; export desktop/browser sizes.
 
 - [x] Fix blank menu-bar icon with a native monochrome template and generate two updated app-icon concepts; retain current app icon pending choice.

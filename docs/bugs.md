@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **Fixed 2026-10-03: white app-icon edges.** The approved presentation export had opaque white exterior padding. Replace it with a true-alpha export and verify transparent corners after resizing.
+
 - **Fixed 2026-10-03: blank menu bar icon.** The tray used an embedded PNG placeholder without template rendering. Use bundled, visible monochrome strokes with transparent background, 18pt/Retina representations and the macOS template flag.
 
 - **Android verification limitation (2026-10-03):** full APK check was stopped during slow Gradle dependency downloads before compilation. Flutter widget test passes; Kotlin namespace/manifest references are aligned, but an APK build is still unverified.

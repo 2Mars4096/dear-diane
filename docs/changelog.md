@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-10-03
+- [fix] Remove the white exterior rectangle from the selected app icon using a transparent imagegen export; regenerate desktop icon formats and favicon with alpha preserved.
+
+## 2026-10-03
 - [infra] Commit and push app/menu artwork separately; install the selected coral radio with an explicit staged-icon replacement, retaining rollback. Production bundle budgets, ICNS decode, native template transparency/Retina checks, installed icon/archive equality, signature and direct/proxy health pass (backend PID 97958).
 - [design] Apply the selected coral walkie-talkie to desktop icon exports and browser favicon, with a matching monochrome radio menu-bar mark. Preserve the original approved artwork as a source backup; add a reproducible native tray renderer.
 
