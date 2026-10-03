@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-10-03
+- [infra] Install and reopen the cropped white-painted icon at `/Applications/Dear Diane.app`. Opaque source pixels and alpha are preserved by the crop; production budgets, installed icon/archive equality, signature and health pass (backend PID 87961).
 - [fix] Crop the existing white-painted source to its painted section, preserving the radio and background while removing exterior presentation margins. Export all app/browser icon sizes from this crop.
 - [fix] Restore the white painted app-icon background as requested. Remove the raised perimeter frame while preserving the radio and white face; regenerate desktop/browser exports.
 
