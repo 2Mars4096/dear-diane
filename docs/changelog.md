@@ -5,7 +5,7 @@
 - [refactor] Rename DianeSettings, phone icon, WireGuard helper and Android Kotlin folders; align Flutter package imports and Kotlin namespace while preserving installed application identity and preferences. Rename local plan filenames and update source-path documentation.
 - [infra] Reinstall and verify the signed desktop build: app PID 50087 owns `diane.server` PID 50108; direct/proxy health, signature and archive equality pass. Existing profile retained. Rollback: `/Applications/.Diane-previous-c021443b-0373-497b-b364-41bb0d5d5ba5.app`.
 - [infra] Refresh uv.lock to include the already-declared browser extra; existing locked versions unchanged, `uv lock --check` passes.
-- [test] Flutter widget test passes; all 19 installed console entry points resolve. Python suite: 853 passed, four skipped; two sandbox-blocked process/relay cases pass in the 13-test focused rerun. All 437 frontend tests and production bundle budgets pass.
+- [test] Android APK compile remains unverified: stopped the optional check during slow Gradle dependency downloads. Flutter widget test passes; all 19 installed console entry points resolve. Python suite: 853 passed, four skipped; two sandbox-blocked process/relay cases pass in the 13-test focused rerun. All 437 frontend tests and production bundle budgets pass.
 
 ## 2026-10-03
 - [infra] Push the vision endpoint, OCR geometry, offline reader/layout, visible branding and documentation in separate commits. Install the signed app; app PID 49135 owns healthy backend PID 49178, direct/proxy health and OpenRouter readiness pass, signature/archive match, and test fixtures are absent. Rollback: `/Applications/.Diane-previous-fb5f43b8-f535-4fbb-8c88-c170adbb40e5.app`.

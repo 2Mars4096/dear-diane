@@ -32,8 +32,8 @@ The attempted broad replacement was stopped and its partial changes undone. At t
 - [x] Rename settings component, evaluation scripts, phone icon, WireGuard helper and Android Kotlin directories; update callers.
 - [x] Publish new `diane` CLI names; retain existing command aliases pointing at the new implementation.
 - [x] Validate Python tests, frontend tests/build, Flutter widget test and installed launch.
-- [ ] Complete optional Android APK build (dependency downloads in progress).
-- [x] Commit by feature; push after final documentation update.
+- [ ] Android APK compile remains unverified: optional build stopped during slow dependency downloads; Flutter widget test passed.
+- [x] Commit by feature and push to origin/main.
 
 This step renames repository source paths. Runtime profiles, environment variables, schema IDs and historical worktrees stay compatible. Android uses the new Kotlin namespace with the existing application ID and preferences. Python callers must update imports to `diane`; old module imports are not retained as a second source folder.
 
