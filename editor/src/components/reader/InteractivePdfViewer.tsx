@@ -549,29 +549,44 @@ export function InteractivePdfViewer({
     if (!stage) {
       return;
     }
-    let previousWidth = 0;
+    let previousSize = { height: 0, width: 0 };
+    let timer: number | null = null;
+    let resizeAnchor: ZoomAnchor | null = null;
     const updateSize = () => {
       const bounds = stage.getBoundingClientRect();
-      const nextSize = {
-        height: Math.round(bounds.height),
-        width: Math.round(bounds.width)
-      };
-      if (previousWidth > 0 && nextSize.width < previousWidth - 40) {
-        const page = documentElementRef.current?.querySelector<HTMLElement>(`[data-pdf-page="${visiblePageRef.current}"]`);
-        if (page) zoomAnchorRef.current = { pageNumber: visiblePageRef.current, pageRatio: clamp((stage.scrollTop + stage.clientHeight / 2 - page.offsetTop) / Math.max(1, page.offsetHeight), 0, 1) };
-        setZoom(1); stage.scrollLeft = 0;
+      const nextSize = { height: Math.round(bounds.height), width: Math.round(bounds.width) };
+      if (nextSize.width <= 0 || nextSize.height <= 0) return;
+      if (timer !== null) window.clearTimeout(timer);
+      if (nextSize.width === previousSize.width && nextSize.height === previousSize.height) {
+        timer = null;
+        resizeAnchor = null;
+        return;
       }
-      previousWidth = nextSize.width;
-      setContainerSize((current) =>
-        current.height === nextSize.height && current.width === nextSize.width
-          ? current
-          : nextSize
-      );
+      if (!previousSize.width) {
+        previousSize = nextSize;
+        setContainerSize(nextSize);
+        return;
+      }
+      // Keep existing canvases during the native resize animation. Commit one final size.
+      if (!resizeAnchor) {
+        const page = documentElementRef.current?.querySelector<HTMLElement>(`[data-pdf-page="${visiblePageRef.current}"]`);
+        if (page) resizeAnchor = { pageNumber: visiblePageRef.current,
+          pageRatio: clamp((stage.scrollTop + previousSize.height / 2 - page.offsetTop) / Math.max(1, page.offsetHeight), 0, 1) };
+      }
+      timer = window.setTimeout(() => {
+        timer = null;
+        zoomAnchorRef.current = resizeAnchor;
+        resizeAnchor = null;
+        if (nextSize.width < previousSize.width - 40) { setZoom(1); stage.scrollLeft = 0; }
+        previousSize = nextSize;
+        setContainerSize(nextSize);
+      }, 120);
     };
     updateSize();
     const observer = new ResizeObserver(updateSize);
     observer.observe(stage);
-    return () => observer.disconnect();
+    return () => { observer.disconnect(); if (timer !== null) window.clearTimeout(timer); };
+
   }, []);
 
   useEffect(() => {
@@ -806,7 +821,7 @@ export function InteractivePdfViewer({
       zoomAnchorRef.current = null;
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [zoom]);
+  }, [zoom, containerSize, pageLayout]);
 
   const captureSelection = useCallback((selectedPage: number, textLayer: HTMLDivElement | null) => {
     const selection = window.getSelection();
