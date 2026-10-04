@@ -26,3 +26,18 @@ describe('selected references', () => {
     expect(selectionBounds([{ left: .6, top: .7, width: .2, height: .05 }, { left: .62, top: .76, width: .1, height: .03 }])).toEqual({ left: .6, top: .7, width: .8 - .6, height: .79 - .7 });
   });
 });
+
+it('background reference quotes preserve renames, moves and exact geometry', async () => {
+  const { finishReferenceQuote } = await import('../lib/paper-reference-tags');
+  const original = normalizePaperReferenceTags([selected('a')], 'paper')[0];
+  const edited = { ...original, label: 'My label', lineId: 'other' };
+  const resolved = { ...original.selection!, quote: 'Accurate quote', quoteSource: 'vision' as const, rects: [] };
+  const updated = finishReferenceQuote([edited], original, resolved)[0];
+  expect(updated.label).toBe('My label');
+  expect(updated.lineId).toBe('other');
+  expect(updated.selection?.rects).toEqual(rects);
+  expect(updated.selection?.quote).toBe('Accurate quote');
+  expect(finishReferenceQuote([], original, resolved)).toEqual([]);
+  expect(finishReferenceQuote([{...edited,materialId:'another'}],original,resolved)).toEqual([{...edited,materialId:'another'}]);
+  expect(finishReferenceQuote([original],original,resolved)[0].label).toBe('Accurate quote');
+});

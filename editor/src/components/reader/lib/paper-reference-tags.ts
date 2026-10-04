@@ -14,6 +14,16 @@ export type PaperReferenceTag = {
   tagId: string;
 };
 
+/** Update only quote fields after background transcription; keep user edits and anchors. */
+export function finishReferenceQuote(tags: PaperReferenceTag[], original: PaperReferenceTag, resolved: PdfSelectionAnchor): PaperReferenceTag[] {
+  return tags.map(tag => tag.tagId === original.tagId && tag.materialId === original.materialId && tag.selection ? {
+    ...tag,
+    label: tag.label === original.label ? resolved.quote.slice(0, 60) || tag.label : tag.label,
+    selection: { ...tag.selection, quote: resolved.quote, quoteSource: resolved.quoteSource,
+      quoteModel: resolved.quoteModel, originalQuote: resolved.originalQuote },
+  } : tag);
+}
+
 export type PaperReferenceTray = {
   lines: PaperReferenceLine[];
   tags: PaperReferenceTag[];

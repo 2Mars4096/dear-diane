@@ -37,6 +37,7 @@ import {
   MAX_PAPER_REFERENCE_LINES,
   MAX_PAPER_REFERENCE_TAGS,
   movePaperReferenceTag,
+  finishReferenceQuote,
   readPaperReferenceTray,
   writePaperReferenceTray,
   type PaperReferenceLine,
@@ -138,6 +139,7 @@ function ReferencePeek({
   tag
 }: ReferencePeekProps) {
   const previewRef = useRef<HTMLDivElement>(null);
+  const labelRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderTaskRef = useRef<RenderTask | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -182,7 +184,7 @@ function ReferencePeek({
       renderTaskRef.current?.cancel();
       renderTaskRef.current = null;
     };
-  }, [documentProxy, tag]);
+  }, [documentProxy, tag.pageNumber]);
 
   useEffect(() => {
     const preview = previewRef.current;
@@ -192,6 +194,11 @@ function ReferencePeek({
     preview.scrollTop = bounds ? Math.max(0, bounds.top * parseFloat(canvas.style.height) - 48) : 0;
     preview.scrollLeft = bounds ? Math.max(0, (bounds.left + bounds.width / 2) * parseFloat(canvas.style.width) - preview.clientWidth / 2) : 0;
   }, [status, tag]);
+
+  useEffect(() => {
+    const input = labelRef.current;
+    if (input && document.activeElement !== input) input.value = tag.label;
+  }, [tag.tagId, tag.label]);
 
   return (
     <aside
@@ -205,7 +212,7 @@ function ReferencePeek({
       <header>
         <div>
           <span>p. {tag.pageNumber}</span>
-          <input key={tag.tagId} aria-label="Reference label" defaultValue={tag.label} maxLength={80}
+          <input ref={labelRef} key={tag.tagId} aria-label="Reference label" defaultValue={tag.label} maxLength={80}
             onBlur={event => { const label = event.target.value.trim(); if (label && label !== tag.label) onRename(label); else event.target.value = tag.label; }}
             onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); }} />
         </div>
@@ -522,6 +529,11 @@ export function InteractivePdfViewer({
     label: "Saved",
     lineId: DEFAULT_PAPER_REFERENCE_LINE_ID
   }]);
+  const referenceScope = useRef(0);
+  useEffect(() => {
+    referenceScope.current++;
+    return () => { referenceScope.current++; };
+  }, [materialId, sourceUrl]);
   const [referenceTags, setReferenceTags] = useState<PaperReferenceTag[]>([]);
   const [referencesHydrated, setReferencesHydrated] = useState(false);
   const [referencesForMaterialId, setReferencesForMaterialId] = useState("");
@@ -1104,21 +1116,25 @@ export function InteractivePdfViewer({
     setPeekedReferenceId(tag.tagId);
   };
 
-  const keepSelection = async () => {
-    if (!selectionPrompt || asking) return;
-    setAsking(true); setSelectionError(null);
-    try {
-    const { left: _left, top: _top, ...picked } = selectionPrompt;
-    const selection = await onResolveSelection(picked);
+  const keepSelection = () => {
+    if (!selectionPrompt || asking || !referencesHydrated) return;
+    setSelectionError(null);
+    const { left: _left, top: _top, ...selection } = selectionPrompt;
     const tag: PaperReferenceTag = { createdAt: new Date().toISOString(), materialId,
       pageNumber: selection.pageNumber, selection, tagId: crypto.randomUUID(),
       label: selection.kind === "area" && !selection.quoteSource ? `Area · p. ${selection.pageNumber}` : selection.quote.slice(0, 60),
       lineId: referenceLines[0]?.lineId ?? DEFAULT_PAPER_REFERENCE_LINE_ID };
+    // Save the anchor now; remote transcription must never block keeping a reference.
     setReferenceTags(current => [...current, tag].slice(-MAX_PAPER_REFERENCE_TAGS));
     setSelectionPrompt(null); window.getSelection()?.removeAllRanges();
     setReferenceTrayPinned(true); setReferenceTrayOpen(true); setPeekedReferenceId(tag.tagId);
-    } catch (error) { setSelectionError(error instanceof Error ? error.message : 'Could not transcribe this selection.'); }
-    finally { setAsking(false); }
+    const scope = referenceScope.current;
+    window.setTimeout(() => {
+      if (referenceScope.current !== scope) return;
+      void onResolveSelection(selection).then(resolved => {
+        if (referenceScope.current === scope) setReferenceTags(current => finishReferenceQuote(current, tag, resolved));
+      }).catch(() => { /* The saved reference remains usable offline or if transcription fails. */ });
+    }, 0);
   };
 
   useEffect(() => {
