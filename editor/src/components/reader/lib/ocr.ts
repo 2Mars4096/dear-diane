@@ -4,7 +4,6 @@
 import type { PdfOcrTextSpan } from "./pdf-ocr";
 
 export const OCR_SPARSE_WORD_THRESHOLD = 20;
-export const MAX_OCR_PAGES = 40;
 export const OCR_RENDER_SCALE = 2.4; // ≈ 170–200 dpi for typical page sizes
 
 export function countWords(text: string): number {

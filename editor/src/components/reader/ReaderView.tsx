@@ -1,4 +1,5 @@
 import { transcribeSelection } from "./lib/transcribe-selection";
+import { browserOcrIdentity, readBrowserOcr, saveBrowserOcr } from "./lib/ocr-cache";
 import { currentOcrPages } from "./lib/ocr-layout";
 import type { ComposerAttachmentDraft } from "../../lib/composerAttachments";
 import { selectionImage } from "./lib/selection-image";
@@ -35,6 +36,7 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
   const [exporting, setExporting] = useState(false);
   const documentRef = useRef<PDFDocumentProxy | null>(null);
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
+  const requestVisibleOcr = useRef<(() => void) | null>(null);
   const visiblePage = useRef(pageNumber); visiblePage.current = pageNumber;
   const onDocument = useCallback((document: PDFDocumentProxy | null) => { documentRef.current = document; setPdfDocument(document); }, []);
 
@@ -66,40 +68,79 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
       const needed = sparsePages(texts);
       if (!needed.length) { setOcr({ status: "idle", done: 0, total: 0 }); return; }
       let saved: MaterialPdfOcrPage[] = [];
+      let browserIdentity: string | null = null;
       try {
-        const response = file.url.startsWith("blob:") ? null : await fetch(`/api/reader/ocr?path=${encodeURIComponent(file.path)}`);
-        if (response?.ok) saved = currentOcrPages((await response.json()).pages, "auto");
+        if (file.url.startsWith("blob:")) {
+          browserIdentity = await browserOcrIdentity(document);
+          saved = currentOcrPages(await readBrowserOcr(browserIdentity), "auto");
+        } else {
+          const response = await fetch(`/api/reader/ocr?path=${encodeURIComponent(file.path)}`);
+          if (response.ok) saved = currentOcrPages((await response.json()).pages, "auto");
+        }
       } catch { /* OCR cache is optional */ }
-      const have = new Set(saved.map((page) => page.page_number));
-      const pending = needed.filter((page) => !have.has(page)).sort((a, b) => Math.abs(a - visiblePage.current) - Math.abs(b - visiblePage.current));
       if (!isCurrent()) return;
       setOcrPages(saved);
-      if (!pending.length) { setOcr({ status: "done", done: needed.length, total: needed.length }); return; }
-      setOcr({ status: "running", done: needed.length - pending.length, total: needed.length });
       const results = [...saved];
-      for (const number of pending) {
-        if (!isCurrent()) return;
+      const have = new Set(saved.map((page) => page.page_number));
+      const scanned = new Set(needed);
+      const distance = (a: number, b: number) => Math.abs(a - visiblePage.current) - Math.abs(b - visiblePage.current);
+      // Recognize only the visible page and its neighbors, never a batch on reopen.
+      const requested = new Set<number>();
+      const failed = new Map<number, string>();
+      let running = false;
+      const drain = async () => {
+        if (running || !isCurrent()) return;
+        running = true;
         try {
-          const page = await ocrPage(document, number);
-          if (!isCurrent()) return;
-          results.push(page);
-          setOcrPages([...results]);
-          setOcr((current) => ({ ...current, done: current.done + 1 }));
-        } catch (error) {
-          if (!isCurrent()) return;
-          setOcr({ status: "error", done: 0, total: needed.length, message: error instanceof Error ? error.message : "OCR failed" });
-          return;
+          while (isCurrent()) {
+            const pending = [...requested].filter(number => !have.has(number) && !failed.has(number)).sort(distance);
+            const progress = { done: [...requested].filter(number => have.has(number)).length, total: requested.size };
+            if (!pending.length) {
+              setOcr({ ...progress, status: failed.size ? "error" : "done", message: [...failed.values()][0] });
+              break;
+            }
+            setOcr({ ...progress, status: "running" });
+            const number = pending[0];
+            try {
+              const page = await ocrPage(document, number);
+              if (!isCurrent()) return;
+              have.add(number);
+              results.push(page);
+              setOcrPages([...results]);
+              // Save completed pages incrementally, including pages requested after prefetch.
+              try {
+                if (browserIdentity) await saveBrowserOcr(browserIdentity, page);
+                else if (!file.url.startsWith("blob:")) await fetch(`/api/reader/ocr?path=${encodeURIComponent(file.path)}`, {
+                  method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pages: results })
+                });
+              } catch { /* OCR cache is optional */ }
+            } catch (error) {
+              if (!isCurrent()) return;
+              failed.set(number, error instanceof Error ? error.message : "OCR failed");
+            }
+          }
+        } finally { running = false; }
+      };
+      const request = () => {
+        if (!isCurrent()) return;
+        requested.clear();
+        for (const number of [visiblePage.current, visiblePage.current + 1, visiblePage.current - 1]) {
+          if (scanned.has(number) && !have.has(number)) {
+            requested.add(number);
+            failed.delete(number);
+          }
         }
-      }
-      setOcr({ status: "done", done: needed.length, total: needed.length });
-      try {
-        if (!file.url.startsWith("blob:")) await fetch(`/api/reader/ocr?path=${encodeURIComponent(file.path)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pages: results }) });
-      } catch { /* next open will OCR again */ }
+        void drain();
+      };
+      requestVisibleOcr.current = request;
+      request();
     })().catch((error: unknown) => {
       if (isCurrent()) setOcr({ status: "error", done: 0, total: 0, message: error instanceof Error ? error.message : "Text extraction failed" });
     });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; requestVisibleOcr.current = null; };
   }, [file.path, file.url, pdfDocument]);
+
+  useEffect(() => { requestVisibleOcr.current?.(); }, [pageNumber]);
 
   const currentComments = useRef(comments); currentComments.current = comments;
   const currentDraft = useRef(draft); currentDraft.current = draft;

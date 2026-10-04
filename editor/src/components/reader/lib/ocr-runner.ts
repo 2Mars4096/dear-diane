@@ -4,7 +4,7 @@ import { detectOcrSplit, mapOcrRegion, OCR_LAYOUT_VERSION, type OcrLayout } from
 // line spans learning-assistant's server OCR produced. Assets come from public/tesseract.
 import type { PDFDocumentProxy } from "pdfjs-dist/types/src/pdf";
 import type { MaterialPdfOcrPage, PdfOcrTextSpan } from "./pdf-ocr";
-import { MAX_OCR_PAGES, OCR_RENDER_SCALE, parseTesseractTsv, shouldOcrPage } from "./ocr";
+import { OCR_RENDER_SCALE, parseTesseractTsv, shouldOcrPage } from "./ocr";
 
 type Worker = { recognize: (image: HTMLCanvasElement, options?: object, output?: { tsv?: boolean }) => Promise<{ data: { tsv?: string } }>; terminate: () => Promise<unknown> };
 let workerPromise: Promise<Worker> | null = null;
@@ -36,7 +36,7 @@ export async function extractPageTexts(document: PDFDocumentProxy): Promise<Map<
 }
 
 export function sparsePages(texts: Map<number, string>): number[] {
-  return [...texts.entries()].filter(([, text]) => shouldOcrPage(text)).map(([number]) => number).slice(0, MAX_OCR_PAGES);
+  return [...texts.entries()].filter(([, text]) => shouldOcrPage(text)).map(([number]) => number);
 }
 
 export async function ocrPage(document: PDFDocumentProxy, pageNumber: number, layout: OcrLayout = "auto"): Promise<MaterialPdfOcrPage> {

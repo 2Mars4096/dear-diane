@@ -1,3 +1,4 @@
+import { ocrSelectionLines, refineOcrLines } from "./lib/ocr-selection-lines";
 import { selectionBounds } from "./lib/selection-image";
 import { pdfAssetBase } from "./lib/pdf-assets";
 // Ported from learning-assistant apps/web/app/materials/[materialId]/guide/interactive-pdf-viewer.tsx.
@@ -111,6 +112,7 @@ type PdfPageProps = {
   onCaptureSelection: (pageNumber: number, textLayer: HTMLDivElement | null) => void;
   onRenderError: () => void;
   ocrSpans: PdfOcrTextSpan[];
+  ocrSplit: number | null;
   pageNumber: number;
   stageRef: RefObject<HTMLDivElement | null>;
   title: string;
@@ -232,6 +234,7 @@ function PdfPage({
   onCaptureSelection,
   onRenderError,
   ocrSpans,
+  ocrSplit,
   pageNumber,
   stageRef,
   title,
@@ -241,6 +244,7 @@ function PdfPage({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const renderTaskRef = useRef<RenderTask | null>(null);
+  const selectionLinesRef = useRef<{ page: PDFPageProxy; spans: PdfOcrTextSpan[]; split: number | null; lines: PdfOcrTextSpan[] } | null>(null);
   const [pageProxy, setPageProxy] = useState<PDFPageProxy | null>(null);
   const [nearViewport, setNearViewport] = useState(pageNumber <= 2);
   const [rendered, setRendered] = useState(false);
@@ -355,7 +359,24 @@ function PdfPage({
           throw error;
         });
         if (ocrSpans.length > 0) {
-          ocrSpans.forEach((ocrSpan) => {
+          await renderPromise;
+          if (cancelled) return;
+          const cached = selectionLinesRef.current;
+          let lines = cached?.page === pageProxy && cached.spans === ocrSpans && cached.split === ocrSplit ? cached.lines : null;
+          if (!lines) {
+            const geometry = document.createElement("canvas");
+            geometry.width = Math.min(1000, canvas.width);
+            geometry.height = Math.round(canvas.height * geometry.width / canvas.width);
+            const geometryContext = geometry.getContext("2d", { willReadFrequently: true });
+            lines = ocrSelectionLines(ocrSpans, ocrSplit, pdfViewport.width / pdfViewport.height);
+            if (geometryContext) {
+              geometryContext.drawImage(canvas, 0, 0, geometry.width, geometry.height);
+              lines = refineOcrLines(geometryContext.getImageData(0, 0, geometry.width, geometry.height), lines, ocrSplit);
+            }
+            geometry.width = geometry.height = 1;
+            selectionLinesRef.current = { page: pageProxy, spans: ocrSpans, split: ocrSplit, lines };
+          }
+          lines.forEach((ocrSpan) => {
             const span = document.createElement("span");
             const targetWidth = Math.max(1, ocrSpan.width * pdfViewport.width);
             const targetHeight = Math.max(1, ocrSpan.height * pdfViewport.height);
@@ -397,7 +418,7 @@ function PdfPage({
       renderTaskRef.current = null;
       textLayer?.cancel();
     };
-  }, [nearViewport, ocrSpans, onRenderError, pageProxy, viewport, zoom]);
+  }, [nearViewport, ocrSpans, ocrSplit, onRenderError, pageProxy, viewport, zoom]);
 
   return (
     <div
@@ -1446,6 +1467,7 @@ export function InteractivePdfViewer({
                 key={index + 1}
                 onCaptureSelection={captureSelection}
                 onRenderError={handlePageRenderError}
+                ocrSplit={ocrPages.find((page) => page.page_number === index + 1)?.split ?? null}
                 ocrSpans={ocrPages.find((page) => page.page_number === index + 1)?.spans ?? EMPTY_OCR_SPANS}
                 pageNumber={index + 1}
                 stageRef={stageRef}
