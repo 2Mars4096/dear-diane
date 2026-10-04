@@ -265,6 +265,15 @@ function PdfPage({
   const [pageProxy, setPageProxy] = useState<PDFPageProxy | null>(null);
   const [nearViewport, setNearViewport] = useState(pageNumber <= 2);
   const [rendered, setRendered] = useState(false);
+  const hasOcrText = ocrSpans.length > 0;
+  const [showOcrReady, setShowOcrReady] = useState(false);
+  useEffect(() => {
+    setShowOcrReady(hasOcrText);
+    if (!hasOcrText) return;
+    const timer = window.setTimeout(() => setShowOcrReady(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [hasOcrText, documentProxy, pageNumber]);
+
 
   useEffect(() => {
     let cancelled = false;
@@ -502,7 +511,7 @@ function PdfPage({
       />
       {[...references.flatMap(tag => tag.selection ? [{ id: tag.tagId, rects: tag.selection.rects }] : []),
         ...(activeSelection ? [{ id: "active-selection", rects: activeSelection.rects }] : [])].map(item => <svg key={item.id} aria-hidden="true" className={styles.commentHighlight} data-ref-highlight={item.id} viewBox="0 0 100 100" preserveAspectRatio="none"><path d={paperHighlightDisplayPath(item.rects) ?? ""} /></svg>)}
-      {ocrSpans.length > 0 ? (
+      {showOcrReady ? (
         <span className={styles.ocrStatus}>Image text ready</span>
       ) : null}
     </div>
