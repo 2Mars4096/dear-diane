@@ -6,7 +6,13 @@
 
 - Python source lives in `src/diane`; distribution `dear-diane`, primary CLI `diane`. Legacy CLI aliases point to the same implementation. Android source namespace is `com.diane.diane_phone`; installed application IDs and persisted settings remain compatible.
 
+## PDF rendering
+- Reader size updates settle for 120 ms before committing expensive page redraws; initial sizing remains immediate. Resize captures/restores the reading anchor in either direction. Each page caches normalized line-selection geometry by PDF page, OCR spans and split; resizing/zooming rebuilds only its DOM positions.
+- Reader imports matching `pdfjs-dist/legacy/build` main and worker bundles so PDF.js supplies APIs absent from bundled Electron (including `Math.sumPrecise`). Keep both entry points aligned; existing glyph-outline and asset settings remain unchanged.
+
 ## Reader selection and transcription
+- `reader/lib/ocr-selection-lines.ts` derives continuous selectable lines from cached word geometry, separately per printed page. A bounded downsample of the rendered canvas refines the paragraph bounds and fills missed-word extents without recognition or cache invalidation. Native PDF text layers remain unchanged.
+- OCR eligibility includes every scanned page. Each reader document recognizes only the visible page and immediate neighbors. Navigation replaces pending requests; reopening never starts another background batch. Reuse saved layers, save completed results incrementally, and discard stale-document completions. `reader/lib/ocr-cache.ts` stores browser-copy OCR per page in IndexedDB, keyed by SHA-256 of PDF bytes and filtered by recognizer/layout version; temporary URL changes do not invalidate it. Filesystem PDFs retain the existing identity-checked server cache.
 - Local Tesseract runs with Chinese/English models and word boxes, separately for each detected printed page. `scan-lines.ts` fills lines omitted by recognition without stretching known words; cache version 3 rejects older geometry.
 - `selection-image.ts` renders selected pixels directly from PDF coordinates, stacking selected strips in reading order for transcription. It rejects blank captures. `/api/reader/transcribe` uses server-side OpenRouter credentials with Qwen3-VL 32B and GLM-4.6V fallback, bounded requests and content-keyed result caching under `graphs/reader_transcriptions`. No surrounding unselected context is uploaded.
 - Comments save synchronously; quote status/model/original quote persist alongside geometry. Async completion merges only the quote into the current draft or saved note, retaining concurrent edits. Offline status persists; reconnect/retry resumes extraction. Existing scan notes can be upgraded by geometry without moving highlights.
@@ -19,6 +25,7 @@
 
 
 ## PDF selection references
+- Ref saves the selection anchor immediately. Deferred quote transcription updates only quote metadata and an unchanged default label; document-scope guards discard stale completions. Preview rasterization depends only on PDF/page, with label updates separate from active typing.
 - Existing rectangular reference anchors remain readable; the separate Select area toolbar tool was removed at the user’s request.
 - `reader/lib/selection-image.ts` renders selected bounds directly to a PNG canvas, respecting page rotation and capping the longest output dimension at 2400 px. Reader Ask uploads through the existing attachment endpoint, then stages the image in main/sidecar chat; sending remains explicit.
 - Reference tags optionally store `PdfSelectionAnchor`; legacy whole-page tags still deduplicate by page, selected refs by ID. Reader/preview overlays share the saved rectangles, and preview scrolling waits for visible canvas layout.
@@ -370,3 +377,5 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - Closing all macOS windows leaves the desktop process and backend running. Full normal Quit stops the owned local tree, including captured descendants in separate process groups. Reused external backends, remote services, pre-existing orphans, OS force-kill, and power loss remain outside this hook.
 
 - `workbench/reconcileRunState.ts` reconciles assistant pending flags and saved run references from terminal task snapshots by exact task/run identity. It preserves partial content, keeps polling stable, and explains writer conflicts without taking over the other connection.
+
+- PDF highlight navigation: page-level pointer hit testing leaves the text layer selectable; `readerStore.noteFocus` requests Notes scrolling/focus separately from notes-to-PDF navigation. Saved highlight SVGs also support keyboard activation.

@@ -1,5 +1,27 @@
 # Todo
 
+- [x] Automatically dismiss the PDF OCR-ready badge after two seconds — [reader](UI-plans/3-reader-and-side-panel.md).
+
+- [x] Link saved PDF highlight clicks to their Notes entry while preserving selection and unsaved edits — [reader](UI-plans/3-reader-and-side-panel.md).
+
+- [x] Optimize PDF expand/restore: coalesce resize redraws, reuse line geometry and preserve reading position; installed and verified — [reader](UI-plans/3-reader-and-side-panel.md).
+
+- [x] Save Ref immediately and enrich quotes in the background; avoid redrawing previews for text edits; installed and verified — [reader](UI-plans/3-reader-and-side-panel.md).
+
+- [x] Restore continuous scanned-line selection, exclude detached binding noise, and fill missed-word geometry from rendered pixels while preserving OCR caches; installed and verified — [reader](UI-plans/3-reader-and-side-panel.md).
+
+- [x] Reuse saved OCR on reopen; recognize only visible/neighboring pages and persist browser-copy results by PDF content; installed and verified — [reader](UI-plans/3-reader-and-side-panel.md).
+
+- [x] Restore selection beyond the first 40 scanned pages: prioritize visited pages and save completed OCR incrementally; reinstalled again on October 4 and health-verified — [reader](UI-plans/3-reader-and-side-panel.md).
+
+- [x] Reinstall project auto-selection and seconds-only timer fixes; signature, archive equality and backend health pass.
+
+- [x] Show activity durations under one minute in seconds only — [navigation](plans/4-13-unified-workspace-navigation.md).
+
+- [x] Select newly created projects in the project selector after folder drops or dialog creation — [navigation](plans/4-13-unified-workspace-navigation.md).
+
+- [x] Fix PDF embedded-font rendering with Electron-compatible PDF.js main/worker builds; reproduced and visually verified missing ligatures; reinstalled and health-verified — [reader](UI-plans/3-reader-and-side-panel.md).
+
 - [x] Crop existing icon to painted area, retaining white textured background.
 
 - [x] Restore white icon background and remove only the raised outer rim.

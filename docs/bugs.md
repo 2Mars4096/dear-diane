@@ -1,5 +1,29 @@
 # Known Issues & Failed Approaches
 
+- **Fixed 2026-10-04: native window expansion/restoration makes PDF reading lag.** Every ResizeObserver event restarted visible-page rendering and pixel-derived line geometry. Debounce commits for 120 ms and cache normalized geometry. The anchor restoration effect depended only on zoom, so same-zoom resize anchors could remain unused; include container size/layout and capture both resize directions. Native window handling is unchanged.
+
+- **Reference-update startup verification 2026-10-04:** initial backend did not become ready and exited. The guarded recovery found that app PID had already exited; a newer app instance was already running. Verified ownership and both health endpoints on the new instance without terminating it.
+
+- **Fixed 2026-10-04: adding Ref waits on transcription.** `keepSelection` awaited the vision call and disabled selection actions before saving anything. Save geometry first and enrich text asynchronously. Preview effects also depended on the entire tag, rerendering PDF pixels after label/quote changes; depend on document/page instead. Hidden Electron label validation required explicit focus events to exercise React blur persistence.
+
+- **Fixed 2026-10-04: scanned paragraph selection fragmented and included binding noise.** The earlier Chinese-word geometry change exposed each recognized word as a caret target; scan-border fragments entered reading order. Previous validation exercised one-word selection, missing passage coverage. Build continuous per-page line targets and refine bounds from rendered pixels. Grouping OCR boxes alone still omitted missed words; raster refinement fills those gaps. The supplied two-paragraph selection now produces exactly 12 clean Comment rectangles, using the existing cache.
+
+- **Fixed 2026-10-04: repeated OCR on reopening.** The navigation repair queued 40 additional uncached pages per mount; browser-copy PDFs skipped the server cache entirely. Replace batch prefetch with visible/neighbor demand, and persist browser OCR in IndexedDB keyed by exact PDF content. Existing filesystem caches remain compatible.
+- **Cache validation packaging:** initial fixture cleanup ran from `editor/` with root-relative paths; stopped the build, removed the temporary fixture from the repository root and rebuilt before installation.
+
+- **Reinstall startup 2026-10-04:** the first reopened app had an exited/zombie backend and unresponsive startup UI; normal termination was delayed. Closed the identified stalled app instances and relaunched with logging. Backend startup and both health endpoints pass; original startup cause was not captured. No backend changes made.
+
+- **Fixed 2026-10-03: scanned pages after 40 cannot be selected.** `sparsePages` truncated the eligible page list before prioritization, and the one-shot queue never resumed on navigation. Apply the limit only to background prefetch, enqueue visited pages/neighbors, reprioritize pending work and persist each completion.
+- **Selection validation:** Vitest only discovers `.test.ts`; renamed the new React test (no JSX) from `.test.tsx` and cleared mock call histories between cases. The temporary PDF fixture uses the CommonJS pdf-lib entry; direct ESM-file import failed. Playwright CLI was unavailable offline; isolated Electron input events verified real mouse selection instead.
+
+- **Connection investigation 2026-10-03:** latest two Codex runs failed within a second with `Codex live connection closed`. The live adapter discards stderr, so persisted records do not establish the underlying startup cause. Reinstallation restores a healthy app/backend; Codex execution remains unverified.
+- **Packaging 2026-10-03:** DMG generation failed on an electron-builder cache permission error after the app bundle built. Signed and installed the completed `.app` directly; frontend build, Electron compilation and bundle budgets passed.
+
+- **Fixed in source 2026-10-03: new folder-drop project left the selector on the previous project.** Creation activated the workspace store but skipped the separate persisted project scope. The shared creation reset now takes the new ID and updates that scope for both folder drops and the project dialog.
+
+- **Fixed in source 2026-10-03: PDF fonts and ligatures disappear in Electron.** Modern PDF.js 6.2 worker uses `Math.sumPrecise`, absent in the bundled runtime. Font conversion catches the exception and substitutes sans-serif, losing fi/fl/ffi/ffl. Both font-face modes reproduced the failure; changing `disableFontFace` alone does not fix it. Matching legacy main/worker builds restore the generated LaTeX fixture. The screenshot document itself remains unverified.
+- **Validation notes 2026-10-03:** isolated loopback validation required sandbox escalation. Electron harness must import built-in `electron` by module name; the absolute npm package path returns the launcher path.
+
 - **Icon intent correction (2026-10-03):** removing the full tile was the wrong interpretation. User wants the white painted background retained, with only the outer rim removed. Use `source-radio-white.png`; do not use the radio-only cutout.
 
 - **Icon correction (2026-10-03):** removing only exterior white pixels left the ivory tile visibly framing the radio. Use a standalone radio cutout; corner-alpha checks alone cannot verify absence of a rim.

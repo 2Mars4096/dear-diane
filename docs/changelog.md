@@ -1,5 +1,44 @@
 # Changelog
 
+## 2026-10-05
+- [fix] Automatically dismiss the PDF “Image text ready” badge after two seconds. Resizing and OCR array refreshes do not restart the timer. Build/budgets pass; reinstalled and verified signature/archive equality and app health.
+
+## 2026-10-05
+- [feat] Click a saved PDF highlight to open Notes, scroll to its entry and focus it; empty highlights offer Add note. Hit testing follows painted lines, ignores drag gestures and preserves unsaved edits. Keyboard activation is supported. Thirty-seven reader tests and isolated Electron click/drag/draft checks pass. Production build/budgets pass; installed/reopened with signature/archive match and direct/proxy health verified (backend 80350).
+
+## 2026-10-04
+- [fix] Coalesce PDF resize updates after 120 ms of settling, retain existing canvases during the native animation, and reuse normalized scan-line geometry across size/zoom changes. Restore the reading anchor on container/layout changes as well as zoom. Isolated expand/restore: 194→21 renders, 4→0 cancelled renders, 7→0 selection-pixel scans. Native macOS maximize/restore retains page 43 and all 54 selection lines; 40 focused tests and production build/budgets pass. Installed/reopened; archive/signature and direct/proxy health verified (backend 35759).
+
+## 2026-10-04
+- [fix] Save selected references immediately instead of waiting for vision transcription. Background quote completion preserves geometry, renames, moves and deletions, and ignores changed/unmounted documents. Preview rendering depends on document/page instead of tag text; label updates preserve active typing. Isolated Electron saves all 12 selected lines in 27 ms with transcription withheld; 35 reader tests and production build/budgets pass. Installed archive/signature match; current app 32107 owns healthy backend 32111 through direct/proxy endpoints.
+
+## 2026-10-04
+- [fix] Render scanned selection as continuous lines instead of individual OCR word/character boxes. Group within each printed page, exclude detached margin fragments, and recover full line extents from rendered pixels. Existing OCR caches and recognition scheduling remain compatible. Real Electron drag/Comment preserves all 12 lines of the supplied passage with no margin/opposite-page rectangles; 34 reader tests and production build/budgets pass. Installed/reopened with signature/archive equality and direct/proxy health verified (backend 26968).
+
+## 2026-10-04
+- [fix] Stop queuing another 40 uncached pages on each reopen. OCR runs only for the visible page and neighbors, reuses saved layers, and drops unstarted requests after navigation. Add persistent per-page browser OCR keyed by SHA-256 of PDF contents. Two separate Electron launches restore all 910 page-43 spans with no OCR worker on the second launch; changed bytes miss the cache. Thirty reader tests and production build/budgets pass. Installed and reopened; signature/archive equality and direct/proxy health pass (app 18655, backend 18695).
+
+## 2026-10-04
+- [infra] Reinstall the latest scanned-selection build again at user request. Reopened through Launch Services; signature/archive equality and direct/proxy health pass (backend PID 15045). Rollback retained at `/Applications/.Diane-previous-71bc8d0e-39d1-40c2-b596-bc0db1a21e06.app`.
+
+## 2026-10-04
+- [infra] Install the scanned-page selection fix with rollback. Signature/archive equality, production budgets and 28 reader tests pass. Initial backend startup failed; a logged relaunch succeeds with app PID 14227 owning healthy backend PID 14233 through direct/proxy endpoints.
+
+## 2026-10-03
+- [fix] Prepare selectable OCR for any visited scanned page, including pages beyond 40. Keep a 40-page background budget, prioritize navigation between recognition calls, reuse cached pages and save each completed page. Verified real drag selection and Comment/Ask/Ref using the supplied screenshot embedded as image-only page 43; 28 reader tests pass.
+
+## 2026-10-03
+- [infra] Reinstall and reopen the project-selection/timer build. Installed archive matches the prepared build; strict signature and backend health pass (app PID 3109, backend PID 3139). Rollback: `/Applications/.Diane-previous-b5823f71-8725-43c8-9f60-1876183631ee.app`.
+
+## 2026-10-03
+- [fix] Show Work details/Thinking durations below one minute as seconds only (`8s`); retain minutes and seconds from `1m00s` onward.
+
+## 2026-10-03
+- [fix] Synchronize the persisted project scope when creating a project by folder drop or dialog, so the selector immediately shows the new project. Existing-project drops retain their selection path. Validation: 10 focused project/drop/dialog tests and TypeScript check pass.
+
+## 2026-10-03
+- [fix] Use matching PDF.js compatibility builds in Reading. The modern worker called unsupported `Math.sumPrecise`, dropping embedded fonts and ligatures; generated LaTeX reproduction restores serif, bold, italic and fi/fl/ffi/ffl glyphs in Electron. No other feature changes. Validation: 24 reader tests, TypeScript/production build and bundle budgets pass; installed and reopened with signature/archive equality and direct/proxy health verified (backend PID 30712).
+
 ## 2026-10-03
 - [infra] Install and reopen the cropped white-painted icon at `/Applications/Dear Diane.app`. Opaque source pixels and alpha are preserved by the crop; production budgets, installed icon/archive equality, signature and health pass (backend PID 87961).
 - [fix] Crop the existing white-painted source to its painted section, preserving the radio and background while removing exterior presentation margins. Export all app/browser icon sizes from this crop.
