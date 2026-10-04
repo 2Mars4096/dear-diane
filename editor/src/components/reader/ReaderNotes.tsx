@@ -11,9 +11,19 @@ export function ReaderNotes({ file, header, textDocument = false, onAsk }: { fil
   const [editing, setEditing] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
   const input = useRef<HTMLTextAreaElement>(null);
+  const panel = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!state.noteFocus) return;
+    const frame = window.requestAnimationFrame(() => {
+      const note = Array.from(panel.current?.querySelectorAll<HTMLElement>('[data-note-id]') ?? []).find(node => node.dataset.noteId === state.noteFocus?.commentId);
+      note?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      note?.querySelector<HTMLButtonElement>('.wb-notes-jump')?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [file.path, state.noteFocus]);
   useEffect(() => { if (state.draft) { setText(""); window.requestAnimationFrame(() => input.current?.focus()); } }, [state.draft?.draftId]);
   const sorted = [...state.comments].sort((a, b) => a.pageNumber - b.pageNumber || (a.rects[0]?.top ?? 0) - (b.rects[0]?.top ?? 0));
-  return <aside className="wb-activity-panel wb-reader-notes" aria-label="Notes">
+  return <aside ref={panel} className="wb-activity-panel wb-reader-notes" aria-label="Notes">
     {header}
     {state.draft && <form className="wb-notes-composer" onSubmit={(event) => { event.preventDefault(); readerActions.addComment(file.path, state.draft!, text); }}>
       <q>{state.draft.quoteStatus ? 'Selected passage' : state.draft.quote}</q>
@@ -26,7 +36,7 @@ export function ReaderNotes({ file, header, textDocument = false, onAsk }: { fil
       <footer><button type="button" onClick={() => readerActions.setDraft(file.path, null)}>Cancel</button><button type="submit">{text.trim() ? "Save note" : "Highlight"}</button></footer>
     </form>}
     {!sorted.length && !state.draft && <p className="wb-activity-empty wb-side-empty">Select text in the file and choose Annotate selection or Comment to add a note.</p>}
-    <ol className="wb-notes-list">{sorted.map((item) => <li key={item.commentId} data-stale={state.stale[item.commentId]}>
+    <ol className="wb-notes-list">{sorted.map((item) => <li key={item.commentId} data-note-id={item.commentId} data-active={state.noteFocus?.commentId === item.commentId || undefined} data-stale={state.stale[item.commentId]}>
       <button type="button" className="wb-notes-jump" onClick={() => readerActions.focus(file.path, item)} title="Show in the file">
         <span>{textDocument ? "Passage" : `p. ${item.pageNumber}`}{state.stale[item.commentId] === "missing" ? " · not found in this version" : ""}</span>
         <q>{item.quoteStatus ? "Selected passage" : item.quote}</q>

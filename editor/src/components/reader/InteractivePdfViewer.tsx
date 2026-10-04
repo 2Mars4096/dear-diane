@@ -30,7 +30,8 @@ import type {
 } from "./lib/pdf-ocr";
 import {
   isPaperHighlightEdgeShadeArtifact,
-  paperHighlightDisplayPath
+  paperHighlightDisplayPath,
+  paperHighlightAtPoint
 } from "./lib/paper-highlight-display";
 import {
   DEFAULT_PAPER_REFERENCE_LINE_ID,
@@ -66,6 +67,7 @@ type InteractivePdfViewerProps = {
   positionIdentity: string;
   onAskSelection: (selection: SelectionAction) => string | null | Promise<string | null>;
   onCommentSelection: (selection: SelectionAction) => void;
+  onOpenComment?: (commentId: string) => void;
   onResolveSelection: (selection: SelectionAction) => Promise<SelectionAction>;
   onDocument?: (document: PDFDocumentProxy | null) => void; // Diane: lets the reader extract text / run OCR
   toolbarExtras?: ReactNode; // Diane: reader actions share the toolbar row with Refs
@@ -110,6 +112,7 @@ type PdfPageProps = {
   comments: PaperComment[];
   containerSize: { height: number; width: number };
   documentProxy: PDFDocumentProxy;
+  onOpenComment?: (commentId: string) => void;
   onCaptureSelection: (pageNumber: number, textLayer: HTMLDivElement | null) => void;
   onRenderError: () => void;
   ocrSpans: PdfOcrTextSpan[];
@@ -239,6 +242,7 @@ function PdfPage({
   containerSize,
   documentProxy,
   onCaptureSelection,
+  onOpenComment,
   onRenderError,
   ocrSpans,
   ocrSplit,
@@ -248,6 +252,12 @@ function PdfPage({
   zoom
 }: PdfPageProps) {
   const pageElementRef = useRef<HTMLDivElement>(null);
+  const highlightPress = useRef<{ pointerId: number; x: number; y: number; moved: boolean; commentId: string } | null>(null);
+  const highlightAt = (x: number, y: number) => {
+    const bounds = pageElementRef.current?.getBoundingClientRect();
+    return bounds && bounds.width > 0 && bounds.height > 0
+      ? paperHighlightAtPoint(comments, (x - bounds.left) / bounds.width, (y - bounds.top) / bounds.height) : undefined;
+  };
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const renderTaskRef = useRef<RenderTask | null>(null);
@@ -438,6 +448,23 @@ function PdfPage({
       data-rendered={rendered ? "true" : "false"}
       data-text-layer={ocrSpans.length > 0 ? "ocr" : "native"}
       ref={pageElementRef}
+      onPointerDown={event => {
+        highlightPress.current = null;
+        if (!onOpenComment || event.button !== 0 || !event.isPrimary) return;
+        const hit = highlightAt(event.clientX, event.clientY);
+        if (hit) highlightPress.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, moved: false, commentId: hit.commentId };
+      }}
+      onPointerMove={event => {
+        const press = highlightPress.current;
+        if (press && press.pointerId === event.pointerId && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 5) press.moved = true;
+      }}
+      onPointerCancel={() => { highlightPress.current = null; }}
+      onPointerUp={event => {
+        const press = highlightPress.current; highlightPress.current = null;
+        if (!press || press.pointerId !== event.pointerId || press.moved || Math.hypot(event.clientX - press.x, event.clientY - press.y) > 5) return;
+        if (window.getSelection()?.isCollapsed === false) return;
+        if (highlightAt(event.clientX, event.clientY)?.commentId === press.commentId) onOpenComment?.(press.commentId);
+      }}
       role="document"
       style={{ height: viewport.height, width: viewport.width }}
     >
@@ -446,7 +473,13 @@ function PdfPage({
         const path = paperHighlightDisplayPath(comment.rects);
         return path ? (
           <svg
-            aria-hidden="true"
+            aria-hidden={onOpenComment ? undefined : true}
+            role={onOpenComment ? "button" : undefined}
+            tabIndex={onOpenComment ? 0 : undefined}
+            aria-label={onOpenComment ? `Open note: ${comment.quote.slice(0, 80)}` : undefined}
+            onKeyDown={event => {
+              if (onOpenComment && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onOpenComment(comment.commentId); }
+            }}
             className={styles.commentHighlight}
             data-comment-id={comment.commentId}
             key={comment.commentId}
@@ -484,6 +517,7 @@ export function InteractivePdfViewer({
   positionIdentity,
   onAskSelection,
   onCommentSelection,
+  onOpenComment,
   onResolveSelection,
   onDocument,
   onPageChange,
@@ -1497,6 +1531,7 @@ export function InteractivePdfViewer({
                 documentProxy={documentProxy}
                 key={index + 1}
                 onCaptureSelection={captureSelection}
+                onOpenComment={onOpenComment}
                 onRenderError={handlePageRenderError}
                 ocrSplit={ocrPages.find((page) => page.page_number === index + 1)?.split ?? null}
                 ocrSpans={ocrPages.find((page) => page.page_number === index + 1)?.spans ?? EMPTY_OCR_SPANS}

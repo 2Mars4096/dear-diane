@@ -295,6 +295,7 @@ export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: 
         onResolveSelection={resolveSelection}
         onAskSelection={ask}
         onCommentSelection={comment}
+        onOpenComment={commentId => { readerActions.focusNote(file.path, commentId); onNotes(); }}
         onDocument={onDocument}
         onPageChange={onPageChange}
         ocrPages={ocrPages}

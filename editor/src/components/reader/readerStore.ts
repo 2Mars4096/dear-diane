@@ -5,7 +5,7 @@ import { readPaperComments, writePaperComments, type PaperComment, type PaperCom
 
 export type ReaderDraft = PdfSelectionAnchor & { draftId?: string; anchor: PaperCommentAnchor | null };
 export type ReaderFocus = { commentId: string; pageNumber: number; requestId: number; top: number };
-export type ReaderState = { comments: PaperComment[]; stale: Record<string, "moved" | "missing">; draft: ReaderDraft | null; focus: ReaderFocus | null };
+export type ReaderState = { comments: PaperComment[]; stale: Record<string, "moved" | "missing">; draft: ReaderDraft | null; focus: ReaderFocus | null; noteFocus: { commentId: string; requestId: number } | null };
 
 const states = new Map<string, ReaderState>();
 const listeners = new Set<() => void>();
@@ -14,7 +14,7 @@ const emit = () => listeners.forEach((listener) => listener());
 function ensure(path: string): ReaderState {
   let state = states.get(path);
   if (!state) {
-    state = { comments: readPaperComments({ material_id: path }), stale: {}, draft: null, focus: null };
+    state = { comments: readPaperComments({ material_id: path }), stale: {}, draft: null, focus: null, noteFocus: null };
     states.set(path, state);
   }
   return state;
@@ -69,6 +69,11 @@ export const readerActions = {
     const stale = { ...ensure(path).stale };
     if (value) stale[commentId] = value; else delete stale[commentId];
     if (JSON.stringify(stale) !== JSON.stringify(ensure(path).stale)) update(path, { stale });
+  },
+  focusNote(path: string, commentId: string) {
+    const state = ensure(path);
+    if (!state.comments.some(comment => comment.commentId === commentId)) return;
+    update(path, { noteFocus: { commentId, requestId: (state.noteFocus?.requestId ?? 0) + 1 } });
   },
   focus(path: string, comment: PaperComment) {
     update(path, { focus: { commentId: comment.commentId, pageNumber: comment.pageNumber, requestId: Date.now(), top: comment.rects[0]?.top ?? 0 } });

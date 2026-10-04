@@ -954,3 +954,5 @@
 .wb-reading-list header button { padding:3px; text-decoration:underline; }
 
 .wb-reading-list { max-height:42vh; overflow-y:auto; }
+
+.wb-notes-list li[data-active="true"] { background:var(--wb-soft); outline:1px solid var(--wb-accent); outline-offset:3px; border-radius:6px; }

@@ -1,4 +1,4 @@
-import type { PdfSelectionRect } from "./paper-comments";
+import type { PaperComment, PdfSelectionRect } from "./paper-comments";
 
 const EDGE_SHADE_LEFT_LIMIT = 0.002;
 const EDGE_SHADE_WIDTH_LIMIT = 0.015;
@@ -88,4 +88,10 @@ export function paperHighlightDisplayPath(rects: PdfSelectionRect[]): string {
     const rectBottom = pathNumber(bottom(rect));
     return `M${left} ${top}H${rectRight}V${rectBottom}H${left}Z`;
   }).join(" ");
+}
+
+/** Match the painted rectangles, not the blank gaps between lines. Newer overlaps win. */
+export function paperHighlightAtPoint(comments: PaperComment[], x: number, y: number): PaperComment | undefined {
+  return [...comments].reverse().find(comment => paperHighlightDisplayRects(comment.rects).some(rect =>
+    x >= rect.left && x <= rect.left + rect.width && y >= rect.top && y <= rect.top + rect.height));
 }

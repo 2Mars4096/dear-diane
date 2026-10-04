@@ -47,7 +47,7 @@ Session titles are set from the first request and stay stable across follow-ups.
 
 Click **Session · ID** above the conversation to copy its permanent ID. Paste it into **Search chats or session ID** to find that chat, or give it to a native agent to look up the other session when needed. Agents receive their own Dear Diane session identity and lookup instructions; this does not send messages between sessions.
 
-Click a file link or attachment to open it in the sidecar beside your conversation. PDFs, text/Markdown, images, and media use their previews; unreadable or unsupported files show the error there. Right-click local links or use the file’s **…** menu for native actions, including **Open With…** on macOS. Select text in PDFs or text previews to annotate; **Use in chat** stages the passage and note for your next request. Notes persist across reopening.
+Click a file link or attachment to open it in the sidecar beside your conversation. PDFs, text/Markdown, images, and media use their previews; unreadable or unsupported files show the error there. Right-click local links or use the file’s **…** menu for native actions, including **Open With…** on macOS. Select text in PDFs or text previews to annotate; **Use in chat** stages the passage and note for your next request. Notes persist across reopening. Click a saved PDF highlight to open its matching Notes entry; highlights without note text offer **Add note**.
 
 Use **Edit** below your latest message, then **Save & resend** to replace its answer while keeping attachments. Finish or stop an active reply before editing; **Cancel** leaves the conversation unchanged.
 
