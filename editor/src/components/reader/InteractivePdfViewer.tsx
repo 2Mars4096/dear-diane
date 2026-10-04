@@ -43,7 +43,9 @@ import {
 } from "./lib/paper-reference-tags";
 import { readPaperPdfPosition, writePaperPdfPosition, type PaperPdfPosition } from "./lib/paper-reading-position";
 import styles from "./interactive-pdf-viewer.module.css";
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+// Keep both PDF.js entry points compatible with the bundled Electron runtime.
+// The modern worker needs Math.sumPrecise; without it embedded fonts silently fail.
+import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 
 type SelectionAction = PdfSelectionAnchor;
 
@@ -319,7 +321,7 @@ function PdfPage({
 
     void (async () => {
       try {
-        const pdfjs = await import("pdfjs-dist");
+        const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
         const context = canvas.getContext("2d", { alpha: false });
         if (!context) {
           throw new Error("Canvas unavailable");
@@ -620,7 +622,7 @@ export function InteractivePdfViewer({
 
     void (async () => {
       try {
-        const pdfjs = await import("pdfjs-dist");
+        const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
         pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
         const assets = pdfAssetBase(import.meta.env.BASE_URL, window.location.href);
         const loadingTask = pdfjs.getDocument({ url: sourceUrl, cMapUrl: `${assets}cmaps/`, cMapPacked: true,
