@@ -5,7 +5,10 @@ import { expect, it, vi } from 'vitest';
 import { ActivitySummary, elapsedLabel } from '../ActivitySummary';
 Object.assign(globalThis,{IS_REACT_ACT_ENVIRONMENT:true});
 it('formats elapsed time without negative values or invalid timestamps',()=>{
- expect(elapsedLabel(1000,129000)).toBe('2m08s');expect(elapsedLabel(1000,0)).toBe('0m00s');expect(elapsedLabel(undefined,1000)).toBe('');expect(elapsedLabel(1000,NaN)).toBe('');
+ expect(elapsedLabel(1000,9000)).toBe('8s');
+ expect(elapsedLabel(1000,60000)).toBe('59s');
+ expect(elapsedLabel(1000,61000)).toBe('1m00s');
+ expect(elapsedLabel(1000,129000)).toBe('2m08s');expect(elapsedLabel(1000,0)).toBe('0s');expect(elapsedLabel(undefined,1000)).toBe('');expect(elapsedLabel(1000,NaN)).toBe('');
 });
 it('ticks from the recorded start, reports observed activity, and freezes at recorded completion',()=>{
  vi.useFakeTimers();vi.setSystemTime(129000);const host=document.createElement('div'),root=createRoot(host);

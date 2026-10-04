@@ -16,6 +16,7 @@ export function currentActivity(events: RunEventPayload[], live = "") {
 export function elapsedLabel(start: number | undefined, end: number) {
   if (!start || !Number.isFinite(start) || !Number.isFinite(end)) return '';
   const seconds = Math.max(0, Math.floor((end - start) / 1000));
+  if (seconds < 60) return `${seconds}s`;
   return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`;
 }
 export function ActivitySummary({ events, active, live, startedAt, endedAt, children }: { events: RunEventPayload[]; active: boolean; live?: string; startedAt?: number; endedAt?: number; children: ReactNode }) {
