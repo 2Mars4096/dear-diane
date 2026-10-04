@@ -15893,7 +15893,8 @@ export default function ChunkWorkspaceApp() {
     }
   }, [threads, openSession, clearActiveSessionView]);
 
-  const resetCreatedProject = () => {
+  const resetCreatedProject = (id: string) => {
+    setWorkspaceProjectScope(id);
     ++sessionSelectionSeqRef.current;
     clearActiveSessionView("Ready");
     setActiveFilePath(null);
@@ -15901,7 +15902,7 @@ export default function ChunkWorkspaceApp() {
   const openDroppedProject = (root: string) => {
     const project = ensureProjectForRoot(root);
     if (!project) return;
-    if (project.created) resetCreatedProject();
+    if (project.created) resetCreatedProject(project.id);
     else switchWorkbenchProject(project.id);
     setActivePane("work");
     setPhonePage("chat");
@@ -17269,7 +17270,7 @@ export default function ChunkWorkspaceApp() {
         onBrowse={() => nativeDialog.openDirectory()}
         onSave={(name, root) => {
           const id = saveWorkbenchProject(name, root, creatingProject);
-          if (id && creatingProject) resetCreatedProject();
+          if (id && creatingProject) resetCreatedProject(id);
           setWorkbenchSettings(false); setShowSessionRail(true); setShowFileExplorer(false); setShowConversationChunks(true); setPhonePage("chat");
         }}
       /></Suspense>}
