@@ -90,3 +90,23 @@ export function refineOcrLines(image: Pick<ImageData, 'width' | 'height' | 'data
     return result.length ? result : group;
   });
 }
+
+/** Keep an OCR drag in reading order when Chromium hits the empty layer between lines. */
+export function extendOcrSelectionAcrossGap(layer: HTMLElement, x: number, y: number): boolean {
+  const selection = layer.ownerDocument.getSelection();
+  const anchor = selection?.anchorNode;
+  if (!anchor || !layer.contains(anchor) || !anchor.parentElement?.closest('[data-ocr-line]')) return false;
+  const lines = Array.from(layer.querySelectorAll<HTMLElement>('[data-ocr-line]'))
+    .map(element => ({ element, rect: element.getBoundingClientRect() }));
+  if (lines.some(({ rect }) => x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom)) return false;
+  // Require text both above and below at this x: margins and page gutters stay native.
+  const column = lines.filter(({ rect }) => x >= rect.left && x <= rect.right);
+  const above = column.filter(({ rect }) => rect.bottom < y).sort((a, b) => b.rect.bottom - a.rect.bottom)[0];
+  const below = column.filter(({ rect }) => rect.top > y).sort((a, b) => a.rect.top - b.rect.top)[0];
+  if (!above || !below || below.rect.top - above.rect.bottom > Math.max(above.rect.height, below.rect.height)) return false;
+  const nearest = y - above.rect.bottom <= below.rect.top - y ? above : below;
+  const caret = layer.ownerDocument.caretRangeFromPoint?.(x, nearest.rect.top + nearest.rect.height / 2);
+  if (!caret || !nearest.element.contains(caret.startContainer)) return false;
+  selection.extend(caret.startContainer, caret.startOffset);
+  return true;
+}

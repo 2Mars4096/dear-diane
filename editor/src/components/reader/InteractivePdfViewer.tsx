@@ -1,4 +1,4 @@
-import { ocrSelectionLines, refineOcrLines } from "./lib/ocr-selection-lines";
+import { extendOcrSelectionAcrossGap, ocrSelectionLines, refineOcrLines } from "./lib/ocr-selection-lines";
 import { selectionBounds } from "./lib/selection-image";
 import { pdfAssetBase } from "./lib/pdf-assets";
 // Ported from learning-assistant apps/web/app/materials/[materialId]/guide/interactive-pdf-viewer.tsx.
@@ -260,6 +260,8 @@ function PdfPage({
   };
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
+  const gapSelectionFrame = useRef(0);
+  useEffect(() => () => cancelAnimationFrame(gapSelectionFrame.current), []);
   const renderTaskRef = useRef<RenderTask | null>(null);
   const selectionLinesRef = useRef<{ page: PDFPageProxy; spans: PdfOcrTextSpan[]; split: number | null; lines: PdfOcrTextSpan[] } | null>(null);
   const [pageProxy, setPageProxy] = useState<PDFPageProxy | null>(null);
@@ -407,6 +409,7 @@ function PdfPage({
             const targetWidth = Math.max(1, ocrSpan.width * pdfViewport.width);
             const targetHeight = Math.max(1, ocrSpan.height * pdfViewport.height);
             span.className = styles.ocrLine;
+            span.dataset.ocrLine = "true";
             if (ocrSpan.geometryOnly) span.dataset.geometryOnly = "true";
             span.textContent = `${ocrSpan.text} `;
             span.style.left = `${ocrSpan.left * pdfViewport.width}px`;
@@ -501,8 +504,20 @@ function PdfPage({
       })}
       <div
         className={styles.textLayer}
+        onMouseMove={event => {
+          cancelAnimationFrame(gapSelectionFrame.current);
+          if (event.buttons !== 1) return;
+          const { currentTarget, clientX, clientY } = event;
+          gapSelectionFrame.current = requestAnimationFrame(() => extendOcrSelectionAcrossGap(currentTarget, clientX, clientY));
+        }}
         onKeyUp={() => onCaptureSelection(pageNumber, textLayerRef.current)}
-        onMouseUp={() => onCaptureSelection(pageNumber, textLayerRef.current)}
+        onMouseUp={event => {
+          cancelAnimationFrame(gapSelectionFrame.current);
+          if (event.button === 0 && window.getSelection()?.isCollapsed === false) {
+            extendOcrSelectionAcrossGap(event.currentTarget, event.clientX, event.clientY);
+          }
+          onCaptureSelection(pageNumber, textLayerRef.current);
+        }}
         onTouchEnd={() => window.setTimeout(
           () => onCaptureSelection(pageNumber, textLayerRef.current),
           80
