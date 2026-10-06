@@ -6,6 +6,7 @@ import { pdfAssetBase } from "./lib/pdf-assets";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -364,8 +365,6 @@ function PdfPage({
         );
         canvas.width = Math.floor(pdfViewport.width * pixelRatio);
         canvas.height = Math.floor(pdfViewport.height * pixelRatio);
-        canvas.style.width = `${pdfViewport.width}px`;
-        canvas.style.height = `${pdfViewport.height}px`;
         textLayerElement.replaceChildren();
         textLayerElement.style.width = `${pdfViewport.width}px`;
         textLayerElement.style.height = `${pdfViewport.height}px`;
@@ -480,7 +479,7 @@ function PdfPage({
       role="document"
       style={{ height: viewport.height, width: viewport.width }}
     >
-      <canvas aria-hidden="true" ref={canvasRef} />
+      <canvas aria-hidden="true" ref={canvasRef} style={{ width: "100%", height: "100%" }} />
       {comments.map((comment) => {
         const path = paperHighlightDisplayPath(comment.rects);
         return path ? (
@@ -855,30 +854,27 @@ export function InteractivePdfViewer({
     return () => window.cancelAnimationFrame(frame);
   }, [commentFocus]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const anchor = zoomAnchorRef.current;
     const stage = stageRef.current;
     const documentElement = documentElementRef.current;
     if (!anchor || !stage || !documentElement) {
       return;
     }
-    const frame = window.requestAnimationFrame(() => {
-      const target = documentElement.querySelector<HTMLElement>(
-        `[data-pdf-page="${anchor.pageNumber}"]`
-      );
-      if (target) {
-        stage.scrollTo({
-          behavior: "auto",
-          left: stage.scrollLeft,
-          top: Math.max(
-            0,
-            target.offsetTop + target.offsetHeight * anchor.pageRatio - stage.clientHeight / 2
-          )
-        });
-      }
-      zoomAnchorRef.current = null;
-    });
-    return () => window.cancelAnimationFrame(frame);
+    const target = documentElement.querySelector<HTMLElement>(
+      `[data-pdf-page="${anchor.pageNumber}"]`
+    );
+    if (target) {
+      stage.scrollTo({
+        behavior: "auto",
+        left: stage.scrollLeft,
+        top: Math.max(
+          0,
+          target.offsetTop + target.offsetHeight * anchor.pageRatio - stage.clientHeight / 2
+        )
+      });
+    }
+    zoomAnchorRef.current = null;
   }, [zoom, containerSize, pageLayout]);
 
   const captureSelection = useCallback((selectedPage: number, textLayer: HTMLDivElement | null) => {
