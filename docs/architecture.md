@@ -1,5 +1,13 @@
 # Architecture
 
+## Sidebar worker composer
+
+- Lazy `SidecarChat` reuses Work composer CSS, `AttachFiles`, `LeadAgentMenu`, and `NativeWorkerSettings`. `SidecarControls` initializes independent lead/mode/team settings from the parent execution profile.
+- Sidebar runs use canonical `chat:<thread>` surface identity and the existing linked thread. Reading supplies the active PDF path even without a selection; browser copies retain excerpt-only context.
+- A single pending Next payload is stored under the sidecar identity with its execution settings and resumes when the panel is mounted. Active execution remains server-owned; sidebar Next is not a server queue. Admission failures roll back optimistic messages.
+
+
+
 - Selected app artwork is `source-radio-painted-crop.png`; ICNS/ICO/PNG and favicon exports share it. `render-tray.swift` generates a separate 18pt monochrome radio silhouette for macOS.
 
 - Native tray assets are copied from `editor/resources/icons` to `dist-electron/icons` by the existing compile preparation script. macOS uses the 18pt template image and automatic Retina representation; other platforms use the color app icon.
@@ -7,6 +15,7 @@
 - Python source lives in `src/diane`; distribution `dear-diane`, primary CLI `diane`. Legacy CLI aliases point to the same implementation. Android source namespace is `com.diane.diane_phone`; installed application IDs and persisted settings remain compatible.
 
 ## PDF rendering
+- Zoom restores the reading anchor in a layout effect before paint; the displayed canvas fills its page frame while PDF.js redraws. OCR-only gap dragging projects the endpoint onto a neighboring line after native mouse selection; normal line hits and saved geometry remain unchanged.
 - Reader size updates settle for 120 ms before committing expensive page redraws; initial sizing remains immediate. Resize captures/restores the reading anchor in either direction. Each page caches normalized line-selection geometry by PDF page, OCR spans and split; resizing/zooming rebuilds only its DOM positions.
 - Reader imports matching `pdfjs-dist/legacy/build` main and worker bundles so PDF.js supplies APIs absent from bundled Electron (including `Math.sumPrecise`). Keep both entry points aligned; existing glyph-outline and asset settings remain unchanged.
 

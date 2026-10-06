@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-10-06
+- [fix] Commit review keeps synchronous canvas sizing scoped to the main PDF page; remove its unintended application to reference previews.
+
+## 2026-10-06
+- [infra] Install/reopen OCR line-gap selection and zoom timing fixes at user request. Production build/budgets, installed signature/archive equality and direct/proxy health pass (app 6558 owns backend 6575). Rollback retained at `/Applications/.Diane-previous-e22356a5-dbf5-4217-9db9-4a3527445f44.app`. Private-PDF interaction acceptance remains pending.
+
+## 2026-10-06
+- [fix] Restrict OCR gap correction to short gaps between horizontally overlapping lines, keeping the original selection anchor. Leave on-line/native selection, margins, OCR recognition, and cached geometry unchanged.
+- [fix] Correct the zoom scroll anchor before paint and size the canvas with its page frame synchronously; avoid the intermediate old-size canvas and later scroll jump. Forty reader tests, production build/budgets, synthetic browser forward/reverse gap drags and 36 zoom frames pass. Source only; private PDF acceptance pending.
+
+## 2026-10-06
+- [infra] Install/reopen the two-line sidebar input update at user request. Build/budgets, signature/archive equality and direct/proxy health pass (app 50112 owns backend 50137). Rollback retained at `/Applications/.Diane-previous-37e38e54-6a7c-428f-bfaa-5dbcab82ae4d.app`.
+
+## 2026-10-06
+- [fix] Default sidebar/Reading input to two lines with a 60px minimum height; preserve automatic growth and the six-line cap. Reinstallation deferred at user request.
+
+## 2026-10-06
+- [infra] Reinstall/reopen sidebar composer and canonical request fix at user request. Production build/budgets, installed signature and archive equality pass; app 80117 owns backend 80157, healthy through direct/proxy endpoints. Previous app retained at `/Applications/.Diane-previous-6935dd32-212d-412b-b2ef-80f67bc9b18d.app`. No provider request sent during installation verification.
+## 2026-10-06
+- [fix] Send canonical `chat:<thread>` sidebar requests, preventing the reported 422; restore the draft/transcript after failed admission and show concise validation errors.
+- [feat] Sidebar/Reading uses Work composer styling, shared Lead/Team/attachment controls, independent execution settings, steering and a persisted one-message Next slot. Next starts while mounted or on reopening; execution runs independently. Reading identifies the open PDF for whole-file requests. Seven regression tests, server schema validation, production build/budgets, and isolated Chrome layout/menu checks at 316/390/680px pass. Desktop not installed.
+
+
 ## 2026-10-05
 - [fix] Automatically dismiss the PDF “Image text ready” badge after two seconds. Resizing and OCR array refreshes do not restart the timer. Build/budgets pass; reinstalled and verified signature/archive equality and app health.
 

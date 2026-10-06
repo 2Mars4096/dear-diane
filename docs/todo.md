@@ -1,4 +1,8 @@
 # Todo
+- [x] Guard OCR selection in line gaps and remove the delayed zoom-position/canvas-size step — [reader](UI-plans/3-reader-and-side-panel.md). Installed/reopened and health-verified.
+- [x] Default sidebar/Reading input to two lines while retaining automatic growth — [reader](UI-plans/3-reader-and-side-panel.md). Installed/reopened; signature/archive equality and backend health verified.
+- [x] Match sidebar/Reading composer controls to Work, isolate worker settings, fix request validation, and include whole-file context — [reader](UI-plans/3-reader-and-side-panel.md). Installed/reopened; signature/archive equality and direct/proxy health verified.
+
 
 - [x] Automatically dismiss the PDF OCR-ready badge after two seconds — [reader](UI-plans/3-reader-and-side-panel.md).
 
