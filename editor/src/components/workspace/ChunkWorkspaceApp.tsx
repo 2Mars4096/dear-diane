@@ -8,7 +8,6 @@ import type { Paper } from "../papers/library";
 import type { DocumentFile } from "../documents/documents";
 import { attachFollowupReply, queueItemIsWaiting, visibleQueuedTranscript, withQueueReceipts } from "../workbench/queuedTranscript";
 import { ProjectMenu } from "../workbench/ProjectMenu";
-import { SidecarChat } from "../workbench/SidecarChat";
 import { LeadAgentMenu } from "../workbench/LeadAgentMenu";
 import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from "../workbench/NativeWorkers";
 import { EMPTY_PROFILE, leadExecutionProfile, modelSource, OPENROUTER_URL, withLeadSelection } from "../workbench/modelSelection";
@@ -173,6 +172,7 @@ const AttachFiles = lazy(() => import("../workbench/AttachFiles"));
 const FileOpener = lazy(() => import("../documents/FileOpener"));
 const FileSidecar = lazy(() => import("../documents/FileSidecar"));
 const DocumentView = lazy(() => import("../documents/DocumentView"));
+const SidecarChat = lazy(() => import("../workbench/SidecarChat").then(module => ({ default: module.SidecarChat })));
 const ReadingChat = lazy(() => import("../papers/ReadingChat").then(module => ({ default: module.ReadingChat })));
 const LiteraturePanel = lazy(() => import("../papers/LiteraturePanel"));
 const PaperLibrary = lazy(() => import("../papers/PaperLibrary").then(module => ({ default: module.PaperLibrary })));
@@ -18740,10 +18740,10 @@ export default function ChunkWorkspaceApp() {
             leadLabel={selectedAgentOption.shortLabel} execution={sidecarExecution()} header={false}
             onLink={link => { if (libraryReading) setLibraryReadings(current => ({ ...current, [activeMainTab]: { ...libraryReading, session: { ...libraryReading.session, link } } })); }}
             onClose={() => setSidecarChat(false)} onCreated={() => { void refreshThreads(); }} /></Suspense>}
-          {!readerFile && activeThread && <SidecarChat key={`${activeThread.workflowId}:${activeThread.id}`} parentId={activeThread.id} workflowId={activeThread.workflowId}
+          {!readerFile && activeThread && <Suspense fallback={<p className="wb-side-empty">Opening chat…</p>}><SidecarChat key={`${activeThread.workflowId}:${activeThread.id}`} parentId={activeThread.id} workflowId={activeThread.workflowId}
             workspaceId={workspace?.id || ""} workspaceRoot={workspaceRootForTasks(tasks) || workspaceRoot || developmentRoot} context={messages} selection={sidecarSelection}
             leadLabel={selectedAgentOption.shortLabel} execution={sidecarExecution()}
-            header={false} onClose={() => setSidecarChat(false)} onCreated={() => { void refreshThreads(); }} />}
+            header={false} onClose={() => setSidecarChat(false)} onCreated={() => { void refreshThreads(); }} /></Suspense>}
           {!readerFile && !activeThread && <aside className="wb-activity-panel"><p className="wb-activity-empty wb-side-empty">Start a conversation to open a side chat about it.</p></aside>}
           </PersistentPanel>
           <PersistentPanel active={visibleSideTab === "activity"} name="Activity"> <aside className="wb-activity-panel"><WorkbenchActivity events={agentEvents} /></aside></PersistentPanel>

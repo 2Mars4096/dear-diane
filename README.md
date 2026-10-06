@@ -23,6 +23,8 @@ Install browser support in the backend Python environment with `pip install -e '
 
 ## Workbench
 
+- **Parallel sidebar chat:** use attachments, Plan/Auto/Full access, Lead and Team settings independently of the main chat. Reading already knows the open PDF name/path; ask “summarize” without repeating it. Browser-only files supply excerpts. Sidebar Next saves one follow-up and starts it when the current run finishes while the chat is open, or when reopened.
+
 - **Reading after restart:** open reading files and the selected document are restored, along with existing reading progress and chat links. Browser-picked copies stay on this device. Closing a file removes it from the saved Reading list.
 - **PDF selection and Refs:** select a passage and choose **Ref** to keep its highlighted location; hover its tag to preview the passage and edit its label. **Ask** stages selected text or an image crop for chat. Scan columns are detected automatically; **Single Page / Two Pages** changes the reading layout.
 

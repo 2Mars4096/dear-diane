@@ -353,17 +353,26 @@
 .wb-sidecar-messages { flex:1; min-height:0; overflow:auto; padding:18px; font-size:13px; }
 .wb-sidecar-messages .wb-message { margin-bottom:24px; }
 .wb-sidecar-messages .wb-message-user { margin-left:0; padding:10px; }
-.wb-sidecar-composer { padding:12px; border-top:1px solid var(--wb-line); }
-.wb-sidecar-composer textarea { display:block; width:100%; min-height:72px; max-height:180px; resize:vertical; padding:10px; font-size:13px; border:1px solid var(--wb-line); border-radius:8px; background:var(--wb-soft); }
-.wb-sidecar-composer footer { display:flex; justify-content:flex-end; margin-top:8px; }
-.wb-sidecar-composer footer button { display:flex; align-items:center; gap:6px; padding:6px 10px; font-size:12px; border:1px solid var(--wb-line); border-radius:6px; }
-.wb-sidecar-composer button:disabled { opacity:.4; }
+.wb-shell .wb-sidecar-composer { padding:8px 12px 12px; }
+.wb-sidecar-composer footer { position:relative; display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.wb-sidecar-composer footer > button, .wb-sidecar-placement button, .wb-sidecar-mode { display:inline-flex; align-items:center; justify-content:center; gap:4px; height:28px; padding:0 8px; font-size:11px; font-weight:600; border:1px solid var(--wb-line); border-radius:6px; background:var(--wb-paper); }
+.wb-sidecar-placement { display:flex; padding:2px; border:1px solid var(--wb-line); border-radius:6px; }
+.wb-sidecar-placement button { height:24px; border:0; background:transparent; }
+.wb-sidecar-placement button[aria-pressed=true] { background:var(--wb-soft); box-shadow:0 1px 3px #0002; }
+.wb-sidecar-mode { position:relative; }
+.wb-sidecar-mode select { appearance:none; background:transparent; border:0; width:auto; padding:0; font:inherit; }
+.wb-sidecar-spacer { flex:1; }
+.wb-sidecar-composer footer .wb-sidecar-send { margin-left:auto; background:var(--wb-ink); color:var(--wb-paper); }
+.wb-sidecar-composer button:disabled { opacity:.4; cursor:not-allowed; }
+.wb-sidecar-composer .wb-native-settings { position:static; }
+.wb-sidecar-composer .wb-native-settings-panel { right:0; width:min(300px,100%); }
 .wb-sidecar-composer [role=alert] { font-size:12px; color:#bc3030; margin-bottom:8px; }
 .wb-sidecar-quote { display:flex; align-items:flex-start; gap:8px; margin-bottom:8px; padding:8px; background:var(--wb-soft); border-radius:6px; font-size:12px; }
 .wb-sidecar-quote span { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; }
 @media(max-width:760px) { .wb-sidecar-chat { position:absolute; inset:60px 0 0; width:100%; max-width:none; z-index:20; } .wb-quote-action button { padding:9px; gap:4px; font-size:11px; } }
 
 .wb-shell .wb-composer textarea { line-height:24px; min-height:36px; max-height:156px; white-space:pre-wrap; overflow-wrap:anywhere; overflow-x:hidden; transition:none; box-sizing:border-box; }
+.wb-shell .wb-sidecar-composer textarea { min-height:60px; }
 .wb-composer-reference { padding:8px; border:1px solid var(--wb-line); border-radius:8px; font-size:12px; }
 .wb-composer-reference > div { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .wb-composer-reference strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }

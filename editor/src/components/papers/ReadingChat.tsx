@@ -15,6 +15,6 @@ export function ReadingChat({ file, reading, onLink, ...props }: Omit<Base, 'pur
     initialLink={reading?.session.link}
     onLinkChange={reading ? async link => { await saveReadingLink(reading.session.id, link); onLink(link); } : undefined}
     purpose={{ title: `Reading ${file.name}`,
-      framing: `You are a reading companion for the PDF "${file.name}" (${file.url.startsWith('blob:') ? 'browser-local copy; only supplied excerpts are available to you' : file.path}). The user is reading it and asks about a passage they selected. Answer directly and concisely, grounded in the passage and its page text; say plainly when that text is not enough. Do not modify files.`,
-      placeholder: 'Ask about this passage…', empty: 'Select text in the PDF and choose Ask. Answers stay here while you keep reading.' }} />;
+      framing: `You are a reading companion for the PDF "${file.name}" (${file.url.startsWith('blob:') ? 'browser-local copy; only supplied excerpts are available to you' : file.path}). This is the currently open document: resolve requests such as "summarize" or "explain this file" to it without asking for its name again. Read the file when a whole-document answer is needed and the path is accessible; supplied selections and page text are additional context. Never imply that you read the full document from an excerpt. Carry out the user request within the selected execution permissions.`,
+      placeholder: 'Ask about this file or give Diane a task…', empty: `Reading ${file.name}. Ask about the whole file, or select a passage and choose Ask. Answers stay here.` }} />;
 }
