@@ -110,3 +110,7 @@ High-level items grouped by phase. Each links to its plan file.
 - In `bugs.md`, never remove a failed approach — it prevents retry loops.
 - Plan numbering is capped at two file levels: top-level (1, 2, 3) and sub-plans (1-1, 1-2). Do not create sub-sub-plan files such as `1-1-1`; merge that detail into the nearest `N-N` plan.
 - When unsure whether to update a doc, update it. The cost of a stale doc is higher than a redundant entry.
+
+## Sticky Todo Handoff
+
+The local companion integration is tracked in `docs/plans/8-sticky-todo-handoff.md`. Reuse Diane project/session/runtime contracts; Todo owns dispatch and brief status, while all follow-up and approvals stay in Diane. Paired installed-app acceptance is pending.

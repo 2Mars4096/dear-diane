@@ -228,3 +228,13 @@ Example execute payload: Codex orchestrates and DeepSeek powers Codex itself.
 
 ### Codex conversation continuity
 Codex-backed native leads and workers run in Diane-owned session storage. Existing Diane chat history seeds a new private native thread when migrating from shared storage. `/api/native-sessions` labels Codex imports with `continuation: "history"`; importing copies conversation history and does not resume the external native thread. Subsequent requests resume the private Diane thread.
+
+## Local Sticky Todo handoff
+
+`/api/sticky-todo` is local-only. The focused desktop Work window publishes `PUT /defaults` with `{projects:[{id,name,root}],active_project_id,execute}` using its existing execution payload. Credentials stay server-side. `GET /projects` exposes project metadata, not the execution profile.
+
+`POST /requests` accepts `{request_id: UUID,task_key,text,parent?,steps?:string[],project_id?}`. The request UUID and body are immutable: identical retries return the same session; conflicting content returns 409. Diane snapshots the existing absolute project folder and execution defaults, creates a durable project session, and starts V2 background work.
+
+`GET /requests/{UUID}` returns `{request_id,task_key,session_id,workflow_id,project_name,run_id,status,summary,artifacts,updated_at,stopping}`. Status is `queued|running|attention|ready|stopped|failed`, following the latest run in the linked session. `POST /requests/{UUID}/stop` requests a checkpoint stop; `stopping` remains true until confirmed.
+
+Desktop only: `POST /api/sticky-todo/requests/{UUID}/open` on loopback port 45173 resolves and opens that session in Diane. It rejects Origin-bearing browser requests. Do not treat loss of connectivity as failure or retry by generating another UUID.

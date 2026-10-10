@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-10
+
+- [feat] Add local Sticky Todo handoff using existing project folders, composer execution defaults, V2 background runs, durable sessions, and scoped stop. Native Open in Diane resolves a receipt to the existing session; all follow-up stays in Diane.
+- [test] Six handoff tests, seven existing session tests, two desktop routing tests, TypeScript checks, frontend build and bundle budgets pass. Source-only worktree; no production app restart or credential changes.
+
 ## 2026-10-06
 - [fix] Commit review keeps synchronous canvas sizing scoped to the main PDF page; remove its unintended application to reference previews.
 

@@ -292,3 +292,9 @@ Files open in main-pane tabs alongside chats. Use Back/Forward (including mapped
 The sidebar’s Reading section lists up to five recent open PDFs/files, with Show all for the rest, separately from project chats. Desktop Back/Forward is also available from the Go menu.
 
 Scanned PDF comments save immediately, including offline. Selected pixels and the OCR hint are transcribed through OpenRouter using Qwen3-VL 32B (GLM-4.6V fallback); native text PDFs use their text directly. Pending quotes retry when connected, while your comment and highlight remain saved. **Single Page / Two Pages** changes the page arrangement; scan-column detection is automatic.
+
+## Sticky Todo companion
+
+The companion handoff lets Sticky Todo send a request into the project selected in your most recently focused Diane Work window. It uses that project's folder and your current execution settings. Todo shows progress and a brief result; Open in Diane returns to the same session for questions, approvals, and further work. Closing Todo leaves background execution in Diane running.
+
+Both companion changes are required. This branch is validated in isolation and has not replaced the installed apps. Remote/browser-only handoff is not part of this first version.

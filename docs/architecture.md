@@ -1,5 +1,12 @@
 # Architecture
 
+## Sticky Todo Integration
+
+- `server/routers/sticky_todo.py` implements local-only project discovery, desktop-default publication, immutable UUID dispatch receipts under the graphs store, current-session status and acknowledged stop. Reuses ChatStore and V2 admission/execution; does not create a parallel runtime.
+- Work publishes existing project IDs/pinned folder roots and `buildWorkspaceAgentExecutePayload`/`withLeadSelection` output only from a focused Electron window. No credentials cross this boundary.
+- `editor/electron/stickyTodo.ts` handles native-only session-open requests on the existing loopback desktop server; it resolves the saved receipt before calling the validated internal session-window path.
+- Retries return the saved receipt. Dispatch bodies with a reused UUID but different content reject. Follow-up in Diane is reflected through the session’s latest active run.
+
 ## Sidebar worker composer
 
 - Lazy `SidecarChat` reuses Work composer CSS, `AttachFiles`, `LeadAgentMenu`, and `NativeWorkerSettings`. `SidecarControls` initializes independent lead/mode/team settings from the parent execution profile.

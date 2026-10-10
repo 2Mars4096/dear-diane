@@ -16555,6 +16555,24 @@ export default function ChunkWorkspaceApp() {
     ],
   );
 
+  // Publish only project metadata and the existing execution payload, never credentials.
+  useEffect(() => {
+    if (!window.electronAPI) return;
+    const publish = () => {
+      if (!document.hasFocus()) return;
+      const payload = withLeadSelection(buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode), selectedAgentId, leadProfiles);
+      payload.profile_policy.native_workers = nativeWorkerProfiles;
+      void fetch('/api/sticky-todo/defaults', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        projects: workspaces.filter(item => !item.removedFromDan).map(item => ({ id: item.id, name: item.name, root: item.pinnedPaths[0] || '' })),
+        active_project_id: activeWorkspaceId, execute: payload,
+      }) }).catch(() => {});
+    };
+    publish();
+    const timer = window.setInterval(publish, 15000);
+    window.addEventListener("focus", publish);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", publish); };
+  }, [workspaces, activeWorkspaceId, selectedAgentOption, selectedModelOption, autonomyMode, selectedAgentId, leadProfiles, nativeWorkerProfiles]);
+
   const handleComposerInputChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
     setComposerInputValue(event.target.value);
     setComposerCaret(event.target.selectionStart ?? event.target.value.length);

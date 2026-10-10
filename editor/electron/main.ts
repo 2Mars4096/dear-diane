@@ -1,5 +1,6 @@
 import { registerNavigation, installNavigationMenu } from './navigation';
 import { sessionWindowDestination } from "./sessionWindows";
+import { handleStickyTodoOpen } from "./stickyTodo";
 import { app, Notification, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, shell } from "electron";
 import path from "node:path";
 import fs, { type FSWatcher } from "node:fs";
@@ -281,6 +282,8 @@ function startProductionServer(distDir: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       const url = req.url ?? "/";
+
+      if (handleStickyTodoOpen(req, res, { backendPort: BACKEND_PORT, frontendPort: PROD_SERVER_PORT, open: createWindow })) return;
 
       if (url.startsWith("/api/")) {
         const proxyReq = http.request(

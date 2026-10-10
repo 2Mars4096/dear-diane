@@ -1,5 +1,9 @@
 # Development Plan
 
+## Local Task Intake
+
+- [Sticky Todo handoff](plans/8-sticky-todo-handoff.md) is implemented and tested in an isolated companion branch. Todo dispatches; Diane owns projects, sessions, decisions and execution. Paired deployment/live acceptance is pending.
+
 ## Product naming
 
 **Dear Diane** is the product; **Diane** is the assistant. Subtitle: “A workspace for research, code, and ideas.” Existing technical IDs remain compatible. See [rename](plans/4-10-dear-diane.md).
