@@ -7,6 +7,7 @@ export function ApiProviders() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [selected, setSelected] = useState("openrouter");
   const [key, setKey] = useState("");
+  const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
@@ -29,11 +30,15 @@ export function ApiProviders() {
   return <section className="wb-api-providers" aria-label="API providers">
     <h3>API providers</h3>
     <p>Keys stay on this host. Choose Native or API in the agent’s model selector.</p>
-    {providers.length > 0 && <form onSubmit={event => { event.preventDefault(); if (key.trim() && !busy) void save(key.trim()); }}>
+    {providers.map(item => <div className="wb-provider-row" key={item.id}>
+      <span className="wb-preference-copy"><span>{item.label}</span><small>{item.configured ? item.saved ? "Key saved on this host" : "Configured on the server" : "Not connected"}</small></span>
+      <button type="button" disabled={busy} onClick={() => { if (selected !== item.id) { setKey(""); setError(""); setStatus(""); } setSelected(item.id); setEditing(true); }}>{item.configured ? "Manage" : "Connect"}<span className="wb-visually-hidden"> {item.label}</span></button>
+    </div>)}
+    {editing && providers.length > 0 && <form onSubmit={event => { event.preventDefault(); if (key.trim() && !busy) void save(key.trim()); }}>
       <label>Provider<select aria-label="API key provider" disabled={busy} value={selected} onChange={event => { setSelected(event.target.value); setKey(""); setError(""); setStatus(""); }}>{providers.map(item => <option key={item.id} value={item.id}>{item.label}{item.configured ? " · configured" : ""}</option>)}</select></label>
       <p>{provider?.configured ? "Key configured" : "No key configured"}{provider?.saved ? " in Settings." : provider?.configured ? " on the server." : "."}</p>
       <label>API key<input aria-label="API key" type="password" autoComplete="new-password" spellCheck={false} disabled={busy} value={key} placeholder={provider?.configured ? "Enter a replacement key" : "Enter API key"} onChange={event => setKey(event.target.value)} /></label>
-      <div className="wb-update-actions"><button type="submit" disabled={busy || !key.trim()}>{busy ? "Saving…" : "Save key"}</button>{provider?.saved && <button type="button" disabled={busy} onClick={() => void save("")}>Remove saved key</button>}</div>
+      <div className="wb-update-actions"><button type="button" disabled={busy} onClick={() => { setEditing(false); setKey(""); }}>Cancel</button><button type="submit" disabled={busy || !key.trim()}>{busy ? "Saving…" : "Save key"}</button>{provider?.saved && <button type="button" disabled={busy} onClick={() => void save("")}>Remove saved key</button>}</div>
     </form>}
     {status && <p role="status">{status}</p>}{error && <p role="alert">{error}</p>}
   </section>;

@@ -1,8 +1,8 @@
 {
   "name": "dear-diane",
   "private": true,
-  "version": "0.1.1",
-  "description": "Dear Diane — A workspace for research, code, and ideas.",
+  "version": "0.1.2",
+  "description": "Dear Diane \u2014 A workspace for research, code, and ideas.",
   "author": "Dear Diane",
   "type": "module",
   "main": "dist-electron/main.js",
@@ -97,8 +97,8 @@
     "publish": {
       "provider": "github",
       "owner": "2Mars4096",
-      "repo": "deep-agent-network",
-      "private": true
+      "repo": "dear-diane",
+      "private": false
     },
     "extraResources": [
       {
@@ -113,7 +113,9 @@
     "@tesseract.js-data/eng": "^1.0.0",
     "dompurify": "^3.3.3",
     "electron-updater": "^6.8.9",
+    "epubjs": "^0.3.93",
     "highlight.js": "^11.11.1",
+    "jszip": "^3.10.2",
     "katex": "^0.16.38",
     "lucide-react": "^0.575.0",
     "marked": "^17.0.4",
@@ -145,5 +147,10 @@
     "vite": "^7.3.1",
     "vitest": "^4.0.18",
     "wait-on": "^9.0.4"
+  },
+  "overrides": {
+    "epubjs": {
+      "@xmldom/xmldom": "0.9.12"
+    }
   }
 }

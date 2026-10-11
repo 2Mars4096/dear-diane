@@ -38,7 +38,7 @@ export function ReaderNotes({ file, header, textDocument = false, onAsk }: { fil
     {!sorted.length && !state.draft && <p className="wb-activity-empty wb-side-empty">Select text in the file and choose Annotate selection or Comment to add a note.</p>}
     <ol className="wb-notes-list">{sorted.map((item) => <li key={item.commentId} data-note-id={item.commentId} data-active={state.noteFocus?.commentId === item.commentId || undefined} data-stale={state.stale[item.commentId]}>
       <button type="button" className="wb-notes-jump" onClick={() => readerActions.focus(file.path, item)} title="Show in the file">
-        <span>{textDocument ? "Passage" : `p. ${item.pageNumber}`}{state.stale[item.commentId] === "missing" ? " · not found in this version" : ""}</span>
+        <span>{item.epub?.label || (textDocument ? "Passage" : `p. ${item.pageNumber}`)}{state.stale[item.commentId] === "missing" ? " · not found in this version" : ""}</span>
         <q>{item.quoteStatus ? "Selected passage" : item.quote}</q>
       </button>
       {item.quoteStatus && <small>Quote pending · comment saved <button type="button" onClick={() => window.dispatchEvent(new CustomEvent('diane:retry-quote', { detail: file.path }))}>Retry quote</button></small>}
@@ -48,7 +48,7 @@ export function ReaderNotes({ file, header, textDocument = false, onAsk }: { fil
           </form>
         : item.text && <p>{item.text}</p>}
       <div className="wb-notes-actions">
-        {onAsk && <button type="button" onClick={() => onAsk(`File: ${file.path}\n${textDocument ? "" : `Page ${item.pageNumber}\n`}\n> ${item.quote}\n\n${item.text}`)}>Use in chat</button>}
+        {onAsk && <button type="button" onClick={() => onAsk(`File: ${file.path}\n${item.epub ? `${item.epub.label}\n` : textDocument ? "" : `Page ${item.pageNumber}\n`}\n> ${item.quote}\n\n${item.text}`)}>Use in chat</button>}
         <button type="button" onClick={() => { setEditing(item.commentId); setEditText(item.text); }}><Pencil size={11} />{item.text ? "Edit" : "Add note"}</button>
         <button type="button" onClick={() => readerActions.removeComment(file.path, item.commentId)}><Trash2 size={11} />Delete</button>
       </div>

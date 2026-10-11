@@ -90,3 +90,10 @@ export async function ocrPage(document: PDFDocumentProxy, pageNumber: number, la
 export function ocrPageText(page: MaterialPdfOcrPage): string {
   return page.spans.filter(span => !span.geometryOnly).map((span) => span.text).join(" ").replace(/\s+/g, " ").trim();
 }
+
+/** Shared local recognition for an EPUB illustration; same bundled language models. */
+export async function ocrIllustration(canvas: HTMLCanvasElement) {
+  const engine = await worker();
+  const result = await engine.recognize(canvas, {}, { tsv: true });
+  return parseTesseractTsv(result.data.tsv ?? "", "word").spans;
+}

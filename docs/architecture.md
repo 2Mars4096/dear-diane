@@ -337,7 +337,7 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - `workbench/DesktopUpdates.tsx` is lazy-loaded in DAN settings. Release channels come from packaged app-update.yml; unconfigured builds say so. Downloads never auto-install on quit.
 - User data stays outside the app. The current Python backend is separately installed and restarts from its existing environment; this updater does not run Git/pip/npm upgrades. `editor/scripts/install-local-update.cjs` bootstraps older clients with a native confirmation after work is idle.
 
-- `electron/githubAuth.ts` manages cancellable GitHub CLI browser authorization, device-code-only presentation, cached connection status, and private-update credentials. `desktopUpdates.ts` supplies an in-memory token to the fixed private GitHub release provider; renderer IPC never receives credentials. Auto-updater logging is disabled and errors redact the active token.
+- `desktopUpdates.ts` explicitly selects the public `2Mars4096/dear-diane` GitHub provider without credentials. Updater IPC has no account/login actions or login state. Packaged feed and publisher use the same repository; publishing credentials are CI-only. Legacy `githubAuth.ts` is no longer used by the updater. Auto-updater logging remains disabled and UI errors are bounded.
 
 ### Codex lead steering transport
 - `native_workers/codex_live.py` maintains a stdio app-server connection for runtime-backed Codex leads. Thread start/resume retains account environment and permission policy; turn/steer targets the existing active turn. Ordinary child workers keep their existing execution path.
@@ -373,7 +373,7 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - `electron/windowControls.ts` accepts only the current main frame’s `window:titlebar` commands. The main process uses actual screen cursor coordinates, a four-pixel threshold, and current window bounds to move the window, restore a maximized drag under the pointer, or toggle maximize. Fullscreen is left intact; pointer release/cancel/lost capture/blur ends dragging. No renderer-supplied window bounds or OS preference writes.
 - Custom movement uses `setPosition`; OS edge-tiling previews are not implemented by this path. Native traffic-light controls remain available.
 
-- Settings groups related controls under named sections with keyboard-accessible jump buttons and section focus.
+- `DianeSettings.tsx` uses local category navigation with one visible panel; lazy panels mount on first visit and remain mounted to preserve unsaved input. Scoped `settings.css` defines aligned preference rows and responsive navigation; `ApiProviders.tsx` exposes status rows with explicit Connect/Manage forms. Agent fields reuse the inline native-worker controls.
 
 ### Provider selection and credentials
 - `native_workers/models.py` defines native/API compatibility, endpoint routing, model reasoning capabilities, and provider key resolution shared by leads and workers. Codex uses process-scoped Responses providers; Claude uses isolated provider-specific config directories and Anthropic-compatible endpoints.
@@ -388,6 +388,20 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - `workbench/reconcileRunState.ts` reconciles assistant pending flags and saved run references from terminal task snapshots by exact task/run identity. It preserves partial content, keeps polling stable, and explains writer conflicts without taking over the other connection.
 
 - PDF highlight navigation: page-level pointer hit testing leaves the text layer selectable; `readerStore.noteFocus` requests Notes scrolling/focus separately from notes-to-PDF navigation. Saved highlight SVGs also support keyboard activation.
+
+## EPUB reading
+- Lazy `reader/EpubReader.tsx` uses EPUB.js and JSZip, with a patched xmldom override. EPUBs retain `file:` identities for backward-compatible document-tab/browser-copy restoration, while `useDocumentTabs` exposes them to Reading chat and Notes. PDF rendering stays in the existing component.
+- EPUB CFIs/hrefs/chapter labels extend shared comment/reference selections; text anchors support relocating changed passages when jumping from Notes. Positions/font/spread use `diane.reader.epub.v1:<path>`. Shared comments/reference stores and reading-chat identity remain unchanged.
+- `reader/lib/epub.ts` validates archive size/encryption, strips active chapter content and applies iframe CSP, and exports highlights/notes into a new standard EPUB. EPUB.js runs with scripted content disabled; the engine and resource URLs are disposed with the document.
+- `EpubReferencePreview.tsx` resolves saved text/image excerpts with crop overlays from archive-owned resources.
+- `EpubImageTools.tsx` reuses bundled Tesseract OCR and content-keyed IndexedDB caching for clicked illustrations. Selected OCR words produce normalized rectangles and a PNG crop for the existing attachment pipeline. Native EPUB text requires no OCR.
+- Main/sidecar readers share behavior. EPUB reading is file-based; the existing paper-library catalogue/import API remains PDF-specific.
+
+## Linked-app credentials and release attention
+
+- `native_workers/linked_credentials.py` writes a paths-only 0600 discovery marker for the desktop backend. Todo reads Diane's original files natively, validates provider/endpoint compatibility, and uses its own fallback; no shared secret store or Keychain API. See [contract](linked-app-credentials.md).
+- `electron/updateSchedule.ts` drives one main-process startup/15-minute/focus schedule. `desktopUpdateStatus.ts` shares polled status across Settings and the lazy sidebar button; availability/ready phases show attention dots.
+- `electron/releaseBundle.ts` stages electron-updater checksum-verified ZIPs after bundle identity, architecture, signature and version checks. Mac release installation uses the existing detached idle/rollback path; other platforms retain electron-updater. `package-mac-release.cjs` ad-hoc signs before building archives and excludes local build paths from the marker. No Keychain changes.
 
 ## Desktop release automation
 - `.github/workflows/desktop-release.yml`: version-tag push runs Mac ARM64 updater tests/build/sign/package with read-only repository permission; a separate Ubuntu job validates and publishes using GitHub's ephemeral token with contents-write permission.

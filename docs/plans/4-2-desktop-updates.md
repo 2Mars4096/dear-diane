@@ -50,7 +50,7 @@
 - [x] Stage checksum-verified Mac ZIPs through the existing identity/architecture/signature/version checks, idle guard and rollback installer; no Developer ID/Keychain writes needed for this private distribution.
 - [x] Package/sign the app before generating ZIP/DMG/checksum assets; remove local build-machine paths from published markers.
 - [ ] Publish release 0.1.1 and verify authenticated in-app discovery/download after GitHub access is restored (current API responses are HTTP 401).
-- [ ] Bootstrap the installed older Mac build once using the existing local installer; its older Squirrel installation path cannot install this ad-hoc release.
+- [x] Bootstrap the installed older Mac build once using the existing local installer; installed 0.1.1 on October 11 after confirming the app/backend were stopped and its default data store idle.
 
 Release scope remains the desktop shell for existing configured Python-backend installations. Standalone backend distribution is not bundled by this change.
 
@@ -68,7 +68,27 @@ Release scope remains the desktop shell for existing configured Python-backend i
 
 - [x] Add automatic workflow-change push trigger on main; resolve the package-version tag and build that immutable source without operator dispatch.
 
+- 2026-10-11 installed `/Applications/Dear Diane.app` 0.1.1 at user request. Signature and source/installed ASAR equality pass; backend 8000 and app proxy 45173 health return HTTP 200. Rollback: `/Applications/.Diane-previous-f1607e81-45de-4360-bd64-073783c1b8bc.app`. Private-feed authentication and remote publication remain unverified.
+
 - [x] Confirm remote Mac build/tests/package succeeded; improve suppressed publication diagnostics and use canonical repository for automatic retry.
 - [ ] Confirm corrected publication succeeds.
 
+## October 11 anonymous updates
+- [x] Remove GitHub sign-in/account controls, auth actions, and credential lookup from update checks.
+- [x] Align client, packaged feed, and publisher with the user-supplied public `2Mars4096/dear-diane` repository; explicitly disable the private provider.
+- [x] Verify anonymous repository visibility; latest-release endpoint returns 404, so no published installer was verified.
+- [x] Replace auth prompts in errors with no-release/network/rate-limit feedback; retain manual download/install and rollback safeguards.
+- [ ] Verify discovery and download against a published public release, then installed-client acceptance. No publication or installation authorized by this change.
+
+## README review
+- [x] Apply humanizer to rewrite README around setup, a first task, agent/model selection, reading, files, remote work, and settings.
+- [x] Remove personal machine/account details and internal operational history; consolidate duplicate sections and correct outdated settings/update instructions. No secrets, private data, or local paths added; no remote writes.
+
+- Anonymous-update validation: 16 updater/UI regression tests and seven publisher tests pass; frontend production build/budgets and Electron compilation pass. README code fences/setup-file references and personal/secret-pattern checks pass.
+
 - [x] Correct release creation 403: use verified existing tag, no redundant target; test exact-source marked draft retries.
+
+## Combined 0.1.2 release
+- [x] Include pending EPUB, Settings, README and public-feed changes at user request.
+- [x] Validate combined source: 224 reader/document/workbench/updater tests and nine publisher tests pass; production build/budgets and Electron compilation pass.
+- [ ] Publish v0.1.2 and verify release assets.

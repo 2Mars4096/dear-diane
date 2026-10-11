@@ -1,9 +1,21 @@
 # Changelog
 
 ## 2026-10-11
+- [infra] Prepare combined 0.1.2 release at user request: EPUB reader, Settings redesign, anonymous update feed, and refreshed README alongside the verified Mac updater. Preserve the existing 0.1.1 tag.
 - [fix] Create releases from independently verified existing tags without redundant `--target`, avoiding old-workflow target permission checks; preserve exact-source draft retries with a notes marker.
+- [fix] Remove updater GitHub sign-in/account IPC and credential lookup; select the anonymous dear-diane release feed in client/package/publisher configuration. Anonymous metadata confirms the repository is public; latest-release endpoint returns 404, so live download is pending. No remote writes or installation. Sixteen updater/UI and seven publisher tests, production build/budgets, and Electron compilation pass.
+- [docs] Rewrite README with humanizer: setup and first task first, consolidated usage instructions, current settings labels, and no personal machine/account paths or internal operational history.
+
+## 2026-10-11
 - [fix] Use the workflow repository’s canonical name for publication and report the failing GitHub operation with token-redacted diagnostics. Run corrected publisher tooling from the workflow commit while retaining the immutable tagged app source and notes.
+- [infra] Install and relaunch prepared Diane 0.1.1 at user request using the verified rollback installer. App/backend were stopped; installed data idle. Bundle signature, exact ASAR equality and direct/proxy health pass. Existing settings/data preserved; private-feed access still unverified.
+- [feat] Redesign Settings with category navigation, aligned preference rows, contextual palette preview, and separate Providers/Agents/Skills. Provider forms open from connection-status rows; visited panels preserve unsaved input. Browser-fixture checks cover light/dark, 390px, category visibility, draft retention, agent loading, and modal Escape; 13 regression tests and production build/budgets pass. Source only, not installed.
+
+## 2026-10-11
 - [fix] Trigger release automation when its workflow changes on main, as well as version-tag pushes. Both paths resolve and build an immutable existing version tag; manual dispatch is only a fallback.
+- [docs] Review Settings organization and row styling against official OpenAI/Claude documentation and OpenCode source; record category structure, consistent row dimensions, progressive disclosure, and pending visual acceptance in the Work/Notes UI plan. No product changes; rendered browser review was unavailable.
+
+## 2026-10-11
 - [fix] Add manual release dispatch for an existing version tag after the first push produced no Actions run; build and publish the tag’s resolved commit without retagging.
 - [infra] Add tag-triggered GitHub Actions Mac releases using the automatic job token, with separate build/publish permissions, exact-source and checksum validation, safe draft retries and six publisher tests. Existing Git SSH access works; no local login or Keychain changes. Pushed isolated source `11ab4e44` and `v0.1.1` to main; remote publication and installed-client acceptance remain to verify.
 
@@ -11,6 +23,11 @@
 - [feat] Add default Diane-first credential lookup to Todo with same-user paths-only discovery; preserve original .env/Settings keys and per-app models. Nine Python and 24 Todo native tests pass; both frontend builds pass.
 - [feat] Check desktop releases every 15 minutes and show Settings/update-action dots; stage verified private Mac release archives through the existing rollback installer. Build/sign before generating release ZIP/checksum assets. 20 frontend/updater checks and real disposable installer/rollback verification pass; 0.1.1 artifacts/source patch are ready locally. Publishing awaits restored GitHub authentication (HTTP 401).
 
+## 2026-10-10
+- [feat] Add EPUB Reading with chapters, reflow/fixed layout, saved positions/settings, shared Ask/Notes/highlights/Refs, local illustration OCR/crops, and annotated EPUB export. Keep browser-copy/tab restoration and per-book chat identity; load the EPUB engine lazily and retain PDF behavior. 69 reader/document/tab tests, isolated Electron reflow/fixed-layout/navigation/notes/Refs/export/restart/OCR-crop checks and production build/budgets pass. Desktop not installed.
+
+## 2026-10-10
+- [docs] Cart IC-045 as a low-priority Tauri option; retain Electron while it works well and require verified feature/data parity before any future migration decision.
 
 ## 2026-10-06
 - [fix] Commit review keeps synchronous canvas sizing scoped to the main PDF page; remove its unintended application to reference previews.

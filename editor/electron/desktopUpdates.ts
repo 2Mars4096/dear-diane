@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { assertNoActiveWork, stageBundle } from "./localUpdate";
-import { GitHubAuth, githubRelease } from "./githubAuth";
+
 import { UPDATE_CHECK_INTERVAL, updateSchedule } from "./updateSchedule";
 import { stagePublishedMacBundle } from "./releaseBundle";
 
@@ -14,17 +14,13 @@ export function registerDesktopUpdates(options: {
   backend: () => { owned: boolean; pid?: number };
 }) {
   const updatesDir = path.join(app.getPath("userData"), "updates");
-  const github = new GitHubAuth();
-  void github.refresh();
-  app.once("before-quit", () => github.cancel());
   let local: Awaited<ReturnType<typeof stageBundle>> | null = null;
   let busy = false;
   let background = false;
-  let updateToken = "";
   let releaseStaging: Promise<void> | null = null;
   const safeError = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
-    return updateErrorMessage(updateToken ? message.split(updateToken).join("[redacted]") : message);
+    return updateErrorMessage(message);
   };
   autoUpdater.logger = null;
   let state = { phase: "idle", currentVersion: app.getVersion(), version: "", source: "", localBuildAvailable: false, message: "", percent: 0, releaseConfigured: false, localSupported: process.platform === "darwin" && app.isPackaged };
@@ -50,8 +46,8 @@ export function registerDesktopUpdates(options: {
       if (quiet) return;
       throw new Error("Published updates are not configured for this build.");
     }
-    updateToken = await github.token();
-    autoUpdater.setFeedURL({ ...githubRelease, token: updateToken });
+    // Public releases never consult local accounts or inherited GitHub tokens.
+    autoUpdater.setFeedURL({ provider: "github", owner: "2Mars4096", repo: "dear-diane", private: false });
     await autoUpdater.checkForUpdates();
   };
   const automaticCheck = updateSchedule(async () => {
@@ -118,7 +114,7 @@ export function registerDesktopUpdates(options: {
         else if (previous.state === "installed") state.message = "Local desktop update installed.";
       } catch { /* no previous installation */ }
     }
-    return { ...state, github: github.state };
+    return { ...state };
   });
   ipcMain.handle("updates:action", async (event, action: unknown) => {
     if (event.sender !== options.window()?.webContents || event.senderFrame !== event.sender.mainFrame) throw new Error("Untrusted update request");
@@ -132,13 +128,7 @@ export function registerDesktopUpdates(options: {
         await prepare(candidate);
         action = "install";
       }
-      if (action === "github-sign-in") {
-        github.start();
-      } else if (action === "github-cancel") {
-        github.cancel();
-      } else if (action === "github-status") {
-        if (github.state.status !== "signing_in") await github.refresh();
-      } else if (action === "choose") {
+      if (action === "choose") {
         if (!state.localSupported) throw new Error("Local app installation is available in the packaged Mac app.");
         const selected = await dialog.showOpenDialog(options.window()!, { title: "Choose the new Dear Diane.app build", properties: ["openFile"], filters: [{ name: "Dear Diane application", extensions: ["app"] }] });
         if (selected.canceled || !selected.filePaths[0]) return state;
@@ -174,10 +164,10 @@ export function registerDesktopUpdates(options: {
           setTimeout(() => autoUpdater.quitAndInstall(false, true), 300);
         }
       } else throw new Error("Unknown update action.");
-      return { ...state, github: github.state };
+      return { ...state };
     } catch (error) {
       state = { ...state, phase: local || state.phase === "ready" ? "ready" : "error", message: safeError(error) };
-      return { ...state, github: github.state };
+      return { ...state };
     } finally { busy = false; }
   });
 }

@@ -22,6 +22,9 @@ it('finds changed same-version builds, skips missing and identical builds, and n
 it('turns provider dumps into bounded user-facing messages',()=>{
  const message=updateErrorMessage(new Error('Unable to find latest version https://api.github.com/repos/a/b/releases/latest HttpError:404 Headers: {secret} at handler (/app:12)'));
  expect(message).toContain('No published release');expect(message).not.toContain('secret');expect(message).not.toContain('Headers');
+ expect(updateErrorMessage('No published versions on GitHub')).toContain('No published release');
+ expect(updateErrorMessage('Unable to find latest version on GitHub HttpError:404')).toContain('No published release');
+ expect(updateErrorMessage('HttpError:403')).not.toMatch(/sign in|account|authorize/i);
  expect(updateErrorMessage(new Error('Finish active work'))).toBe('Finish active work');
- expect(updateErrorMessage('HttpError:401 Headers: bearer secret')).toContain('authorize');
+ expect(updateErrorMessage('HttpError:401 Headers: bearer secret')).toContain('update server');
 });

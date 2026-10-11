@@ -1,4 +1,4 @@
-import { cleanRect, type PdfSelectionAnchor } from "./paper-comments";
+import { cleanEpubLocation, cleanRect, type PdfSelectionAnchor } from "./paper-comments";
 export type PaperReferenceLine = {
   label: string;
   lineId: string;
@@ -98,7 +98,8 @@ export function normalizePaperReferenceTags(
     }
     const raw = record.selection as Partial<PdfSelectionAnchor> | undefined;
     const rects = Array.isArray(raw?.rects) ? raw.rects.map(cleanRect).filter((r): r is NonNullable<typeof r> => !!r).slice(0, 40) : [];
-    const selection: PdfSelectionAnchor | undefined = rects.length ? {
+    const selection: PdfSelectionAnchor | undefined = rects.length || cleanEpubLocation(raw?.epub) ? {
+      ...(cleanEpubLocation(raw?.epub) ? { epub: cleanEpubLocation(raw?.epub) } : {}),
       ...(raw?.quoteSource === 'vision' ? { quoteSource: 'vision' as const, quoteModel: raw.quoteModel, originalQuote: raw.originalQuote } : {}),
       pageNumber, rects, quote: typeof raw?.quote === "string" ? raw.quote.slice(0, 700) : "Selected area",
       kind: raw?.kind === "area" ? "area" : "text",

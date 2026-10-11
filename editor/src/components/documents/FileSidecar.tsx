@@ -34,7 +34,7 @@ export default function FileSidecar({ request, active, onAsk }: { request: FileO
         {mainTabs.filter(tab => documents[tab.id]).map(tab => <option key={tab.id} value={tab.id}>{tab.label}</option>)}
       </select>
       {file && <>
-        {/\.pdf$/i.test(file.name) && <button onClick={() => setNotes(!notes)} aria-pressed={notes}>Notes</button>}
+        {/\.(pdf|epub)$/i.test(file.name) && <button onClick={() => setNotes(!notes)} aria-pressed={notes}>Notes</button>}
         {file.source === 'local' && window.electronAPI?.shell.fileLink && <button aria-label="File actions" onClick={() => void menu()}>…</button>}
         <button aria-label={`Close ${file.name}`} onClick={() => closeTab(activeMainTab)}>×</button>
       </>}
@@ -43,7 +43,7 @@ export default function FileSidecar({ request, active, onAsk }: { request: FileO
     {error && <div role="alert" className="dan-document-message"><strong>Could not open file</strong><p>{request?.href || request?.file?.path}</p><p>{error}</p><button onClick={() => setAttempt(value => value + 1)}>Retry</button></div>}
     <div className="dan-file-sidecar-content" hidden={opening || !!error}>
       {Object.entries(documents).map(([id, entry]) => <div className="dan-side-document" key={id} hidden={id !== activeMainTab}>
-        {/\.pdf$/i.test(entry.name) ? <><ReaderView file={entry} onNotes={() => setNotes(true)} onAsk={ask => onAsk(`File: ${entry.path}\nPage ${ask.pageNumber}\n\n> ${ask.quote}\n\nContext: ${ask.pageText}`, ask.attachment)} />{notes && id === activeMainTab && <ReaderNotes file={entry} onAsk={onAsk} />}</> :
+        {/\.(pdf|epub)$/i.test(entry.name) ? <><ReaderView file={entry} onNotes={() => setNotes(true)} onAsk={ask => onAsk(`File: ${entry.path}\n${ask.locationLabel || `Page ${ask.pageNumber}`}\n\n> ${ask.quote}\n\nContext: ${ask.pageText}`, ask.attachment)} />{notes && id === activeMainTab && <ReaderNotes file={entry} onAsk={onAsk} />}</> :
           <DocumentView file={entry} active={active && id === activeMainTab} drafts={documentDrafts.current} onDirty={(path, dirty) => setDirtyDocuments(current => ({ ...current, [path]: dirty }))} annotate onAsk={onAsk} />}
       </div>)}
       {!file && !opening && !error && <p className="dan-document-message">Open a file from the conversation or Files panel.</p>}

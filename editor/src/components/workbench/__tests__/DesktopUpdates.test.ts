@@ -16,7 +16,7 @@ it("supports local prepare/install without pretending an unconfigured release ch
     const button = (label: string) => [...host.querySelectorAll("button")].find(b => b.textContent === label)!;
     expect(button("Check for updates").disabled).toBe(false);
     expect(button("Install local update")).toBeUndefined();
-    expect(host.textContent).toContain("Local updates do not require GitHub sign-in");
+    expect(host.textContent).not.toContain("GitHub");
     await act(async () => button("Choose a different build…").click());
     expect(api.action).toHaveBeenCalledWith("choose");
     expect(api.action).not.toHaveBeenCalledWith("install");
@@ -25,24 +25,19 @@ it("supports local prepare/install without pretending an unconfigured release ch
   } finally { act(() => root.unmount()); delete window.electronAPI; }
 });
 
-it("offers browser sign-in, shows the device code, and supports cancellation", async () => {
-  const base = { phase: "idle", currentVersion: "1", version: "", source: "", message: "", percent: 0, releaseConfigured: true, localSupported: true };
-  const signedOut = { ...base, github: { status: "signed_out", login: "", code: "", message: "Sign in to GitHub" } };
-  const api = { status: vi.fn().mockResolvedValue(signedOut), action: vi.fn()
-    .mockResolvedValueOnce({ ...base, github: { status: "signing_in", login: "", code: "ABCD-1234", message: "Authorize in your browser" } })
-    .mockResolvedValueOnce(signedOut) };
-  Object.defineProperty(window, "electronAPI", { configurable: true, value: { isElectron: true, updates: api } });
+it("checks for updates without offering account controls, even with stale login state", async () => {
+  const state = { phase: "idle", currentVersion: "1", version: "", source: "", message: "", percent: 0, releaseConfigured: true, localSupported: true, github: { status: "signed_out", login: "", code: "", message: "Sign in" } };
+  const api = { status: vi.fn().mockResolvedValue(state), action: vi.fn().mockResolvedValue({ ...state, message: "No published release is available yet." }) };
+  Object.defineProperty(window, "electronAPI", { configurable: true, value: { updates: api } });
   const host = document.createElement("div"); const root = createRoot(host);
-  const button = (text: string) => [...host.querySelectorAll('button')].find(b => b.textContent === text)!;
   try {
     await act(async () => root.render(createElement(DesktopUpdates)));
-    await act(async () => button("Sign in to GitHub").click());
-    expect(api.action).toHaveBeenCalledWith("github-sign-in");
-    expect(host.textContent).toContain("ABCD-1234");
-    expect(button("Open GitHub sign-in")).toBeDefined();
-    await act(async () => button("Cancel sign-in").click());
-    expect(api.action).toHaveBeenCalledWith("github-cancel");
-    expect(host.textContent).not.toContain("ABCD-1234");
+    expect(host.textContent).not.toMatch(/GitHub|sign in|connection/i);
+    const check = [...host.querySelectorAll("button")].find(button => button.textContent === "Check for updates")!;
+    expect(check.disabled).toBe(false);
+    await act(async () => check.click());
+    expect(api.action).toHaveBeenCalledExactlyOnceWith("check");
+    expect(host.textContent).toContain("No published release is available yet.");
   } finally { act(() => root.unmount()); delete window.electronAPI; }
 });
 

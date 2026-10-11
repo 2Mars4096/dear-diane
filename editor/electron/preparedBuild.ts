@@ -39,8 +39,8 @@ export async function findPreparedBuild(marker: string, target: string, remember
 
 export function updateErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
-  if (/releases\/latest|no published versions|cannot find latest/i.test(raw) && /404|not found|no published/i.test(raw)) return 'No published release is available, or this GitHub account cannot access it. You can install a prepared local update instead.';
-  if (/401|403|unauthorized|bad credentials/i.test(raw)) return 'GitHub could not authorize the update check. Refresh your connection or sign in again.';
+  if (/releases\/latest|no published versions|cannot find latest|unable to find latest/i.test(raw) && /404|not found|no published/i.test(raw)) return 'No published release is available yet. You can install a prepared local update instead.';
+  if (/401|403|unauthorized|bad credentials/i.test(raw)) return 'The update server refused the request or reached its rate limit. Try again later.';
   if (/ENOTFOUND|ETIMEDOUT|ECONN|network/i.test(raw)) return 'Could not reach the update server. Check your connection and try again.';
   // HTTP dumps and stack traces are never useful in the settings surface.
   if (/headers:|at .*\(|HttpError|https?:\/\//i.test(raw)) return 'The update could not be completed. Try again or use a prepared local update.';

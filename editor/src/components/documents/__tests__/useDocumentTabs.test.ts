@@ -106,3 +106,15 @@ it('guards restart until a browser copy finishes saving', async () => {
   expect(tabs.restored).toBe(true);
   const ready = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(ready); expect(ready.defaultPrevented).toBe(false);
 });
+
+it('opens EPUB in Reading and restores its original file identity and reading chat', async () => {
+  act(() => tabs.openDocument({ ...pathDocument('/book.epub'), readingWorkflowId: 'book-chat' }));
+  expect(tabs.activeMainTab).toBe('file:/book.epub');
+  expect(tabs.readerFile?.name).toBe('book.epub');
+  act(() => root.unmount()); root = createRoot(document.createElement('div'));
+  function Restored() { tabs = useDocumentTabs(); return null; }
+  await act(async () => root.render(createElement(Restored)));
+  expect(tabs.readerFile).toMatchObject({ path: '/book.epub', readingWorkflowId: 'book-chat' });
+  act(() => tabs.setActiveMainTab('chat')); expect(tabs.readerFile).toBeNull();
+  act(() => tabs.closeTab('file:/book.epub')); expect(tabs.documents).toEqual({});
+});

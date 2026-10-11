@@ -12,6 +12,8 @@ it('masks and clears entered keys, supports removal, and does not store keys in 
   const host = document.createElement('div'); document.body.append(host); const root = createRoot(host);
   try {
     await act(async () => root.render(createElement(ApiProviders)));
+    expect(host.querySelector('input')).toBeNull();
+    act(() => [...host.querySelectorAll('button')].find(button => button.textContent?.startsWith('Connect'))!.click());
     const input = host.querySelector<HTMLInputElement>('input')!;
     expect(input.type).toBe('password');
     act(() => {

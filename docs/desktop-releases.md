@@ -1,6 +1,6 @@
 # Desktop releases
 
-The private release feed is `2Mars4096/deep-agent-network`. Version numbers in `editor/package.json` and its lockfile must increase for each published release.
+The public release feed is `2Mars4096/dear-diane`. End users do not need GitHub authentication to check or download updates. Version numbers in `editor/package.json` and its lockfile must increase for each published release.
 
 ## Publish through GitHub Actions
 
@@ -8,7 +8,7 @@ Push the reviewed release source and a matching `vX.Y.Z` tag. Updating the workf
 
 - Keep `editor/package.json`, its lockfile and the tag version aligned; add `docs/releases/vX.Y.Z.md`.
 - The publisher validates checksums, asset sizes and exact tag commit before creating a draft. It publishes only after verifying uploaded assets. A rerun can resume a draft from that same source; published releases are never overwritten.
-- Git SSH push authentication is independent of `gh` API authentication. This workflow does not repair the installed app's private-feed login; downloading private releases still requires valid GitHub access.
+- Git SSH push authentication is independent of `gh` API authentication. Workflow credentials authorize publication only; the app reads releases anonymously.
 - If the first tag push produces no run, open **Desktop release → Run workflow**, use branch `main`, and enter the existing release tag (for this release, `v0.1.1`). The workflow builds that tag and passes its resolved source commit to publication.
 - View runs at https://github.com/2Mars4096/deep-agent-network/actions/workflows/desktop-release.yml . GitHub Actions must be enabled with available runner quota.
 - Runner labels: https://docs.github.com/en/actions/reference/runners/github-hosted-runners .
@@ -28,13 +28,17 @@ Push the reviewed release source and a matching `vX.Y.Z` tag. Updating the workf
 
 - Check after startup, every 15 minutes, and on focus when overdue. Background failures remain quiet. Available/downloaded updates remain visible and do not trigger automatic downloads or restarts.
 - Settings and its download/install action show dots for available/ready updates.
-- On macOS, electron-updater verifies download checksums; the app verifies bundle identity, architecture, code-signature integrity and release version before staging through the existing detached installer. The private GitHub channel controls release provenance; ad-hoc signing is **not** Developer ID notarization.
+- On macOS, electron-updater verifies download checksums; the app verifies bundle identity, architecture, code-signature integrity and release version before staging through the existing detached installer. The configured GitHub repository controls release provenance; ad-hoc signing is **not** Developer ID notarization.
 - The installer waits for the owned app/backend to exit, retains a rollback bundle, and preserves chats, settings and icons. Active or queued work blocks installation.
-- Older Mac clients using the Squirrel install path require one local bootstrap to 0.1.1. Afterwards this private Mac channel does not require a Developer ID identity.
+- Older Mac clients using the Squirrel install path require one local bootstrap to 0.1.1. Afterwards this Mac channel does not require a Developer ID identity.
 - Releases currently update the desktop shell for machines with an existing configured Python backend. They do not install/update Python or its dependencies. Standalone backend packaging is a separate prerequisite for distribution to new machines.
 
 ## Current release
 
 Release source `11ab4e44` and tag `v0.1.1` were pushed to main on 2026-10-11 using existing SSH authentication. GitHub reports the repository's canonical name is now `2Mars4096/dear-diane`; the original remote redirects there. [View Actions](https://github.com/2Mars4096/dear-diane/actions/workflows/desktop-release.yml) to confirm completion. The local API token is invalid, so remote publication has not yet been verified.
 
-The release uses an isolated snapshot excluding concurrent reader work in the original workspace. Twenty updater tests, six publisher tests, production build/budgets and Electron compilation pass locally. Prepared local 0.1.1 assets previously passed checksum/signature and disposable installation/rollback checks. No installed app has been replaced. A one-time local bootstrap and valid private-feed client authentication remain before in-app update acceptance.
+The release uses an isolated snapshot excluding concurrent reader work in the original workspace. Twenty updater tests, six publisher tests, production build/budgets and Electron compilation pass locally. Prepared local 0.1.1 assets previously passed checksum/signature and disposable installation/rollback checks. Installed and relaunched the prepared local 0.1.1 build on October 11 at user request; signature, archive equality and app/backend health pass. The one-time bootstrap is complete. Remote publication and valid private-feed client authentication remain before in-app update acceptance.
+
+## Public-feed transition, October 11
+
+The user supplied `https://github.com/2Mars4096/dear-diane`. An anonymous repository request confirmed `private: false`; the latest-release request returned 404. Source now uses the public feed with no GitHub login or credential lookup. This change has not been published or installed, and an end-to-end public release download remains unverified. Repository visibility was not changed.

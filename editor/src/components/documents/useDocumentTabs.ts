@@ -109,5 +109,5 @@ export function useDocumentTabs(keyboard = true, persistenceKey: string | null =
   }, [activeMainTab, closeTab]);
   return { restored: restored && pendingSaves === 0, restoreError, mainTabs, setMainTabs, activeMainTab, setActiveMainTab, openTab, openDocument, closeTab,
     documents, documentDrafts, dirtyDocuments, setDirtyDocuments, libraryReadings, setLibraryReadings,
-    libraryReading: libraryReadings[activeMainTab], readerFile: restored && activeMainTab.startsWith('pdf:') ? documents[activeMainTab] ?? null : null };
+    libraryReading: libraryReadings[activeMainTab], readerFile: restored && /\.(pdf|epub)$/i.test(documents[activeMainTab]?.name ?? '') ? documents[activeMainTab] ?? null : null };
 }

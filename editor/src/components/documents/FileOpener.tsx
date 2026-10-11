@@ -68,7 +68,7 @@ export default function FileOpener({ onOpen, onFolder }: { onOpen: (file: Docume
   return <>
     <button type="button" aria-label="Open file" title="Open file (⌘/Ctrl+O), or drop files into Dear Diane" onClick={() => input.current?.click()}><FolderOpen size={17} /></button>
     <input ref={input} type="file" multiple hidden onChange={e => { void open(Array.from(e.target.files ?? [])); e.target.value = ''; }} />
-    {dragging && <div className="dan-file-drop" role="status" style={bounds ? { inset: 'auto', top: bounds.top + 8, left: bounds.left + 8, width: Math.max(0, bounds.width - 16), height: Math.max(0, bounds.height - 16) } : undefined}><div><FolderOpen size={32} aria-hidden="true" /><strong>Drop a folder to open it as a project</strong><span>Or drop PDFs and other files to open them</span></div></div>}
+    {dragging && <div className="dan-file-drop" role="status" style={bounds ? { inset: 'auto', top: bounds.top + 8, left: bounds.left + 8, width: Math.max(0, bounds.width - 16), height: Math.max(0, bounds.height - 16) } : undefined}><div><FolderOpen size={32} aria-hidden="true" /><strong>Drop a folder to open it as a project</strong><span>Or drop PDFs, EPUBs, and other files to open them</span></div></div>}
     {error && <div className="dan-file-error" role="alert">{error}<button onClick={() => setError('')}>Dismiss</button></div>}
   </>;
 }

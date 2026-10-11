@@ -23,8 +23,7 @@ for (const file of manifest.files) {
   if (fs.existsSync(filename + '.blockmap')) files.push(filename + '.blockmap');
 }
 fs.accessSync(notes);
-const repo = process.env.GITHUB_REPOSITORY || '2Mars4096/dear-diane';
-if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw Error('Invalid release repository.');
+const repo = '2Mars4096/dear-diane';
 const tag = `v${manifest.version}`;
 const sourceMarker = `<!-- diane-source: ${commit} -->`;
 const publishNotes = path.join(root, '.publish-notes.md');

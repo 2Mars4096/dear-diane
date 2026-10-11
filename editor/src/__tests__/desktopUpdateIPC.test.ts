@@ -2,13 +2,13 @@ import { afterEach, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-const mocks = vi.hoisted(() => ({ handlers: new Map<string, (...args: any[]) => any>(), events: new Map<string, (...args: any[]) => any>(), quit: vi.fn(), install: vi.fn(), idle: vi.fn(), check: vi.fn(), download: vi.fn(), prepare: vi.fn(), stageRelease: vi.fn() }));
+const mocks = vi.hoisted(() => ({ handlers: new Map<string, (...args: any[]) => any>(), events: new Map<string, (...args: any[]) => any>(), quit: vi.fn(), install: vi.fn(), idle: vi.fn(), check: vi.fn(), download: vi.fn(), prepare: vi.fn(), stageRelease: vi.fn(), feed: vi.fn() }));
 vi.mock("electron", () => ({ app: { getPath: () => "/tmp/dan-update-ipc", getVersion: () => "1.0.0", isPackaged: true, quit: mocks.quit, once: vi.fn(), on: vi.fn(), removeListener: vi.fn() }, ipcMain: { handle: (name: string, fn: (...args: any[]) => any) => mocks.handlers.set(name, fn) }, dialog: {} }));
-vi.mock("electron-updater", () => ({ autoUpdater: { on: (name: string, fn: (...args: any[]) => any) => mocks.events.set(name, fn), checkForUpdates: mocks.check, downloadUpdate: mocks.download, setFeedURL: vi.fn(), quitAndInstall: mocks.install } }));
+vi.mock("electron-updater", () => ({ autoUpdater: { on: (name: string, fn: (...args: any[]) => any) => mocks.events.set(name, fn), checkForUpdates: mocks.check, downloadUpdate: mocks.download, setFeedURL: mocks.feed, quitAndInstall: mocks.install } }));
 vi.mock("../../electron/localUpdate", () => ({ assertNoActiveWork: mocks.idle, stageBundle: mocks.prepare }));
 vi.mock("../../electron/githubAuth", () => ({
   githubRelease: { provider: "github", owner: "owner", repo: "private" },
-  GitHubAuth: class { state = { status: "connected", login: "tester", code: "", message: "" }; refresh = vi.fn(); cancel = vi.fn(); start = vi.fn(); token = vi.fn().mockResolvedValue("test-secret"); },
+  GitHubAuth: class { constructor() { throw new Error("Update checks must not access GitHub credentials"); } },
 }));
 vi.mock("../../electron/releaseBundle", () => ({ stagePublishedMacBundle: mocks.stageRelease }));
 import { registerDesktopUpdates } from "../../electron/desktopUpdates";
@@ -28,6 +28,7 @@ it("restricts update IPC to the main window, separates download from install, an
     await expect(action({ ...event, senderFrame: {} }, "install")).rejects.toThrow("Untrusted");
     mocks.check.mockImplementation(async () => mocks.events.get("update-available")!({ version: "2.0.0" }));
     expect((await action(event, "check")).phase).toBe("available");
+    expect(mocks.feed).toHaveBeenLastCalledWith({ provider: "github", owner: "2Mars4096", repo: "dear-diane", private: false });
     expect(mocks.download).not.toHaveBeenCalled();
     mocks.download.mockImplementation(async () => mocks.events.get("update-downloaded")!({ version: "2.0.0" }));
     expect((await action(event, "download")).phase).toBe("ready");
@@ -82,6 +83,7 @@ it('checks after startup and every fifteen minutes without opening Settings or d
   registerDesktopUpdates({ window: () => null, graphs: () => '/tmp/graphs', backend: () => ({ owned: true }) });
   await vi.advanceTimersByTimeAsync(10_000);
   expect(mocks.check).toHaveBeenCalledTimes(1);
+  expect(mocks.feed).toHaveBeenLastCalledWith({ provider: "github", owner: "2Mars4096", repo: "dear-diane", private: false });
   await vi.advanceTimersByTimeAsync(15 * 60 * 1000);
   expect(mocks.check).toHaveBeenCalledTimes(2);
   mocks.events.get('update-available')!({ version: '2.0.0' });
