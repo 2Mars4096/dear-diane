@@ -32,6 +32,12 @@ const gh = args => {
   operation = args[0] === 'api' ? `GET ${args[1]}` : args.slice(0, 2).join(' ');
   return execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 };
+// The by-tag endpoint only finds published releases. List releases includes drafts
+// for the publishing token and also allows safe retries after an interrupted upload.
+const findRelease = () => {
+  const result = gh(['api', `repos/${repo}/releases`, '--paginate', '--jq', `.[] | select(.tag_name == "${tag}")`]).trim();
+  return result ? JSON.parse(result) : null;
+};
 try {
   // Read-only auth/source checks happen before any remote mutation.
   gh(['api', `repos/${repo}/commits/${commit}`]);
@@ -39,9 +45,7 @@ try {
     const taggedCommit = gh(['api', `repos/${repo}/commits/${tag}`, '--jq', '.sha']).trim();
     if (taggedCommit !== commit) throw Error('Release tag does not match the built source commit.');
   }
-  let existing;
-  try { existing = JSON.parse(gh(['api', `repos/${repo}/releases/tags/${tag}`])); }
-  catch (error) { if (!String(error.stderr).includes('(HTTP 404)')) throw error; }
+  const existing = findRelease();
   if (existing) {
     if (!existing.draft || (existing.target_commitish !== commit && !String(existing.body || '').includes(sourceMarker))) throw Error('Refusing to replace a published release or a draft from different source.');
     gh(['release', 'upload', tag, ...files, '--repo', repo, '--clobber']);
@@ -49,7 +53,8 @@ try {
     fs.writeFileSync(publishNotes, fs.readFileSync(notes, 'utf8') + `\n\n${sourceMarker}\n`, { mode: 0o600 });
     gh(['release', 'create', tag, ...files, '--repo', repo, '--draft', '--verify-tag', '--title', `Dear Diane ${manifest.version}`, '--notes-file', publishNotes]);
   }
-  const release = JSON.parse(gh(['api', `repos/${repo}/releases/tags/${tag}`]));
+  const release = findRelease();
+  if (!release || !release.draft || !Array.isArray(release.assets)) throw Error('Draft could not be verified; nothing was published.');
   for (const filename of files) {
     if (!release.assets.some(asset => asset.name === path.basename(filename) && asset.size === fs.statSync(filename).size)) throw Error('Draft upload verification failed; release remains a draft.');
   }
@@ -61,6 +66,7 @@ try {
   for (const secret of [process.env.GH_TOKEN, process.env.GITHUB_TOKEN].filter(Boolean)) detail = detail.split(secret).join('[redacted]');
   detail = detail.replace(/(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)/g, '[redacted]');
   console.error(`Publishing failed during ${operation}: ${detail.slice(0, 2000)}`);
+  if (process.env.GITHUB_ACTIONS === 'true') console.error(`::error::${(`Publishing failed during ${operation}: ${detail.slice(0, 2000)}`).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')}`);
   console.error('Any created draft remains unpublished.');
   process.exitCode = 1;
 }

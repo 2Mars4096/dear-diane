@@ -1,6 +1,8 @@
 # Changelog
 
 ## 2026-10-11
+- [fix] Discover and verify release drafts through the authenticated release listing, fixing the post-upload 404. Preserve source/asset checks and expose sanitized failures as workflow annotations.
+- [infra] Push combined v0.1.2 (`13aae0df`): EPUB, Settings redesign, public updater and README. All 224 scoped frontend tests and nine publisher tests pass locally; remote build/package succeeds. Publication still fails (run 38132743457); no v0.1.2 release is available.
 - [infra] Prepare combined 0.1.2 release at user request: EPUB reader, Settings redesign, anonymous update feed, and refreshed README alongside the verified Mac updater. Preserve the existing 0.1.1 tag.
 - [fix] Create releases from independently verified existing tags without redundant `--target`, avoiding old-workflow target permission checks; preserve exact-source draft retries with a notes marker.
 - [fix] Remove updater GitHub sign-in/account IPC and credential lookup; select the anonymous dear-diane release feed in client/package/publisher configuration. Anonymous metadata confirms the repository is public; latest-release endpoint returns 404, so live download is pending. No remote writes or installation. Sixteen updater/UI and seven publisher tests, production build/budgets, and Electron compilation pass.

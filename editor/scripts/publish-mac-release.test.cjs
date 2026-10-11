@@ -23,10 +23,11 @@ function exercise({ existing, tagCommit = commit, corrupt = false, missingAsset 
       calls.push(args);
       if (apiError) { const error = new Error("API failed"); error.stderr = apiError; throw error; }
       if (args[0] === 'api' && args[1].endsWith(`/commits/${tag}`)) return tagCommit;
-      if (args[0] === 'api' && args[1].includes('/releases/tags/')) {
-        if (uploaded) return JSON.stringify({ assets: missingAsset ? [] : [asset.url, 'latest-mac.yml'].map(name => ({ name, size: fs.statSync(path.join(dir, name)).size })) });
+      if (args[0] === 'api' && args[1].includes('/releases/tags/')) { const error = new Error('Drafts are not found by tag'); error.stderr = '(HTTP 404)'; throw error; }
+      if (args[0] === 'api' && args[1].endsWith('/releases')) {
+        if (uploaded) return JSON.stringify({ draft: true, assets: missingAsset ? [] : [asset.url, 'latest-mac.yml'].map(name => ({ name, size: fs.statSync(path.join(dir, name)).size })) });
         if (existing) return JSON.stringify(existing);
-        const error = new Error('Not found'); error.stderr = '(HTTP 404)'; throw error;
+        return '';
       }
       if (args[0] === 'release' && ['create', 'upload'].includes(args[1])) uploaded = true;
       return '{}';
@@ -83,4 +84,11 @@ test('resumes a marked draft even when GitHub records default branch as target',
   const result = exercise({ existing: { draft: true, target_commitish: 'main', body: `<!-- diane-source: ${commit} -->` } });
   assert.equal(result.failed, false);
   assert.equal(published(result), true);
+});
+
+test('finds and verifies drafts through paginated release listing, not published-tag lookup', () => {
+  const result = exercise();
+  assert.equal(result.failed, false);
+  assert.equal(result.calls.some(args => String(args[1]).includes('/releases/tags/')), false);
+  assert.equal(result.calls.filter(args => args[0] === 'api' && args[1].endsWith('/releases') && args.includes('--paginate')).length, 2);
 });

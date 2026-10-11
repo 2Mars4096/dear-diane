@@ -92,3 +92,7 @@ Release scope remains the desktop shell for existing configured Python-backend i
 - [x] Include pending EPUB, Settings, README and public-feed changes at user request.
 - [x] Validate combined source: 224 reader/document/workbench/updater tests and nine publisher tests pass; production build/budgets and Electron compilation pass.
 - [ ] Publish v0.1.2 and verify release assets.
+
+- Combined release source `13aae0df`, tag `v0.1.2`, is pushed. Actions run `38132743457` passed build/tests/packaging but failed publication; release endpoint remains 404. Exact latest publisher error awaits operator-visible log; no further permission assumptions.
+
+- [x] Fix post-creation draft lookup 404 and add a regression matching GitHub’s draft endpoint behavior.
