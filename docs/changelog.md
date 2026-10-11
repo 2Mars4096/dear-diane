@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-10-11
+- [fix] Create releases from independently verified existing tags without redundant `--target`, avoiding old-workflow target permission checks; preserve exact-source draft retries with a notes marker.
 - [fix] Use the workflow repository’s canonical name for publication and report the failing GitHub operation with token-redacted diagnostics. Run corrected publisher tooling from the workflow commit while retaining the immutable tagged app source and notes.
 - [fix] Trigger release automation when its workflow changes on main, as well as version-tag pushes. Both paths resolve and build an immutable existing version tag; manual dispatch is only a fallback.
 - [fix] Add manual release dispatch for an existing version tag after the first push produced no Actions run; build and publish the tag’s resolved commit without retagging.

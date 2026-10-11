@@ -70,3 +70,5 @@ Release scope remains the desktop shell for existing configured Python-backend i
 
 - [x] Confirm remote Mac build/tests/package succeeded; improve suppressed publication diagnostics and use canonical repository for automatic retry.
 - [ ] Confirm corrected publication succeeds.
+
+- [x] Correct release creation 403: use verified existing tag, no redundant target; test exact-source marked draft retries.

@@ -72,3 +72,15 @@ test('reports operation and error without exposing the GitHub token', () => {
   assert.ok(result.errors.join(' ').includes('GET repos/2Mars4096/dear-diane/commits/'));
   assert.equal(result.errors.join(' ').includes('test-sensitive-token'), false);
 });
+
+test('creates from verified existing tag without requesting a target commit', () => {
+  const result = exercise();
+  const create = result.calls.find(args => args[0] === 'release' && args[1] === 'create');
+  assert.ok(create.includes('--verify-tag'));
+  assert.equal(create.includes('--target'), false);
+});
+test('resumes a marked draft even when GitHub records default branch as target', () => {
+  const result = exercise({ existing: { draft: true, target_commitish: 'main', body: `<!-- diane-source: ${commit} -->` } });
+  assert.equal(result.failed, false);
+  assert.equal(published(result), true);
+});

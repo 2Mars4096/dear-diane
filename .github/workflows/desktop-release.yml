@@ -101,7 +101,7 @@ jobs:
         with:
           name: mac-release
           path: release-upload
-      - name: Validate assets and publish
+      - name: Validate assets and publish existing tag
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.build.outputs.tag }}

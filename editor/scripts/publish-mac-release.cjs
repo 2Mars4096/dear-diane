@@ -26,6 +26,8 @@ fs.accessSync(notes);
 const repo = process.env.GITHUB_REPOSITORY || '2Mars4096/dear-diane';
 if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw Error('Invalid release repository.');
 const tag = `v${manifest.version}`;
+const sourceMarker = `<!-- diane-source: ${commit} -->`;
+const publishNotes = path.join(root, '.publish-notes.md');
 let operation = '';
 const gh = args => {
   operation = args[0] === 'api' ? `GET ${args[1]}` : args.slice(0, 2).join(' ');
@@ -34,7 +36,7 @@ const gh = args => {
 try {
   // Read-only auth/source checks happen before any remote mutation.
   gh(['api', `repos/${repo}/commits/${commit}`]);
-  if (process.env.RELEASE_TAG) {
+  {
     const taggedCommit = gh(['api', `repos/${repo}/commits/${tag}`, '--jq', '.sha']).trim();
     if (taggedCommit !== commit) throw Error('Release tag does not match the built source commit.');
   }
@@ -42,10 +44,11 @@ try {
   try { existing = JSON.parse(gh(['api', `repos/${repo}/releases/tags/${tag}`])); }
   catch (error) { if (!String(error.stderr).includes('(HTTP 404)')) throw error; }
   if (existing) {
-    if (!existing.draft || existing.target_commitish !== commit) throw Error('Refusing to replace a published release or a draft from different source.');
+    if (!existing.draft || (existing.target_commitish !== commit && !String(existing.body || '').includes(sourceMarker))) throw Error('Refusing to replace a published release or a draft from different source.');
     gh(['release', 'upload', tag, ...files, '--repo', repo, '--clobber']);
   } else {
-    gh(['release', 'create', tag, ...files, '--repo', repo, '--draft', '--target', commit, '--title', `Dear Diane ${manifest.version}`, '--notes-file', path.resolve(notes)]);
+    fs.writeFileSync(publishNotes, fs.readFileSync(notes, 'utf8') + `\n\n${sourceMarker}\n`, { mode: 0o600 });
+    gh(['release', 'create', tag, ...files, '--repo', repo, '--draft', '--verify-tag', '--title', `Dear Diane ${manifest.version}`, '--notes-file', publishNotes]);
   }
   const release = JSON.parse(gh(['api', `repos/${repo}/releases/tags/${tag}`]));
   for (const filename of files) {
@@ -62,3 +65,5 @@ try {
   console.error('Any created draft remains unpublished.');
   process.exitCode = 1;
 }
+
+finally { fs.rmSync(publishNotes, { force: true }); }
