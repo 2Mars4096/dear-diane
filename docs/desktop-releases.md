@@ -9,6 +9,7 @@ Push the reviewed release source and a matching `vX.Y.Z` tag. `.github/workflows
 - Keep `editor/package.json`, its lockfile and the tag version aligned; add `docs/releases/vX.Y.Z.md`.
 - The publisher validates checksums, asset sizes and exact tag commit before creating a draft. It publishes only after verifying uploaded assets. A rerun can resume a draft from that same source; published releases are never overwritten.
 - Git SSH push authentication is independent of `gh` API authentication. This workflow does not repair the installed app's private-feed login; downloading private releases still requires valid GitHub access.
+- If the first tag push produces no run, open **Desktop release → Run workflow**, use branch `main`, and enter the existing release tag (for this release, `v0.1.1`). The workflow builds that tag and passes its resolved source commit to publication.
 - View runs at https://github.com/2Mars4096/deep-agent-network/actions/workflows/desktop-release.yml . GitHub Actions must be enabled with available runner quota.
 - Runner labels: https://docs.github.com/en/actions/reference/runners/github-hosted-runners .
 
@@ -34,4 +35,6 @@ Push the reviewed release source and a matching `vX.Y.Z` tag. `.github/workflows
 
 ## Current release
 
-0.1.1 is prepared locally. Local GitHub API authentication returns HTTP 401, but Git SSH access works. Publication now uses the Actions workflow; remote completion must be verified in Actions. The local release was built from an isolated source snapshot containing the update/credential-discovery changes, excluding concurrent reader changes in the main workspace. A corresponding source commit must be pushed before publication.
+Release source `11ab4e44` and tag `v0.1.1` were pushed to main on 2026-10-11 using existing SSH authentication. GitHub reports the repository's canonical name is now `2Mars4096/dear-diane`; the original remote redirects there. [View Actions](https://github.com/2Mars4096/dear-diane/actions/workflows/desktop-release.yml) to confirm completion. The local API token is invalid, so remote publication has not yet been verified.
+
+The release uses an isolated snapshot excluding concurrent reader work in the original workspace. Twenty updater tests, six publisher tests, production build/budgets and Electron compilation pass locally. Prepared local 0.1.1 assets previously passed checksum/signature and disposable installation/rollback checks. No installed app has been replaced. A one-time local bootstrap and valid private-feed client authentication remain before in-app update acceptance.

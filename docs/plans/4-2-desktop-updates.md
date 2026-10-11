@@ -60,5 +60,8 @@ Release scope remains the desktop shell for existing configured Python-backend i
 - [x] Add tag-triggered Mac build/test/artifact workflow and separate publisher using GitHub's automatic token.
 - [x] Validate exact tag source and checksums; allow resuming only matching drafts; protect published releases. Six publisher tests pass.
 - [x] Verify Git SSH access independently of the invalid local GitHub API token.
-- [ ] Push isolated release source/tag and verify Actions completion.
+- [x] Push isolated release source `11ab4e44` to main and tag `v0.1.1` through existing SSH access.
+- [ ] Verify Actions completion (local API token invalid; operator can view the private run).
 - [ ] Verify installed private-feed authentication separately; workflow authentication does not repair client login.
+
+- [x] Add manual dispatch for an existing tag after the initial push produced zero runs; propagate the resolved source SHA into publication.

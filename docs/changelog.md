@@ -1,7 +1,8 @@
 # Changelog
 
 ## 2026-10-11
-- [infra] Add tag-triggered GitHub Actions Mac releases using the automatic job token, with separate build/publish permissions, exact-source and checksum validation, safe draft retries and six publisher tests. Existing Git SSH access works; no local login or Keychain changes. Remote publication and installed-client acceptance remain to verify.
+- [fix] Add manual release dispatch for an existing version tag after the first push produced no Actions run; build and publish the tag’s resolved commit without retagging.
+- [infra] Add tag-triggered GitHub Actions Mac releases using the automatic job token, with separate build/publish permissions, exact-source and checksum validation, safe draft retries and six publisher tests. Existing Git SSH access works; no local login or Keychain changes. Pushed isolated source `11ab4e44` and `v0.1.1` to main; remote publication and installed-client acceptance remain to verify.
 
 ## 2026-10-10
 - [feat] Add default Diane-first credential lookup to Todo with same-user paths-only discovery; preserve original .env/Settings keys and per-app models. Nine Python and 24 Todo native tests pass; both frontend builds pass.

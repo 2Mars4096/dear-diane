@@ -3,9 +3,16 @@ name: Desktop release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing version tag to build and publish'
+        required: true
+        default: 'v0.1.1'
+        type: string
 
 concurrency:
-  group: desktop-release-${{ github.ref }}
+  group: desktop-release-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -15,22 +22,30 @@ jobs:
   build:
     runs-on: macos-15
     timeout-minutes: 40
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      tag: ${{ steps.source.outputs.tag }}
     defaults:
       run:
         working-directory: editor
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: editor/package-lock.json
       - name: Validate release tag and runner
+        id: source
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           node -e 'const p = require("./package.json"); if (process.env.RELEASE_TAG !== `v${p.version}` || !/^\d+\.\d+\.\d+$/.test(p.version) || process.arch !== "arm64") process.exit(1)'
           test -f "../docs/releases/$RELEASE_TAG.md"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
       - run: npm ci
       - run: node --test scripts/publish-mac-release.test.cjs
       - name: Test updater
@@ -56,6 +71,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.commit }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -70,6 +87,6 @@ jobs:
       - name: Validate assets and publish
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
         run: node editor/scripts/publish-mac-release.cjs release-upload "docs/releases/$RELEASE_TAG.md" "$RELEASE_COMMIT"
