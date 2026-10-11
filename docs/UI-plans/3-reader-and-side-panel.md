@@ -116,3 +116,11 @@
 - Validation: 69 reader/document/tab tests; isolated Electron reflow and fixed-layout fixtures, chapter links, Ask staging, notes/highlights, reference previews, font changes, annotated ZIP contents, restart restoration, local OCR/cropped PNG attachment (mock upload), and standalone 390px reader pass. No live AI request sent.
 - EPUB exports use native EPUB highlights/notes; illustrated EPUBs recognize text when clicked. Existing Papers/Literature discovery remains PDF-only. DRM books display a clear unsupported message.
 - Production build/budgets pass; desktop app not reinstalled.
+
+## October 11 — unified controls and blank EPUB
+- [x] Reproduce/fix hidden-pane blank EPUB using the supplied Thinking, Fast and Slow book; validate production rendering.
+- [x] Share toolbar styling/order for PDF and EPUB, preserving format-specific sizing and reference behavior.
+- [x] Add PDF embedded outlines and labelled heading detection from existing text/OCR, without automatically OCRing the whole book.
+- [x] Verify 73 reader/document tests, TypeScript, real-book rendering/chapter navigation, responsive toolbar, production build and budgets.
+- Exact book: 56 navigation options including the placeholder, valid cover image, Introduction navigation; hidden initial mount reproduces zero iframes before the fix and renders after it. Installed app's file endpoint returns identical bytes; ordinary installed-UI opening also works in an isolated profile. Original live-window state remains unverified.
+- Synthetic PDF: detected chapter jumps to page 8; 430px EPUB/PDF controls fit, and references open below the wrapped bar. Private fixtures removed. Source changes only; running installed app unchanged.

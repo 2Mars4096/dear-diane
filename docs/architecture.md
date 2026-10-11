@@ -418,3 +418,8 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - Updater `download-install` IPC owns the complete user-triggered download/stage/install/restart sequence in Electron. It checks idle/backend ownership before download and immediately before installation; ready updates survive blocked installation. The Settings primary button selects check or the combined action, with install-only retry for an already prepared bundle.
 
 - Desktop update status carries `downloaded` and `total` bytes from Electron download events. Settings uses these for visible percentage/MB and an indeterminate bar while size is unknown; existing shared status polling refreshes progress.
+
+## Shared reader controls and chapter navigation
+- `reader/ReaderToolbar.tsx` and `reader-toolbar.css` provide the shared responsive control order. PDF keeps page/zoom navigation; EPUB keeps reflow sizing. PDF reference overlays use the document grid row so wrapped controls cannot overlap them.
+- `reader/lib/pdf-chapters.ts` resolves nested PDF destinations and conservatively detects explicit headings when an outline is absent. Text extraction preserves line breaks; existing OCR can supply headings on empty/number-only pages, without scheduling additional OCR.
+- `reader/lib/reader-size.ts` waits for measurable EPUB host dimensions before engine initialization. Hidden panes previously let EPUB.js resolve display without creating any views. Waiting is abortable on close; the opening timeout starts only after the pane becomes visible.

@@ -1,4 +1,5 @@
 # Todo
+- [x] Fix blank EPUB, unify reader controls and add PDF chapters — [reader](UI-plans/3-reader-and-side-panel.md).
 
 - [x] Publish v0.1.4 with download progress; verify public installer and updater assets — [4-2](plans/4-2-desktop-updates.md).
 

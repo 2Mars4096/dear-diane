@@ -46,6 +46,8 @@ import {
   type PaperReferenceTag
 } from "./lib/paper-reference-tags";
 import { readPaperPdfPosition, writePaperPdfPosition, type PaperPdfPosition } from "./lib/paper-reading-position";
+import { ReaderToolbar } from "./ReaderToolbar";
+import type { ReaderChapter } from "./lib/pdf-chapters";
 import styles from "./interactive-pdf-viewer.module.css";
 // Keep both PDF.js entry points compatible with the bundled Electron runtime.
 // The modern worker needs Math.sumPrecise; without it embedded fonts silently fail.
@@ -71,6 +73,8 @@ type InteractivePdfViewerProps = {
   onOpenComment?: (commentId: string) => void;
   onResolveSelection: (selection: SelectionAction) => Promise<SelectionAction>;
   onDocument?: (document: PDFDocumentProxy | null) => void; // Diane: lets the reader extract text / run OCR
+  chapters?: ReaderChapter[];
+  chaptersLoading?: boolean;
   toolbarExtras?: ReactNode; // Diane: reader actions share the toolbar row with Refs
   onPageChange: (pageNumber: number) => void;
   ocrPages: MaterialPdfOcrPage[];
@@ -548,7 +552,9 @@ export function InteractivePdfViewer({
   pageNumber,
   sourceUrl,
   title,
-  toolbarExtras
+  toolbarExtras,
+  chapters = [],
+  chaptersLoading = false
 }: InteractivePdfViewerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -1325,71 +1331,30 @@ export function InteractivePdfViewer({
 
   return (
     <div className={styles.viewer} ref={rootRef}>
-      <div className={styles.toolbar} aria-label="PDF page controls">
-        <button
-          aria-label="Previous page"
-          disabled={!canGoBack}
-          onClick={() => navigatePage(pageNumber - 1)}
-          type="button"
-        >
-          ←
-        </button>
-        <span>Page {pageNumber}{pageCount ? ` / ${pageCount}` : ""}</span>
-        <button
-          aria-label="Next page"
-          disabled={!canGoForward}
-          onClick={() => navigatePage(pageNumber + 1)}
-          type="button"
-        >
-          →
-        </button>
-        <span className={styles.toolbarDivider} aria-hidden="true" />
-        <button
-          aria-label="Zoom out"
-          disabled={zoom <= MIN_ZOOM}
-          onClick={() => changeZoom(Math.max(
-            MIN_ZOOM,
-            Math.round((zoom - ZOOM_STEP) * 10) / 10
-          ))}
-          type="button"
-        >
-          −
-        </button>
-        <span>{zoom === 1 ? "Fit" : `${Math.round(zoom * 100)}%`}</span>
-        <button
-          aria-label="Zoom in"
-          disabled={zoom >= MAX_ZOOM}
-          onClick={() => changeZoom(Math.min(
-            MAX_ZOOM,
-            Math.round((zoom + ZOOM_STEP) * 10) / 10
-          ))}
-          type="button"
-        >
-          +
-        </button>
-        <select className={styles.pageLayout} aria-label="Page layout" value={pageLayout} onChange={event => {
-          const next = event.target.value === 'two' ? 'two' : 'single';
-          setPageLayout(next); setSelectionPrompt(null);
+      <ReaderToolbar
+        navigation={<>
+          <button aria-label="Previous page" disabled={!canGoBack} onClick={() => navigatePage(pageNumber - 1)}>←</button>
+          <input aria-label="Page number" key={pageNumber} type="number" min={1} max={pageCount || 1} defaultValue={pageNumber} onKeyDown={event => { if (event.key === 'Enter') { const value = Number(event.currentTarget.value); if (Number.isInteger(value) && value >= 1 && value <= pageCount) navigatePage(value); } }} onBlur={event => { const value = Number(event.currentTarget.value); if (Number.isInteger(value) && value >= 1 && value <= pageCount) navigatePage(value); else event.currentTarget.value = String(pageNumber); }} />
+          <span>/ {pageCount || '…'}</span>
+          <button aria-label="Next page" disabled={!canGoForward} onClick={() => navigatePage(pageNumber + 1)}>→</button>
+        </>}
+        chapters={<select aria-label="Chapter" disabled={!chapters.length} value={[...chapters].reverse().find(item => item.page <= pageNumber)?.id || ''} title="PDF outline, or headings detected from available text and OCR" onChange={event => { const chapter = chapters.find(item => item.id === event.target.value); if (chapter) navigatePage(chapter.page); }}><option value="" disabled>{chaptersLoading ? 'Finding chapters…' : chapters.length ? 'Chapters' : 'No chapters found'}</option>{chapters.map(item => <option key={item.id} value={item.id}>{item.detected ? 'Detected · ' : ''}{'　'.repeat(item.depth)}{item.label} · p. {item.page}</option>)}</select>}
+        sizing={<>
+          <button aria-label="Zoom out" disabled={zoom <= MIN_ZOOM} onClick={() => changeZoom(Math.max(MIN_ZOOM, Math.round((zoom - ZOOM_STEP) * 10) / 10))}>−</button>
+          <button aria-label="Fit page width" onClick={() => changeZoom(1)}>{zoom === 1 ? 'Fit' : `${Math.round(zoom * 100)}%`}</button>
+          <button aria-label="Zoom in" disabled={zoom >= MAX_ZOOM} onClick={() => changeZoom(Math.min(MAX_ZOOM, Math.round((zoom + ZOOM_STEP) * 10) / 10))}>+</button>
+        </>}
+        layout={<select aria-label="Page layout" value={pageLayout} onChange={event => {
+          const next = event.target.value === 'two' ? 'two' : 'single'; setPageLayout(next); setSelectionPrompt(null);
           try { localStorage.setItem('diane.reader.page-layout', next); } catch { /* Current visit only. */ }
           requestAnimationFrame(() => requestAnimationFrame(() => navigatePage(pageNumber)));
-        }}><option value="single">Single Page</option><option value="two">Two Pages</option></select>
-        {toolbarExtras ? <div className={styles.toolbarExtras}>{toolbarExtras}</div> : null}
-        <button
-          aria-expanded={referenceTrayOpen}
-          aria-label={`References, ${referenceTags.length} saved`}
-          aria-pressed={referenceTrayPinned}
-          className={styles.referenceTrayToggle}
-          disabled={!referencesHydrated}
-          onBlur={scheduleReferenceTrayClose}
-          onClick={toggleReferenceTrayPin}
-          onFocus={showReferenceTrayFromFocus}
-          onMouseEnter={showReferenceTrayFromHover}
-          onMouseLeave={scheduleReferenceTrayClose}
-          type="button"
-        >
-          Refs{referenceTags.length ? ` ${referenceTags.length}` : ""}
-        </button>
-      </div>
+        }}><option value="single">Single page</option><option value="two">Two pages</option></select>}
+        references={<button aria-expanded={referenceTrayOpen} aria-label={`References, ${referenceTags.length} saved`} aria-pressed={referenceTrayPinned} disabled={!referencesHydrated}
+          onBlur={scheduleReferenceTrayClose} onClick={toggleReferenceTrayPin} onFocus={showReferenceTrayFromFocus} onMouseEnter={showReferenceTrayFromHover} onMouseLeave={scheduleReferenceTrayClose}>
+          References{referenceTags.length ? ` ${referenceTags.length}` : ''}
+        </button>}
+        actions={toolbarExtras}
+      />
 
       {referenceTrayOpen ? (
         <div

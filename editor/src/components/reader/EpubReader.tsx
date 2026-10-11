@@ -1,3 +1,4 @@
+import { waitForReaderSize } from './lib/reader-size';
 import { useEffect, useRef, useState } from 'react';
 import ePub from 'epubjs';
 import type Book from 'epubjs/types/book';
@@ -16,6 +17,8 @@ import { normalizePassageText } from './lib/paper-anchors';
 import { EpubReferencePreview } from './EpubReferencePreview';
 import { EpubImageTools } from './EpubImageTools';
 import './epub-reader.css';
+import { ReaderToolbar } from './ReaderToolbar';
+import { Download, MessageSquareQuote } from 'lucide-react';
 
 type Selection = ReaderDraft & { context: string; image?: string; crop?: Blob };
 type Position = { cfi?: string; font?: number; spread?: string };
@@ -65,12 +68,15 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
     if (!host.current) return;
     let cancelled = false;
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => { controller.abort(); if (!cancelled) setError('Opening timed out. Try again.'); }, 30000);
+    let timeout: number | undefined;
     let book: Book | undefined, rendition: Rendition | undefined;
     let resize: ResizeObserver | undefined, theme: MutationObserver | undefined;
-    setReady(false); setError(''); setSelection(null);
+    setReady(false); setError(''); setSelection(null); setLocation(null); setToc([]); setChapter('');
     const failure = (e: unknown) => { if (!cancelled) setError(e instanceof Error ? e.message : 'Could not open this EPUB.'); };
     void (async () => {
+      await waitForReaderSize(host.current!, controller.signal);
+      if (cancelled) return;
+      timeout = window.setTimeout(() => { controller.abort(); if (!cancelled) setError('Opening timed out. Try again.'); }, 30000);
       const response = await fetch(file.url, { signal: controller.signal });
       if (!response.ok) throw Error(`Could not load EPUB (${response.status}).`);
       if (Number(response.headers.get('content-length')) > EPUB_MAX_BYTES) throw Error('This EPUB is too large (150 MB maximum).');
@@ -101,6 +107,8 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
         book.spine.each((section: Section) => chapters.push({ href: section.href, label: `Chapter ${section.index + 1}` }));
         setToc(chapters); tocRef.current = chapters;
       }
+      await waitForReaderSize(host.current!, controller.signal);
+      if (cancelled) return;
       rendition = book.renderTo(host.current!, { width: '100%', height: '100%', flow: 'paginated', spread: options.current.spread, allowScriptedContent: false });
       renditionRef.current = rendition;
       rendition.on('displayError', failure);
@@ -150,8 +158,12 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
         });
       });
       try { await rendition.display(position.current); }
-      catch { position.current = undefined; await rendition.display(); setNotice('The saved location is unavailable; opened the beginning of this book.'); }
-      if (cancelled) return;
+      catch {
+        if (cancelled || controller.signal.aborted) return;
+        position.current = undefined; await rendition.display();
+        if (!cancelled) setNotice('The saved location is unavailable; opened the beginning of this book.');
+      }
+      if (cancelled || controller.signal.aborted) return;
       resize = new ResizeObserver(() => {
         const box = host.current?.getBoundingClientRect();
         if (box && box.width > 0 && box.height > 0) rendition?.resize(box.width, box.height);
@@ -245,17 +257,23 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
   };
   const go = (target: string) => { void renditionRef.current?.display(target).catch(e => setNotice(e instanceof Error ? e.message : 'This location could not be opened.')); };
   return <section className="wb-epub" ref={root} aria-label={`Reading ${file.name}`}>
-    <div className="wb-epub-controls" aria-label="EPUB reading controls">
-      <button disabled={!ready || location?.atStart} aria-label="Previous page" onClick={() => void renditionRef.current?.prev().catch(e => setNotice(String(e)))}>←</button>
-      <button disabled={!ready || location?.atEnd} aria-label="Next page" onClick={() => void renditionRef.current?.next().catch(e => setNotice(String(e)))}>→</button>
-      <select aria-label="Chapter" disabled={!ready} value={toc.find(item => item.href.split('#')[0] === chapter.split('#')[0])?.href || ''} onChange={e => go(e.target.value)}><option value="" disabled>Chapters</option>{toc.map((item, index) => <option key={`${item.href}:${index}`} value={item.href}>{item.label}</option>)}</select>
-      <button disabled={!ready || font <= 70} aria-label="Smaller text" onClick={() => setFont(value => Math.max(70, value - 10))}>A−</button><button disabled={!ready || font === 100} aria-label="Reset text size" onClick={() => setFont(100)}>{font}%</button><button disabled={!ready || font >= 200} aria-label="Larger text" onClick={() => setFont(value => Math.min(200, value + 10))}>A+</button>
-      <select aria-label="Page layout" value={spread} onChange={e => setSpread(e.target.value)}><option value="none">Single page</option><option value="auto">Two pages when space allows</option></select>
-      <button disabled={!ready} aria-expanded={references} onClick={() => setReferences(!references)}>References{tray.tags.length ? ` ${tray.tags.length}` : ''}</button>
-      <button onClick={onNotes}>Notes{state.comments.length ? ` ${state.comments.length}` : ''}</button>
-      <button disabled={!ready || busy || !state.comments.length} onClick={() => void exportBook()}>{busy ? 'Preparing…' : 'Export annotated EPUB'}</button>
-      <a href={file.url} download={file.name}>Download</a>
-    </div>
+    <ReaderToolbar
+      navigation={<>
+        <button disabled={!ready || location?.atStart} aria-label="Previous page" onClick={() => void renditionRef.current?.prev().catch(e => setNotice(String(e)))}>←</button>
+        <button disabled={!ready || location?.atEnd} aria-label="Next page" onClick={() => void renditionRef.current?.next().catch(e => setNotice(String(e)))}>→</button>
+      </>}
+      chapters={<select aria-label="Chapter" disabled={!ready} value={toc.find(item => item.href.split('#')[0] === chapter.split('#')[0])?.href || ''} onChange={e => go(e.target.value)}><option value="" disabled>Chapters</option>{toc.map((item, index) => <option key={`${item.href}:${index}`} value={item.href}>{item.label}</option>)}</select>}
+      sizing={<>
+        <button disabled={!ready || font <= 70} aria-label="Smaller text" onClick={() => setFont(value => Math.max(70, value - 10))}>A−</button><button disabled={!ready || font === 100} aria-label="Reset text size" onClick={() => setFont(100)}>{font}%</button><button disabled={!ready || font >= 200} aria-label="Larger text" onClick={() => setFont(value => Math.min(200, value + 10))}>A+</button>
+      </>}
+      layout={<select aria-label="Page layout" value={spread} onChange={e => setSpread(e.target.value)}><option value="none">Single page</option><option value="auto">Two pages</option></select>}
+      references={<button disabled={!ready} aria-expanded={references} onClick={() => setReferences(!references)}>References{tray.tags.length ? ` ${tray.tags.length}` : ''}</button>}
+      actions={<>
+        <button onClick={onNotes}><MessageSquareQuote size={13} />Notes{state.comments.length ? ` ${state.comments.length}` : ''}</button>
+        <button disabled={!ready || busy || !state.comments.length} title="Download an EPUB copy with highlights and notes" onClick={() => void exportBook()}><Download size={13} />{busy ? 'Preparing…' : 'Export'}</button>
+        <a href={file.url} download={file.name}>Download</a>
+      </>}
+    />
     {references && <section className="wb-epub-references" aria-label="Saved references">
       <button disabled={!ready} onClick={reference}>Save current location</button>{tray.lines.length < MAX_PAPER_REFERENCE_LINES && <button onClick={() => updateTray({ ...tray, lines: [...tray.lines, { lineId: crypto.randomUUID(), label: 'New group' }] })}>Add group</button>}
       {tray.lines.map(line => <div key={line.lineId}>

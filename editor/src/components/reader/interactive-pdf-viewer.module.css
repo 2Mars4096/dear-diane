@@ -754,3 +754,6 @@
 
 .commentHighlight[role="button"]:focus-visible { outline: none; }
 .commentHighlight[role="button"]:focus-visible path { stroke: var(--wb-accent); stroke-width: .2; }
+
+/* Reference panels start below the shared toolbar, including wrapped controls. */
+.referenceOverlay { grid-row: 2; top: 8px; bottom: 10px; height: auto; }

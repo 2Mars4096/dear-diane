@@ -1,6 +1,13 @@
 # Changelog
 
 ## 2026-10-11
+- [infra] Prepare v0.1.5 with blank-EPUB initialization repair, shared reading controls, and PDF page/chapter navigation.
+
+## 2026-10-11
+- [fix] Wait for a visible, measurable EPUB pane before initialization; hidden mounts previously reported success without any rendered page. Verified with the supplied Thinking, Fast and Slow EPUB in development/production and with a cancellation regression test.
+- [feat] Unify PDF/EPUB reading controls and add PDF direct page jumps, embedded chapter outlines, and labelled local heading detection from available text/OCR. Reference overlays follow toolbar wrapping. 73 focused tests, TypeScript, real-book/synthetic-PDF Electron checks, production build and bundle budgets pass. Temporary book copies removed; installed app unchanged.
+
+## 2026-10-11
 - [infra] Publish v0.1.4 (`0065ab2b`) with download percentage and MB progress. 34 focused tests, production build/budgets and Electron compilation pass; public installer/update assets and anonymous manifest verified.
 
 ## 2026-10-11

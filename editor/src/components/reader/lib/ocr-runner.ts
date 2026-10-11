@@ -29,7 +29,7 @@ export async function extractPageTexts(document: PDFDocumentProxy): Promise<Map<
     try {
       const page = await document.getPage(number);
       const content = await page.getTextContent();
-      texts.set(number, content.items.map((item) => ("str" in item ? item.str : "")).join(" ").replace(/\s+/g, " ").trim());
+      texts.set(number, content.items.map((item) => ("str" in item ? item.str + (item.hasEOL ? "\n" : " ") : "")).join("").replace(/[^\S\n]+/g, " ").trim());
     } catch { texts.set(number, ""); }
   }
   return texts;

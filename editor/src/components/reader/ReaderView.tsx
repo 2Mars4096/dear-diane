@@ -1,10 +1,11 @@
+import { pdfOutline, detectPdfChapters, type ReaderChapter } from "./lib/pdf-chapters";
 import { transcribeSelection } from "./lib/transcribe-selection";
 import { browserOcrIdentity, readBrowserOcr, saveBrowserOcr } from "./lib/ocr-cache";
 import { currentOcrPages } from "./lib/ocr-layout";
 import type { ComposerAttachmentDraft } from "../../lib/composerAttachments";
 import { selectionImage } from "./lib/selection-image";
 import { prepareAttachments } from "../../lib/attachFiles";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download, MessageSquareQuote, ScanText } from "lucide-react";
 import type { PDFDocumentProxy } from "pdfjs-dist/types/src/pdf";
 import { InteractivePdfViewer } from "./InteractivePdfViewer";
@@ -41,6 +42,19 @@ function PdfReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: (ask
   const [exporting, setExporting] = useState(false);
   const documentRef = useRef<PDFDocumentProxy | null>(null);
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
+  const [outline, setOutline] = useState<ReaderChapter[]>([]);
+  const [chaptersLoading, setChaptersLoading] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    setOutline([]);
+    if (!pdfDocument) return;
+    setChaptersLoading(true);
+    void pdfOutline(pdfDocument).then(items => { if (!cancelled) setOutline(items); })
+      .catch(() => { /* Fall back to locally available headings. */ })
+      .finally(() => { if (!cancelled) setChaptersLoading(false); });
+    return () => { cancelled = true; };
+  }, [pdfDocument]);
+  const chapters = useMemo(() => outline.length ? outline : detectPdfChapters(pageTexts, ocrPages), [outline, pageTexts, ocrPages]);
   const requestVisibleOcr = useRef<(() => void) | null>(null);
   const visiblePage = useRef(pageNumber); visiblePage.current = pageNumber;
   const onDocument = useCallback((document: PDFDocumentProxy | null) => { documentRef.current = document; setPdfDocument(document); }, []);
@@ -292,6 +306,8 @@ function PdfReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: (ask
     {repairStatus && <div role="status" className="wb-reader-ocr">{repairStatus}{repairStatus.startsWith('Could not') && <button onClick={() => setRepairEpoch(value => value + 1)}>Retry</button>}</div>}
     <div className="wb-reader-stage">
       <InteractivePdfViewer
+        chapters={chapters}
+        chaptersLoading={chaptersLoading || ocr.status === "checking"}
         commentFocus={commentFocus}
         comments={visibleComments}
         currentPageLabel={`Page ${pageNumber}`}
@@ -312,6 +328,7 @@ function PdfReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: (ask
           {ocr.status === "error" && <span data-error title={ocr.message}><ScanText size={12} />OCR failed</span>}
           <button type="button" onClick={onNotes}><MessageSquareQuote size={13} />Notes{comments.length ? ` ${comments.length}` : ""}</button>
           <button type="button" onClick={() => void exportPdf()} disabled={!comments.length || exporting} title="Download a copy with notes as PDF highlights"><Download size={13} />{exporting ? "Exporting…" : "Export"}</button>
+          <a href={file.url} download={file.name}>Download</a>
         </>}
       />
     </div>

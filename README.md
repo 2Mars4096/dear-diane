@@ -132,7 +132,7 @@ Reading position, annotations, references, and chat links are remembered. Open r
 
 Scanned PDFs use local OCR to make text selectable. Comments and highlights save immediately, including offline. Transcription of selected scan pixels uses OpenRouter; pending quotes retry when connected. Native text PDFs use their existing text directly. Export saves an annotated copy and preserves the original.
 
-EPUBs support chapter navigation, text-size controls, and single-page or two-page layouts. You can select text, annotate, and export an annotated EPUB. Illustrations support local OCR. EPUBs must be unencrypted and no larger than 150 MB compressed or expanded. The paper catalogue and literature importer currently handle PDFs.
+PDFs and EPUBs share a reading toolbar with chapters, sizing, page layout, references, notes, export, and download. PDF chapters use embedded bookmarks or labelled headings detected from available text/OCR; scanned pages become eligible as you read them. PDFs also support direct page jumps. EPUBs support text-size controls and single-page or two-page layouts. You can select text, annotate, and export an annotated EPUB. Illustrations support local OCR. EPUBs must be unencrypted and no larger than 150 MB compressed or expanded. The paper catalogue and literature importer currently handle PDFs.
 
 ### Paper library
 
