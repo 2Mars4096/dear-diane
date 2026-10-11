@@ -23,13 +23,13 @@ export function registerDesktopUpdates(options: {
     return updateErrorMessage(message);
   };
   autoUpdater.logger = null;
-  let state = { phase: "idle", currentVersion: app.getVersion(), version: "", source: "", localBuildAvailable: false, message: "", percent: 0, releaseConfigured: false, localSupported: process.platform === "darwin" && app.isPackaged };
+  let state = { phase: "idle", currentVersion: app.getVersion(), version: "", source: "", localBuildAvailable: false, message: "", percent: 0, downloaded: 0, total: 0, releaseConfigured: false, localSupported: process.platform === "darwin" && app.isPackaged };
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.on("error", error => { if (!background) state = { ...state, phase: "error", message: safeError(error) }; });
   autoUpdater.on("update-available", info => { state = { ...state, phase: "available", source: "release", version: info.version, message: "A desktop update is available." }; });
   autoUpdater.on("update-not-available", () => { state = { ...state, phase: "idle", message: "You have the latest published desktop version." }; });
-  autoUpdater.on("download-progress", progress => { state = { ...state, phase: "downloading", percent: Math.round(progress.percent) }; });
+  autoUpdater.on("download-progress", progress => { state = { ...state, phase: "downloading", percent: Math.round(progress.percent), downloaded: progress.transferred, total: progress.total }; });
   autoUpdater.on("update-downloaded", info => {
     const ready = () => { state = { ...state, phase: "ready", source: "release", version: info.version, message: "Update downloaded. Install when your work is finished." }; };
     if (process.platform !== "darwin") { ready(); return; }
@@ -105,7 +105,7 @@ export function registerDesktopUpdates(options: {
   };
   const downloadRelease = async () => {
     if (state.phase !== "available" || state.source !== "release") throw new Error("Check for an update first.");
-    state = { ...state, phase: "downloading", percent: 0, message: "Downloading update…" };
+    state = { ...state, phase: "downloading", percent: 0, downloaded: 0, total: 0, message: "Downloading update…" };
     releaseStaging = null;
     await autoUpdater.downloadUpdate();
     if (releaseStaging) await releaseStaging;

@@ -17,6 +17,9 @@ export function DesktopUpdates() {
     finally { setPending(false); }
   }
   const attention = updateNeedsAttention(state);
+  const progress = state?.total && state.total > 0
+    ? Math.min(100, Math.max(0, Math.round((state.downloaded ?? 0) / state.total * 100))) : undefined;
+  const megabytes = (bytes: number) => `${(bytes / 1_000_000).toFixed(1)} MB`;
   const primaryAction = state?.phase === "ready" ? "install" : state?.phase === "available" ? "download-install" : "check";
   const primaryLabel = state?.phase === "checking" ? "Checking…"
     : state?.phase === "downloading" ? "Downloading…"
@@ -38,7 +41,15 @@ export function DesktopUpdates() {
     </div>
     {state?.phase === "available" && <p>Diane will restart automatically after downloading and installing the update.</p>}
     {error && <p role="alert">{error}</p>}
-    {state?.phase === "downloading" && <progress aria-label="Update download" max={100} value={state.percent}>{state.percent}%</progress>}
+    {state?.phase === "downloading" && <div className="wb-update-progress">
+      <div className="wb-update-progress-details">
+        <span>{progress === undefined ? "Downloading…" : `${progress}%`}</span>
+        <span>{state.total && state.total > 0
+          ? `${megabytes(state.downloaded ?? 0)} of ${megabytes(state.total)}`
+          : (state.downloaded ?? 0) > 0 ? `${megabytes(state.downloaded!)} downloaded` : "Waiting for download size…"}</span>
+      </div>
+      <progress aria-label="Update download" max={100} value={progress} />
+    </div>}
     {state?.localSupported && <details className="wb-update-options"><summary>Update options</summary>
       {state && !state.releaseConfigured && <p>Published updates aren’t configured for this build.</p>}
       {state?.localSupported && <div className="wb-update-option-row">

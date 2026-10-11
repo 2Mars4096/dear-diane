@@ -30,6 +30,9 @@ it("restricts update IPC to the main window, separates download from install, an
     expect((await action(event, "check")).phase).toBe("available");
     expect(mocks.feed).toHaveBeenLastCalledWith({ provider: "github", owner: "2Mars4096", repo: "dear-diane", private: false });
     expect(mocks.download).not.toHaveBeenCalled();
+    mocks.events.get("download-progress")!({ percent: 42, transferred: 42_000_000, total: 100_000_000 });
+    expect(await mocks.handlers.get("updates:status")!(event)).toMatchObject({ phase: "downloading", percent: 42, downloaded: 42_000_000, total: 100_000_000 });
+    mocks.events.get("update-available")!({ version: "2.0.0" });
     mocks.download.mockImplementation(async () => mocks.events.get("update-downloaded")!({ version: "2.0.0" }));
     expect((await action(event, "download")).phase).toBe("ready");
     expect(mocks.install).not.toHaveBeenCalled();

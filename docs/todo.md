@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Show update download percentage and transferred/total MB using Sticky Todo’s progress pattern — [desktop updates](plans/4-2-desktop-updates.md).
+
 - [x] Commit, push and publish v0.1.3 with one-click updates and Diane-side Sticky Todo handoff; verify public updater assets — [release](plans/4-2-desktop-updates.md).
 
 - [x] Move old Diane rollback backups to Trash; preserve installed/staged apps — [4-2](plans/4-2-desktop-updates.md).

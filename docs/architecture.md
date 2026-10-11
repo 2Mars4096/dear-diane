@@ -416,3 +416,5 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - Git SSH publishing and installed private-feed authentication are separate. No local credential store is changed by the release workflow.
 
 - Updater `download-install` IPC owns the complete user-triggered download/stage/install/restart sequence in Electron. It checks idle/backend ownership before download and immediately before installation; ready updates survive blocked installation. The Settings primary button selects check or the combined action, with install-only retry for an already prepared bundle.
+
+- Desktop update status carries `downloaded` and `total` bytes from Electron download events. Settings uses these for visible percentage/MB and an indeterminate bar while size is unknown; existing shared status polling refreshes progress.

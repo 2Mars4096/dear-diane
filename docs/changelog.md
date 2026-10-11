@@ -1,6 +1,12 @@
 # Changelog
 
 ## 2026-10-11
+- [infra] Prepare v0.1.4 with percentage and transferred/total MB download progress.
+
+## 2026-10-11
+- [fix] Show Diane update download percentage and transferred/total MB beside a slim progress bar, following Sticky Todo’s byte-based progress and unknown-size handling. Keep the existing download/install/restart flow.
+
+## 2026-10-11
 - [infra] Publish v0.1.3 (`41e5ad31`): one-click desktop update flow and Diane-side Sticky Todo handoff. 58 focused tests, production build/budgets and Electron compilation pass; Actions run 38135780419 succeeds and anonymous updater manifest is verified. Local/remote main histories reconciled. No app reinstall performed.
 
 ## 2026-10-11

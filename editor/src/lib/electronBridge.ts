@@ -5,6 +5,7 @@
 
 export interface DesktopUpdateState {
   localBuildAvailable?: boolean;
+  downloaded?: number; total?: number;
   phase: string; currentVersion: string; version: string; source: string;
   message: string; percent: number; releaseConfigured: boolean; localSupported: boolean;
 }

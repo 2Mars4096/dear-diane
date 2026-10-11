@@ -111,3 +111,11 @@ Release scope remains the desktop shell for existing configured Python-backend i
 - [x] Push v0.1.3 (`41e5ad31`) and verify publication: run 38135780419 succeeded; non-draft release includes DMG/ZIP/blockmaps; anonymous manifest confirms 0.1.3.
 
 - [x] Clean up 13 old rollback app bundles to Trash at user request; preserve installed app and staged update. Resolve the real macOS home through the user database because the agent HOME is redirected.
+
+## October 11 download progress
+- [x] Review Sticky Todo’s update controller/component; expose transferred/total bytes through Diane update status and display percentage plus MB, with indeterminate progress before size is known.
+- [x] Verify progress IPC, live UI updates, unknown-size and staging transitions: 15 focused tests pass.
+
+## 0.1.4 release
+- [x] Validate download-progress improvements: 24 updater/UI tests, ten publisher tests, production build/budgets and Electron compilation pass.
+- [ ] Publish v0.1.4 and verify public update manifest.

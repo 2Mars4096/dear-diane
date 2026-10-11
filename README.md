@@ -203,7 +203,7 @@ On macOS, closing the window leaves work running. Quit Dear Diane stops the app 
 
 Use Settings > About & updates > Check for updates. Checks use the public GitHub release feed and do not require a GitHub account or GitHub CLI. If no release has been published, Diane reports that instead of asking you to sign in.
 
-The app also checks at startup and every 15 minutes, with a catch-up check on focus. A dot marks an available or downloaded update. When an update is available, the button changes to Download and install. One click downloads it, installs it, and restarts Diane. Finish active work and queued messages first. If work starts during the download, Diane keeps the prepared update and asks you to finish before restarting.
+The app also checks at startup and every 15 minutes, with a catch-up check on focus. A dot marks an available or downloaded update. When an update is available, the button changes to Download and install. One click downloads it, installs it, and restarts Diane. During download, the progress bar shows percentage and transferred/total MB. Finish active work and queued messages first. If work starts during the download, Diane keeps the prepared update and asks you to finish before restarting.
 
 Under Update options, use Install local update for a detected prepared build or choose a build manually; `DAN_LOCAL_UPDATE_PATH` can specify its location. The installer validates the bundle, keeps a rollback copy, and preserves chats and settings.
 

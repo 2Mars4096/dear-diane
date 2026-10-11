@@ -112,3 +112,23 @@ it("checks first, then offers one download-and-install action", async () => {
     expect(primary().disabled).toBe(true);
   } finally { act(() => root.unmount()); delete window.electronAPI; }
 });
+
+it('shows live byte progress and uses an indeterminate bar until the size is known', async () => {
+  const { setDesktopUpdateStatus } = await import('../desktopUpdateStatus');
+  const state = { phase: 'downloading', currentVersion: '1', version: '2', source: 'release', message: 'Downloading update…', percent: 0, releaseConfigured: true, localSupported: false, downloaded: 0, total: 0 };
+  Object.defineProperty(window, 'electronAPI', { configurable: true, value: { updates: { status: vi.fn().mockResolvedValue(state), action: vi.fn() } } });
+  const host = document.createElement('div'); const root = createRoot(host);
+  try {
+    await act(async () => root.render(createElement(DesktopUpdates)));
+    expect(host.querySelector('progress')?.hasAttribute('value')).toBe(false);
+    expect(host.textContent).toContain('Waiting for download size…');
+    await act(async () => setDesktopUpdateStatus({ ...state, percent: 42, downloaded: 42_000_000, total: 100_000_000 }));
+    expect(host.querySelector('progress')?.value).toBe(42);
+    expect(host.textContent).toContain('42%');
+    expect(host.textContent).toContain('42.0 MB of 100.0 MB');
+    expect(host.querySelector('button')?.textContent).toBe('Downloading…');
+    expect(host.querySelector('button')?.disabled).toBe(true);
+    await act(async () => setDesktopUpdateStatus({ ...state, phase: 'staging' }));
+    expect(host.querySelector('progress')).toBeNull();
+  } finally { act(() => root.unmount()); delete window.electronAPI; }
+});
