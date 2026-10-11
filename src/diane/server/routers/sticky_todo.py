@@ -183,7 +183,8 @@ async def dispatch(body: Dispatch, request: Request):
         thread.messages.append(ChatMessage(id="todo-result", role="assistant", content="",
             task_run_ref=TaskRunRef(task_id=ref.get("task_id"), run_id=record["run_id"], status="queued", workspace_id=project.id, workspace_root=project.root)))
         chats.save_thread(thread, auto_title=False)
-        record["phase"] = "submitted"
+        # Keep admission recoverable until the runtime accepts execution. A crash
+        # here must surface attention instead of a permanently queued receipt.
         write(path, record)
         execution = defaults.execute.model_copy(update={"background": True})
         try:
@@ -192,6 +193,8 @@ async def dispatch(body: Dispatch, request: Request):
             record["phase"] = "prepared"
             write(path, record)
             raise
+        record["phase"] = "submitted"
+        write(path, record)
         return status(request, record)
 
 

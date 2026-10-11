@@ -141,3 +141,23 @@ def test_followup_in_diane_updates_same_link_and_stops_current_run(handoff):
     client.post('/api/sticky-todo/requests/' + payload['request_id'] + '/stop')
     assert app.state.chat_v2_store.get_run(run_id).metadata['stop_requested']
     assert not app.state.chat_v2_store.get_run(first['run_id']).metadata.get('stop_requested')
+
+
+def test_receipt_stays_prepared_until_execution_is_accepted(handoff, monkeypatch):
+    """A crash before the runtime accepts a request must not leave it queued."""
+    client, app, _, _ = handoff
+    payload = body()
+
+    async def accept(run_id, execute, request):
+        receipt = module.read(app.state.chat_store.base_dir / "sticky_todo" / f"{payload['request_id']}.json")
+        assert receipt["phase"] == "prepared"
+        assert receipt["run_id"] == run_id
+        assert module.status(request, receipt)["status"] == "attention"
+        app.state.chat_v2_store.record_agent_event(AgentRunEvent(type="worker_started", run_id=run_id, summary="Working"))
+
+    monkeypatch.setattr(module, "execute_agent_run", accept)
+    response = client.post("/api/sticky-todo/requests", json=payload)
+    assert response.status_code == 200
+    assert response.json()["status"] == "running"
+    receipt = module.read(app.state.chat_store.base_dir / "sticky_todo" / f"{payload['request_id']}.json")
+    assert receipt["phase"] == "submitted"

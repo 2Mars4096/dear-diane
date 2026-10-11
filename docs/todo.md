@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Close Sticky Todo pre-execution receipt crash window during merge review — [plan](plans/8-sticky-todo-handoff.md).
+
 - [x] Implement and test local Sticky Todo handoff in an isolated branch: project/profile inheritance, durable dispatch, status/stop, desktop session opening — [plan](plans/8-sticky-todo-handoff.md).
 - [ ] Integrate the Todo companion and run installed-app acceptance when existing Diane work is idle.
 - [x] Guard OCR selection in line gaps and remove the delayed zoom-position/canvas-size step — [reader](UI-plans/3-reader-and-side-panel.md). Installed/reopened and health-verified.

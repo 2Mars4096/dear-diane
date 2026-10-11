@@ -25,3 +25,6 @@
 - TypeScript frontend/Electron checks, Vite production build and bundle budgets pass.
 - Background test uses real V2 scheduling with a deterministic backend. Credentials and production runs are untouched.
 - Worktree `/private/tmp/diane-sticky-handoff`, branch `feat/sticky-todo-handoff`; companion `/private/tmp/todo-sticky-diane`.
+
+## Merge review, October 11
+- [x] Keep the receipt prepared until execution is accepted so an interrupted admission offers recovery rather than remaining queued. Added a regression that inspects durable state at runtime handoff.

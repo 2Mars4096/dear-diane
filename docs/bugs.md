@@ -1,4 +1,5 @@
 # Known Issues & Failed Approaches
+- **Fixed during Sticky Todo merge review, October 11:** marking a receipt submitted before execution acceptance could strand a queued request after a process crash. Persist prepared state through admission; mark submitted only after acceptance, with a regression at the handoff boundary.
 
 - **Sticky Todo handoff 2026-10-10:** project/profile selection is renderer-owned, so raw backend admission cannot inherit it. Publish the existing composer payload from the focused desktop window; inactive windows must not overwrite the default project.
 - **Handoff validation:** worktree dependency links need local Vite/TypeScript cache directories; use installed Node 22. Python project venv lacks pytest; installed Anaconda pytest runs the backend tests. A first test/build invocation used the root instead of `editor`; corrected. Installed-app/authenticated acceptance remains pending to preserve ongoing work.

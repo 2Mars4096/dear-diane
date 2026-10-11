@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-10-11
+- [fix] Keep Sticky Todo admission prepared until runtime acceptance; a crash before scheduling now offers attention instead of leaving a submitted/queued receipt. Add durable-handoff regression coverage.
+
 ## 2026-10-10
 
 - [feat] Add local Sticky Todo handoff using existing project folders, composer execution defaults, V2 background runs, durable sessions, and scoped stop. Native Open in Diane resolves a receipt to the existing session; all follow-up stays in Diane.
