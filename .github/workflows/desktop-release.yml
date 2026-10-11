@@ -84,7 +84,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
           ref: ${{ needs.build.outputs.commit }}
+          path: release-source
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -92,6 +96,7 @@ jobs:
           cache-dependency-path: editor/package-lock.json
       - run: npm ci --ignore-scripts
         working-directory: editor
+      - run: node --test editor/scripts/publish-mac-release.test.cjs
       - uses: actions/download-artifact@v4
         with:
           name: mac-release
@@ -101,4 +106,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.build.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
-        run: node editor/scripts/publish-mac-release.cjs release-upload "docs/releases/$RELEASE_TAG.md" "$RELEASE_COMMIT"
+        run: node editor/scripts/publish-mac-release.cjs release-upload "release-source/docs/releases/$RELEASE_TAG.md" "$RELEASE_COMMIT"

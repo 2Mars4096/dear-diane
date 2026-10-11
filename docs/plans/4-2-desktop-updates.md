@@ -67,3 +67,6 @@ Release scope remains the desktop shell for existing configured Python-backend i
 - [x] Add manual dispatch for an existing tag after the initial push produced zero runs; propagate the resolved source SHA into publication.
 
 - [x] Add automatic workflow-change push trigger on main; resolve the package-version tag and build that immutable source without operator dispatch.
+
+- [x] Confirm remote Mac build/tests/package succeeded; improve suppressed publication diagnostics and use canonical repository for automatic retry.
+- [ ] Confirm corrected publication succeeds.

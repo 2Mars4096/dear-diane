@@ -7,11 +7,11 @@ const crypto = require('node:crypto');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, 'publish-mac-release.cjs'), 'utf8');
 const commit = 'a'.repeat(40);
-function exercise({ existing, tagCommit = commit, corrupt = false, missingAsset = false, tag = 'v0.1.1' } = {}) {
+function exercise({ existing, tagCommit = commit, corrupt = false, missingAsset = false, tag = 'v0.1.1', apiError = '' } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'diane-publish-test-'));
   const calls = [];
   const errors = [];
-  const proc = { argv: ['node', 'script', dir, path.join(dir, 'notes.md'), commit], env: { RELEASE_TAG: tag } };
+  const proc = { argv: ['node', 'script', dir, path.join(dir, 'notes.md'), commit], env: { RELEASE_TAG: tag, GH_TOKEN: 'test-sensitive-token', GITHUB_REPOSITORY: '2Mars4096/dear-diane' } };
   try {
     const bytes = Buffer.from('release fixture');
     const asset = { url: 'Dear-Diane-0.1.1-mac-arm64.zip', size: bytes.length, sha512: crypto.createHash('sha512').update(bytes).digest('base64') };
@@ -21,6 +21,7 @@ function exercise({ existing, tagCommit = commit, corrupt = false, missingAsset 
     let uploaded = false;
     const mockRequire = name => name === 'node:child_process' ? { execFileSync: (_file, args) => {
       calls.push(args);
+      if (apiError) { const error = new Error("API failed"); error.stderr = apiError; throw error; }
       if (args[0] === 'api' && args[1].endsWith(`/commits/${tag}`)) return tagCommit;
       if (args[0] === 'api' && args[1].includes('/releases/tags/')) {
         if (uploaded) return JSON.stringify({ assets: missingAsset ? [] : [asset.url, 'latest-mac.yml'].map(name => ({ name, size: fs.statSync(path.join(dir, name)).size })) });
@@ -62,4 +63,12 @@ test('rejects a tag pointing to different source before uploading', () => {
 });
 test('leaves incomplete upload unpublished', () => {
   const result = exercise({ missingAsset: true }); assert.equal(result.failed, true); assert.equal(published(result), false);
+});
+
+test('reports operation and error without exposing the GitHub token', () => {
+  const result = exercise({ apiError: 'HTTP 403 denied test-sensitive-token' });
+  assert.equal(result.failed, true);
+  assert.ok(result.errors.join(' ').includes('HTTP 403'));
+  assert.ok(result.errors.join(' ').includes('GET repos/2Mars4096/dear-diane/commits/'));
+  assert.equal(result.errors.join(' ').includes('test-sensitive-token'), false);
 });

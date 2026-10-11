@@ -23,9 +23,14 @@ for (const file of manifest.files) {
   if (fs.existsSync(filename + '.blockmap')) files.push(filename + '.blockmap');
 }
 fs.accessSync(notes);
-const repo = '2Mars4096/deep-agent-network';
+const repo = process.env.GITHUB_REPOSITORY || '2Mars4096/dear-diane';
+if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw Error('Invalid release repository.');
 const tag = `v${manifest.version}`;
-const gh = args => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+let operation = '';
+const gh = args => {
+  operation = args[0] === 'api' ? `GET ${args[1]}` : args.slice(0, 2).join(' ');
+  return execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+};
 try {
   // Read-only auth/source checks happen before any remote mutation.
   gh(['api', `repos/${repo}/commits/${commit}`]);
@@ -50,6 +55,10 @@ try {
   console.log(`Published https://github.com/${repo}/releases/tag/${tag}`);
 } catch (error) {
   // Do not echo subprocess command/environment dumps.
-  console.error(error.stderr ? 'GitHub could not complete publishing. Check authentication and repository access. Any created draft remains unpublished.' : error.message);
+  let detail = String(error.stderr || error.message);
+  for (const secret of [process.env.GH_TOKEN, process.env.GITHUB_TOKEN].filter(Boolean)) detail = detail.split(secret).join('[redacted]');
+  detail = detail.replace(/(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)/g, '[redacted]');
+  console.error(`Publishing failed during ${operation}: ${detail.slice(0, 2000)}`);
+  console.error('Any created draft remains unpublished.');
   process.exitCode = 1;
 }
