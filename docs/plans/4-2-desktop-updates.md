@@ -107,5 +107,5 @@ Release scope remains the desktop shell for existing configured Python-backend i
 - [x] Fourteen UI/IPC tests cover one-click success, download failure, initially active work, and work starting during download.
 
 ## 0.1.3 release
-- [ ] Validate combined updater and Sticky Todo changes, commit and reconcile main.
+- [x] Validate combined updater and Sticky Todo changes, commit and reconcile main: 28 desktop/updater tests, ten publisher tests and 20 Python tests pass; production build/budgets and Electron compilation pass.
 - [ ] Push v0.1.3 and verify published installer/update manifest.

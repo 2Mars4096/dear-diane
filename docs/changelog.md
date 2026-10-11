@@ -1,7 +1,7 @@
 # Changelog
 
 ## 2026-10-11
-- [infra] Prepare 0.1.3 with single-click update installation and Diane-side Sticky Todo handoff; reconcile local feature commits with published release history. Paired Todo acceptance remains pending.
+- [infra] Prepare 0.1.3 with single-click update installation and Diane-side Sticky Todo handoff; reconcile local feature commits with published release history. All 58 focused tests, production build/budgets and Electron compilation pass. Paired Todo acceptance remains pending.
 
 ## 2026-10-11
 - [fix] Make Download and install a single main-process operation that downloads, stages, installs, and restarts without another click. Keep Check for updates when none is detected, progress labels while busy, idle checks before/after download, and no restart on failure. Fourteen UI/IPC tests pass.
