@@ -1,0 +1,109 @@
+name: Desktop release
+
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+    paths: ['.github/workflows/desktop-release.yml']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing version tag to build and publish'
+        required: true
+        default: 'v0.1.1'
+        type: string
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      tag: ${{ steps.source.outputs.tag }}
+    defaults:
+      run:
+        working-directory: editor
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editor/package-lock.json
+      - name: Select immutable release source
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
+        run: |
+          RELEASE_TAG="${REQUESTED_TAG:-$(node -p '"v" + require("./package.json").version')}"
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a stable version tag" >&2
+            exit 1
+          fi
+          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          git checkout --detach "refs/tags/$RELEASE_TAG"
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+      - name: Validate release tag and runner
+        id: source
+        run: |
+          node -e 'const p = require("./package.json"); if (process.env.RELEASE_TAG !== `v${p.version}` || !/^\d+\.\d+\.\d+$/.test(p.version) || process.arch !== "arm64") process.exit(1)'
+          test -f "../docs/releases/$RELEASE_TAG.md"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+      - run: npm ci
+      - run: node --test scripts/publish-mac-release.test.cjs
+      - name: Test updater
+        run: npm test -- src/__tests__/desktopUpdateIPC.test.ts src/__tests__/releaseBundle.test.ts src/__tests__/updateSchedule.test.ts src/__tests__/desktopUpdates.test.ts src/__tests__/backendLaunch.test.ts src/components/workbench/__tests__/DesktopUpdates.test.ts
+      - name: Build and verify Mac release
+        run: npm run dist:mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-release
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            editor/release/*.zip
+            editor/release/*.dmg
+            editor/release/*.blockmap
+            editor/release/latest-mac.yml
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          path: release-source
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editor/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: editor
+      - run: node --test editor/scripts/publish-mac-release.test.cjs
+      - uses: actions/download-artifact@v4
+        with:
+          name: mac-release
+          path: release-upload
+      - name: Verify draft assets and publish existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+        run: node editor/scripts/publish-mac-release.cjs release-upload "release-source/docs/releases/$RELEASE_TAG.md" "$RELEASE_COMMIT"

@@ -20,7 +20,7 @@ export function textSelection(text: string, start: number, end: number): ReaderD
   const anchor = createTextAnchor(text, positions.indexOf(start), positions.indexOf(end - 1) + 1);
   return anchor ? { quote: anchor.quote, pageNumber: 1, rotation: 0, rects: [], anchor: { ...anchor, pageFingerprint: fingerprintText(text) } } : null;
 }
-function anchorRange(element: HTMLElement, anchor: NonNullable<ReaderDraft['anchor']>) {
+export function anchorRange(element: HTMLElement, anchor: NonNullable<ReaderDraft['anchor']>) {
   const result = resolveTextAnchor(element.textContent || '', anchor);
   if (result.status === 'missing') return null;
   const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);

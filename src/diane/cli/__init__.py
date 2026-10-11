@@ -28,9 +28,16 @@ def _safe_current_directory() -> str:
 def load_env() -> None:
     """Load .env file if present (same pattern as diane.server.app)."""
     try:
-        from dotenv import load_dotenv
+        from dotenv import load_dotenv, find_dotenv
 
-        load_dotenv()
+        env_file = find_dotenv()
+        load_dotenv(env_file)
+        from diane.native_workers.linked_credentials import publish_locations
+        try:
+            publish_locations(env_file)
+        except OSError:
+            # Linked-app discovery must not prevent Diane from starting.
+            pass
     except ImportError:
         pass
 

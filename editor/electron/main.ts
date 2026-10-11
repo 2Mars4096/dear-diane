@@ -161,6 +161,7 @@ async function startBackend(): Promise<void> {
   const danServe = process.env.DAN_SERVE_CMD;
   const graphsDir = process.env.DAN_GRAPHS_DIR || getPersistentGraphsDir();
   const env = buildBackendLaunchEnv({ env: process.env, graphsDir });
+  env.DAN_DESKTOP_LINKED_CREDENTIALS = "1";
   const backendGraphsDir = env.DAN_GRAPHS_DIR || graphsDir;
   const workspaceRoot = env.DAN_WORKSPACE_ROOT || path.dirname(backendGraphsDir);
   fs.mkdirSync(backendGraphsDir, { recursive: true });

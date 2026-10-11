@@ -4,7 +4,7 @@ import { currentOcrPages } from "./lib/ocr-layout";
 import type { ComposerAttachmentDraft } from "../../lib/composerAttachments";
 import { selectionImage } from "./lib/selection-image";
 import { prepareAttachments } from "../../lib/attachFiles";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Download, MessageSquareQuote, ScanText } from "lucide-react";
 import type { PDFDocumentProxy } from "pdfjs-dist/types/src/pdf";
 import { InteractivePdfViewer } from "./InteractivePdfViewer";
@@ -16,7 +16,7 @@ import { extractPageTexts, ocrPage, ocrPageText, sparsePages } from "./lib/ocr-r
 import { rectsForQuote } from "./lib/text-layer";
 
 export type ReaderFile = { name: string; path: string; url: string };
-export type ReaderAsk = { attachment?: ComposerAttachmentDraft; quote: string; pageNumber: number; pageText: string; file: ReaderFile; anchor?: PaperCommentAnchor | null };
+export type ReaderAsk = { locationLabel?: string; attachment?: ComposerAttachmentDraft; quote: string; pageNumber: number; pageText: string; file: ReaderFile; anchor?: PaperCommentAnchor | null };
 
 const PAGE_CONTEXT_LIMIT = 6000;
 type OcrState = { status: "idle" | "checking" | "running" | "done" | "error"; done: number; total: number; message?: string };
@@ -26,7 +26,12 @@ type OcrState = { status: "idle" | "checking" | "running" | "done" | "error"; do
  * questions go to the side chat, comments stay as anchored highlights on the page.
  * Scanned pages get an OCR text layer; comments export as standard PDF highlights.
  */
-export function ReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: (ask: ReaderAsk) => void; onNotes: () => void }) {
+const EpubReader = lazy(() => import("./EpubReader"));
+export function ReaderView(props: { file: ReaderFile; onAsk: (ask: ReaderAsk) => void; onNotes: () => void }) {
+  return /\.epub$/i.test(props.file.name) ? <Suspense fallback={<p role="status">Opening EPUB…</p>}><EpubReader key={props.file.path} {...props} /></Suspense> : <PdfReaderView {...props} />;
+}
+
+function PdfReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: (ask: ReaderAsk) => void; onNotes: () => void }) {
   const root = useRef<HTMLDivElement>(null);
   const { comments, draft, stale, focus: commentFocus } = useReaderState(file.path);
   const [pageNumber, setPageNumber] = useState(1);

@@ -2,18 +2,21 @@ import { afterEach, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-const mocks = vi.hoisted(() => ({ handlers: new Map<string, (...args: any[]) => any>(), events: new Map<string, (...args: any[]) => any>(), quit: vi.fn(), install: vi.fn(), idle: vi.fn(), check: vi.fn(), download: vi.fn(), prepare: vi.fn() }));
-vi.mock("electron", () => ({ app: { getPath: () => "/tmp/dan-update-ipc", getVersion: () => "1.0.0", isPackaged: true, quit: mocks.quit, once: vi.fn() }, ipcMain: { handle: (name: string, fn: (...args: any[]) => any) => mocks.handlers.set(name, fn) }, dialog: {} }));
-vi.mock("electron-updater", () => ({ autoUpdater: { on: (name: string, fn: (...args: any[]) => any) => mocks.events.set(name, fn), checkForUpdates: mocks.check, downloadUpdate: mocks.download, setFeedURL: vi.fn(), quitAndInstall: mocks.install } }));
+const mocks = vi.hoisted(() => ({ handlers: new Map<string, (...args: any[]) => any>(), events: new Map<string, (...args: any[]) => any>(), quit: vi.fn(), install: vi.fn(), idle: vi.fn(), check: vi.fn(), download: vi.fn(), prepare: vi.fn(), stageRelease: vi.fn(), feed: vi.fn() }));
+vi.mock("electron", () => ({ app: { getPath: () => "/tmp/dan-update-ipc", getVersion: () => "1.0.0", isPackaged: true, quit: mocks.quit, once: vi.fn(), on: vi.fn(), removeListener: vi.fn() }, ipcMain: { handle: (name: string, fn: (...args: any[]) => any) => mocks.handlers.set(name, fn) }, dialog: {} }));
+vi.mock("electron-updater", () => ({ autoUpdater: { on: (name: string, fn: (...args: any[]) => any) => mocks.events.set(name, fn), checkForUpdates: mocks.check, downloadUpdate: mocks.download, setFeedURL: mocks.feed, quitAndInstall: mocks.install } }));
 vi.mock("../../electron/localUpdate", () => ({ assertNoActiveWork: mocks.idle, stageBundle: mocks.prepare }));
 vi.mock("../../electron/githubAuth", () => ({
   githubRelease: { provider: "github", owner: "owner", repo: "private" },
-  GitHubAuth: class { state = { status: "connected", login: "tester", code: "", message: "" }; refresh = vi.fn(); cancel = vi.fn(); start = vi.fn(); token = vi.fn().mockResolvedValue("test-secret"); },
+  GitHubAuth: class { constructor() { throw new Error("Update checks must not access GitHub credentials"); } },
 }));
+vi.mock("../../electron/releaseBundle", () => ({ stagePublishedMacBundle: mocks.stageRelease }));
 import { registerDesktopUpdates } from "../../electron/desktopUpdates";
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 it("restricts update IPC to the main window, separates download from install, and blocks busy runs", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "dan-update-feed-"));
+  const previousPlatform = process.platform;
+  Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
   const previous = (process as any).resourcesPath;
   Object.defineProperty(process, "resourcesPath", { configurable: true, value: root });
   try {
@@ -25,6 +28,7 @@ it("restricts update IPC to the main window, separates download from install, an
     await expect(action({ ...event, senderFrame: {} }, "install")).rejects.toThrow("Untrusted");
     mocks.check.mockImplementation(async () => mocks.events.get("update-available")!({ version: "2.0.0" }));
     expect((await action(event, "check")).phase).toBe("available");
+    expect(mocks.feed).toHaveBeenLastCalledWith({ provider: "github", owner: "2Mars4096", repo: "dear-diane", private: false });
     expect(mocks.download).not.toHaveBeenCalled();
     mocks.download.mockImplementation(async () => mocks.events.get("update-downloaded")!({ version: "2.0.0" }));
     expect((await action(event, "download")).phase).toBe("ready");
@@ -34,9 +38,10 @@ it("restricts update IPC to the main window, separates download from install, an
     expect(mocks.install).not.toHaveBeenCalled();
     mocks.idle.mockResolvedValue(undefined); vi.useFakeTimers();
     expect((await action(event, "install")).phase).toBe("installing");
-    vi.runAllTimers(); expect(mocks.install).toHaveBeenCalledWith(false, true);
+    vi.advanceTimersByTime(300); expect(mocks.install).toHaveBeenCalledWith(false, true);
   } finally {
     Object.defineProperty(process, "resourcesPath", { configurable: true, value: previous });
+    Object.defineProperty(process, "platform", { configurable: true, value: previousPlatform });
     await fs.rm(root, { recursive: true, force: true });
   }
 });
@@ -48,3 +53,78 @@ it("checks active work before preparing an automatically found local build", asy
   const result=await mocks.handlers.get("updates:action")!({sender:contents,senderFrame:frame},"install-local");
   expect(result.message).toBe("Finish active work");expect(mocks.prepare).not.toHaveBeenCalled();
 });
+
+
+it("stages Mac release ZIPs before advertising install readiness and retains failures", async () => {
+  const previousPlatform = process.platform;
+  Object.defineProperty(process, "platform", { configurable: true, value: "darwin" });
+  try {
+    const frame = {}, contents = { mainFrame: frame };
+    registerDesktopUpdates({ window: () => ({ webContents: contents }) as any, graphs: () => "/tmp/graphs", backend: () => ({ owned: true }) });
+    const event = { sender: contents, senderFrame: frame };
+    mocks.events.get("update-available")!({ version: "2.0.0" });
+    mocks.stageRelease.mockResolvedValueOnce({ staged: "/tmp/staged.app", version: "2.0.0" });
+    mocks.download.mockImplementation(async () => mocks.events.get("update-downloaded")!({ version: "2.0.0", downloadedFile: "/tmp/release.zip" }));
+    expect((await mocks.handlers.get("updates:action")!(event, "download")).phase).toBe("ready");
+    expect(mocks.stageRelease).toHaveBeenCalledWith("/tmp/release.zip", expect.any(String), expect.any(String), "2.0.0");
+    registerDesktopUpdates({ window: () => ({ webContents: contents }) as any, graphs: () => "/tmp/graphs", backend: () => ({ owned: true }) });
+    mocks.events.get("update-available")!({ version: "2.0.0" });
+    mocks.stageRelease.mockRejectedValueOnce(Error("The downloaded app version does not match its release."));
+    expect((await mocks.handlers.get("updates:action")!(event, "download")).phase).toBe("error");
+  } finally { Object.defineProperty(process, "platform", { configurable: true, value: previousPlatform }); }
+});
+
+it('checks after startup and every fifteen minutes without opening Settings or downloading', async () => {
+  Object.defineProperty(process, 'resourcesPath', { configurable: true, value: '/tmp/test-resources' });
+  vi.useFakeTimers();
+  vi.spyOn(fs, 'access').mockResolvedValue(undefined);
+  mocks.check.mockReset().mockResolvedValue(undefined);
+  mocks.download.mockClear();
+  registerDesktopUpdates({ window: () => null, graphs: () => '/tmp/graphs', backend: () => ({ owned: true }) });
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(mocks.check).toHaveBeenCalledTimes(1);
+  expect(mocks.feed).toHaveBeenLastCalledWith({ provider: "github", owner: "2Mars4096", repo: "dear-diane", private: false });
+  await vi.advanceTimersByTimeAsync(15 * 60 * 1000);
+  expect(mocks.check).toHaveBeenCalledTimes(2);
+  mocks.events.get('update-available')!({ version: '2.0.0' });
+  await vi.advanceTimersByTimeAsync(15 * 60 * 1000);
+  expect(mocks.check).toHaveBeenCalledTimes(2);
+  expect(mocks.download).not.toHaveBeenCalled();
+});
+
+it.each(['success', 'download-failure', 'work-started-during-download', 'already-busy'])(
+  'download-and-install handles %s without a second renderer action', async scenario => {
+    const previousPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'linux' });
+    vi.useFakeTimers();
+    mocks.install.mockClear();
+    mocks.idle.mockReset().mockResolvedValue(undefined);
+    mocks.download.mockReset();
+    try {
+      const frame = {}, contents = { mainFrame: frame };
+      registerDesktopUpdates({ window: () => ({ webContents: contents }) as any, graphs: () => '/tmp/graphs', backend: () => ({ owned: true }) });
+      const event = { sender: contents, senderFrame: frame };
+      mocks.events.get('update-available')!({ version: '2.0.0' });
+      if (scenario === 'already-busy') mocks.idle.mockRejectedValueOnce(Error('Finish active work'));
+      mocks.download.mockImplementation(async () => {
+        if (scenario === 'download-failure') throw Error('Network unavailable');
+        mocks.events.get('update-downloaded')!({ version: '2.0.0' });
+        if (scenario === 'work-started-during-download') mocks.idle.mockRejectedValueOnce(Error('Finish active work'));
+      });
+      const result = await mocks.handlers.get('updates:action')!(event, 'download-install');
+      vi.advanceTimersByTime(300);
+      if (scenario === 'success') {
+        expect(result.phase).toBe('installing');
+        expect(mocks.idle).toHaveBeenCalledTimes(2);
+        expect(mocks.install).toHaveBeenCalledExactlyOnceWith(false, true);
+      } else {
+        expect(mocks.install).not.toHaveBeenCalled();
+        if (scenario === 'work-started-during-download') {
+          expect(result.phase).toBe('ready');
+          expect(result.message).toBe('Finish active work');
+        }
+        if (scenario === 'already-busy') expect(mocks.download).not.toHaveBeenCalled();
+      }
+    } finally { Object.defineProperty(process, 'platform', { configurable: true, value: previousPlatform }); }
+  },
+);

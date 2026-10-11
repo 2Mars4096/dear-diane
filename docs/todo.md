@@ -1,9 +1,25 @@
 # Todo
 
+- [x] Use Check when no update is known and one-click Download and install with automatic restart when available; local builds stay under Update options — [4-2](plans/4-2-desktop-updates.md).
+
+- [x] Remove the merged Sticky Todo worktree; retain its branch — [plan](plans/8-sticky-todo-handoff.md).
+
 - [x] Close Sticky Todo pre-execution receipt crash window during merge review — [plan](plans/8-sticky-todo-handoff.md).
 
-- [x] Implement and test local Sticky Todo handoff in an isolated branch: project/profile inheritance, durable dispatch, status/stop, desktop session opening — [plan](plans/8-sticky-todo-handoff.md).
+- [x] Merge and test local Sticky Todo handoff on main: project/profile inheritance, durable dispatch, status/stop, desktop session opening — [plan](plans/8-sticky-todo-handoff.md).
 - [ ] Integrate the Todo companion and run installed-app acceptance when existing Diane work is idle.
+
+- [x] Publish combined 0.1.2 (EPUB, Settings redesign, anonymous updates, README); 224 frontend and nine publisher tests plus build/budgets pass — [desktop updates](plans/4-2-desktop-updates.md).
+
+- [x] Remove update sign-in and use the public release feed; rewrite README for setup/use without personal or internal operational details — [4-2](plans/4-2-desktop-updates.md). Public-release download and installed-client acceptance remain pending.
+
+- [x] Review Settings against OpenAI, Claude Code, and OpenCode organization/rows — [UI findings](UI-plans/1-work-notes-gui.md#settings-review-2026-10-11).
+- [x] Apply Settings category navigation and consistent compact rows; browser-fixture acceptance complete — [UI review](UI-plans/1-work-notes-gui.md#settings-review-2026-10-11).
+
+- [x] [Linked-app credential fallback](plans/4-15-shared-provider-accounts.md): Todo reads Diane keys first, then its own; .env and Keychain unchanged.
+- [ ] [Published desktop updates](plans/4-2-desktop-updates.md): 15-minute checks/dots and Mac archive staging implemented; publish 0.1.1 through GitHub Actions using existing Git SSH access; local 0.1.1 bootstrap installed and health-verified; verify the remote run and private-feed access.
+- [x] EPUB reading with PDF-equivalent reading tools — [reader](UI-plans/3-reader-and-side-panel.md).
+- IC-045: Possible Tauri migration is deferred in the [idea cart](../.agents/idea-cart.md); current Electron works well. Preserve feature/data parity if revisited; not committed work.
 - [x] Guard OCR selection in line gaps and remove the delayed zoom-position/canvas-size step — [reader](UI-plans/3-reader-and-side-panel.md). Installed/reopened and health-verified.
 - [x] Default sidebar/Reading input to two lines while retaining automatic growth — [reader](UI-plans/3-reader-and-side-panel.md). Installed/reopened; signature/archive equality and backend health verified.
 - [x] Match sidebar/Reading composer controls to Work, isolate worker settings, fix request validation, and include whole-file context — [reader](UI-plans/3-reader-and-side-panel.md). Installed/reopened; signature/archive equality and direct/proxy health verified.

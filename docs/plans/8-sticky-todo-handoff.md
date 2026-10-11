@@ -10,7 +10,8 @@
 - [x] Open the linked session in a desktop window through a bounded native-only route.
 - [x] Follow the session's latest run when the user continues in Diane.
 - [x] Verify protocol, background execution, restart, duplicate requests, stop acknowledgement, session continuity, desktop routing, types, build and bundle budgets.
-- [ ] Integrate companion branches and run installed-app acceptance while existing work is idle.
+- [x] Merge the Diane handoff branch into local main, preserving the existing uncommitted workspace changes.
+- [ ] Integrate the matching Todo companion branch and run paired installed-app acceptance while existing work is idle.
 
 ## Decisions
 - Reuse the existing project store and composer profile builder; no independent task runtime, credential store, or model picker.
@@ -28,3 +29,7 @@
 
 ## Merge review, October 11
 - [x] Keep the receipt prepared until execution is accepted so an interrupted admission offers recovery rather than remaining queued. Added a regression that inspects durable state at runtime handoff.
+
+- Merged through `e0f97750` on October 11. Combined main/workspace validation: 18 Python handoff/session tests, two desktop routing tests, frontend production build/budgets, and Electron compilation pass. No push, app installation, or worktree removal performed.
+
+- [x] Remove the clean, merged Sticky Todo worktree at user request on October 11; retain the feature branch. Four worktrees remain, including main.

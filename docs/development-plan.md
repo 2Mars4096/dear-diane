@@ -2,7 +2,7 @@
 
 ## Local Task Intake
 
-- [Sticky Todo handoff](plans/8-sticky-todo-handoff.md) is implemented and tested in an isolated companion branch. Todo dispatches; Diane owns projects, sessions, decisions and execution. Paired deployment/live acceptance is pending.
+- [Sticky Todo handoff](plans/8-sticky-todo-handoff.md) is implemented, tested, and merged into local main. Todo dispatches; Diane owns projects, sessions, decisions and execution. Paired deployment/live acceptance is pending.
 
 ## Product naming
 

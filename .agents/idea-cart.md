@@ -1,6 +1,6 @@
 # Idea Cart
 
-Last reviewed: 2026-10-02
+Last reviewed: 2026-10-10
 
 ## Priority and expected gain
 
@@ -23,6 +23,18 @@ Review notes:
 - IC-026 remains low priority for near-term work. IC-028 retains high priority as a conditional gate.
 
 ## Active Items
+
+### IC-045 - Consider Tauri only if Electron becomes a limitation
+- Status: carted
+- Priority: low
+- Kind: idea
+- Scope: desktop shell
+- Point: Keep Electron for now; revisit Tauri only if a concrete benefit justifies migration, since the current Electron app works well for the user.
+- Why: Potentially reduce desktop packaging overhead without sacrificing existing features or workflows.
+- Constraints: Preserve all user-visible features, behavior, and existing data; parity is a requirement to verify, not an established migration result. No migration or implementation is authorized by this capture.
+- Checkout target: desktop-shell feasibility assessment if selected later.
+- Acceptance: Inventory Electron/Node integrations, assess Tauri equivalents and backend packaging, and verify workflow/data parity and rendering on target platforms before deciding whether to migrate.
+- Source: 2026-10-10 discussion; user explicitly deferred the idea because Electron works fine.
 
 ### IC-043 - Configurable panes with one shared composer
 - Status: carted

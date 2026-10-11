@@ -12,7 +12,16 @@ export type PdfSelectionRect = {
   width: number;
 };
 
+export type EpubLocation = { cfi: string; href: string; label: string };
+export function cleanEpubLocation(value: unknown): EpubLocation | undefined {
+  if (!value || typeof value !== "object") return;
+  const v = value as Record<string, unknown>;
+  if (typeof v.cfi !== "string" || !/^epubcfi\(.+\)$/.test(v.cfi) || v.cfi.length > 4000 || typeof v.href !== "string" || typeof v.label !== "string") return;
+  return { cfi: v.cfi, href: v.href.slice(0, 2000), label: v.label.slice(0, 200) };
+}
+
 export type PdfSelectionAnchor = {
+  epub?: EpubLocation;
   kind?: "text" | "area";
   quoteSource?: "vision";
   quoteStatus?: "pending" | "deferred";
@@ -138,12 +147,13 @@ export function normalizePaperComments(
       : [];
     const createdAt = cleanDate(record.createdAt);
     const updatedAt = cleanDate(record.updatedAt);
-    if (!commentId || !quote || !pageNumber || (!rects.length && !cleanAnchor(record.anchor)) || !createdAt || !updatedAt) {
+    if (!commentId || !quote || !pageNumber || (!rects.length && !cleanAnchor(record.anchor) && !cleanEpubLocation(record.epub)) || !createdAt || !updatedAt) {
       return [];
     }
     const anchor = cleanAnchor(record.anchor);
     return [{
       ...(anchor ? { anchor } : {}),
+      ...(cleanEpubLocation(record.epub) ? { epub: cleanEpubLocation(record.epub) } : {}),
       ...(["pending", "deferred"].includes(String(record.quoteStatus)) ? { quoteStatus: record.quoteStatus as "pending" | "deferred" } : {}),
       ...(typeof record.originalQuote === 'string' ? { originalQuote: record.originalQuote.slice(0, 700) } : {}),
       ...(record.quoteSource === "vision" ? { quoteSource: "vision" as const, quoteModel: String(record.quoteModel ?? '').slice(0, 100) } : {}),
