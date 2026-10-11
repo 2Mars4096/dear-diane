@@ -1,5 +1,9 @@
 # Todo
 
+- [x] Commit, push and publish v0.1.3 with one-click updates and Diane-side Sticky Todo handoff; verify public updater assets — [release](plans/4-2-desktop-updates.md).
+
+- [x] Move old Diane rollback backups to Trash; preserve installed/staged apps — [4-2](plans/4-2-desktop-updates.md).
+
 - [x] Use Check when no update is known and one-click Download and install with automatic restart when available; local builds stay under Update options — [4-2](plans/4-2-desktop-updates.md).
 
 - [x] Remove the merged Sticky Todo worktree; retain its branch — [plan](plans/8-sticky-todo-handoff.md).

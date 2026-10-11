@@ -46,3 +46,7 @@ The user supplied `https://github.com/2Mars4096/dear-diane`. An anonymous reposi
 ## Published 0.1.2
 
 [Version 0.1.2](https://github.com/2Mars4096/dear-diane/releases/tag/v0.1.2) is published, confirmed non-draft with installer and updater assets. [Run 38133765309](https://github.com/2Mars4096/dear-diane/actions/runs/38133765309) succeeded after draft lookup was corrected. This release includes EPUB, redesigned Settings, anonymous public updates and refreshed documentation. Local installed 0.1.1 was not replaced during publication.
+
+## Published 0.1.3
+
+[Version 0.1.3](https://github.com/2Mars4096/dear-diane/releases/tag/v0.1.3), source `41e5ad31`, is published. Actions run `38135780419` succeeded; all five installer/updater assets and anonymous manifest access are verified. It includes the single download/install action and Diane-side Sticky Todo integration. Companion integration and paired acceptance remain pending. No app reinstall was performed for this release.

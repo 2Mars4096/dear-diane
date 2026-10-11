@@ -1,6 +1,12 @@
 # Changelog
 
 ## 2026-10-11
+- [infra] Publish v0.1.3 (`41e5ad31`): one-click desktop update flow and Diane-side Sticky Todo handoff. 58 focused tests, production build/budgets and Electron compilation pass; Actions run 38135780419 succeeds and anonymous updater manifest is verified. Local/remote main histories reconciled. No app reinstall performed.
+
+## 2026-10-11
+- [infra] Move 13 verified, non-running Diane rollback bundles (about 6.4 GB) from Applications to the macOS user Trash at user request. Preserve the installed app, staged 0.1.2 update, and user data; no Trash emptying.
+
+## 2026-10-11
 - [infra] Prepare 0.1.3 with single-click update installation and Diane-side Sticky Todo handoff; reconcile local feature commits with published release history. All 58 focused tests, production build/budgets and Electron compilation pass. Paired Todo acceptance remains pending.
 
 ## 2026-10-11

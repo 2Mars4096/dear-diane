@@ -108,4 +108,6 @@ Release scope remains the desktop shell for existing configured Python-backend i
 
 ## 0.1.3 release
 - [x] Validate combined updater and Sticky Todo changes, commit and reconcile main: 28 desktop/updater tests, ten publisher tests and 20 Python tests pass; production build/budgets and Electron compilation pass.
-- [ ] Push v0.1.3 and verify published installer/update manifest.
+- [x] Push v0.1.3 (`41e5ad31`) and verify publication: run 38135780419 succeeded; non-draft release includes DMG/ZIP/blockmaps; anonymous manifest confirms 0.1.3.
+
+- [x] Clean up 13 old rollback app bundles to Trash at user request; preserve installed app and staged update. Resolve the real macOS home through the user database because the agent HOME is redirected.
