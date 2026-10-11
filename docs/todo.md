@@ -1,4 +1,7 @@
 # Todo
+
+- [x] [Linked-app credential fallback](plans/4-15-shared-provider-accounts.md): Todo reads Diane keys first, then its own; .env and Keychain unchanged.
+- [ ] [Published desktop updates](plans/4-2-desktop-updates.md): 15-minute checks/dots and Mac archive staging implemented; publish 0.1.1 through GitHub Actions using existing Git SSH access; verify the remote run and installed private-feed access.
 - [x] Guard OCR selection in line gaps and remove the delayed zoom-position/canvas-size step — [reader](UI-plans/3-reader-and-side-panel.md). Installed/reopened and health-verified.
 - [x] Default sidebar/Reading input to two lines while retaining automatic growth — [reader](UI-plans/3-reader-and-side-panel.md). Installed/reopened; signature/archive equality and backend health verified.
 - [x] Match sidebar/Reading composer controls to Work, isolate worker settings, fix request validation, and include whole-file context — [reader](UI-plans/3-reader-and-side-panel.md). Installed/reopened; signature/archive equality and direct/proxy health verified.

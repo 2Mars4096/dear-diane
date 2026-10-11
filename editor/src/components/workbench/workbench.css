@@ -965,3 +965,5 @@
 .wb-reading-list { max-height:42vh; overflow-y:auto; }
 
 .wb-notes-list li[data-active="true"] { background:var(--wb-soft); outline:1px solid var(--wb-accent); outline-offset:3px; border-radius:6px; }
+
+.wb-update-dot { display:inline-block; flex-shrink:0; width:7px; height:7px; margin-left:7px; border-radius:50%; background:var(--wb-accent); vertical-align:middle; }

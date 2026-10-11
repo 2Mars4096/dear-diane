@@ -167,6 +167,7 @@ import MarkdownRenderer from "../shared/MarkdownRenderer";
 
 // Reader (pdf.js) loads on first use so it stays out of the workspace shell chunk.
 const FollowupQueue = lazy(() => import("../workbench/FollowupQueue").then(module => ({ default: module.FollowupQueue })));
+const SettingsUpdateButton = lazy(() => import("../workbench/SettingsUpdateButton").then(module => ({ default: module.SettingsUpdateButton })));
 const DianeSettings = lazy(() => import("../workbench/DianeSettings").then(module => ({ default: module.DianeSettings })));
 const AttachFiles = lazy(() => import("../workbench/AttachFiles"));
 const FileOpener = lazy(() => import("../documents/FileOpener"));
@@ -18361,7 +18362,7 @@ export default function ChunkWorkspaceApp() {
             <div className="wb-panel-heading"><span>Diane</span></div>
             <button className="wb-sidebar-new" onClick={() => { void startNewSession(); setShowConversationChunks(true); setPhonePage("chat"); }}><Plus size={16} />New chat</button>
             <div className="wb-items-host" ref={setRecentSessionHost} />
-            <div className="wb-sidebar-footer"><Suspense fallback={null}><UsagePanel /></Suspense>{sessionShelfScope === "archived" && <><button className="wb-delete-archived" disabled={deletingArchived || !threads.some((thread) => thread.archived)} onClick={() => void deleteAllArchivedSessions()}><Trash2 size={15} />{deletingArchived ? "Deleting archived chats…" : "Delete all archived chats"}</button>{archiveDeleteProgress && <p role="status" className="wb-archive-delete-progress">{archiveDeleteProgress}</p>}</>}<button onClick={() => { setSessionShelfScope(sessionShelfScope === "archived" ? "all" : "archived"); }}><Archive size={15} />{sessionShelfScope === "archived" ? "Back to workspace" : "Archived chats"}</button><button onClick={openSettingsTab}><MoreHorizontal size={15} />Settings</button></div>
+            <div className="wb-sidebar-footer"><Suspense fallback={null}><UsagePanel /></Suspense>{sessionShelfScope === "archived" && <><button className="wb-delete-archived" disabled={deletingArchived || !threads.some((thread) => thread.archived)} onClick={() => void deleteAllArchivedSessions()}><Trash2 size={15} />{deletingArchived ? "Deleting archived chats…" : "Delete all archived chats"}</button>{archiveDeleteProgress && <p role="status" className="wb-archive-delete-progress">{archiveDeleteProgress}</p>}</>}<button onClick={() => { setSessionShelfScope(sessionShelfScope === "archived" ? "all" : "archived"); }}><Archive size={15} />{sessionShelfScope === "archived" ? "Back to workspace" : "Archived chats"}</button><Suspense fallback={<button onClick={openSettingsTab}><MoreHorizontal size={15} />Settings</button>}><SettingsUpdateButton onClick={openSettingsTab} /></Suspense></div>
           </aside>}
           {!isPhoneViewport && !renderFileExplorer && (
             <CollapsedPaneRail

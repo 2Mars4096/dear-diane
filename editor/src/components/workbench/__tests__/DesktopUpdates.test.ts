@@ -58,3 +58,36 @@ it("installs a detected local update without opening the file chooser", async ()
     expect(api.action).not.toHaveBeenCalledWith("choose");
   } finally {act(()=>root.unmount());delete window.electronAPI;}
 });
+
+it('shows and clears update dots on Settings and the update action together', async () => {
+  const { SettingsUpdateButton } = await import('../SettingsUpdateButton');
+  const { setDesktopUpdateStatus } = await import('../desktopUpdateStatus');
+  const state = { phase: 'available', currentVersion: '0.1.0', version: '0.1.1', source: 'release', message: 'Update available', percent: 0, releaseConfigured: true, localSupported: true };
+  Object.defineProperty(window, 'electronAPI', { configurable: true, value: { updates: { status: vi.fn().mockResolvedValue(state), action: vi.fn() } } });
+  const host = document.createElement('div'); const root = createRoot(host);
+  try {
+    await act(async () => root.render(createElement('div', null, createElement(SettingsUpdateButton, { onClick: vi.fn() }), createElement(DesktopUpdates))));
+    expect(host.querySelectorAll('.wb-update-dot')).toHaveLength(2);
+    expect(host.querySelector('[aria-label="Settings, update available"]')).not.toBeNull();
+    await act(async () => setDesktopUpdateStatus({ ...state, phase: 'ready' }));
+    expect(host.querySelectorAll('.wb-update-dot')).toHaveLength(2);
+    await act(async () => setDesktopUpdateStatus({ ...state, phase: 'idle' }));
+    expect(host.querySelectorAll('.wb-update-dot')).toHaveLength(0);
+  } finally { act(() => root.unmount()); delete window.electronAPI; }
+});
+
+it('does not erase a new update notification with an older in-flight status response', async () => {
+  const { SettingsUpdateButton } = await import('../SettingsUpdateButton');
+  const { setDesktopUpdateStatus } = await import('../desktopUpdateStatus');
+  const base = { phase: 'idle', currentVersion: '0.1.0', version: '', source: '', message: '', percent: 0, releaseConfigured: true, localSupported: true };
+  let finish!: (state: typeof base) => void;
+  const status = new Promise<typeof base>(resolve => { finish = resolve; });
+  Object.defineProperty(window, 'electronAPI', { configurable: true, value: { updates: { status: () => status } } });
+  const host = document.createElement('div'); const root = createRoot(host);
+  try {
+    await act(async () => { setDesktopUpdateStatus(base); root.render(createElement(SettingsUpdateButton, { onClick: vi.fn() })); });
+    await act(async () => setDesktopUpdateStatus({ ...base, phase: 'available', version: '0.1.1' }));
+    await act(async () => { finish(base); await status; });
+    expect(host.querySelector('.wb-update-dot')).not.toBeNull();
+  } finally { act(() => root.unmount()); delete window.electronAPI; }
+});

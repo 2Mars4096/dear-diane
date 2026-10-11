@@ -388,3 +388,8 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - `workbench/reconcileRunState.ts` reconciles assistant pending flags and saved run references from terminal task snapshots by exact task/run identity. It preserves partial content, keeps polling stable, and explains writer conflicts without taking over the other connection.
 
 - PDF highlight navigation: page-level pointer hit testing leaves the text layer selectable; `readerStore.noteFocus` requests Notes scrolling/focus separately from notes-to-PDF navigation. Saved highlight SVGs also support keyboard activation.
+
+## Desktop release automation
+- `.github/workflows/desktop-release.yml`: version-tag push runs Mac ARM64 updater tests/build/sign/package with read-only repository permission; a separate Ubuntu job validates and publishes using GitHub's ephemeral token with contents-write permission.
+- `editor/scripts/publish-mac-release.cjs` verifies version, exact source tag and archive checksums, resumes only same-source drafts, verifies uploaded asset sizes, then publishes. Notes live in `docs/releases/`; publisher safety cases use Node's test runner.
+- Git SSH publishing and installed private-feed authentication are separate. No local credential store is changed by the release workflow.

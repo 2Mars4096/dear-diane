@@ -1,7 +1,7 @@
 {
   "name": "dear-diane",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Dear Diane — A workspace for research, code, and ideas.",
   "author": "Dear Diane",
   "type": "module",
@@ -18,7 +18,7 @@
     "electron:dev": "npm run electron:compile && concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:build": "npm run build && npm run electron:compile",
     "dist": "npm run build && npm run electron:compile && electron-builder",
-    "dist:mac": "npm run build && npm run electron:compile && CXXFLAGS=\"-isystem $(xcrun --show-sdk-path)/usr/include/c++/v1\" electron-builder --mac --publish never && codesign --force --deep --sign - \"release/mac-arm64/Dear Diane.app\"",
+    "dist:mac": "node scripts/package-mac-release.cjs",
     "dist:win": "npm run build && npm run electron:compile && electron-builder --win",
     "dist:linux": "npm run build && npm run electron:compile && electron-builder --linux",
     "ocr:assets": "node scripts/copy-ocr-assets.mjs"
@@ -105,7 +105,8 @@
         "from": "build/github-update.yml",
         "to": "app-update.yml"
       }
-    ]
+    ],
+    "artifactName": "Dear-Diane-${version}-${os}-${arch}.${ext}"
   },
   "dependencies": {
     "@tesseract.js-data/chi_sim": "^1.0.0",

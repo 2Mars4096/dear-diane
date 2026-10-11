@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-11
+- [infra] Add tag-triggered GitHub Actions Mac releases using the automatic job token, with separate build/publish permissions, exact-source and checksum validation, safe draft retries and six publisher tests. Existing Git SSH access works; no local login or Keychain changes. Remote publication and installed-client acceptance remain to verify.
+
+## 2026-10-10
+- [feat] Add default Diane-first credential lookup to Todo with same-user paths-only discovery; preserve original .env/Settings keys and per-app models. Nine Python and 24 Todo native tests pass; both frontend builds pass.
+- [feat] Check desktop releases every 15 minutes and show Settings/update-action dots; stage verified private Mac release archives through the existing rollback installer. Build/sign before generating release ZIP/checksum assets. 20 frontend/updater checks and real disposable installer/rollback verification pass; 0.1.1 artifacts/source patch are ready locally. Publishing awaits restored GitHub authentication (HTTP 401).
+
+
 ## 2026-10-06
 - [fix] Commit review keeps synchronous canvas sizing scoped to the main PDF page; remove its unintended application to reference previews.
 

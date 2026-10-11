@@ -6,6 +6,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { assertNoActiveWork, stageBundle } from "./localUpdate";
 import { GitHubAuth, githubRelease } from "./githubAuth";
+import { UPDATE_CHECK_INTERVAL, updateSchedule } from "./updateSchedule";
+import { stagePublishedMacBundle } from "./releaseBundle";
 
 export function registerDesktopUpdates(options: {
   window: () => BrowserWindow | null; graphs: () => string;
@@ -17,7 +19,9 @@ export function registerDesktopUpdates(options: {
   app.once("before-quit", () => github.cancel());
   let local: Awaited<ReturnType<typeof stageBundle>> | null = null;
   let busy = false;
+  let background = false;
   let updateToken = "";
+  let releaseStaging: Promise<void> | null = null;
   const safeError = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     return updateErrorMessage(updateToken ? message.split(updateToken).join("[redacted]") : message);
@@ -26,14 +30,53 @@ export function registerDesktopUpdates(options: {
   let state = { phase: "idle", currentVersion: app.getVersion(), version: "", source: "", localBuildAvailable: false, message: "", percent: 0, releaseConfigured: false, localSupported: process.platform === "darwin" && app.isPackaged };
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
-  autoUpdater.on("error", error => { state = { ...state, phase: "error", message: safeError(error) }; });
+  autoUpdater.on("error", error => { if (!background) state = { ...state, phase: "error", message: safeError(error) }; });
   autoUpdater.on("update-available", info => { state = { ...state, phase: "available", source: "release", version: info.version, message: "A desktop update is available." }; });
   autoUpdater.on("update-not-available", () => { state = { ...state, phase: "idle", message: "You have the latest published desktop version." }; });
   autoUpdater.on("download-progress", progress => { state = { ...state, phase: "downloading", percent: Math.round(progress.percent) }; });
-  autoUpdater.on("update-downloaded", info => { state = { ...state, phase: "ready", source: "release", version: info.version, message: "Update downloaded. Install when your work is finished." }; });
+  autoUpdater.on("update-downloaded", info => {
+    const ready = () => { state = { ...state, phase: "ready", source: "release", version: info.version, message: "Update downloaded. Install when your work is finished." }; };
+    if (process.platform !== "darwin") { ready(); return; }
+    state = { ...state, phase: "staging", message: "Preparing the downloaded update…" };
+    releaseStaging = stagePublishedMacBundle(info.downloadedFile, target(), updatesDir, info.version)
+      .then(prepared => { local = prepared; ready(); })
+      .catch(error => { state = { ...state, phase: "error", message: safeError(error) }; });
+  });
   const configured = async () => {
     try { await fs.access(path.join(process.resourcesPath, "app-update.yml")); return app.isPackaged; } catch { return false; }
   };
+  const checkPublished = async (quiet = false) => {
+    if (!await configured()) {
+      if (quiet) return;
+      throw new Error("Published updates are not configured for this build.");
+    }
+    updateToken = await github.token();
+    autoUpdater.setFeedURL({ ...githubRelease, token: updateToken });
+    await autoUpdater.checkForUpdates();
+  };
+  const automaticCheck = updateSchedule(async () => {
+    // Keep downloaded and available updates, and never compete with user actions.
+    if (busy || ["available", "ready", "staging", "downloading", "installing"].includes(state.phase)) return;
+    busy = true; background = true;
+    const previous = { ...state };
+    try { await checkPublished(true); }
+    catch { state = previous; /* Quiet failures retry on the next scheduled check. */ }
+    finally { busy = false; background = false; }
+  });
+  if (app.isPackaged) {
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const startup = setTimeout(() => {
+      void automaticCheck();
+      timer = setInterval(() => void automaticCheck(), UPDATE_CHECK_INTERVAL);
+      timer.unref();
+    }, 10_000);
+    startup.unref();
+    const focus = () => { void automaticCheck(); };
+    app.on("browser-window-focus", focus);
+    app.once("before-quit", () => {
+      clearTimeout(startup); if (timer) clearInterval(timer); app.removeListener("browser-window-focus", focus);
+    });
+  }
   const target = () => path.resolve(app.getPath("exe"), "../../..");
   let candidate: string | null = null;
   let lastDiscovery = 0;
@@ -102,19 +145,14 @@ export function registerDesktopUpdates(options: {
         await prepare(selected.filePaths[0]);
       } else if (action === "check") {
         if (local || state.phase === "ready") throw new Error("An update is already prepared. Install it before checking again.");
-        await discover(true);
-        if (candidate) { await prepare(candidate); return { ...state, github: github.state }; }
         if (!await configured()) throw new Error("Published updates are not configured for this build. You can install a prepared local build below.");
         state = { ...state, phase: "checking", message: "Checking for updates…", source: "release" };
-        updateToken = await github.token();
-        // An explicit in-memory token selects PrivateGitHubProvider; do not let
-        // a different inherited GH_TOKEN override the browser-authorized account.
-        autoUpdater.setFeedURL({ ...githubRelease, token: updateToken });
-        await autoUpdater.checkForUpdates();
+        await checkPublished();
       } else if (action === "download") {
         if (state.phase !== "available" || state.source !== "release") throw new Error("Check for an update first.");
         state = { ...state, phase: "downloading", percent: 0, message: "Downloading update…" };
         await autoUpdater.downloadUpdate();
+        if (releaseStaging) await releaseStaging;
       } else if (action === "install") {
         if (state.phase !== "ready") throw new Error("Prepare or download an update first.");
         await idle();
