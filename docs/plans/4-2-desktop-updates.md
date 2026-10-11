@@ -65,3 +65,5 @@ Release scope remains the desktop shell for existing configured Python-backend i
 - [ ] Verify installed private-feed authentication separately; workflow authentication does not repair client login.
 
 - [x] Add manual dispatch for an existing tag after the initial push produced zero runs; propagate the resolved source SHA into publication.
+
+- [x] Add automatic workflow-change push trigger on main; resolve the package-version tag and build that immutable source without operator dispatch.

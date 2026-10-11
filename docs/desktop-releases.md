@@ -4,7 +4,7 @@ The private release feed is `2Mars4096/deep-agent-network`. Version numbers in `
 
 ## Publish through GitHub Actions
 
-Push the reviewed release source and a matching `vX.Y.Z` tag. `.github/workflows/desktop-release.yml` builds on an Apple Silicon `macos-15` runner, runs updater/publisher tests and build budgets, and uploads the signed ZIP/DMG/manifests. A separate job receives `contents: write` and publishes using GitHub's automatic job token. No local GitHub CLI login, provider keys, signing certificates or Keychain changes are required for publication.
+Push the reviewed release source and a matching `vX.Y.Z` tag. Updating the workflow on main also automatically builds the existing tag matching the package version; manual dispatch is only a fallback. `.github/workflows/desktop-release.yml` builds on an Apple Silicon `macos-15` runner, runs updater/publisher tests and build budgets, and uploads the signed ZIP/DMG/manifests. A separate job receives `contents: write` and publishes using GitHub's automatic job token. No local GitHub CLI login, provider keys, signing certificates or Keychain changes are required for publication.
 
 - Keep `editor/package.json`, its lockfile and the tag version aligned; add `docs/releases/vX.Y.Z.md`.
 - The publisher validates checksums, asset sizes and exact tag commit before creating a draft. It publishes only after verifying uploaded assets. A rerun can resume a draft from that same source; published releases are never overwritten.

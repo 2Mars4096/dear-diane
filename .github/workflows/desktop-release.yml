@@ -3,6 +3,8 @@ name: Desktop release
 on:
   push:
     tags: ['v*']
+    branches: [main]
+    paths: ['.github/workflows/desktop-release.yml']
   workflow_dispatch:
     inputs:
       release_tag:
@@ -12,7 +14,7 @@ on:
         type: string
 
 concurrency:
-  group: desktop-release-${{ inputs.release_tag || github.ref_name }}
+  group: desktop-release
   cancel-in-progress: false
 
 permissions:
@@ -37,10 +39,20 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: editor/package-lock.json
+      - name: Select immutable release source
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
+        run: |
+          RELEASE_TAG="${REQUESTED_TAG:-$(node -p '"v" + require("./package.json").version')}"
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a stable version tag" >&2
+            exit 1
+          fi
+          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          git checkout --detach "refs/tags/$RELEASE_TAG"
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
       - name: Validate release tag and runner
         id: source
-        env:
-          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           node -e 'const p = require("./package.json"); if (process.env.RELEASE_TAG !== `v${p.version}` || !/^\d+\.\d+\.\d+$/.test(p.version) || process.arch !== "arm64") process.exit(1)'
           test -f "../docs/releases/$RELEASE_TAG.md"

@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-10-11
+- [fix] Trigger release automation when its workflow changes on main, as well as version-tag pushes. Both paths resolve and build an immutable existing version tag; manual dispatch is only a fallback.
 - [fix] Add manual release dispatch for an existing version tag after the first push produced no Actions run; build and publish the tag’s resolved commit without retagging.
 - [infra] Add tag-triggered GitHub Actions Mac releases using the automatic job token, with separate build/publish permissions, exact-source and checksum validation, safe draft retries and six publisher tests. Existing Git SSH access works; no local login or Keychain changes. Pushed isolated source `11ab4e44` and `v0.1.1` to main; remote publication and installed-client acceptance remain to verify.
 
