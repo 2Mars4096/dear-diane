@@ -1,5 +1,9 @@
 # Todo
 
+- [x] Publish v0.1.4 with download progress; verify public installer and updater assets — [4-2](plans/4-2-desktop-updates.md).
+
+- [x] Reinstall local 0.1.4 progress build and verify app/backend health — [desktop updates](plans/4-2-desktop-updates.md).
+
 - [x] Show update download percentage and transferred/total MB using Sticky Todo’s progress pattern — [desktop updates](plans/4-2-desktop-updates.md).
 
 - [x] Commit, push and publish v0.1.3 with one-click updates and Diane-side Sticky Todo handoff; verify public updater assets — [release](plans/4-2-desktop-updates.md).

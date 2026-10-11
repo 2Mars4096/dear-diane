@@ -118,4 +118,6 @@ Release scope remains the desktop shell for existing configured Python-backend i
 
 ## 0.1.4 release
 - [x] Validate download-progress improvements: 24 updater/UI tests, ten publisher tests, production build/budgets and Electron compilation pass.
-- [ ] Publish v0.1.4 and verify public update manifest.
+- [x] Publish v0.1.4 (`0065ab2b`), run 38136805347; verify non-draft release, five assets and anonymous 0.1.4 update manifest.
+
+- [x] Install local 0.1.4 progress build at user request; isolated build/budgets and Electron compile pass. Verified signature/archive equality and healthy app-owned backend after launch; rollback retained.

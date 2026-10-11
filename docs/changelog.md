@@ -1,6 +1,12 @@
 # Changelog
 
 ## 2026-10-11
+- [infra] Publish v0.1.4 (`0065ab2b`) with download percentage and MB progress. 34 focused tests, production build/budgets and Electron compilation pass; public installer/update assets and anonymous manifest verified.
+
+## 2026-10-11
+- [infra] Reinstall and launch local 0.1.4 with visible download progress at user request. Build in an isolated copy to avoid concurrent release output; production build/budgets, Electron compilation, signature, installed archive equality, and app-owned backend health pass. Preserve user data and one rollback bundle.
+
+## 2026-10-11
 - [infra] Prepare v0.1.4 with percentage and transferred/total MB download progress.
 
 ## 2026-10-11
