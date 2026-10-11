@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-10-11
+- [infra] Publish v0.1.5 (`501685ed`): hidden-pane EPUB fix, shared reader controls and PDF page/chapter navigation. 73 reader/document tests, ten publisher tests, isolated build/budgets and Electron compilation pass; Actions 38138382110 succeeds and public update manifest verifies.
+
+## 2026-10-11
 - [infra] Prepare v0.1.5 with blank-EPUB initialization repair, shared reading controls, and PDF page/chapter navigation.
 
 ## 2026-10-11

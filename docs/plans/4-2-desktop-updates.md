@@ -124,4 +124,4 @@ Release scope remains the desktop shell for existing configured Python-backend i
 
 ## 0.1.5 release
 - [x] Validate isolated source: 73 reader/document tests, ten publisher tests, frontend/Electron compilation and bundle budgets pass.
-- [ ] Publish v0.1.5 and verify public update assets.
+- [x] Publish v0.1.5 (`501685ed`); Actions run 38138382110 succeeded, all five assets present and anonymous 0.1.5 manifest verified.
