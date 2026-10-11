@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-10-11
+- [infra] Publish combined v0.1.2 successfully: Actions run 38133765309 passes, release is public/non-draft with DMG, update ZIP, blockmaps and latest-mac.yml. Installed local app remains 0.1.1.
 - [fix] Discover and verify release drafts through the authenticated release listing, fixing the post-upload 404. Preserve source/asset checks and expose sanitized failures as workflow annotations.
 - [infra] Push combined v0.1.2 (`13aae0df`): EPUB, Settings redesign, public updater and README. All 224 scoped frontend tests and nine publisher tests pass locally; remote build/package succeeds. Publication still fails (run 38132743457); no v0.1.2 release is available.
 - [infra] Prepare combined 0.1.2 release at user request: EPUB reader, Settings redesign, anonymous update feed, and refreshed README alongside the verified Mac updater. Preserve the existing 0.1.1 tag.

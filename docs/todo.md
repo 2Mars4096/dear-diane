@@ -1,6 +1,6 @@
 # Todo
 
-- [ ] Publish combined 0.1.2 (EPUB, Settings redesign, anonymous updates, README); 224 frontend and nine publisher tests plus build/budgets pass — [desktop updates](plans/4-2-desktop-updates.md).
+- [x] Publish combined 0.1.2 (EPUB, Settings redesign, anonymous updates, README); 224 frontend and nine publisher tests plus build/budgets pass — [desktop updates](plans/4-2-desktop-updates.md).
 
 - [x] Remove update sign-in and use the public release feed; rewrite README for setup/use without personal or internal operational details — [4-2](plans/4-2-desktop-updates.md). Public-release download and installed-client acceptance remain pending.
 

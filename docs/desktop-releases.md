@@ -42,3 +42,7 @@ The release uses an isolated snapshot excluding concurrent reader work in the or
 ## Public-feed transition, October 11
 
 The user supplied `https://github.com/2Mars4096/dear-diane`. An anonymous repository request confirmed `private: false`; the latest-release request returned 404. Source now uses the public feed with no GitHub login or credential lookup. This change has not been published or installed, and an end-to-end public release download remains unverified. Repository visibility was not changed.
+
+## Published 0.1.2
+
+[Version 0.1.2](https://github.com/2Mars4096/dear-diane/releases/tag/v0.1.2) is published, confirmed non-draft with installer and updater assets. [Run 38133765309](https://github.com/2Mars4096/dear-diane/actions/runs/38133765309) succeeded after draft lookup was corrected. This release includes EPUB, redesigned Settings, anonymous public updates and refreshed documentation. Local installed 0.1.1 was not replaced during publication.

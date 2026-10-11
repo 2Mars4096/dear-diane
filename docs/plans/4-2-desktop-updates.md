@@ -71,7 +71,7 @@ Release scope remains the desktop shell for existing configured Python-backend i
 - 2026-10-11 installed `/Applications/Dear Diane.app` 0.1.1 at user request. Signature and source/installed ASAR equality pass; backend 8000 and app proxy 45173 health return HTTP 200. Rollback: `/Applications/.Diane-previous-f1607e81-45de-4360-bd64-073783c1b8bc.app`. Private-feed authentication and remote publication remain unverified.
 
 - [x] Confirm remote Mac build/tests/package succeeded; improve suppressed publication diagnostics and use canonical repository for automatic retry.
-- [ ] Confirm corrected publication succeeds.
+- [x] Confirm corrected publication succeeds for v0.1.2 (run 38133765309).
 
 ## October 11 anonymous updates
 - [x] Remove GitHub sign-in/account controls, auth actions, and credential lookup from update checks.
@@ -91,7 +91,7 @@ Release scope remains the desktop shell for existing configured Python-backend i
 ## Combined 0.1.2 release
 - [x] Include pending EPUB, Settings, README and public-feed changes at user request.
 - [x] Validate combined source: 224 reader/document/workbench/updater tests and nine publisher tests pass; production build/budgets and Electron compilation pass.
-- [ ] Publish v0.1.2 and verify release assets.
+- [x] Publish v0.1.2 and verify release assets: run 38133765309 succeeded, draft=false, DMG/ZIP/blockmaps/manifest present.
 
 - Combined release source `13aae0df`, tag `v0.1.2`, is pushed. Actions run `38132743457` passed build/tests/packaging but failed publication; release endpoint remains 404. Exact latest publisher error awaits operator-visible log; no further permission assumptions.
 
