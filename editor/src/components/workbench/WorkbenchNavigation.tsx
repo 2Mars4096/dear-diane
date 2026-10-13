@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight, Layers, PanelLeft, Plus, X } from "lucide-react";
 import { directionKeys, heldDirectionSlot, reconcileSessionSlots, type NavigationSession } from "./navigation";
 
@@ -9,6 +9,7 @@ export interface NavigationProject {
   sessions: NavigationSession[];
 }
 interface Props {
+  history?: ReactNode;
   projectRequest?: number;
   projectScope?: string;
   onAllProjects?: () => void;
@@ -118,6 +119,7 @@ export function WorkbenchNavigation(props: Props) {
   return <>
     <div className="wb-navigation">
       <span className="wb-sidebar-toggle"><button onClick={props.onToggleSidebar} aria-label={props.sidebarOpen ? "Hide sidebar" : "Show sidebar"} title={`${props.sidebarOpen ? "Hide sidebar" : "Show sidebar"} (${modifier}B)`} aria-keyshortcuts="Meta+B Control+B" aria-expanded={props.sidebarOpen} aria-controls="wb-project-sidebar"><PanelLeft size={18} /></button></span>
+      {props.history}
       <button onClick={() => open("projects")} title={`Switch project (${modifier}⇧E)`} aria-keyshortcuts="Meta+Shift+E Control+Shift+E"><Layers size={17} /><span>{props.itemProject || project?.name || "Projects"}</span><span className="wb-shortcut">{modifier}⇧E</span></button>
       <span className="wb-divider">/</span>
       <button onClick={() => props.itemLabel ? props.onAllSessions() : open("sessions")} title={props.itemLabel ? "Show workspace items" : `Switch session (${modifier}⇧S)`} aria-keyshortcuts={props.itemLabel ? undefined : "Meta+Shift+S Control+Shift+S"}><span>{props.itemLabel || sessions.find((item) => item.id === props.activeSessionId)?.title || "Sessions"}</span>{!props.itemLabel && <span className="wb-shortcut">{modifier}⇧S</span>}</button>

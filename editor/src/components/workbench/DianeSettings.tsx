@@ -4,6 +4,7 @@ import { X } from "lucide-react";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { NativeWorkerSettings, type WorkerProfiles } from "./NativeWorkers";
 import { AppearanceChoices } from "./AppearanceChoices";
+import { useDesktopUpdateStatus, updateNeedsAttention } from "./desktopUpdateStatus";
 import "./settings.css";
 
 const DesktopUpdates = lazy(() => import("./DesktopUpdates").then(module => ({ default: module.DesktopUpdates })));
@@ -24,6 +25,7 @@ export function DianeSettings({ onClose, profiles, onProfilesChange, onPapers, p
   const content = useRef<HTMLDivElement>(null);
   const id = useId();
   const settings = useSettingsStore();
+  const updateAvailable = updateNeedsAttention(useDesktopUpdateStatus());
   const [selected, setActive] = useState("appearance");
   const active = selected === "library" && !onPapers ? "appearance" : selected;
   const [visited, setVisited] = useState(() => new Set(["appearance"]));
@@ -78,7 +80,7 @@ export function DianeSettings({ onClose, profiles, onProfilesChange, onPapers, p
     <div className="wb-settings-body">
       <nav className="wb-settings-nav" aria-label="Settings categories">{groups.map(group => <div className="wb-settings-nav-group" key={group.title}>
         {group.title && <span className="wb-settings-nav-label">{group.title}</span>}
-        {group.sections.map(([section, label]) => <button type="button" key={section} aria-current={active === section ? "page" : undefined} aria-controls={`${id}-${section}`} onClick={() => select(section)}>{label}</button>)}
+        {group.sections.map(([section, label]) => <button type="button" key={section} aria-current={active === section ? "page" : undefined} aria-controls={`${id}-${section}`} onClick={() => select(section)} aria-label={section === "app" && updateAvailable ? `${label}, update available` : undefined}>{label}{section === "app" && updateAvailable && <span className="wb-update-dot" aria-hidden="true" />}</button>)}
       </div>)}</nav>
       <div className="wb-settings-content" ref={content}>{sections.map(([section, label]) => <section key={section} id={`${id}-${section}`} hidden={active !== section} aria-labelledby={`${id}-${section}-title`} className="wb-settings-category">
         <h2 id={`${id}-${section}-title`}>{label}</h2>
