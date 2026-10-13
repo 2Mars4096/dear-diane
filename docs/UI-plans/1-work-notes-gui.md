@@ -114,3 +114,17 @@
 - Protocol references: [Codex account quotas](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt), [OpenRouter current key](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key).
 
 - [x] Queue reference follow-up: use persisted display text for new requests; convert older reference envelopes to source-labelled multiline quotes. Preserve the execution prompt and queue IDs/actions. 164 focused tests and TypeScript check pass; installed acceptance pending.
+
+## October 14 — compact header and update notice
+- [x] Move existing history controls beside the sidebar toggle; remove their standalone row and obsolete wrapper CSS.
+- [x] Preserve open-document tabs and history handlers; scope breadcrumb responsive selectors away from history buttons.
+- [x] Subscribe Settings navigation to shared update availability and render the existing dot plus accessible status.
+- [x] Typecheck, production build and bundle budgets pass.
+- [ ] Installed desktop visual acceptance.
+
+- October 14 local installation: current 0.1.6 bundle installed and launched after idle checks; signature/archive equality and backend/proxy health verified. Visual installed acceptance remains separate.
+
+## October 14 — native caption alignment
+- [x] Follow the rendered sidebar-toggle center at current zoom; retain native controls and caption dragging.
+- [x] Eleven tests and isolated Electron geometry checks at three zoom levels pass; signed build ready.
+- [ ] Installation explicitly deferred by user after active-work guard rejected restart.

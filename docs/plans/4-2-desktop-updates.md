@@ -138,7 +138,8 @@ Release scope remains the desktop shell for existing configured Python-backend i
 - [x] Write a bounded 32 KiB latest-launch receipt at `userData/logs/startup.log` with launch/spawn/health/failure events and startup stderr; omit inherited environment values. Log failure must not prevent startup/quit.
 - [x] Centralize `original-fs` selection for physical archive hashing/removal. Targeted lint and real Electron success/failure cleanup checks pass.
 - [x] Build and ad-hoc sign the isolated arm64 snapshot at `/private/tmp/diane-priority-editor/release/mac-arm64/Dear Diane.app`; strict deep signature verification passes.
-- [ ] Install after idle check, then test LaunchServices relaunch. Root cause of earlier backend exits/timeouts remains unproven; this change fixes blocked error handling and adds evidence collection, not a claimed launch-cause fix.
+- [x] Install after idle check; later October 13 installation receipts below verify signature/archive/health.
+- [ ] Establish repeatable LaunchServices relaunch reliability using startup receipts. Root cause of earlier backend exits/timeouts remains unproven; successful installs alone do not close this investigation.
 - Validation: 23 focused startup/update/health tests and the separately permission-enabled shutdown regression pass. Production build/budgets and Electron compilation pass.
 
 - [x] October 13: install the current local build at user request; signed bundle/archive equality, idle checks and launched backend/proxy health pass. Plan mode is now included in the installed app. Live model MCQ acceptance remains separate from the synthetic preview.
@@ -151,3 +152,10 @@ Release scope remains the desktop shell for existing configured Python-backend i
 - [x] Validate current installed-source snapshot: 506 frontend tests and 61 focused backend tests pass.
 - [x] Prepare 0.1.6 notes and version metadata, including the matching-backend requirement for Plan mode.
 - [x] Publish v0.1.6 from `ee2d1cbe`; workflow `38415664390` built and published all five Mac assets. Anonymous update manifest and non-draft release verified.
+
+
+## October 14 — Settings category notice
+- [x] Show the existing accent dot on About & updates for available/ready phases using the shared status subscription, even before visiting the panel.
+- [x] Install updated frontend; signed bundle/archive equality and backend/proxy health pass.
+
+- October 14 local installation: current 0.1.6 bundle installed and launched after idle checks; signature/archive equality and backend/proxy health verified. Visual installed acceptance remains separate.

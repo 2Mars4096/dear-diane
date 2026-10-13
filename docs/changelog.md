@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-10-14
+- [fix] Align macOS traffic lights with the rendered title-bar controls at the current renderer zoom; follow header replacement/resize through the existing main-frame-only window-control IPC.
+- [test] Eleven window-control/appearance tests, Electron compilation and a real isolated Electron check at 90%, 100% and 125% zoom pass. Signed local build prepared. Installation was blocked by active work, then explicitly deferred by the user.
+
+
+## 2026-10-14
+- [infra] Reinstall local 0.1.6 with update-category dot, compact title-bar history controls and native-run cutoff removal. App/backend were closed and persisted work idle. Signature, source/installed ASAR hashes, backend and desktop-proxy health pass; launched Python resolves updated repository code. Rollback retained at `/Applications/.Diane-previous-026bc70c-d04d-4af2-a18a-c970828c05d3.app`.
+
+## 2026-10-14
+- [fix] Show the shared update-availability dot beside Settings → About & updates, including an accessible status label before that panel is opened.
+- [refactor] Move Back/Forward next to the title-bar sidebar toggle and remove the separate history row/wrapper; preserve document tabs and navigation handlers. Scope responsive breadcrumb rules away from history controls.
+- [test] All 33 focused navigation/tab/updater tests, frontend typecheck, production build and bundle budgets pass. Desktop installation pending.
+
+## 2026-10-14
+- [fix] Correct token analysis for Codex response-level records, legacy last-only/cumulative-only usage and mixed modes; deduplicate response twins/pings. Use final Claude streaming counters while preserving original rounds/tool blocks, and invalidate old summaries with cache version 5.
+- [test] All 24 focused token/quota tests pass; Diane now matches all six CodeBurn comparison fixtures and all five saved local response-record totals. Source only; backend restart pending.
+
+## 2026-10-14
+- [docs] Compare CodeBurn 0.9.27 with Diane token analysis: upstream parser passes six synthetic Codex cases versus Diane’s two; it matches response-record sums in five local numeric-only snapshots versus Diane’s three. Record focused Claude revised-usage reproduction, integration options and proposed follow-ups in Plan 4-3. Product code and installed app unchanged.
+
+## 2026-10-14
+- [fix] Remove the fixed 30-minute lifetime cutoff from live Codex turns and native CLI workers. Completion, explicit Stop, transport failure and shutdown cleanup retain their existing behavior.
+- [test] All 32 live Codex/native-worker tests pass, including accelerated former-deadline coverage and Stop/steering checks. Source change; running backend restart pending.
+
+## 2026-10-13
+- [docs] Reconcile the actual commercialization conversation into the existing business roadmap: general-audience, self-service, Mac-first, BYOK-first preferences; $10 offer hypothesis and three paying repeat-user target; unresolved paid boundary and first recurring workflow. Preserve the user's correction that current app flows are adequate; label new commercial work as proposed and historical business guidance as unvalidated.
+
+## 2026-10-13
+- [docs] Reconcile cart closures and next-work triage after v0.1.6 publication: explicitly mark IC-034–037/040–042 done and IC-033 result-cap subtask complete, retain phone ideas as transferred and semantic search as open. Close live Codex append/steer acceptance from delivery receipts plus user confirmation; keep continuation/recovery/paired acceptance and launch-cause investigation open.
+
 ## 2026-10-13
 - [infra] Publish v0.1.6 from `ee2d1cbe` through GitHub workflow `38415664390`; verify public non-draft release, DMG/ZIP/blockmaps and anonymous 0.1.6 update manifest. Release notes state that Plan mode requires matching Python backend source.
 - [test] Release source passes 506 frontend tests, 61 focused backend tests and ten publisher tests; hosted Mac build and updater checks pass.

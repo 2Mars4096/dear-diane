@@ -1,5 +1,24 @@
 # Todo
 
+- [x] Align macOS traffic lights with the header across zoom levels; verify native geometry at 90%, 100% and 125%.
+- [ ] Install title-bar alignment fix later; user explicitly deferred installation on October 14.
+
+- [x] Add About & updates navigation dot and move Back/Forward into the top bar beside the sidebar toggle; remove redundant history row — [UI](UI-plans/1-work-notes-gui.md).
+- [x] Install updated Settings/navigation frontend; signed archive equality and backend/proxy health verified.
+
+## Token analysis — October 14 assessment
+- [x] Compare CodeBurn and Diane using source review, six synthetic Codex cases and five local numeric-only snapshots — [results](plans/4-3-token-usage-analyzer.md#codeburn-comparison--2026-10-14).
+- [x] Fix Codex usage records/cumulative fallbacks and Claude streaming revisions; rebuild stale summaries and verify all six comparison cases plus five saved local snapshots — [accounting](plans/4-3-token-usage-analyzer.md#accounting-implementation--2026-10-14).
+- [ ] Activate token-accounting fixes on the next safe backend restart.
+- [ ] Proposed: cross-session replay deduplication, historical aggregation and a pinned CodeBurn JSON adapter for broader reporting — [follow-ups](plans/4-3-token-usage-analyzer.md#codeburn-comparison--2026-10-14).
+
+- [x] Remove native-agent 30-minute execution cutoff; verify completion, steering and Stop — [native workers](UI-plans/2-native-agent-workers.md).
+- [x] Activate cutoff removal: local reinstall launched the updated backend; module path and removed cutoffs verified.
+
+## Commercial validation — discussion reconciled October 13
+- [x] Recover and record actual commercialization preferences and unresolved choices — [business roadmap](business/launch-roadmap.md#october-13-2026--current-commercial-direction).
+- [ ] Proposed: define the paid/free boundary and choose one recurring demo workflow before billing or broad new features. $10/month and three paying repeat users are test hypotheses/targets, not validated demand; user decision needed on the offer.
+
 - [x] Publish v0.1.6 with conversational planning and current installed improvements — [release](plans/4-2-desktop-updates.md).
 
 - [x] Clarify single/multiple choice controls, remove secondary selection hints, and select Other automatically when comments are typed — [Plan mode](UI-plans/4-plan-mode.md).
@@ -20,7 +39,8 @@
 - [x] Enter steers, Cmd/Ctrl+Enter queues; remove queued status text and duplicate header Stop — [workbench](UI-plans/1-work-notes-gui.md).
 - [x] Clean targeted Electron/navigation lint and validate an isolated, signed app snapshot while preserving concurrent work.
 - [x] Verify Todo integration is already merged/installed at 2.1.10; rerun current companion fixtures and confirm existing 16 unrelated Star Focus type errors — [handoff](plans/8-sticky-todo-handoff.md).
-- [ ] Complete live queue/steer, Regenerate/Fork, refresh, Team, reader Ask and paired Todo acceptance. Do not mark fixture checks as live acceptance.
+- [x] Confirm live Codex append/steer delivery from durable completed receipts and user-visible replies on October 13.
+- [ ] Complete live continue-after-current queue, Regenerate/Fork, refresh, Team, reader Ask and paired Todo acceptance. Do not mark fixture checks as live acceptance.
 - [ ] Reproduce any subsequent LaunchServices startup failure using the new startup receipt; root cause remains open.
 - [x] Research Codex, Claude Code, and grill-me; draft a low-question Plan mode UX — [proposal](UI-plans/4-plan-mode.md).
 - [x] Implement Plan mode separately from skills: durable scope/specification/steps, section/step refinement, bounded questions and reviewed-revision start; browser and live Codex planning verified — [Plan mode](UI-plans/4-plan-mode.md).
@@ -384,7 +404,8 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
 - [x] Connect private GitHub release updates and in-app browser sign-in; verify account/repository access. First signed release and live download/install acceptance remain pending.
 
 - [x] Keep queued messages out of the transcript; show them in Up next with Remove; no fake queued replies.
-- [ ] Live-verify Up next delivery (append and continue lanes) against a real run in the installed app.
+- [x] Live-verify Up next append/steer delivery; user confirmed October 13.
+- [ ] Live-verify Up next continue-after-current delivery in the installed app.
 
 - [x] Paper search follow-up: verified and installed the pointer/keyboard selection fix; user confirmed working ([4-7](plans/4-7-paper-library.md)).
 
