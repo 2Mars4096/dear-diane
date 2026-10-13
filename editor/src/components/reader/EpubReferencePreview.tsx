@@ -11,10 +11,11 @@ export function EpubReferencePreview({ book, selection }: { book: Book | null; s
     const epub = selection.epub;
     void book.getRange(epub.cfi).then(async range => {
       if (cancelled || !range) return;
-      if (range.collapsed) setText(range.startContainer.parentElement?.textContent?.slice(0, 700) || selection.quote);
-      const illustration = range.cloneContents().querySelector('img');
+      const context = range.startContainer.parentElement?.textContent?.trim() || '';
+      if (range.collapsed) setText(context.slice(0, 700) || selection.quote);
+      const illustration = range.collapsed && !context ? range.startContainer.parentElement?.querySelector('img') : range.cloneContents().querySelector('img');
       const src = illustration?.getAttribute('src');
-      if (!src || selection.kind !== 'area') return;
+      if (!src || (selection.kind !== 'area' && !(range.collapsed && !context))) return;
       const chapter = new URL(book.resolve(epub.href), 'https://epub.invalid/');
       const asset = new URL(src, chapter);
       if (asset.origin !== 'https://epub.invalid') return;

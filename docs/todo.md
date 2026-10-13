@@ -1,4 +1,56 @@
 # Todo
+
+- [ ] Publish v0.1.6 with conversational planning and current installed improvements — [release](plans/4-2-desktop-updates.md).
+
+- [x] Clarify single/multiple choice controls, remove secondary selection hints, and select Other automatically when comments are typed — [Plan mode](UI-plans/4-plan-mode.md).
+
+- [x] Add batched checkbox MCQs with Other/comments and remove empty planning greeting — [Plan mode](UI-plans/4-plan-mode.md).
+- [x] Install latest planning follow-up, including batched checkbox choices, inline Other/comments and bordered answer rows; signature/archive/health verified.
+
+- [x] Install current local app with conversational Plan mode; verify signature, matching archive and backend/proxy health — [desktop](plans/4-2-desktop-updates.md).
+
+- [x] Simplify Plan mode to chat responses and single/multiple-choice questions; remove the Plan tab and section editing/discussion — [Plan mode](UI-plans/4-plan-mode.md).
+
+- [x] Show readable referenced text in Up next, including previously saved queue entries — [workbench](UI-plans/1-work-notes-gui.md).
+
+## October 13 — authorized priority batch and composer follow-up
+- [x] Use `/plan` with a conditional Plan mode status instead of a composer button; retain slash-command discovery separate from skills — [Plan mode](UI-plans/4-plan-mode.md).
+- [x] Prepare startup failure diagnostics and nonblocking error/quit handling; targeted regressions pass — [desktop](plans/4-2-desktop-updates.md).
+- [x] Fix account-specific quota discovery and show all configured provider/account rows — [workbench](UI-plans/1-work-notes-gui.md).
+- [x] Enter steers, Cmd/Ctrl+Enter queues; remove queued status text and duplicate header Stop — [workbench](UI-plans/1-work-notes-gui.md).
+- [x] Clean targeted Electron/navigation lint and validate an isolated, signed app snapshot while preserving concurrent work.
+- [x] Verify Todo integration is already merged/installed at 2.1.10; rerun current companion fixtures and confirm existing 16 unrelated Star Focus type errors — [handoff](plans/8-sticky-todo-handoff.md).
+- [ ] Complete live queue/steer, Regenerate/Fork, refresh, Team, reader Ask and paired Todo acceptance. Do not mark fixture checks as live acceptance.
+- [ ] Reproduce any subsequent LaunchServices startup failure using the new startup receipt; root cause remains open.
+- [x] Research Codex, Claude Code, and grill-me; draft a low-question Plan mode UX — [proposal](UI-plans/4-plan-mode.md).
+- [x] Implement Plan mode separately from skills: durable scope/specification/steps, section/step refinement, bounded questions and reviewed-revision start; browser and live Codex planning verified — [Plan mode](UI-plans/4-plan-mode.md).
+- [x] Verify and install sidebar New chat folder routing — [workbench](UI-plans/1-work-notes-gui.md).
+- [x] Verify and install project-selection restoration fix — [workbench](UI-plans/1-work-notes-gui.md).
+
+## October 12 — low-risk backlog batch
+- [x] Reconcile superseded release/Team tasks and rank all remaining cart ideas; historical receipts retained.
+- [x] Review combined changes and validate frontend/backend/build; lint limitations recorded in `bugs.md`.
+- [x] Discover isolated Claude provider histories, preserve history-only continuation, and fix Cursor exclusions/size-limit reporting — [native workers](UI-plans/2-native-agent-workers.md).
+- [x] Remove Cmd+K's 12-result cap — [paper library](plans/4-7-paper-library.md). Semantic retrieval remains carted as IC-033.
+- [x] Complete isolated keyboard, focus, persistence and narrow-layout checks; repair confirmed overflow — [UI](UI-plans/1-work-notes-gui.md).
+- [x] Inspect Sticky Todo companion contracts and run local handoff checks — [handoff](plans/8-sticky-todo-handoff.md). Companion-wide typecheck fails outside handoff; merge/install/paired acceptance remain pending.
+
+## Recent delivery
+- [x] Verify and install sidebar New project action — [workbench](UI-plans/1-work-notes-gui.md).
+- [x] Verify and install project-switcher control layout — [workbench](UI-plans/1-work-notes-gui.md).
+- [x] Install matching 12px selection-toolbar/composer/message corners — [workbench](UI-plans/1-work-notes-gui.md).
+- [x] Install project-header new-chat plus shortcut — [workbench](UI-plans/1-work-notes-gui.md).
+- [x] Install non-sticky appearance preview — [settings](UI-plans/1-work-notes-gui.md).
+- [x] Install visual appearance presets, Neon palette and independent font roles — [settings](UI-plans/1-work-notes-gui.md).
+- [x] Install automatic page-counter sizing and clear counting status — [reader](UI-plans/3-reader-and-side-panel.md).
+- [x] Verify and install EPUB keyboard focus, continuous scrolling and responsive navigation — [reader](UI-plans/3-reader-and-side-panel.md).
+- [x] Install stable EPUB selection, whole-book page counts, and PDF/EPUB page slider — [reader](UI-plans/3-reader-and-side-panel.md).
+- [x] Reinstall latest local EPUB/reference build again at user request; startup and archive verification pass.
+- [x] Install EPUB iframe file-drop repair and PDF-style reference tray — [reader](UI-plans/3-reader-and-side-panel.md).
+- [x] Restore and install EPUB reference hover/pin behavior — [reader](UI-plans/3-reader-and-side-panel.md).
+- [x] Install EPUB fractional-width startup fix and simpler page/size controls — [reader](UI-plans/3-reader-and-side-panel.md).
+- [x] Fix physical ASAR bundle cleanup during updates; verify with real Electron — [desktop updates](plans/4-2-desktop-updates.md).
+- [x] Install cleanup-fixed local 0.1.5; verify signature/archive equality and app/backend health.
 - [x] Publish v0.1.5 reader improvements; verify public release and update manifest — [release](plans/4-2-desktop-updates.md).
 - [x] Fix blank EPUB, unify reader controls and add PDF chapters — [reader](UI-plans/3-reader-and-side-panel.md).
 
@@ -19,7 +71,7 @@
 - [x] Close Sticky Todo pre-execution receipt crash window during merge review — [plan](plans/8-sticky-todo-handoff.md).
 
 - [x] Merge and test local Sticky Todo handoff on main: project/profile inheritance, durable dispatch, status/stop, desktop session opening — [plan](plans/8-sticky-todo-handoff.md).
-- [ ] Integrate the Todo companion and run installed-app acceptance when existing Diane work is idle.
+- [ ] Run paired installed-app acceptance when Diane is idle; companion integration is already merged and installed.
 
 - [x] Publish combined 0.1.2 (EPUB, Settings redesign, anonymous updates, README); 224 frontend and nine publisher tests plus build/budgets pass — [desktop updates](plans/4-2-desktop-updates.md).
 
@@ -29,7 +81,7 @@
 - [x] Apply Settings category navigation and consistent compact rows; browser-fixture acceptance complete — [UI review](UI-plans/1-work-notes-gui.md#settings-review-2026-10-11).
 
 - [x] [Linked-app credential fallback](plans/4-15-shared-provider-accounts.md): Todo reads Diane keys first, then its own; .env and Keychain unchanged.
-- [ ] [Published desktop updates](plans/4-2-desktop-updates.md): 15-minute checks/dots and Mac archive staging implemented; publish 0.1.1 through GitHub Actions using existing Git SSH access; local 0.1.1 bootstrap installed and health-verified; verify the remote run and private-feed access.
+- [x] Published-update bootstrap superseded by public releases through v0.1.5; private-feed authentication is retired. Signed remote-upgrade acceptance remains in the release backlog — [desktop updates](plans/4-2-desktop-updates.md).
 - [x] EPUB reading with PDF-equivalent reading tools — [reader](UI-plans/3-reader-and-side-panel.md).
 - IC-045: Possible Tauri migration is deferred in the [idea cart](../.agents/idea-cart.md); current Electron works well. Preserve feature/data parity if revisited; not committed work.
 - [x] Guard OCR selection in line gaps and remove the delayed zoom-position/canvas-size step — [reader](UI-plans/3-reader-and-side-panel.md). Installed/reopened and health-verified.
@@ -242,7 +294,7 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
   - [x] Latest-message Edit with attachment-preserving resend, cancellation, active-run guard, and failed-send recovery — [4-1](plans/4-1-agent-workbench.md).
   - [x] [4-3-token-usage-analyzer](plans/4-3-token-usage-analyzer.md) — per-session and combined token analyzer in Settings with Jev stage labelling.
   - [ ] [Reader and side panel](UI-plans/3-reader-and-side-panel.md) — persistent side panel, phone layout, and PDF reader delivered; live Ask answer run and private-PDF font verification remain.
-  - [ ] [Native agent workers](UI-plans/2-native-agent-workers.md) — Codex/Claude/Antigravity worker baseline and opt-in forked imports delivered; team progress strip/panel delivered; live acceptance, restart-resume, approval transport, and browser thumbnails remain.
+  - [ ] [Native agent workers](UI-plans/2-native-agent-workers.md) — Codex/Claude/Antigravity worker baseline and opt-in forked imports delivered; team progress/transcripts, explicit restart-resume and Codex approval transport delivered; mixed-agent live acceptance, adapter-specific gaps and browser thumbnails remain.
 - [x] [5-universal-product-cutover](plans/5-universal-product-cutover.md) — deleted the backed-up legacy tree, renumbered docs, validated, committed, and pushed.
 
 ## Live evaluation
@@ -254,9 +306,9 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
 ## Backlog
 - [x] [4-5-browser-research](plans/4-5-browser-research.md) — ordinary-chat browser tools and native bridge; visible sessions, cleanup, 422 tests, live Codex → Scholar → BibTeX, and installed-app chat acceptance verified.
 - [ ] Verify native Claude browser use in the installed app after the selected account signs in; current default account returns `/login` before browsing.
-- [ ] Include Claude's isolated OpenRouter transcript directory in native discovery/token-analysis coverage.
+- [x] Include Claude's isolated API-provider transcript stores in native discovery/token analysis; imported provider histories never resume external native sessions.
 - [x] Raise native import limit to 256 MB, resolve native/legacy placeholder titles, leave new projects empty, and expand Up next with checkpoint-receipt filtering — [workbench](plans/4-1-agent-workbench.md), [native workers](UI-plans/2-native-agent-workers.md).
-- [ ] Complete Mac release signing/notarization and live private-release validation after Apple Developer account setup — [desktop updates](plans/4-2-desktop-updates.md).
+- Mac signing/notarization depends on Apple Developer setup; tracked with the standalone-distribution/remote-upgrade item below. Private-feed validation is superseded by the public feed.
 - [x] Add all eight supplied light/dark palettes to Settings, apply changes immediately, and retain the selection across launches.
 - [x] Resume waiting follow-ups automatically after restart; preserve account/policy and acknowledge completed delivery without replaying it on later restarts.
 - [x] Hide injected messages from the composer queue, remove waiting-list truncation, and restyle as Up next with expandable previews.
@@ -320,8 +372,8 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
 - [x] Plan/Auto/Full access modes mapped to Codex/Claude/DAN settings; drop duplicate conversation title.
 - [ ] Live-verify Claude Auto mode sandboxed Bash and Antigravity permission flags.
 
-- [ ] Verify the live Team display with Codex enabled before turn start; built-in Codex collaboration currently does not populate it.
-- [ ] Fix Cursor fallback exclusion handling and explicit large-transcript limit reporting (see native workers plan).
+- Team observer is implemented; the fresh built-in Codex spawn acceptance item below replaces the earlier enabled-Team workaround.
+- [x] Preserve modern Cursor header exclusions across legacy fallback; reject chats above 20,000 bubbles explicitly instead of silently truncating.
 
 - [x] Show direct built-in Codex subagents in Team without requiring enabled DAN delegates; validate real-record replay and lifecycle/control tests.
 - [ ] Verify a fresh built-in Codex spawn in the installed app after deploying the Team observer/client update.

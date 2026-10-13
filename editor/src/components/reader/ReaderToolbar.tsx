@@ -7,7 +7,7 @@ export function ReaderToolbar({ navigation, chapters, sizing, layout, references
   references: ReactNode; actions: ReactNode; status?: ReactNode;
 }) {
   return <div className="wb-reader-toolbar" role="group" aria-label="Reading controls">
-    <div className="wb-reader-toolbar-group">{navigation}</div>
+    <div className="wb-reader-toolbar-group wb-reader-toolbar-navigation">{navigation}</div>
     <div className="wb-reader-toolbar-chapters">{chapters}</div>
     <div className="wb-reader-toolbar-group">{sizing}</div>
     <div className="wb-reader-toolbar-group">{layout}</div>

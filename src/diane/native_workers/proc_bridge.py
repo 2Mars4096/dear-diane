@@ -14,7 +14,7 @@ import time
 from uuid import uuid4
 
 
-async def serve(directory: Path, workspace: str, workspace_id: str = "", thread_id: str = "", backend: str = "agent"):
+async def serve(directory: Path, workspace: str, workspace_id: str = "", thread_id: str = "", backend: str = "agent", permission: str = "auto"):
     from diane.processes import manager
     while True:
         for request in directory.glob("*.proc-request"):
@@ -24,6 +24,8 @@ async def serve(directory: Path, workspace: str, workspace_id: str = "", thread_
                     raise ValueError("Process request is too large")
                 payload = json.loads(request.read_text())
                 action = payload.get("action")
+                if permission == "plan" and action not in {"list", "logs"}:
+                    raise ValueError("Plan mode can inspect processes but cannot start or stop them")
                 processes = manager()
                 if action == "start":
                     cwd = str(payload.get("cwd") or workspace)

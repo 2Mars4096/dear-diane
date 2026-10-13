@@ -86,6 +86,14 @@ async def create_agent_run(
     bridge_context = bridged_req.surface_context.get("v2_control_plane")
     store = _require_chat_v2_store(request)
     turn = build_surface_turn_from_chat_request(bridged_req)
+    review = req.surface_context.get("plan_review")
+    if isinstance(review, dict) and review.get("action") in {"refine", "start"}:
+        # Do not let a stale second window append a plan/start request to an existing run.
+        if review.get("workflow_id") != req.workflow_id:
+            raise HTTPException(409, "The plan belongs to a different project session")
+        if any(task.status in {"running", "queued", "paused", "needs_input", "blocked"}
+               for task in store.list_thread_tasks(str(req.thread_id or ""))):
+            raise HTTPException(409, "Finish or stop the current session run before refining or starting a plan")
     admitted = admit_foreground_turn(store, turn)
     acceptance = admitted.acceptance
     summary = summarize_v2_bridge_context(bridge_context)

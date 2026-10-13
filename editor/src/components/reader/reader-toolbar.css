@@ -14,3 +14,13 @@
 .wb-reader-toolbar :is(button,select,input,a):focus-visible { outline:2px solid var(--wb-accent); outline-offset:2px; }
 .wb-reader-toolbar-status { color:var(--wb-muted); font-size:11px; }
 @media(max-width:600px) { .wb-reader-toolbar { gap:5px; padding:5px 6px; } .wb-reader-toolbar-chapters { flex:1 1 120px; } .wb-reader-toolbar-actions { margin-left:0; } }
+.wb-reader-toolbar-navigation { flex:0 0 auto; min-width:max-content; }
+.wb-reader-page-navigation { flex:0 0 auto; min-width:max-content; font-variant-numeric:tabular-nums; position:relative; display:flex; align-items:center; gap:5px; white-space:nowrap; }
+.wb-reader-page-navigation input[type=number] { appearance:textfield; text-align:center; flex-shrink:0; }
+.wb-reader-page-navigation input[type=number]::-webkit-inner-spin-button,.wb-reader-page-navigation input[type=number]::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
+.wb-reader-page-scrubber { position:absolute; top:calc(100% + 6px); left:0; z-index:20; width:min(280px,65vw); padding:12px; border:1px solid var(--wb-line); border-radius:8px; background:var(--wb-paper); box-shadow:0 8px 24px #0003; white-space:normal; }
+.wb-reader-page-scrubber label { display:block; }
+.wb-reader-page-scrubber input[type=range] { display:block; width:100%; height:28px; margin:6px 0; padding:0; border:0; accent-color:var(--wb-accent); cursor:ew-resize; }
+.wb-reader-page-scrubber > div { display:flex; justify-content:space-between; color:var(--wb-muted); }
+
+.wb-reader-page-navigation > span { flex:0 0 auto; min-width:11ch; width:max-content; white-space:nowrap; overflow:visible; text-overflow:clip; }

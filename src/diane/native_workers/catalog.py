@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -61,6 +62,25 @@ def accounts() -> dict[str, dict[str, dict]]:
                 home = profile / ".claude" if (profile / ".claude").is_dir() else profile
                 result["claude"][profile.name] = {"label": profile.name, "env": {"CLAUDE_CONFIG_DIR": str(home)}}
     return result
+
+
+def claude_provider_home(source: str, account: str) -> Path:
+    from diane.server.paths import resolve_graphs_dir
+    account_id = hashlib.sha256(account.encode()).hexdigest()[:16]
+    return Path(resolve_graphs_dir()) / "model_accounts" / f"claude_{source}" / account_id
+
+
+def claude_history_profiles(profiles: dict):
+    """Read-only history locations; never add provider stores to login accounts."""
+    yield from profiles.items()
+    for account, profile in profiles.items():
+        for source, spec in API_PROVIDERS.items():
+            if "anthropic_url" not in spec:
+                continue
+            home = claude_provider_home(source, account)
+            if (home / "projects").is_dir():
+                yield account, {**profile, "history_provider": source,
+                                "env": {"CLAUDE_CONFIG_DIR": str(home)}}
 
 
 def binary(runtime: str) -> str | None:
@@ -223,11 +243,8 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
         cmd = [executable, "-p", objective, "--output-format", "stream-json"]
         if runtime == "claude":
             if source != "native":
-                from diane.server.paths import resolve_graphs_dir
                 # Isolate gateway login from cached subscription/keychain credentials.
-                import hashlib
-                account_id = hashlib.sha256(str(profile.get("account") or "default").encode()).hexdigest()[:16]
-                config_dir = Path(resolve_graphs_dir()) / "model_accounts" / f"claude_{source}" / account_id
+                config_dir = claude_provider_home(source, str(profile.get("account") or "default"))
                 config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
                 env.update(CLAUDE_CONFIG_DIR=str(config_dir), ANTHROPIC_BASE_URL=API_PROVIDERS[source]["anthropic_url"],
                            ANTHROPIC_AUTH_TOKEN=provider_key(source), ANTHROPIC_MODEL=model, ANTHROPIC_API_KEY="",

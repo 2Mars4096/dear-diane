@@ -11,7 +11,8 @@
 - [x] Follow the session's latest run when the user continues in Diane.
 - [x] Verify protocol, background execution, restart, duplicate requests, stop acknowledgement, session continuity, desktop routing, types, build and bundle budgets.
 - [x] Merge the Diane handoff branch into local main, preserving the existing uncommitted workspace changes.
-- [ ] Integrate the matching Todo companion branch and run paired installed-app acceptance while existing work is idle.
+- [x] Integrate the matching Todo companion branch (verified on current main October 13).
+- [ ] Run paired installed-app acceptance while existing work is idle.
 
 ## Decisions
 - Reuse the existing project store and composer profile builder; no independent task runtime, credential store, or model picker.
@@ -33,3 +34,19 @@
 - Merged through `e0f97750` on October 11. Combined main/workspace validation: 18 Python handoff/session tests, two desktop routing tests, frontend production build/budgets, and Electron compilation pass. No push, app installation, or worktree removal performed.
 
 - [x] Remove the clean, merged Sticky Todo worktree at user request on October 11; retain the feature branch. Four worktrees remain, including main.
+
+## October 12 — read-only companion integration review
+- [x] Inspect companion `/private/tmp/todo-sticky-diane` at `a7f7c05`; worktree clean at inspection.
+- [x] Compare frontend types, Rust bridge, Diane routes and desktop opening contract: version 1 projects; immutable UUID dispatch; six statuses; stop acknowledgement; native-only open on loopback 45173 align.
+- [x] Seven Diane API tests pass with deterministic execution, including repeated requests, interrupted admission, restart, subsequent Diane runs and scoped Stop.
+- [x] Companion `diane.ts`/`DianeAction.tsx` focused typecheck passes; existing browser fixture passes status indicators, reduced motion, open, Escape, double-click dedup, reload, Stop, disconnect and independent Todo editing with offline/pending/malformed/corrupt data.
+- Gap: full companion typecheck reports 16 errors in StarFocusOrbitalMap/3D/useStarFocus (optional ring, ES library target, argument count, missing Three types and related inference, duration union). None are in handoff files. Resolve in the Todo project before integration.
+- Remaining: merge matching companion branch, build its native shell, then paired installed-app acceptance with real persistence and idle Diane. Mock bridge checks do not prove native transport or installation.
+- This review did not modify, merge, install or restart either companion app.
+
+## October 13 — correct companion integration status
+- [x] Verify current Todo main already merged the companion on October 11 and released it in 2.1.7/2.1.8; current installed 2.1.10 passes strict deep signature verification. The October 12 stale-worktree review's “merge matching companion branch” next step is superseded; do not merge it again.
+- [x] Rerun current main's handoff/standalone browser fixture from an isolated snapshot: statuses, Open, Escape, deduplication, reload, Stop acknowledgement, disconnected state, and independent task CRUD with absent/stalled/malformed/corrupt/disabled integration all pass.
+- [x] Recheck full current companion TypeScript: the same 16 Star Focus diagnostics remain outside handoff. No unrelated Star Focus rewrites or native reinstall undertaken.
+- [x] Seven Diane handoff API regressions pass as part of the focused backend batch.
+- [ ] Paired installed authenticated dispatch and persistence acceptance remains pending while the Diane run is active. Existing installed native bundle is available; no redundant companion merge/build is required for unchanged handoff source.

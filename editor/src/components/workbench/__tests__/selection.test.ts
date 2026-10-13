@@ -26,3 +26,17 @@ it("keeps rendered text nodes and the native selection when the quote toolbar op
     act(()=>button.click());expect(sidecar).toHaveBeenCalledWith("Keep this");
   } finally { window.getSelection()?.removeAllRanges();act(()=>root.unmount());host.remove(); }
 });
+
+it("keeps plan choices attached to their response when later messages arrive", () => {
+  const host=document.createElement("div"); const root=createRoot(host);
+  try {
+    act(()=>root.render(createElement(WorkbenchConversation, {
+      messages:[{id:"plan",role:"assistant",content:"Review these choices.",timestamp:1,taskRunRef:{taskId:"task",runId:"run",status:"completed"}}, {id:"next",role:"user",content:"One more detail",timestamp:2}],
+      pending:{},loading:false,status:"Ready",onQuote:vi.fn(),
+      planReview:{runId:"run",version:1,content:createElement("button",null,"Use recommendation")},
+    })));
+    expect(host.querySelector('[data-message-id="plan"] button')?.textContent).toBe("Use recommendation");
+    expect(host.querySelector('[data-message-id="next"] button')).toBeNull();
+    expect(host.querySelectorAll(".wb-conversation-scroll")).toHaveLength(1);
+  } finally {act(()=>root.unmount());host.remove();}
+});

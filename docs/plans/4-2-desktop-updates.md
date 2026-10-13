@@ -49,7 +49,7 @@
 - [x] Show a dot on Settings and the download/install button while an update is available or ready.
 - [x] Stage checksum-verified Mac ZIPs through the existing identity/architecture/signature/version checks, idle guard and rollback installer; no Developer ID/Keychain writes needed for this private distribution.
 - [x] Package/sign the app before generating ZIP/DMG/checksum assets; remove local build-machine paths from published markers.
-- [ ] Publish release 0.1.1 and verify authenticated in-app discovery/download after GitHub access is restored (current API responses are HTTP 401).
+- Superseded by public releases through v0.1.5; authenticated private-feed acceptance is retired.
 - [x] Bootstrap the installed older Mac build once using the existing local installer; installed 0.1.1 on October 11 after confirming the app/backend were stopped and its default data store idle.
 
 Release scope remains the desktop shell for existing configured Python-backend installations. Standalone backend distribution is not bundled by this change.
@@ -61,8 +61,8 @@ Release scope remains the desktop shell for existing configured Python-backend i
 - [x] Validate exact tag source and checksums; allow resuming only matching drafts; protect published releases. Six publisher tests pass.
 - [x] Verify Git SSH access independently of the invalid local GitHub API token.
 - [x] Push isolated release source `11ab4e44` to main and tag `v0.1.1` through existing SSH access.
-- [ ] Verify Actions completion (local API token invalid; operator can view the private run).
-- [ ] Verify installed private-feed authentication separately; workflow authentication does not repair client login.
+- [x] Subsequent public publication runs verified; see 0.1.2–0.1.5 release receipts below.
+- Superseded: public updater requires no client GitHub login. Signed installed-client upgrade acceptance remains open.
 
 - [x] Add manual dispatch for an existing tag after the initial push produced zero runs; propagate the resolved source SHA into publication.
 
@@ -78,7 +78,8 @@ Release scope remains the desktop shell for existing configured Python-backend i
 - [x] Align client, packaged feed, and publisher with the user-supplied public `2Mars4096/dear-diane` repository; explicitly disable the private provider.
 - [x] Verify anonymous repository visibility; latest-release endpoint returns 404, so no published installer was verified.
 - [x] Replace auth prompts in errors with no-release/network/rate-limit feedback; retain manual download/install and rollback safeguards.
-- [ ] Verify discovery and download against a published public release, then installed-client acceptance. No publication or installation authorized by this change.
+- [x] Public release assets/anonymous manifest verified in later release receipts.
+- [ ] Verify a complete published-feed upgrade in the installed client; local reinstalls do not establish this.
 
 ## README review
 - [x] Apply humanizer to rewrite README around setup, a first task, agent/model selection, reading, files, remote work, and settings.
@@ -125,3 +126,28 @@ Release scope remains the desktop shell for existing configured Python-backend i
 ## 0.1.5 release
 - [x] Validate isolated source: 73 reader/document tests, ten publisher tests, frontend/Electron compilation and bundle budgets pass.
 - [x] Publish v0.1.5 (`501685ed`); Actions run 38138382110 succeeded, all five assets present and anonymous 0.1.5 manifest verified.
+
+## October 11 update cleanup repair
+- [x] Use original-fs for physical bundle operations and staged-app deletion; verify extracted ASAR cleanup in real Electron on success and validation rejection.
+- [x] Ten focused updater tests, production build/budgets and Electron compilation pass.
+- [x] Install fixed local 0.1.5 with rollback; signature/archive equality and both health endpoints pass after a startup retry.
+
+## October 13 — startup investigation and prepared fix
+- [x] Confirm installed app/proxy/backend are healthy while a real run is active; do not restart it.
+- [x] Address the documented synchronous NSAlert quit blockage with `dialog.showMessageBox` and explicit Quit. Retain ownership of failed-start backend processes so ordinary shutdown reaps them.
+- [x] Write a bounded 32 KiB latest-launch receipt at `userData/logs/startup.log` with launch/spawn/health/failure events and startup stderr; omit inherited environment values. Log failure must not prevent startup/quit.
+- [x] Centralize `original-fs` selection for physical archive hashing/removal. Targeted lint and real Electron success/failure cleanup checks pass.
+- [x] Build and ad-hoc sign the isolated arm64 snapshot at `/private/tmp/diane-priority-editor/release/mac-arm64/Dear Diane.app`; strict deep signature verification passes.
+- [ ] Install after idle check, then test LaunchServices relaunch. Root cause of earlier backend exits/timeouts remains unproven; this change fixes blocked error handling and adds evidence collection, not a claimed launch-cause fix.
+- Validation: 23 focused startup/update/health tests and the separately permission-enabled shutdown regression pass. Production build/budgets and Electron compilation pass.
+
+- [x] October 13: install the current local build at user request; signed bundle/archive equality, idle checks and launched backend/proxy health pass. Plan mode is now included in the installed app. Live model MCQ acceptance remains separate from the synthetic preview.
+
+- [x] October 13 final planning follow-up installed after work became idle: batched questions, Other/comments on one row and answer boundaries. Signature/archive equality and backend/proxy health pass; rollback `.Diane-previous-7a29b1da-ed0b-4bfc-b6ca-5a773e9da7c1.app` retained.
+
+- [x] Install concise choice labels and auto-select Other follow-up; seven focused tests, build/budgets, signature/archive equality and app health pass. Rollback retained at `/Applications/.Diane-previous-6c40a7e2-9cdb-4ebd-917c-a673be863601.app`.
+
+## 0.1.6 release
+- [x] Validate current installed-source snapshot: 506 frontend tests and 61 focused backend tests pass.
+- [x] Prepare 0.1.6 notes and version metadata, including the matching-backend requirement for Plan mode.
+- [ ] Push immutable source/tag and verify published Mac assets and anonymous update manifest.

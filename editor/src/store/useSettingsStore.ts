@@ -1,3 +1,4 @@
+import { workbenchFont, type WorkbenchFontId } from "../lib/workbenchFonts";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { workbenchPalette, type WorkbenchPaletteId } from "../lib/workbenchPalette";
@@ -5,6 +6,9 @@ import { workbenchPalette, type WorkbenchPaletteId } from "../lib/workbenchPalet
 export interface EditorSettings {
   theme: "system" | "vs-dark" | "vs" | "hc-black";
   workbenchColorScheme: WorkbenchPaletteId;
+  textFont: WorkbenchFontId;
+  headingFont: WorkbenchFontId;
+  highlightFont: WorkbenchFontId;
   workspaceSurfaceTheme: "original" | "industrial" | "factory-worn";
   workspaceSurfaceTone: "system" | "day" | "night";
 }
@@ -33,6 +37,7 @@ interface SettingsState extends EditorSettings {
 const DEFAULT_SETTINGS: EditorSettings = {
   theme: "system",
   workbenchColorScheme: "warm",
+  textFont: "system", headingFont: "system", highlightFont: "system",
   workspaceSurfaceTheme: "factory-worn",
   workspaceSurfaceTone: "system",
 };
@@ -83,7 +88,7 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: "dan-editor-settings",
-      version: 7,
+      version: 8,
       migrate: (persistedState, version) => {
         const state = persistedState as Partial<SettingsState> | undefined;
         if (!state) return persistedState as SettingsState;
@@ -111,7 +116,7 @@ export const useSettingsStore = create<SettingsState>()(
         }
 
         migrated = { ...migrated, workbenchColorScheme: workbenchPalette(migrated.workbenchColorScheme).id };
-        return migrated as SettingsState;
+        return { ...migrated, textFont: workbenchFont(migrated.textFont).id, headingFont: workbenchFont(migrated.headingFont).id, highlightFont: workbenchFont(migrated.highlightFont).id } as SettingsState;
       },
     },
   ),

@@ -74,12 +74,20 @@ If the interface cannot connect, check that the backend terminal is still runnin
 ## Your first task
 
 1. Create a project from the sidebar and select its working folder. In the desktop app, you can also drop a folder into the workspace.
-2. Choose New chat. Select the Lead agent and its model before sending a request.
+2. Choose New chat, or click + beside the project’s three-dot menu. To add a project directly, choose **New project** in that menu. Select the Lead agent and its model before sending a request.
 3. Describe the task and any constraints. Use Plan mode to inspect and discuss work before allowing changes.
 4. Follow the activity indicator while the agent works. Expand Work details to inspect recorded actions.
 5. Review the reply and any file changes. Use the Changes side panel to inspect project text edits and send selected differences back as feedback.
 
 Conversations and drafts survive switching between projects. Session titles stay stable after the first request; you can rename, pin, fork, or archive a chat from its menu. Removing a project from Diane leaves the folder and its files in place.
+
+### Plan the work first
+
+Send `/plan` to toggle planning, or `/plan <request>` to enter planning with a task. A **Plan mode** status appears while active. Type `/` to discover commands; `$` selects skills. Planning happens in the conversation. Answer inline multiple-choice questions with square checkboxes, then submit. Diane presents the outcome, scope, specifications, and next steps as a chat reply. Plans stay with the session.
+
+Diane drafts with at most three clarification questions across the planning session. Recommendations are labeled but never preselected. Questions specify whether to choose one or several options; you can also reply in chat. **Start this plan** executes the reviewed revision once blocking decisions are resolved. Plan mode is separate from skills and execution permissions; starting preserves those settings. The **Read only** permission setting must be changed explicitly before execution.
+
+Native agents can inspect the project while planning. The built-in API planner drafts from supplied conversation/context without running tools.
 
 ### Follow-ups and side conversations
 
@@ -108,7 +116,7 @@ In Settings > Providers, choose Connect or Manage to add, replace, or remove a k
 
 Settings > Skills controls sharing of installed skills across supported agents. Each CLI's own skill folders stay unchanged.
 
-To bring an existing conversation into a project, open its menu and choose Import native sessions. Select the conversations and import them as forks. Native originals remain intact. Available import and resume behavior depends on the agent; Antigravity imports are not currently supported.
+To bring an existing conversation into a project, open its menu and choose Import native sessions. Select the conversations and import them as forks. Native originals remain intact. Diane’s isolated Claude API-provider histories are available as independent history copies. Available import and resume behavior depends on the agent; Antigravity imports are not currently supported.
 
 ## Work with files
 
@@ -132,9 +140,11 @@ Reading position, annotations, references, and chat links are remembered. Open r
 
 Scanned PDFs use local OCR to make text selectable. Comments and highlights save immediately, including offline. Transcription of selected scan pixels uses OpenRouter; pending quotes retry when connected. Native text PDFs use their existing text directly. Export saves an annotated copy and preserves the original.
 
-PDFs and EPUBs share a reading toolbar with chapters, sizing, page layout, references, notes, export, and download. PDF chapters use embedded bookmarks or labelled headings detected from available text/OCR; scanned pages become eligible as you read them. PDFs also support direct page jumps. EPUBs support text-size controls and single-page or two-page layouts. You can select text, annotate, and export an annotated EPUB. Illustrations support local OCR. EPUBs must be unencrypted and no larger than 150 MB compressed or expanded. The paper catalogue and literature importer currently handle PDFs.
+PDFs and EPUBs share a reading toolbar with chapters, sizing, page layout, references, notes, export, and download. PDF chapters use embedded bookmarks or labelled headings detected from available text/OCR; scanned pages become eligible as you read them. Both readers support direct page jumps and a page slider on hover. EPUB supports continuous vertical scrolling or horizontal single/two-page reading, with keyboard and wheel navigation. EPUB page numbers cover the whole book and recalculate for the current window, text size, and layout. EPUBs support text-size controls and single-page or two-page layouts. You can select text, annotate, and export an annotated EPUB. Illustrations support local OCR. EPUBs must be unencrypted and no larger than 150 MB compressed or expanded. The paper catalogue and literature importer currently handle PDFs.
 
 ### Paper library
+
+Paper search (Cmd/Ctrl+K) supports scrolling and keyboard navigation through every match.
 
 Open Papers in the sidebar, or use Cmd/Ctrl+K to search by title, author, citation key, topic, or notes. Search accepts words in any order and small metadata typos. An empty search shows pinned and recent papers.
 
@@ -180,7 +190,7 @@ Settings has separate pages for appearance, notifications, providers, agents, sk
 
 Appearance includes eight paired light/dark palettes and independent Notes appearance controls. Notifications can alert you when work finishes or needs attention; browser notifications require permission.
 
-Hover Usage in the sidebar to see remaining account quota. Settings > Usage > Open analyzer shows token use across sessions or within one session. Optional model-based classification sends step summaries through OpenRouter, not file contents or command output.
+Hover Usage in the sidebar to see each discovered Codex/Claude account and configured API provider. Codex CLI and app profiles have separate quota rows; OpenRouter shows key spending. Unavailable quota is reported explicitly. Enter steers an active run, Cmd/Ctrl+Enter queues a follow-up, and Shift+Enter inserts a newline. Settings > Usage > Open analyzer shows token use across sessions or within one session. Optional model-based classification sends step summaries through OpenRouter, not file contents or command output.
 
 | Action | Shortcut |
 | --- | --- |
@@ -225,3 +235,9 @@ npm run build:verify
 Live-provider and real-browser evaluations are opt-in. Flutter 3.41 or newer is needed only to build the optional phone client. Planned phone personal-agent features are not yet available.
 
 The Python package is `dear-diane`, with imports under `diane`. Use `dear-diane --help` for commands; existing `dan` aliases and `DAN_*` configuration names remain supported. Existing installations keep their saved data and settings when updating.
+
+Appearance settings include one shared live preview, dropdown controls, a Neon preset, and ten font choices with separate controls for normal text, headings and saved highlight quotes.
+
+- Planning follow-up: show up to three MCQs together within the existing session question budget. Every question has Other with a custom answer and optional comments. Submit all answers together. Empty Plan mode adds no greeting to the transcript. `questions` is the batch field; legacy `question` remains readable.
+
+Planning choices are marked **Choose one** or **Choose multiple**. Typing in the comment field selects **Other** automatically.

@@ -1,8 +1,8 @@
 import { useId, useRef, useState } from "react";
 import { Download, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 
-export function ProjectMenu({ name, onNewChat, onEdit, onImport, onRemove }: {
-  name: string; onNewChat: () => void; onEdit: () => void; onImport?: () => void; onRemove: () => void;
+export function ProjectMenu({ name, onNewChat, onNewProject, onEdit, onImport, onRemove }: {
+  name: string; onNewChat: () => void; onNewProject: () => void; onEdit: () => void; onImport?: () => void; onRemove: () => void;
 }) {
   const headingId = useId();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -13,6 +13,7 @@ export function ProjectMenu({ name, onNewChat, onEdit, onImport, onRemove }: {
   const close = () => { menu.current?.hidePopover(); trigger.current?.focus(); };
   const dismiss = () => { confirmation.current?.close(); trigger.current?.focus(); };
   return <>
+    <button type="button" className="wb-project-new-chat" title={`New chat in ${name}`} aria-label={`New chat in ${name}`} onClick={onNewChat}><Plus size={14} /></button>
     <button ref={trigger} className="wb-project-new-chat" title={`Project actions: ${name}`} aria-label={`Actions for ${name}`} aria-haspopup="menu" aria-expanded={open} onClick={() => {
       if (open) { close(); return; }
       const box = trigger.current!.getBoundingClientRect();
@@ -32,6 +33,7 @@ export function ProjectMenu({ name, onNewChat, onEdit, onImport, onRemove }: {
       buttons[index]?.focus();
     }}>
       <button role="menuitem" onClick={() => { close(); onNewChat(); }}><Plus size={15} />New chat</button>
+      <button role="menuitem" onClick={() => { close(); onNewProject(); }}><Plus size={15} />New project</button>
       <button role="menuitem" onClick={() => { close(); onEdit(); }}><Pencil size={15} />Edit project</button>
       {onImport && <button role="menuitem" onClick={() => { close(); onImport(); }}><Download size={15} />Import native sessions</button>}
       <div className="wb-menu-separator" />

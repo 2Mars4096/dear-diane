@@ -1,6 +1,9 @@
+import { epubNavigationKey, epubWheelNavigation, prioritizeEpubInput } from './lib/epub-input';
+import { useEpubPagination } from './useEpubPagination';
+import { ReaderPageNavigation } from './ReaderPageNavigation';
 import { waitForReaderSize } from './lib/reader-size';
 import { useEffect, useRef, useState } from 'react';
-import ePub from 'epubjs';
+import ePub, { EpubCFI } from 'epubjs';
 import type Book from 'epubjs/types/book';
 import type Rendition from 'epubjs/types/rendition';
 import type { Location } from 'epubjs/types/rendition';
@@ -9,26 +12,27 @@ import type Section from 'epubjs/types/section';
 import type { NavItem } from 'epubjs/types/navigation';
 import type { ReaderAsk, ReaderFile } from './ReaderView';
 import { readerActions, useReaderState, type ReaderDraft } from './readerStore';
-import { readPaperReferenceTray, writePaperReferenceTray, MAX_PAPER_REFERENCE_TAGS, MAX_PAPER_REFERENCE_LINES, movePaperReferenceTag, type PaperReferenceTray } from './lib/paper-reference-tags';
+import { readPaperReferenceTray, writePaperReferenceTray, MAX_PAPER_REFERENCE_TAGS, type PaperReferenceTray } from './lib/paper-reference-tags';
 import { checkEpub, downloadEpubBlob, exportAnnotatedEpub, protectEpubDocument, EPUB_MAX_BYTES } from './lib/epub';
 import { prepareAttachments } from '../../lib/attachFiles';
 import { textSelection, anchorRange } from '../documents/TextAnnotations';
 import { normalizePassageText } from './lib/paper-anchors';
-import { EpubReferencePreview } from './EpubReferencePreview';
+import { EpubReferences } from './EpubReferences';
+import { bridgeReaderFileDrops } from './lib/reader-file-drop';
 import { EpubImageTools } from './EpubImageTools';
 import './epub-reader.css';
 import { ReaderToolbar } from './ReaderToolbar';
 import { Download, MessageSquareQuote } from 'lucide-react';
 
 type Selection = ReaderDraft & { context: string; image?: string; crop?: Blob };
-type Position = { cfi?: string; font?: number; spread?: string };
+type Position = { cfi?: string; font?: number; spread?: string; flow?: string };
 const key = (path: string) => `diane.reader.epub.v1:${path}`;
 function savedPosition(path: string): Position {
   try {
     const saved = JSON.parse(localStorage.getItem(key(path)) || '{}');
     if (!saved || typeof saved !== 'object') return {};
     return { cfi: typeof saved.cfi === 'string' && /^epubcfi\(.+\)$/.test(saved.cfi) ? saved.cfi : undefined,
-      font: typeof saved.font === 'number' && Number.isFinite(saved.font) ? saved.font : 100, spread: saved.spread === 'auto' ? 'auto' : 'none' };
+      font: typeof saved.font === 'number' && Number.isFinite(saved.font) ? saved.font : 100, spread: saved.spread === 'auto' ? 'auto' : 'none', flow: saved.flow === 'paginated' ? 'paginated' : 'scrolled-continuous' };
   } catch { return {}; }
 }
 function flatten(items: NavItem[], depth = 0): { href: string; label: string }[] {
@@ -40,12 +44,14 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
   const root = useRef<HTMLElement>(null);
   const bookRef = useRef<Book | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
+  const turnRef = useRef<(direction: number) => void>(() => {});
   const bytesRef = useRef<ArrayBuffer | null>(null);
   const callbacks = useRef({ onAsk, onNotes }); callbacks.current = { onAsk, onNotes };
   const state = useReaderState(file.path);
   const [initial] = useState(() => savedPosition(file.path));
   const [font, setFont] = useState(() => Math.max(70, Math.min(200, initial.font || 100)));
   const [spread, setSpread] = useState(initial.spread === 'auto' ? 'auto' : 'none');
+  const [flow, setFlow] = useState(initial.flow || 'scrolled-continuous');
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -53,12 +59,45 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
   const [toc, setToc] = useState<{ href: string; label: string }[]>([]);
   const [chapter, setChapter] = useState('');
   const [location, setLocation] = useState<Location | null>(null);
+  const pagination = useEpubPagination(bookRef.current, host, ready, font, spread);
+  const bookPage = location ? (flow === 'paginated'
+    ? pagination.pages.findIndex(page => page.section === location.start.index && page.page === location.start.displayed.page) + 1
+    : (() => {
+      const compare = new EpubCFI();
+      let low = 0, high = pagination.pages.length;
+      while (low < high) { const mid = (low + high) >>> 1; if (compare.compare(pagination.pages[mid].cfi, location.start.cfi) <= 0) low = mid + 1; else high = mid; }
+      return Math.max(1, low);
+    })()) : 0;
   const [selection, setSelection] = useState<Selection | null>(null);
   const [tray, setTray] = useState(() => readPaperReferenceTray(file.path));
   const [references, setReferences] = useState(false);
+  const [referencesPinned, setReferencesPinned] = useState(false);
+  const referenceTimers = useRef<{ open?: number; close?: number }>({});
+  const cancelReferenceTimers = () => {
+    window.clearTimeout(referenceTimers.current.open);
+    window.clearTimeout(referenceTimers.current.close);
+  };
+  useEffect(() => () => {
+    window.clearTimeout(referenceTimers.current.open);
+    window.clearTimeout(referenceTimers.current.close);
+  }, []);
+  const openReferences = (hover = false) => {
+    cancelReferenceTimers();
+    if (hover) referenceTimers.current.open = window.setTimeout(() => setReferences(true), 140);
+    else setReferences(true);
+  };
+  const closeReferences = () => {
+    cancelReferenceTimers();
+    if (!referencesPinned) referenceTimers.current.close = window.setTimeout(() => { setReferences(false); setPreview(null); }, 240);
+  };
+  const pinReferences = () => {
+    cancelReferenceTimers();
+    setReferencesPinned(!referencesPinned); setReferences(!referencesPinned);
+    if (referencesPinned) setPreview(null);
+  };
   const [preview, setPreview] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const options = useRef({ font, spread }); options.current = { font, spread };
+  const options = useRef({ font, spread, flow }); options.current = { font, spread, flow };
   const position = useRef(initial.cfi);
   const tocRef = useRef(toc); tocRef.current = toc;
   const persist = () => { try { localStorage.setItem(key(file.path), JSON.stringify({ ...options.current, cfi: position.current })); } catch { setNotice('Reading position could not be saved on this device.'); } };
@@ -109,7 +148,7 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
       }
       await waitForReaderSize(host.current!, controller.signal);
       if (cancelled) return;
-      rendition = book.renderTo(host.current!, { width: '100%', height: '100%', flow: 'paginated', spread: options.current.spread, allowScriptedContent: false });
+      rendition = book.renderTo(host.current!, { width: '100%', height: '100%', manager: flow === 'paginated' ? 'default' : 'continuous', flow, spread: options.current.spread, allowScriptedContent: false });
       renditionRef.current = rendition;
       rendition.on('displayError', failure);
       const applyTheme = () => {
@@ -122,9 +161,20 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
       applyTheme(); rendition.themes.fontSize(`${options.current.font}%`);
       theme = new MutationObserver(applyTheme); theme.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
       let lastSection = '';
+      let located = false;
+      let turning = false;
+      const turn = (direction: number) => {
+        prioritizeEpubInput();
+        if (cancelled || !located || turning) return;
+        turning = true;
+        void (direction > 0 ? rendition!.next() : rendition!.prev()).catch(failure).finally(() => { turning = false; });
+      };
+      turnRef.current = turn;
       rendition.on('relocated', (next: Location) => {
         if (cancelled) return;
-        setLocation(next); setChapter(next.start.href);
+        located = true;
+        window.clearTimeout(timeout);
+        setReady(true); setLocation(next); setChapter(next.start.href);
         if (lastSection && lastSection !== next.start.href) setSelection(null);
         lastSection = next.start.href;
         position.current = next.start.cfi; persist();
@@ -133,7 +183,6 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
         try {
           const range = contents.range(cfi); const quote = range.toString().trim();
           if (!quote) return;
-          if (quote.length > 700) { setNotice('Select a passage of up to 700 characters.'); setSelection(null); return; }
           const section = book!.spine.get(contents.sectionIndex);
           const before = range.cloneRange(); before.selectNodeContents(contents.document.body); before.setEnd(range.startContainer, range.startOffset);
           const start = before.toString().length;
@@ -144,6 +193,7 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
         } catch (e) { failure(e); }
       });
       rendition.hooks.content.register((contents: Contents) => {
+        if (root.current) bridgeReaderFileDrops(contents.document, root.current);
         contents.document.addEventListener('click', event => {
           const image = (event.target as Element)?.closest('img');
           if (!image || !/^(blob:|data:image\/)/.test(image.src)) return;
@@ -151,11 +201,8 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
           const section = book!.spine.get(contents.sectionIndex);
           setSelection({ draftId: crypto.randomUUID(), quote: image.alt || 'Selected illustration', pageNumber: contents.sectionIndex + 1, rotation: 0, rects: [], anchor: null, kind: 'area', epub: { cfi: contents.cfiFromRange(range), href: section.href, label: labelFor(contents.sectionIndex, section.href) }, context: image.parentElement?.textContent?.slice(0, 6000) || '', image: image.src });
         });
-        contents.document.addEventListener('keydown', event => {
-          if (event.altKey || event.ctrlKey || event.metaKey || (event.target as Element)?.closest('input,textarea,[contenteditable]')) return;
-          if (event.key === 'ArrowRight') { event.preventDefault(); void rendition!.next().catch(failure); }
-          if (event.key === 'ArrowLeft') { event.preventDefault(); void rendition!.prev().catch(failure); }
-        });
+        contents.document.addEventListener('keydown', event => epubNavigationKey(event, turn));
+        if (flow === 'paginated') contents.document.addEventListener('wheel', epubWheelNavigation(turn), { passive: false });
       });
       try { await rendition.display(position.current); }
       catch {
@@ -166,12 +213,15 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
       if (cancelled || controller.signal.aborted) return;
       resize = new ResizeObserver(() => {
         const box = host.current?.getBoundingClientRect();
-        if (box && box.width > 0 && box.height > 0) rendition?.resize(box.width, box.height);
+        // Resizing clears EPUB.js views. Before its first relocated event there
+        // is no location to redisplay, so an eager observer can erase the book.
+        if (located && box && box.width > 0 && box.height > 0) rendition?.resize(box.width, box.height);
       });
-      resize.observe(host.current!); setReady(true);
-    })().catch(failure).finally(() => window.clearTimeout(timeout));
+      resize.observe(host.current!);
+    })().catch(error => { window.clearTimeout(timeout); failure(error); });
     return () => {
       cancelled = true; controller.abort(); window.clearTimeout(timeout); resize?.disconnect(); theme?.disconnect();
+      turnRef.current = () => {};
       renditionRef.current = null; bookRef.current = null; bytesRef.current = null;
       // Destroy the book once outstanding open/display promises settle to avoid stale hooks.
       if (book?.isOpen) book.destroy();
@@ -179,8 +229,15 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
     };
     // File identity owns the entire engine; controls update the current rendition below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file.path, file.url, attempt]);
+  }, [file.path, file.url, attempt, flow]);
 
+  useEffect(() => {
+    const element = host.current;
+    if (!element || flow !== 'paginated') return;
+    const wheel = epubWheelNavigation(direction => turnRef.current(direction));
+    element.addEventListener('wheel', wheel, { passive: false });
+    return () => element.removeEventListener('wheel', wheel);
+  }, [flow]);
   useEffect(() => { const r = renditionRef.current; if (r && ready) { r.themes.fontSize(`${font}%`); r.spread(spread); persist(); } }, [font, spread, ready]);
   useEffect(() => {
     const r = renditionRef.current; if (!r || !ready) return;
@@ -223,12 +280,12 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
   const updateTray = (next: PaperReferenceTray) => {
     setTray(next); try { writePaperReferenceTray(file.path, next); } catch { setNotice('References could not be saved on this device.'); }
   };
-  const reference = () => {
-    const saved = selection || (location ? { quote: labelFor(location.start.index, location.start.href), pageNumber: location.start.index + 1, rotation: 0 as const, rects: [], epub: { cfi: location.start.cfi, href: location.start.href, label: labelFor(location.start.index, location.start.href) } } : null);
+  const reference = (locationOnly = false) => {
+    const saved = (!locationOnly && selection) || (location ? { quote: labelFor(location.start.index, location.start.href), pageNumber: location.start.index + 1, rotation: 0 as const, rects: [], epub: { cfi: location.start.cfi, href: location.start.href, label: labelFor(location.start.index, location.start.href) } } : null);
     if (!saved) return;
     if (tray.tags.length >= MAX_PAPER_REFERENCE_TAGS) { setNotice('Remove a reference before adding another (8 maximum).'); setReferences(true); return; }
     const { quote, pageNumber, rotation, rects, epub, kind } = saved as ReaderDraft;
-    updateTray({ ...tray, tags: [...tray.tags, { selection: { quote, pageNumber, rotation, rects, epub, kind }, createdAt: new Date().toISOString(), label: quote.slice(0, 60), lineId: tray.lines[0].lineId, materialId: file.path, pageNumber, tagId: crypto.randomUUID() }] }); setReferences(true);
+    updateTray({ ...tray, tags: [...tray.tags, { selection: { quote, pageNumber, rotation, rects, epub, kind }, createdAt: new Date().toISOString(), label: quote.slice(0, 60), lineId: tray.lines[0].lineId, materialId: file.path, pageNumber, tagId: crypto.randomUUID() }] }); setReferences(true); setReferencesPinned(true);
   };
   const ask = async () => {
     if (!selection || busy) return;
@@ -255,50 +312,37 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
     catch (e) { setNotice(e instanceof Error ? e.message : 'Could not export EPUB.'); }
     finally { setBusy(false); }
   };
-  const go = (target: string) => { void renditionRef.current?.display(target).catch(e => setNotice(e instanceof Error ? e.message : 'This location could not be opened.')); };
-  return <section className="wb-epub" ref={root} aria-label={`Reading ${file.name}`}>
+  const go = (target: string) => { prioritizeEpubInput(); void renditionRef.current?.display(target).catch(e => setNotice(e instanceof Error ? e.message : 'This location could not be opened.')); };
+  return <section className="wb-epub" ref={root} tabIndex={-1} onKeyDown={event => epubNavigationKey(event.nativeEvent, direction => turnRef.current(direction))} aria-label={`Reading ${file.name}`}>
+    <div className="wb-epub-toolbar">
     <ReaderToolbar
-      navigation={<>
-        <button disabled={!ready || location?.atStart} aria-label="Previous page" onClick={() => void renditionRef.current?.prev().catch(e => setNotice(String(e)))}>←</button>
-        <button disabled={!ready || location?.atEnd} aria-label="Next page" onClick={() => void renditionRef.current?.next().catch(e => setNotice(String(e)))}>→</button>
-      </>}
+      navigation={<ReaderPageNavigation page={bookPage} total={pagination.pages.length} loading={pagination.loading} onGo={page => { const target = pagination.pages[page - 1]; if (target) go(target.cfi); }} previous={() => turnRef.current(-1)} next={() => turnRef.current(1)} canPrevious={ready && !location?.atStart} canNext={ready && !location?.atEnd} />}
       chapters={<select aria-label="Chapter" disabled={!ready} value={toc.find(item => item.href.split('#')[0] === chapter.split('#')[0])?.href || ''} onChange={e => go(e.target.value)}><option value="" disabled>Chapters</option>{toc.map((item, index) => <option key={`${item.href}:${index}`} value={item.href}>{item.label}</option>)}</select>}
       sizing={<>
-        <button disabled={!ready || font <= 70} aria-label="Smaller text" onClick={() => setFont(value => Math.max(70, value - 10))}>A−</button><button disabled={!ready || font === 100} aria-label="Reset text size" onClick={() => setFont(100)}>{font}%</button><button disabled={!ready || font >= 200} aria-label="Larger text" onClick={() => setFont(value => Math.min(200, value + 10))}>A+</button>
+        <button disabled={!ready || font <= 70} aria-label="Smaller text" onClick={() => setFont(value => Math.max(70, value - 10))}>−</button><button disabled={!ready || font === 100} aria-label="Reset text size" onClick={() => setFont(100)}>{font}%</button><button disabled={!ready || font >= 200} aria-label="Larger text" onClick={() => setFont(value => Math.min(200, value + 10))}>+</button>
       </>}
-      layout={<select aria-label="Page layout" value={spread} onChange={e => setSpread(e.target.value)}><option value="none">Single page</option><option value="auto">Two pages</option></select>}
-      references={<button disabled={!ready} aria-expanded={references} onClick={() => setReferences(!references)}>References{tray.tags.length ? ` ${tray.tags.length}` : ''}</button>}
+      layout={<select aria-label="Page layout" value={flow === 'paginated' ? spread : 'scroll'} onChange={e => { const value = e.target.value; setFlow(value === 'scroll' ? 'scrolled-continuous' : 'paginated'); setSpread(value === 'auto' ? 'auto' : 'none'); }}><option value="scroll">Continuous scroll</option><option value="none">Single page</option><option value="auto">Two pages</option></select>}
+      references={<button disabled={!ready} aria-expanded={references} aria-pressed={referencesPinned} onMouseEnter={() => openReferences(true)} onMouseLeave={closeReferences} onFocus={() => openReferences()} onBlur={closeReferences} onClick={pinReferences}>References{tray.tags.length ? ` ${tray.tags.length}` : ''}</button>}
       actions={<>
         <button onClick={onNotes}><MessageSquareQuote size={13} />Notes{state.comments.length ? ` ${state.comments.length}` : ''}</button>
         <button disabled={!ready || busy || !state.comments.length} title="Download an EPUB copy with highlights and notes" onClick={() => void exportBook()}><Download size={13} />{busy ? 'Preparing…' : 'Export'}</button>
         <a href={file.url} download={file.name}>Download</a>
       </>}
     />
-    {references && <section className="wb-epub-references" aria-label="Saved references">
-      <button disabled={!ready} onClick={reference}>Save current location</button>{tray.lines.length < MAX_PAPER_REFERENCE_LINES && <button onClick={() => updateTray({ ...tray, lines: [...tray.lines, { lineId: crypto.randomUUID(), label: 'New group' }] })}>Add group</button>}
-      {tray.lines.map(line => <div key={line.lineId}>
-        <input aria-label="Reference group name" value={line.label} maxLength={40} onChange={e => updateTray({ ...tray, lines: tray.lines.map(item => item.lineId === line.lineId ? { ...item, label: e.target.value } : item) })} />
-        {tray.lines.length > 1 && <button aria-label={`Remove ${line.label} group`} onClick={() => updateTray({ ...tray, lines: tray.lines.filter(item => item.lineId !== line.lineId), tags: tray.tags.map(tag => tag.lineId === line.lineId ? { ...tag, lineId: tray.lines.find(item => item.lineId !== line.lineId)!.lineId } : tag) })}>Remove group</button>}
-        {tray.tags.filter(tag => tag.lineId === line.lineId).map(tag => <div className="wb-epub-reference" key={tag.tagId}>
-          <button onClick={() => tag.selection?.epub && go(tag.selection.epub.cfi)}>{tag.selection?.epub?.label || `Chapter ${tag.pageNumber}`}</button>
-          <input aria-label="Reference label" maxLength={80} value={tag.label} onChange={e => updateTray({ ...tray, tags: tray.tags.map(item => item.tagId === tag.tagId ? { ...item, label: e.target.value } : item) })} />
-          <button aria-expanded={preview === tag.tagId} onClick={() => setPreview(preview === tag.tagId ? null : tag.tagId)}>Preview</button>
-          <select aria-label={`Group for ${tag.label}`} value={tag.lineId} onChange={e => updateTray({ ...tray, tags: tray.tags.map(item => item.tagId === tag.tagId ? { ...item, lineId: e.target.value } : item) })}>{tray.lines.map(item => <option key={item.lineId} value={item.lineId}>{item.label}</option>)}</select>
-          <button aria-label={`Move ${tag.label} earlier`} disabled={tray.tags.filter(item => item.lineId === line.lineId)[0]?.tagId === tag.tagId} onClick={() => { const group = tray.tags.filter(item => item.lineId === line.lineId); const previous = group[group.findIndex(item => item.tagId === tag.tagId) - 1]; if (previous) updateTray({ ...tray, tags: movePaperReferenceTag(tray.tags, tag.tagId, line.lineId, previous.tagId) }); }}>↑</button>
-          <button aria-label={`Remove ${tag.label} reference`} onClick={() => updateTray({ ...tray, tags: tray.tags.filter(item => item.tagId !== tag.tagId) })}>Remove</button>
-          {preview === tag.tagId && <EpubReferencePreview book={bookRef.current} selection={tag.selection} />}
-        </div>)}
-      </div>)}
+    {references && <section className="wb-epub-references" aria-label="Saved references" onMouseEnter={cancelReferenceTimers} onMouseLeave={closeReferences} onFocus={cancelReferenceTimers} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) closeReferences(); }} onKeyDown={event => { if (event.key === "Escape") { cancelReferenceTimers(); setReferencesPinned(false); setReferences(false); setPreview(null); } }}>
+      <EpubReferences book={bookRef.current} tray={tray} onChange={updateTray} onKeep={() => reference(true)} onGo={go} onPin={() => setReferencesPinned(true)} preview={preview} onPreview={setPreview} page={bookPage || 1} />
     </section>}
+    </div>
     {!ready && !error && <p className="wb-epub-status" role="status">Opening EPUB…</p>}
     {error && <div className="wb-epub-status" role="alert"><strong>Could not open EPUB</strong><p>{error}</p><button onClick={() => setAttempt(value => value + 1)}>Retry</button></div>}
     {notice && <p className="wb-epub-status" role="status">{notice}</p>}
-    <div className="wb-epub-stage" ref={host} />
-    {ready && location && <div className="wb-epub-status">{labelFor(location.start.index, location.start.href)} · {location.start.displayed.page}/{location.start.displayed.total} in this section</div>}
+    <div className="wb-epub-stage" ref={host} onPointerDown={() => root.current?.focus({ preventScroll: true })} />
+    <div className="wb-epub-selection-overlay">
     {selection?.image && <EpubImageTools key={selection.epub?.cfi} image={selection.image} onSelection={(quote, rects, crop) => setSelection(current => current ? { ...current, quote, rects, crop } : null)} />}
     {selection && <div className="wb-epub-controls wb-epub-selection" aria-label="Selection actions"><q>{selection.quote}</q>
       <button disabled={busy} onClick={() => { const { context: _context, image: _image, crop: _crop, ...draft } = selection; readerActions.setDraft(file.path, draft); onNotes(); }}>Comment</button>
-      <button className="primary" disabled={busy} onClick={() => void ask()}>Ask</button><button disabled={busy} onClick={reference}>Ref</button><button aria-label="Dismiss selection" onClick={() => setSelection(null)}>×</button>
+      <button className="primary" disabled={busy} onClick={() => void ask()}>Ask</button><button disabled={busy} onClick={() => reference()}>Ref</button><button aria-label="Dismiss selection" onClick={() => setSelection(null)}>×</button>
     </div>}
+    </div>
   </section>;
 }

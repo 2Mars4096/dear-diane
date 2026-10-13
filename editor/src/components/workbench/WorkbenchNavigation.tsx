@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Layers, PanelLeft, Plus, X } from "lucide-react";
 import { directionKeys, heldDirectionSlot, reconcileSessionSlots, type NavigationSession } from "./navigation";
 
@@ -52,16 +52,16 @@ export function WorkbenchNavigation(props: Props) {
     return () => window.removeEventListener("blur", clear);
   }, []);
   const project = props.projects.find((item) => item.id === props.activeProjectId);
-  const sessions = project?.sessions ?? [];
+  const sessions = useMemo(() => project?.sessions ?? [], [project?.sessions]);
   const slots = useMemo(() => reconcileSessionSlots(storedSlots[project?.id ?? ""] ?? [], sessions), [storedSlots, project?.id, sessions]);
   // Persist only while open: a transient empty list during API loading must not erase slots.
+  if (mode === "sessions" && project && sessions.length > 0 && JSON.stringify(storedSlots[project.id]) !== JSON.stringify(slots)) {
+    setStoredSlots({ ...storedSlots, [project.id]: slots });
+  }
   useEffect(() => {
     if (mode !== "sessions" || !project || sessions.length === 0) return;
-    if (JSON.stringify(storedSlots[project.id]) === JSON.stringify(slots)) return;
-    const next = { ...storedSlots, [project.id]: slots };
-    setStoredSlots(next);
-    try { localStorage.setItem(storageKey, JSON.stringify(next)); } catch { /* In-memory navigation still works. */ }
-  }, [mode, project, sessions.length, slots, storedSlots]);
+    try { localStorage.setItem(storageKey, JSON.stringify(storedSlots)); } catch { /* In-memory navigation still works. */ }
+  }, [mode, project, sessions.length, storedSlots]);
 
   const open = (next: "projects" | "sessions") => {
     heldDirections.current.clear();
@@ -70,7 +70,8 @@ export function WorkbenchNavigation(props: Props) {
     setSelectedSlot(Math.max(0, slots.indexOf(props.activeSessionId)));
     setMode(next);
   };
-  useEffect(() => { if (props.projectRequest) open("projects"); }, [props.projectRequest]);
+  const openRequestedProject = useEffectEvent(() => open("projects"));
+  useEffect(() => { if (props.projectRequest) openRequestedProject(); }, [props.projectRequest]);
   const close = () => { heldDirections.current.clear(); setMode(null); };
   useEffect(() => {
     const node = dialog.current;
@@ -180,7 +181,14 @@ export function WorkbenchNavigation(props: Props) {
             })}
             {!props.projects.length && <p>No projects yet. Create one to begin.</p>}
           </div>
-          <div className="wb-carousel-controls">{props.onAllProjects && <button onClick={() => { close(); props.onAllProjects?.(); }} aria-pressed={props.projectScope === "*"} title={`All projects (${modifier}⇧0)`} aria-keyshortcuts="Meta+Shift+0 Control+Shift+0">All projects <span className="wb-shortcut">{modifier}⇧0</span></button>}<button onClick={() => move(-1)} disabled={index === 0} aria-label="Previous project"><ChevronLeft size={18} /></button><span title={preview?.name || "Projects"}>{preview?.name || "Projects"}</span><button onClick={() => move(1)} disabled={index >= props.projects.length - 1} aria-label="Next project"><ChevronRight size={18} /></button></div>
+          <div className="wb-carousel-controls">
+            {props.onAllProjects && <button className="wb-carousel-all" onClick={() => { close(); props.onAllProjects?.(); }} aria-pressed={props.projectScope === "*"} title={`All projects (${modifier}⇧0)`} aria-keyshortcuts="Meta+Shift+0 Control+Shift+0">All projects <span className="wb-shortcut">{modifier}⇧0</span></button>}
+            <div className="wb-carousel-navigation">
+              <button onClick={() => move(-1)} disabled={index === 0} aria-label="Previous project"><ChevronLeft size={18} /></button>
+              <span title={preview?.name || "Projects"}>{preview?.name || "Projects"}</span>
+              <button onClick={() => move(1)} disabled={index >= props.projects.length - 1} aria-label="Next project"><ChevronRight size={18} /></button>
+            </div>
+          </div>
         </> : <div className="wb-wheel">
           <div className="wb-wheel-center" aria-live="polite"><span className="wb-project-number">SESSION {String(selectedSlot + 1).padStart(2, "0")}</span><strong>{selected?.title || "Room for your next conversation"}</strong><span className="wb-wheel-status">{selected ? selected.id === props.activeSessionId ? "Current session" : "Ready to resume" : "No session in this position"}</span><button disabled={!selected} onClick={() => commit()}>Open session <span aria-hidden="true">↵</span></button></div>
           {slots.map((id, position) => {

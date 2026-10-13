@@ -28,7 +28,7 @@ export function useSidecarControls(initial: Execution = {}) {
   }, agent, profiles) : base;
   return { execution, label: agent === 'native' ? 'Diane' : agent === 'codex' ? 'Codex' : agent === 'claude' ? 'Claude' : agent,
     render: (disabled: boolean) => <>
-      <label className="wb-sidecar-mode"><WandSparkles size={12}/><select aria-label="Mode" disabled={disabled} value={mode} onChange={event => { setMode(event.target.value); setChanged(true); }}><option value="plan">Plan</option><option value="auto">Auto</option><option value="full">Full access</option></select><ChevronDown size={12}/></label>
+      <label className="wb-sidecar-mode"><WandSparkles size={12}/><select aria-label="Execution permissions" disabled={disabled} value={mode} onChange={event => { setMode(event.target.value); setChanged(true); }}><option value="plan">Read only</option><option value="auto">Auto</option><option value="full">Full access</option></select><ChevronDown size={12}/></label>
       <LeadAgentMenu selected={agent} onChange={value => { setAgent(value); setChanged(true); }} disabled={disabled} profiles={profiles} onProfilesChange={value => { setProfiles(value); setChanged(true); }}/>
       <NativeWorkerSettings profiles={team} onChange={value => { setTeam(value); setChanged(true); }}/>
     </> };

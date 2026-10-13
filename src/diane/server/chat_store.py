@@ -436,6 +436,8 @@ class ChatStore:
                 journal.unlink()
             self._journal_counts.pop(journal, None)
             self._thread_cache.pop(path, None)
+            plan = self._chats_dir(workflow_id) / f"{thread_id}.plan.json"
+            plan.unlink(missing_ok=True)
             meta = self._meta_path(workflow_id, thread_id)
             if meta.exists():
                 meta.unlink()
@@ -552,7 +554,7 @@ class ChatStore:
         results: list[dict[str, Any]] = []
         for wf_dir in self._workflow_dirs(workflow_id):
             for p in wf_dir.glob("*.json"):
-                if p.name.endswith(".meta.json"):
+                if p.name.endswith((".meta.json", ".plan.json")):
                     continue
                 try:
                     thread = self._load_thread_from_path(p)
@@ -695,7 +697,7 @@ class ChatStore:
         results: list[dict[str, Any]] = []
         for wf_dir in self._workflow_dirs(workflow_id):
             for p in sorted(wf_dir.glob("*.json")):
-                if p.name.endswith(".meta.json"):
+                if p.name.endswith((".meta.json", ".plan.json")):
                     continue
                 try:
                     thread = self._load_thread_from_path(p)

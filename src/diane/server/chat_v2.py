@@ -1095,6 +1095,7 @@ def _agent_surface_context(surface_context: dict[str, Any]) -> dict[str, Any]:
         "selected_blueprint_node",
         "active_file",
         "selected_skills",
+        "plan_review",
         "appended_attachments",
         "communication_policy",
         "execution_policy",

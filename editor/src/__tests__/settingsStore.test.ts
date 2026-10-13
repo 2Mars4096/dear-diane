@@ -51,6 +51,6 @@ describe("useSettingsStore", () => {
       theme: "vs", workspaceSurfaceTheme: "original", workspaceSurfaceTone: "night",
     } }));
     await useSettingsStore.persist.rehydrate();
-    expect(useSettingsStore.getState()).toMatchObject({ theme: "vs", workbenchColorScheme: "warm", workspaceSurfaceTone: "night" });
+    expect(useSettingsStore.getState()).toMatchObject({ theme: "vs", workbenchColorScheme: "warm", workspaceSurfaceTone: "night", textFont: "system", headingFont: "system", highlightFont: "system" });
   });
 });

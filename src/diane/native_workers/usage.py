@@ -1,12 +1,13 @@
 """Near-real-time quota/usage for the accounts Diane runs agents with.
 
-Codex writes its rate limits into every session rollout; Claude Code reports
+Codex reports per-login rate limits through its app-server; Claude Code reports
 usage through Anthropic's OAuth usage endpoint using the CLI's own login.
 Credentials are read server-side only and never returned to the browser.
 """
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -30,73 +31,94 @@ def _window_label(minutes: int | None) -> str:
     return f"{minutes}m"
 
 
-def codex_usage(home: Path) -> dict:
-    """Latest rate limits recorded by any Codex session under this account's home."""
-    from .codex_home import private_home
-    newest = None
-    for sessions in (home / "sessions", private_home(home) / "sessions"):
-        for path in sessions.glob("*/*/*/*.jsonl"):
-            try:
-                stamp = path.stat().st_mtime
-            except OSError:
+async def _codex_snapshot(home: Path) -> dict:
+    """Read this login's quota without opening a thread or starting a model turn."""
+    import asyncio
+    from .catalog import binary
+    executable = binary("codex")
+    if not executable:
+        raise FileNotFoundError("Codex CLI unavailable")
+    process = await asyncio.create_subprocess_exec(
+        executable, "app-server", "--listen", "stdio://",
+        cwd=str(home), env={**os.environ, "CODEX_HOME": str(home)},
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL, limit=2 * 1024 * 1024)
+
+    async def request(sequence, method, params):
+        process.stdin.write((json.dumps({"id": sequence, "method": method, "params": params}) + "\n").encode())
+        await process.stdin.drain()
+        while line := await process.stdout.readline():
+            row = json.loads(line)
+            if row.get("id") != sequence or "method" in row:
                 continue
-            if newest is None or stamp > newest[0]:
-                newest = (stamp, path)
-    if newest is None:
-        return {"windows": [], "error": "No Codex sessions yet"}
-    stamp, path = newest
-    limits = None
-    cwd = ""
+            if "error" in row:
+                raise ValueError("Codex quota request failed")
+            return row.get("result", {})
+        raise ConnectionError("Codex quota connection closed")
+
+    async def read():
+        await request(1, "initialize", {"clientInfo": {"name": "diane_usage", "version": "1.0.0"}})
+        process.stdin.write(b'{"method":"initialized","params":{}}\n')
+        await process.stdin.drain()
+        return await request(2, "account/rateLimits/read", {})
+
     try:
-        with path.open() as head:  # session meta: which folder the session ran in
-            first = json.loads(head.readline() or "{}")
-            cwd = str((first.get("payload") if isinstance(first.get("payload"), dict) else first).get("cwd") or "")
-    except (OSError, ValueError):
-        pass
+        return await asyncio.wait_for(read(), timeout=12)
+    finally:
+        if process.returncode is None:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+
+
+def _codex_windows(data: dict) -> dict:
+    buckets = data.get("rateLimitsByLimitId") or {"codex": data.get("rateLimits", {})}
+    windows, plan = [], ""
+    for name, limits in buckets.items():
+        if not isinstance(limits, dict):
+            continue
+        plan = plan or limits.get("planType") or ""
+        for key in ("primary", "secondary"):
+            bucket = limits.get(key)
+            if not isinstance(bucket, dict) or bucket.get("usedPercent") is None:
+                continue
+            minutes = bucket.get("windowDurationMins")
+            label = _window_label(minutes)
+            if name != "codex":
+                label = f"{limits.get('limitName') or name} · {label}"
+            windows.append({"label": label, "used_percent": float(bucket["usedPercent"]),
+                            "resets_at": bucket.get("resetsAt"), "minutes": minutes or 0})
+    windows.sort(key=lambda window: window.pop("minutes"))
+    return {"windows": windows, "plan": plan}
+
+
+_codex_cache: dict[str, tuple[float, dict]] = {}
+
+
+def codex_usage(home: Path) -> dict:
+    import asyncio
+    home = home.expanduser().resolve()
     try:
-        with path.open("rb") as stream:
-            stream.seek(0, os.SEEK_END)
-            size = stream.tell()
-            stream.seek(max(0, size - 512_000))
-            for line in stream.read().decode(errors="replace").splitlines():
-                if '"rate_limits"' not in line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                payload = row.get("payload") if isinstance(row.get("payload"), dict) else row
-                found = payload.get("rate_limits") or (payload.get("info") or {}).get("rate_limits") if isinstance(payload, dict) else None
-                if isinstance(found, dict):
-                    limits = found
+        auth_stamp = (home / "auth.json").stat().st_mtime_ns
     except OSError:
-        return {"windows": [], "error": "Could not read the Codex session log"}
-    if not limits:
-        return {"windows": [], "error": "No rate-limit data in the latest session"}
-    windows = []
-    for key in ("secondary", "primary"):  # short window first
-        bucket = limits.get(key)
-        if isinstance(bucket, dict) and bucket.get("used_percent") is not None:
-            windows.append({"label": _window_label(bucket.get("window_minutes")), "used_percent": float(bucket["used_percent"]),
-                            "resets_at": float(bucket["resets_at"]) if bucket.get("resets_at") else None})
-    return {"windows": windows, "plan": limits.get("plan_type") or "", "observed_at": stamp, "active_account": codexx_account_for(cwd)}
-
-
-def codexx_account_for(cwd: str) -> str:
-    """codexx remembers the last account per project folder; rollouts themselves carry no account."""
-    if not cwd:
-        return ""
-    config = Path(os.environ.get("DAN_CODEXX_CONFIG", str(user_home() / ".config/codexx/config.toml")))
+        auth_stamp = 0
+    key = f"{home}:{auth_stamp}"
+    cached = _codex_cache.get(key)
+    if cached and time.time() - cached[0] < 30:
+        return dict(cached[1])
     try:
-        projects = json.loads((config.parent / "state.json").read_text()).get("projects", {})
-    except (OSError, ValueError, AttributeError):
-        return ""
-    folder = Path(cwd)
-    for candidate in [folder, *folder.parents]:
-        account = (projects.get(str(candidate)) or {}).get("last_account") if isinstance(projects.get(str(candidate)), dict) else None
-        if account:
-            return str(account)
-    return ""
+        result = {**_codex_windows(asyncio.run(_codex_snapshot(home))), "observed_at": time.time()}
+    except Exception as exc:
+        # Never substitute a shared transcript's quota for this account's quota.
+        result = {"windows": [], "error": f"Account quota unavailable ({type(exc).__name__})"}
+    _codex_cache[key] = (time.time(), result)
+    return dict(result)
 
 
 def _claude_token(env: dict) -> str:
@@ -120,12 +142,13 @@ def _pretty_bucket(key: str) -> str:
 
 
 def claude_usage(account: str, env: dict) -> dict:
-    cached = _claude_cache.get(account)
-    if cached and time.time() - cached[0] < CLAUDE_CACHE_SECONDS:
-        return cached[1]
     token = _claude_token(env)
     if not token:
-        return {"windows": [], "error": "Not logged in to Claude Code"}
+        return {"windows": [], "error": "Could not read Claude Code login"}
+    cache_key = hashlib.sha256(token.encode()).hexdigest()
+    cached = _claude_cache.get(cache_key)
+    if cached and time.time() - cached[0] < CLAUDE_CACHE_SECONDS:
+        return cached[1]
     try:
         request = Request(CLAUDE_USAGE_URL, headers={"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20"})
         with urlopen(request, timeout=8) as response:
@@ -134,7 +157,7 @@ def claude_usage(account: str, env: dict) -> dict:
         return {"windows": [], "error": f"Usage unavailable ({type(exc).__name__})"}
     windows = _claude_windows(data)
     result = {"windows": windows, "observed_at": time.time()}
-    _claude_cache[account] = (time.time(), result)
+    _claude_cache[cache_key] = (time.time(), result)
     return result
 
 
@@ -184,31 +207,62 @@ def recent_accounts(base: Path, limit: int = 2) -> list[tuple[str, str]]:
     return [key for key, _ in sorted(seen.items(), key=lambda item: item[1], reverse=True)[:limit]]
 
 
-def usage_report(base: Path, limit: int = 2) -> dict:
+def openrouter_usage(key: str) -> dict:
+    try:
+        request = Request("https://openrouter.ai/api/v1/key", headers={"Authorization": f"Bearer {key}"})
+        with urlopen(request, timeout=8) as response:
+            data = json.loads(response.read())["data"]
+        # Deliberately omit the API's key label, IDs and other credential metadata.
+        spend = {name: data.get(name) for name in ("usage", "usage_daily", "usage_monthly", "limit", "limit_remaining", "limit_reset")}
+        return {"windows": [], "spend": spend, "observed_at": time.time()}
+    except Exception as exc:
+        return {"windows": [], "error": f"Usage unavailable ({type(exc).__name__})"}
+
+
+def usage_report(base: Path, limit: int | None = None) -> dict:
+    """All discovered logins and configured API providers; recency only sets order."""
+    from concurrent.futures import ThreadPoolExecutor
+    from .models import API_PROVIDERS, provider_key
     configured = accounts()
-    chosen = [pair for pair in recent_accounts(base, limit) if pair[0] in configured and pair[1] in configured[pair[0]]]
-    for backend in ("codex", "claude"):  # always have something to show
-        if len(chosen) >= limit:
-            break
-        if backend in configured and (backend, "default") not in chosen:
-            chosen.append((backend, "default"))
-    rows = []
-    seen_stores: set[str] = set()
-    for backend, account in chosen[:limit]:
-        env = configured[backend][account].get("env", {})
-        if backend == "codex":
-            home = Path(env.get("CODEX_HOME") or os.environ.get("CODEX_HOME") or user_home() / ".codex")
-            store = str((home / "sessions").resolve())
-            if store in seen_stores:  # accounts sharing one session store report the same numbers
+    # A desktop launch can inherit the app profile; still include the native CLI home.
+    native = user_home() / ".codex"
+    codex = dict(configured.get("codex", {}))
+    if native.is_dir():
+        codex.setdefault("personal", {"label": "Native CLI", "env": {"CODEX_HOME": str(native)}})
+    configured = {**configured, "codex": codex}
+    recent = recent_accounts(base, 1000)
+    jobs, seen = [], {}
+    for backend in ("codex", "claude"):
+        for account, profile in configured.get(backend, {}).items():
+            env = profile.get("env", {})
+            home = Path(env.get("CODEX_HOME") or native).expanduser().resolve() if backend == "codex" else None
+            # Deduplicate aliases by credential location, never by shared session storage.
+            identity = str((home / "auth.json").resolve()) if home else str(Path(env["CLAUDE_CONFIG_DIR"]).expanduser().resolve()) if env.get("CLAUDE_CONFIG_DIR") else "keychain"
+            store = (backend, identity)
+            alias = "Native CLI" if backend == "codex" and home == native.resolve() else "Default profile" if account == "default" else account
+            if store in seen:
+                seen[store]["aliases"].append(alias)
                 continue
-            seen_stores.add(store)
-            usage = codex_usage(home)
-            # The latest session may belong to a different account than Diane last used.
-            account = usage.pop("active_account", "") or account
-        elif backend == "claude":
-            usage = claude_usage(account, env)
-        else:
-            usage = {"windows": [], "error": "This CLI does not expose usage locally"}
-        usage.pop("active_account", None)
-        rows.append({"backend": backend, "account": account, "label": (configured[backend].get(account) or {}).get("label", account), **usage})
+            row = {"backend": backend, "account": account, "label": alias, "aliases": [alias]}
+            seen[store] = row
+            jobs.append((row, (lambda home=home: codex_usage(home)) if home else (lambda account=account, env=env: claude_usage(account, env))))
+    for source in API_PROVIDERS:
+        key = provider_key(source)
+        if not key:
+            continue
+        row = {"backend": source, "account": "api", "label": "Configured API key", "aliases": []}
+        jobs.append((row, (lambda key=key: openrouter_usage(key)) if source == "openrouter" else
+                     (lambda: {"windows": [], "error": "Quota is available in the provider’s billing dashboard."})))
+    jobs.sort(key=lambda job: min((recent.index((job[0]["backend"], a)) for a in [job[0]["account"], *job[0]["aliases"]] if (job[0]["backend"], a) in recent), default=len(recent)))
+    if limit is not None:
+        jobs = jobs[:max(1, limit)]
+    def collect(job):
+        row, read = job
+        try:
+            result = read()
+        except Exception as exc:
+            result = {"windows": [], "error": f"Usage unavailable ({type(exc).__name__})"}
+        return {**row, **result}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        rows = list(pool.map(collect, jobs))
     return {"accounts": rows, "fetched_at": time.time()}

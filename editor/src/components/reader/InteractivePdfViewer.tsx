@@ -46,6 +46,7 @@ import {
   type PaperReferenceTag
 } from "./lib/paper-reference-tags";
 import { readPaperPdfPosition, writePaperPdfPosition, type PaperPdfPosition } from "./lib/paper-reading-position";
+import { ReaderPageNavigation } from "./ReaderPageNavigation";
 import { ReaderToolbar } from "./ReaderToolbar";
 import type { ReaderChapter } from "./lib/pdf-chapters";
 import styles from "./interactive-pdf-viewer.module.css";
@@ -1332,12 +1333,7 @@ export function InteractivePdfViewer({
   return (
     <div className={styles.viewer} ref={rootRef}>
       <ReaderToolbar
-        navigation={<>
-          <button aria-label="Previous page" disabled={!canGoBack} onClick={() => navigatePage(pageNumber - 1)}>←</button>
-          <input aria-label="Page number" key={pageNumber} type="number" min={1} max={pageCount || 1} defaultValue={pageNumber} onKeyDown={event => { if (event.key === 'Enter') { const value = Number(event.currentTarget.value); if (Number.isInteger(value) && value >= 1 && value <= pageCount) navigatePage(value); } }} onBlur={event => { const value = Number(event.currentTarget.value); if (Number.isInteger(value) && value >= 1 && value <= pageCount) navigatePage(value); else event.currentTarget.value = String(pageNumber); }} />
-          <span>/ {pageCount || '…'}</span>
-          <button aria-label="Next page" disabled={!canGoForward} onClick={() => navigatePage(pageNumber + 1)}>→</button>
-        </>}
+        navigation={<ReaderPageNavigation page={pageNumber} total={pageCount} onGo={navigatePage} previous={() => navigatePage(pageNumber - 1)} next={() => navigatePage(pageNumber + 1)} canPrevious={canGoBack} canNext={canGoForward} />}
         chapters={<select aria-label="Chapter" disabled={!chapters.length} value={[...chapters].reverse().find(item => item.page <= pageNumber)?.id || ''} title="PDF outline, or headings detected from available text and OCR" onChange={event => { const chapter = chapters.find(item => item.id === event.target.value); if (chapter) navigatePage(chapter.page); }}><option value="" disabled>{chaptersLoading ? 'Finding chapters…' : chapters.length ? 'Chapters' : 'No chapters found'}</option>{chapters.map(item => <option key={item.id} value={item.id}>{item.detected ? 'Detected · ' : ''}{'　'.repeat(item.depth)}{item.label} · p. {item.page}</option>)}</select>}
         sizing={<>
           <button aria-label="Zoom out" disabled={zoom <= MIN_ZOOM} onClick={() => changeZoom(Math.max(MIN_ZOOM, Math.round((zoom - ZOOM_STEP) * 10) / 10))}>−</button>

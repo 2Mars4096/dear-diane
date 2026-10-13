@@ -98,7 +98,7 @@ it('uses independent sidebar mode and lead selections for execution', async () =
   const execution = { backend: 'claude', profile_policy: { permission_mode: 'auto' } };
   try {
     await act(async () => root.render(createElement(SidecarChat, { parentId: 'parent', workflowId: 'project', workspaceId: 'project', workspaceRoot: '/work', context: [], selection: { text: '', token: 0 }, execution, leadLabel: 'Claude', onClose: vi.fn(), onCreated: vi.fn() })));
-    act(() => { const mode = host.querySelector('select[aria-label="Mode"]') as HTMLSelectElement; mode.value = 'plan'; mode.dispatchEvent(new Event('change', { bubbles: true })); const lead = host.querySelector('select[aria-label="Lead agent"]') as HTMLSelectElement; lead.value = 'codex'; lead.dispatchEvent(new Event('change', { bubbles: true })); });
+    act(() => { const mode = host.querySelector('select[aria-label="Execution permissions"]') as HTMLSelectElement; mode.value = 'plan'; mode.dispatchEvent(new Event('change', { bubbles: true })); const lead = host.querySelector('select[aria-label="Lead agent"]') as HTMLSelectElement; lead.value = 'codex'; lead.dispatchEvent(new Event('change', { bubbles: true })); });
     const input = host.querySelector('textarea')!;
     act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Inspect'); input.dispatchEvent(new Event('input', { bubbles: true })); });
     await act(async () => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Send')!.click());

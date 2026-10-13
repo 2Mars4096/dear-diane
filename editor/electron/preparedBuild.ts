@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 // Electron mounts .asar archives as virtual directories. Hash their physical files.
-const archiveFs: typeof import('node:fs') = process.versions.electron ? require('original-fs') : require('node:fs');
+import { physicalFs as archiveFs } from "./physicalFs";
 
 async function digest(file: string): Promise<string> {
   const hash = createHash('sha256');

@@ -2677,6 +2677,16 @@ describe("workspace blueprint nodes", () => {
     ).toBe(true);
   });
 
+  it("does not restore a previous chat after an explicit empty project selection", () => {
+    expect(shouldAutoRestoreSessionForTest({
+      projectSelected: true,
+      activeThreadPresent: false,
+      creatingSession: false,
+      targetThreadId: "previous-project-thread",
+      threadCount: 3,
+    })).toBe(false);
+  });
+
   it("does not start duplicate auto-restore while session history is loading", () => {
     expect(
       shouldAutoRestoreSessionForTest({

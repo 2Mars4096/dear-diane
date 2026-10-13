@@ -57,3 +57,60 @@
 - Scoped `settings.css` aligns labels and right-side controls; narrow layouts stack controls and scroll category navigation horizontally. Theme preview uses existing palette tokens, without changing stored palettes.
 - Provider status rows reveal Connect/Manage forms. Appearance changes still save automatically; credentials retain explicit Save/Cancel/Remove actions.
 - Browser evidence: `output/playwright/settings-{light,dark,mobile,providers}.png`. Real backend writes and desktop installation were not performed.
+
+## October 12 — visual appearance choices
+- [x] Use dropdown selectors and one shared live workspace preview for colors and all font roles, per user follow-up; remove per-option cards.
+- [x] Add Neon/Terminal with independent light/dark selection.
+- [x] Add System, Humanist, Bookish, Monospace and six bundled fonts (Inter, Lora, Space Grotesk, Orbitron, Monoton, Tilt Neon), with independently saved normal/headings/highlight-quote fonts and live specimens.
+- [x] Preserve original PDF/EPUB typography; apply highlight fonts to saved quotes and reference labels.
+- [x] Verify six settings/palette tests, real browser application/reload and 390px layout; inspect desktop screenshot and verify all six bundled font files load.
+- [x] Verify production build and reinstall locally. Installed Settings confirms one preview, all six bundled fonts loading, independent roles and narrow fit. Signature/archive equality and app/backend health pass; rollback retained at `/Applications/.Diane-previous-4b8abfec-848e-422b-bbcf-a521554013b1.app`.
+
+- [x] Repeat local reinstall at user request; signature and both health endpoints pass. Rollback: `/Applications/.Diane-previous-c199de61-dde7-4e67-bd20-692847de0015.app`.
+
+- [x] Remove sticky appearance preview; preview and controls share normal document flow.
+- [x] Rebuild and reinstall non-sticky appearance layout. Installed browser check: preview moves 220px with 220px scroll; signature and app/backend health pass.
+
+- [x] Add a direct new-chat plus button immediately before the project actions menu, reusing its existing project-scoped handler.
+- [x] Build and install project new-chat shortcut.
+
+- [x] Match Reply to selection / Sidecar chat toolbar corners to composer/message bubbles (12px).
+- [x] Verify installed selection toolbar corners: selection, message and composer all compute to 12px. Production build/budgets, signature, archive equality and both health endpoints pass. Rollback retained at `/Applications/.Diane-previous-d2001e72-bbe8-4461-b4e7-b7d5a74890a3.app`.
+
+## October 12 — project switcher controls
+- [x] Separate All projects text action from the previous/name/next navigation group; wrap groups on narrow windows.
+- [x] Verify desktop/narrow layout and reinstall locally: installed Electron checks at 1200/828/390px show no overlap, text fits and arrows/name stay aligned; 390px screenshot inspected. Build/budgets, signature, archive equality and health pass.
+
+- [x] Add New project to sidebar project menu, opening the existing creation dialog directly.
+- [x] Verify direct sidebar creation entry and install locally: installed Electron opens a blank New project form and closes the menu without opening the carousel. Build/budgets, signature, archive equality and health pass.
+
+## October 12 — isolated backlog review
+- [x] Review search, Settings and project-menu keyboard interaction in a synthetic browser fixture.
+- [x] Verify Settings palette/font persistence, modal focus behavior and 390px layout; open result 30 using the keyboard.
+- [x] Repair unbroken-paper-title horizontal overflow in the search list; preserve established palette values.
+- [x] Post-fix browser verification passes at 390px and desktop width. Screenshots: `output/playwright/low-risk-*.png`.
+- Full application contrast audit, physical-device checks and installed-app acceptance are separate; this batch does not restart or replace the app.
+
+## October 12 — project context restoration
+- [x] Reproduce old chat and project reappearing after creating a new project.
+- [x] Explicit project selection suppresses startup auto-restore and clears remembered previous chat; initial startup restoration remains supported.
+- [x] Session/project regressions: 153 tests pass; production build/budgets pass.
+- [x] Verify installed creation flow retains new project and blank chat; reinstalled locally. Same isolated Electron reproduction changes from Old project / old selection / one message to ra-neo fixture / no old selection / zero messages. Signature/archive/health verified.
+
+## October 12 — sidebar new-chat folder
+- [x] Reproduce scope/active-project mismatch: sidebar ra-neo plus posts chat creation to old project and dispatches old root.
+- [x] Default New chat target follows explicit sidebar project scope, retaining active-project fallback for All projects and explicit caller overrides.
+- [x] Installed verification intercepts `/api/chats/ra` creation and `/api/v2/agent-runs` with `/Users/lizhi/Downloads/local_projects/ra-neo`. Pre-fix same fixture targeted old project/root. No model task submitted. Build/budgets, signature, archive equality and health pass.
+
+## October 13 — account usage and composer simplification
+- [x] Remove the two-account panel limit and shared-session-store deduplication. Include the native CLI home even when desktop defaults inherit the app profile; merge only credential-location aliases.
+- [x] Use Codex `account/rateLimits/read` without starting a thread/turn; preserve bucket labels, plan and observation timestamp. Failed reads never borrow another account's rollout quota.
+- [x] Show Claude account availability and configured API providers; OpenRouter key spending/remaining key budget is separate from subscription percentages and account balance. No credentials/remote key labels returned.
+- [x] Make Enter explicitly steer and Cmd/Ctrl+Enter queue independently of placement-button selection. Preserve Shift+Enter/IME; modified Enter bypasses autocomplete selection.
+- [x] Remove “Added to Up next” status and header Stop run; keep queue rows and composer Stop.
+- [x] Clean navigation render/effect state synchronization; browser checks cover project/session open, Escape and requested reopen.
+- [x] Validate 502-test isolated snapshot, 10 usage backend tests and mobile/desktop account rendering. Read-only live probes: native CLI Pro and app Pro Lite have different quotas; configured OpenRouter usage works, Claude login unreadable.
+- [ ] Install and verify the updated composer in the installed app once its active run ends.
+- Protocol references: [Codex account quotas](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt), [OpenRouter current key](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key).
+
+- [x] Queue reference follow-up: use persisted display text for new requests; convert older reference envelopes to source-labelled multiline quotes. Preserve the execution prompt and queue IDs/actions. 164 focused tests and TypeScript check pass; installed acceptance pending.

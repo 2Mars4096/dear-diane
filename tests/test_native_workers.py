@@ -216,7 +216,7 @@ def test_cursor_chat_import_reads_store_without_writing(monkeypatch, tmp_path):
         (user / "workspaceStorage" / workspace_id / "workspace.json").write_text(json.dumps({"folder": folder}))
     legacy = sqlite3.connect(user / "workspaceStorage/w1/state.vscdb")
     legacy.execute("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)")
-    legacy.execute("INSERT INTO ItemTable VALUES ('composer.composerData', ?)", (json.dumps({"allComposers": [{"composerId": "old", "name": "Older chat"}, {"composerId": "gone", "name": "Pruned"}]}),))
+    legacy.execute("INSERT INTO ItemTable VALUES ('composer.composerData', ?)", (json.dumps({"allComposers": [{"composerId": "old", "name": "Older chat"}, {"composerId": "gone", "name": "Pruned"}] + [{"composerId": cid} for cid in ("c2", "c3", "c4")] + [{"composerId": "legacy-sub", "isSubagent": True}, {"composerId": "legacy-archived", "isArchived": True}]}),))
     legacy.commit(); legacy.close()
     (user / "globalStorage").mkdir(parents=True)
     db = user / "globalStorage/state.vscdb"
@@ -229,6 +229,8 @@ def test_cursor_chat_import_reads_store_without_writing(monkeypatch, tmp_path):
     for bubble, kind, text in [("b1", 1, "How should the reader work?"), ("b2", 2, ""), ("b3", 2, "Select, then ask."), ("b4", 2, "Answers stay in the side chat.")]:
         con.execute("INSERT INTO cursorDiskKV VALUES (?, ?)", (f"bubbleId:c1:{bubble}", json.dumps({"type": kind, "text": text})))
     con.execute("INSERT INTO cursorDiskKV VALUES ('composerData:old', ?)", (json.dumps({"conversation": [{"type": 1, "text": "hi"}, {"type": 2, "text": "hello"}]}),))
+    for cid in ("c2", "c3", "c4", "legacy-sub", "legacy-archived"):
+        con.execute("INSERT INTO cursorDiskKV VALUES (?, ?)", (f"composerData:{cid}", json.dumps({"conversation": [{"type": 1, "text": "excluded"}]})))
     con.commit(); con.close()
     before = db.stat().st_mtime_ns
     monkeypatch.setenv("DAN_CURSOR_USER_DIR", str(user))
@@ -348,3 +350,48 @@ async def test_old_codex_worker_recovers_history_into_private_session(monkeypatc
     await team.start('codex', 'Next request', worker_id='old')
     await asyncio.gather(*team.tasks.values())
     assert calls[-1][0] == 'private-new'
+
+
+@pytest.mark.parametrize("field", ["conversation", "fullConversationHeadersOnly"])
+def test_cursor_oversized_chat_is_rejected_without_partial_import(tmp_path, field):
+    import sqlite3
+    from diane.native_workers.sessions import cursor_messages, CURSOR_BUBBLE_LIMIT
+    db = tmp_path / "cursor.db"
+    bubble = {"type": 1, "text": "hello"} if field == "conversation" else {"bubbleId": "b"}
+    with sqlite3.connect(db) as con:
+        con.execute("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)")
+        con.execute("INSERT INTO cursorDiskKV VALUES (?, ?)", ("composerData:large", json.dumps({field: [bubble] * (CURSOR_BUBBLE_LIMIT + 1)})))
+    original = db.read_bytes()
+    with pytest.raises(ValueError, match="20,000-bubble.*no messages imported"):
+        cursor_messages(db, "large")
+    assert db.read_bytes() == original
+
+
+def test_claude_provider_histories_are_discovered_without_changing_accounts(monkeypatch, tmp_path):
+    from diane.native_workers import catalog, sessions, token_usage
+    monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path / "graphs"))
+    profiles = {"default": {"env": {"CLAUDE_CONFIG_DIR": str(tmp_path / "native")}}}
+    configured = {"claude": profiles}
+    monkeypatch.setattr(sessions, "accounts", lambda: configured)
+    monkeypatch.setattr(token_usage, "accounts", lambda: configured)
+    monkeypatch.setattr(token_usage, "user_home", lambda: tmp_path)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    home = catalog.claude_provider_home("openrouter", "default")
+    project = home / "projects" / "work"
+    project.mkdir(parents=True)
+    path = project / "provider-session.jsonl"
+    path.write_text(json.dumps({"type": "user", "cwd": str(workspace), "message": {"role": "user", "content": "Provider history"}}) + "\n")
+    original = path.read_bytes()
+    found = sessions.discover(str(workspace))
+    assert len(found) == 1 and found[0]["provider"] == "openrouter"
+    assert found[0]["account"] == "default" and found[0]["continuation"] == "history"
+    assert sessions.messages(found[0])[0]["content"] == "Provider history"
+    assert ("claude", "default", home) in token_usage._stores()
+    report = token_usage.list_sessions(tmp_path / "analysis")
+    assert any(row["session_id"] == "provider-session" for row in report["sessions"])
+    assert sessions.discover(str(tmp_path / "other")) == []
+    assert profiles == {"default": {"env": {"CLAUDE_CONFIG_DIR": str(tmp_path / "native")}}}
+    assert path.read_bytes() == original

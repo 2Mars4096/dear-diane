@@ -80,7 +80,7 @@
  outline-offset:-2px;
 }
 .papers-search-result[aria-selected=true] > svg { color:var(--wb-accent); }
-.papers-search-result > div { min-width:0; flex:1; }
+.papers-search-result > div { min-width:0; flex:1; overflow-wrap:anywhere; }
 .papers-search-result strong { font-size:14px; font-weight:550; }
 .papers-search-result small { font-size:10px; color:var(--wb-muted); }
 .papers-search-dialog footer { display:flex; gap:10px; align-items:center; justify-content:space-between; border-top:1px solid var(--wb-line); padding:12px 20px; font-size:11px; color:var(--wb-muted); }

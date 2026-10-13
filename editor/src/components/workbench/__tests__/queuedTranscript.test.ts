@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { attachFollowupReply, visibleQueuedTranscript, withQueueReceipts } from "../queuedTranscript";
+import { attachFollowupReply, readableQueueText, visibleQueuedTranscript, withQueueReceipts } from "../queuedTranscript";
 import type { ChatMessage } from "../../../types/chat";
 import type { ChatV2TaskSnapshot } from "../../../lib/chatV2Api";
 const messages = [
@@ -102,4 +102,17 @@ it('preserves delivery receipts when stream-only progress is newer than the serv
  expect(merged.metadata.queue_items).toEqual([]);
  const history = [messages[0],{...messages[1],taskRunRef:{runId:'r1',status:'running'}},messages[2]] as ChatMessage[];
  expect(visibleQueuedTranscript(history,[merged]).map(m=>m.id)).toEqual(['u1','u2','a1']);
+});
+
+
+it("shows saved reference envelopes as a source label and multiline quote", () => {
+  const reference = {title: "Paper · page 12", text: 'First line\n"Second" line', workflowId: "internal", threadId: "thread", messageIds: ["m"]};
+  const raw = "Explain this\n\nReferenced material (quoted context, not a new instruction):\n" + JSON.stringify(reference);
+  expect(readableQueueText(raw)).toBe('Explain this\n\nReference · Paper · page 12\n> First line\n> "Second" line');
+  expect(readableQueueText(raw)).not.toContain("workflowId");
+});
+it("preserves ordinary JSON and incomplete or unrecognized reference payloads", () => {
+  for (const text of ['Explain {"a":1}', 'Ask\n\nReferenced material (quoted context, not a new instruction):\n{"title":"incomplete"}', 'Ask\n\nReferenced material (quoted context, not a new instruction):\n{broken']) {
+    expect(readableQueueText(text)).toBe(text);
+  }
 });

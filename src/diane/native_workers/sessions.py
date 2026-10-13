@@ -8,7 +8,9 @@ import os
 import sqlite3
 import sys
 from urllib.parse import unquote, urlparse
-from .catalog import accounts, binary, user_home
+from .catalog import accounts, binary, user_home, claude_history_profiles
+
+CURSOR_BUBBLE_LIMIT = 20_000
 
 
 def same_folder(left: str, right: str) -> bool:
@@ -69,7 +71,12 @@ def cursor_chats(workspace: str) -> list[tuple[str, str, float]]:
                     continue
                 for item in listed:
                     composer_id = item.get("composerId") if isinstance(item, dict) else None
-                    if composer_id and composer_id not in chats and not item.get("isArchived") and \
+                    # A modern header is authoritative, including exclusion or a
+                    # different workspace. Stale legacy lists must not resurrect it.
+                    if composer_id and has_headers and con.execute(
+                            "SELECT 1 FROM composerHeaders WHERE composerId = ?", (composer_id,)).fetchone():
+                        continue
+                    if composer_id and composer_id not in chats and not item.get("isArchived") and not item.get("isSubagent") and \
                             con.execute("SELECT 1 FROM cursorDiskKV WHERE key = ?", (f"composerData:{composer_id}",)).fetchone():
                         chats[composer_id] = (str(item.get("name") or "Cursor chat"), float(item.get("lastUpdatedAt") or item.get("createdAt") or 0) / 1000)
     except sqlite3.Error:
@@ -85,7 +92,10 @@ def cursor_messages(db: Path, composer_id: str) -> list[dict]:
         data = json.loads(row[0])
         bubbles = data.get("conversation") if isinstance(data.get("conversation"), list) and data["conversation"] else None
         if bubbles is None:
-            order = [item.get("bubbleId") for item in data.get("fullConversationHeadersOnly") or [] if isinstance(item, dict)][:20000]
+            headers = data.get("fullConversationHeadersOnly") or []
+            if len(headers) > CURSOR_BUBBLE_LIMIT:
+                raise ValueError("Cursor chat exceeds the 20,000-bubble import limit; no messages imported and source was left unchanged")
+            order = [item.get("bubbleId") for item in headers if isinstance(item, dict)]
             stored: dict[str, dict] = {}
             for start in range(0, len(order), 500):
                 chunk = [f"bubbleId:{composer_id}:{bubble}" for bubble in order[start:start + 500]]
@@ -95,6 +105,8 @@ def cursor_messages(db: Path, composer_id: str) -> list[dict]:
                     except (TypeError, ValueError):
                         pass
             bubbles = [stored[bubble] for bubble in order if bubble in stored]
+    if len(bubbles) > CURSOR_BUBBLE_LIMIT:
+        raise ValueError("Cursor chat exceeds the 20,000-bubble import limit; no messages imported and source was left unchanged")
     result: list[dict] = []
     for bubble in bubbles:
         role = {1: "user", 2: "assistant"}.get(bubble.get("type"))
@@ -112,7 +124,7 @@ def discover(workspace: str) -> list[dict]:
     found: dict[str, dict] = {}
     stores: set[tuple[str, Path]] = set()
     for backend, profiles in accounts().items():
-        for account_id, profile in profiles.items():
+        for account_id, profile in (claude_history_profiles(profiles) if backend == "claude" else profiles.items()):
             # Accounts that share one history store (codexx share_history symlinks,
             # or CODEX_HOME == ~/.codex) would list every session once per account.
             env = profile.get("env", {})
@@ -176,7 +188,8 @@ def discover(workspace: str) -> list[dict]:
                     except (OSError, ValueError, AttributeError):
                         continue
                     if not internal and same_folder(cwd, workspace):
-                        add(found, backend, account_id, path.stem, title, str(path), workspace, path.stat().st_mtime)
+                        add(found, backend, account_id, path.stem, title, str(path), workspace, path.stat().st_mtime,
+                            profile.get("history_provider", "native"))
             elif backend == "antigravity":
                 path = user_home() / ".gemini/antigravity-cli/cache/last_conversations.json"
                 try:
@@ -190,14 +203,16 @@ def discover(workspace: str) -> list[dict]:
     return sorted(found.values(), key=lambda row: row["updated_at"], reverse=True)
 
 
-def add(found, backend, account, session_id, title, path, workspace, updated_at: float = 0.0):
+def add(found, backend, account, session_id, title, path, workspace, updated_at: float = 0.0, provider: str = "native"):
     # Shared histories can be visible under multiple accounts; preserve account choice.
-    key = hashlib.sha256(f"{backend}:{account}:{session_id}".encode()).hexdigest()[:24]
+    identity = f"{backend}:{account}:{session_id}" + (f":{provider}" if provider != "native" else "")
+    key = hashlib.sha256(identity.encode()).hexdigest()[:24]
     found[key] = {"id": key, "backend": backend, "account": account, "session_id": session_id,
                   "title": title or session_id, "path": path, "workspace": workspace, "updated_at": updated_at,
                   "can_import": backend != "antigravity", "fork": True,
                   # Cursor editor chats cannot be resumed headlessly; the import is a transcript copy.
-                  "continuation": "history" if backend in {"cursor", "codex"} else "native",
+                  "continuation": "history" if backend in {"cursor", "codex"} or provider != "native" else "native",
+                  "provider": provider,
                   "reason": "Antigravity's documented fork is interactive; headless import is unavailable." if backend == "antigravity" else ""}
 
 

@@ -1,0 +1,8 @@
+/* Bundled Google Fonts, SIL Open Font License; licenses in public/fonts. */
+@font-face { font-family:"Diane Inter"; src:url('/fonts/inter.ttf') format('truetype'); font-weight:100 900; font-style:normal; font-display:swap; }
+@font-face { font-family:"Diane Lora"; src:url('/fonts/lora.ttf') format('truetype'); font-weight:400 700; font-style:normal; font-display:swap; }
+@font-face { font-family:"Diane Space Grotesk"; src:url('/fonts/spacegrotesk.ttf') format('truetype'); font-weight:300 700; font-style:normal; font-display:swap; }
+@font-face { font-family:"Diane Orbitron"; src:url('/fonts/orbitron.ttf') format('truetype'); font-weight:400 900; font-style:normal; font-display:swap; }
+@font-face { font-family:"Diane Monoton"; src:url('/fonts/monoton.ttf') format('truetype'); font-weight:400; font-style:normal; font-display:swap; }
+
+@font-face { font-family:"Diane Tilt Neon"; src:url('/fonts/tiltneon.ttf') format('truetype'); font-weight:400; font-style:normal; font-display:swap; }

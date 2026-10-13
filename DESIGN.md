@@ -17,3 +17,15 @@
 - Folder drop affordance is visible before interaction: dashed outline, folder icon, centered instruction, browse action, and an editable path inside the boundary.
 
 - Project and session menus share the palette surface role, border, shadow, typography, spacing, and hover/focus treatment.
+
+- Appearance uses dropdowns with one shared preview of all selected colors and font roles; no per-option cards. Neon adds a dark navy/mint terminal palette. System, Humanist, Bookish and Monospace are local font sets with independent normal, heading/emphasis and saved-highlight quote roles. Original document typography is preserved.
+
+- The appearance preview scrolls with its dropdown controls in normal flow; do not pin it or give it a separate scrolling layer.
+
+- Plan mode uses `/plan` and shows an active-only composer status. Planning lives inside assistant chat responses, with one bounded question at a time: square checkboxes for both exclusive and compatible choices, labeled recommendations without preselection, and explicit Submit answer. Show the completed plan and Start this plan inline. No Plan side tab, section editing, Discuss actions, or separate review workspace. Preserve scope approval separately from skills and execution permissions.
+
+- Planning follow-up: show up to three MCQs together within the existing session question budget. Every question has Other with a custom answer and optional comments. Submit all answers together. Empty Plan mode adds no greeting to the transcript. `questions` is the batch field; legacy `question` remains readable.
+
+- Plan choices use bordered clickable rows with checked/focus states. Other and its comment input share one horizontal row; Recommended is inline with answer text. Comments also supply the custom answer when Other is selected.
+
+- Choice mode uses a concise Choose one / Choose multiple label without a secondary selection hint. Single-choice inputs have rounded check-mark selectors and radio semantics; multiple-choice inputs are square checkboxes. Typing comments selects Other, replacing the prior single answer or preserving multiple selections.

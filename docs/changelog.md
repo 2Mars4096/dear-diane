@@ -1,5 +1,124 @@
 # Changelog
 
+## 2026-10-13
+- [fix] Distinguish rounded single-choice selectors from square multi-select checkboxes; retain only Choose one / Choose multiple labels. Typing comments automatically selects Other, replacing the previous single choice or preserving multiple selections.
+- [test] Seven focused frontend tests and production build/budgets pass. Installed locally after idle guard; signed archive matches the build and app/backend health passes.
+
+## 2026-10-13
+- [fix] Give planning answers bordered clickable rows; keep Other/comments on one horizontal row and Recommended inline. Reuse the comment field for custom Other answers; request descriptive options from the planner.
+- [infra] Install final follow-up after idle guard clears. Six frontend tests, eleven backend tests, desktop/mobile synthetic preview, build/budgets, installed signature/archive equality and backend/proxy health pass. Rollback retained.
+
+## 2026-10-13
+- [feat] Support bounded batches of inline planning questions, square checkboxes for both selection modes, Other/custom answers and optional comments on every question. Remove empty planning greetings. Preserve legacy single-question state and the three-question session budget.
+- [test] Six frontend and eleven backend tests and production build/budgets pass. Local follow-up install is pending because the active-work guard rejected replacement; running app remains untouched.
+
+## 2026-10-13
+- [infra] Install and launch the current local 0.1.5 build at user request, including conversational Plan mode and single/multiple-choice questions. Idle guard, signed bundle verification, source/installed archive equality, backend and app-proxy health pass. Chats/settings preserved; rollback retained at `/Applications/.Diane-previous-307c8314-fba3-4010-b8e7-5ecbffb6586b.app`.
+
+## 2026-10-13
+- [feat] Move planning into assistant chat responses; remove Plan side-tab navigation and section Edit/Discuss controls. Inline questions support single-choice radios and multiple-choice checkboxes with explicit submission and no preselected answers. Preserve bounded questions, persisted plans and revision-bound start.
+- [test] 159 frontend and 10 backend focused tests pass; production build/budgets and synthetic desktop/mobile preview checks pass. Installed app unchanged.
+
+## 2026-10-13
+- [fix] Render queued references as readable source-labelled quotes instead of the agent’s JSON envelope. Persist display text for new queue commands and format existing saved reference envelopes without changing execution context. 164 focused queue/workspace tests pass; TypeScript check passes. Source only; installed app unchanged.
+
+## 2026-10-13
+- [fix] Remove the persistent composer Plan button. `/plan` toggles planning, `/plan <request>` enters with a task, and a noninteractive Plan mode status appears only while active. Correct slash-command suggestions independently of skills.
+- [test] Verify command entry/exit/re-entry and desktop/mobile review/start with synthetic browser data; 157 focused frontend tests and production build/budgets pass. Installed app unchanged.
+
+## 2026-10-13
+- [feat] Implement session Plan mode separately from skills and execution permissions: saved scope/specifications/steps, section and step edits, anchored discussion, revision comparison, a three-question limit, and exact-revision start. Reuse existing conversation, side-pane, and V2 runtime contracts.
+- [fix] Preserve conflicting/unsaved plan edits, reject duplicate and stale-window starts, and prevent native planning from starting/stopping processes through the process bridge.
+- [test] Verify component/backend regressions, desktop/390px edit/start flows and unchanged execution permissions, production build/budgets, and a real read-only Codex planning run that saves a draft with zero questions. Installed app not replaced.
+
+## 2026-10-13
+- [fix] Read Codex quota directly per login instead of guessing from shared rollouts/codexx project state. Show all discovered Codex/Claude profiles and configured API providers; distinguish OpenRouter key spend from subscription quota, preserve per-account freshness, and isolate account failures. Live read-only probes distinguish native Pro from app Pro Lite and verify OpenRouter usage; Claude credentials were unavailable.
+- [fix] Enter steers; Cmd/Ctrl+Enter queues during an active run, Shift+Enter preserves newlines, and IME confirmation does not submit. Remove the queued-message status text and duplicate header Stop run button; retain composer Stop.
+- [fix] Replace the blocking startup alert with an asynchronous Quit dialog, preserve failed-backend ownership for shutdown, and write a bounded startup receipt. The underlying intermittent LaunchServices/backend failure remains unconfirmed.
+- [refactor] Centralize physical ASAR filesystem access and clean the targeted Electron/navigation lint findings; preserve concurrently edited Plan mode and reader changes.
+- [test] Isolated snapshot: 502 frontend tests, production build/budgets, Electron compilation and physical-ASAR regression pass. 39 focused backend tests pass, followed by all 10 final usage tests. Account/navigation browser checks pass at mobile/desktop sizes; current Todo companion lifecycle/standalone fixtures pass. Prepared ad-hoc-signed arm64 bundle at `/private/tmp/diane-priority-editor/release/mac-arm64/Dear Diane.app`; no installed-app replacement, restart, commit or publication. Active run prevents idle installation and paired live acceptance.
+
+## 2026-10-13
+- [docs] Add Plan mode UX proposal grounded in Codex/Claude Code documentation, upstream grill-me/grilling, and Diane's existing blueprint views. Specify readable scope/specs/steps, section-level refinement, a three-question draft budget, and explicit revision-bound execution. Prototype and implementation remain pending.
+
+## 2026-10-12
+- [fix] New chat, including the project-header plus button, follows the sidebar’s selected project rather than a different active conversation’s workspace. Explicit caller overrides and All projects fallback remain supported. Reinstalled; intercepted request verification confirms both creation project and agent-run folder use ra-neo. Signature/archive/health checks pass.
+
+## 2026-10-12
+- [fix] Include Claude API-provider histories in discovery/token analysis without changing login profiles; preserve history-only imports in both native and DAN execution. Prevent Cursor fallback from restoring excluded chats and reject over-limit transcripts explicitly.
+- [fix] Remove paper-search's silent 12-result cap and wrap long titles on narrow screens; preserve lexical ranking and keyboard/focus behavior.
+- [docs] Reconcile superseded update/Team backlog entries, rank all 12 active cart ideas, and partially check out only IC-033's result-cap subtask. Record companion contract review and unrelated typecheck blockers in Plan 8.
+- [test] 73 focused backend tests pass; 490 frontend tests pass across the suite plus permission-enabled process-test rerun, and six final search tests pass. Isolated production build/budgets, Electron compile/ASAR cleanup, desktop/390px UI checks and companion handoff fixtures pass. Existing lint findings remain documented. No install, restart, publish or companion merge in this batch.
+
+## 2026-10-12
+- [fix] Prevent startup chat restoration from overriding a newly created or selected project. Clear the previous remembered chat on explicit project selection so an empty project stays empty and new requests use its folder. Reproduced before fix; 153 regression tests and installed Electron reproduction pass after reinstall. Signature/archive/health verified.
+
+## 2026-10-12
+- [feat] Add New project to the sidebar project’s three-dot menu, opening the existing creation form without visiting the carousel. Reinstalled locally and verified the direct form entry, signature, archive equality and health.
+
+## 2026-10-12
+- [fix] Give All projects a text-sized button outside the three-column carousel navigation; keep arrows/name aligned and wrap whole groups on narrow screens. Reinstalled locally and verified at 1200/828/390px, with signature/archive/health checks passing.
+
+## 2026-10-12
+- [fix] Match the transcript selection toolbar to the composer/message 12px corner radius. Rebuilt and reinstalled locally with the project new-chat shortcut; installed Electron confirms all three radii match. Signature, archive equality and app/backend health pass.
+- [test] Investigated the saved Codex disconnect: startup, thread initialization and a minimal read-only turn now pass with the failed run’s default account and gpt-6-astra. Historical cause remains unconfirmed; no authentication or transport fix claimed.
+
+## 2026-10-12
+- [feat] Add a plus button to the left of the project three-dot menu for direct new-chat creation, using the existing handler and matching icon style.
+
+## 2026-10-12
+- [fix] Remove sticky positioning from the appearance preview so it scrolls together with the dropdowns, as requested. Reinstalled locally and verified matching preview/scroll movement in the installed app; signature and health pass.
+
+## 2026-10-12
+- [infra] Reinstalled the completed single-preview appearance/font build again at user request; signature and direct/proxy health pass. Rollback retained.
+
+## 2026-10-12
+- [refactor] Appearance uses dropdowns and one shared live preview instead of palette/font option cards. Reinstalled locally; installed font loading, preview roles, narrow layout, signature/archive equality and service health verified.
+- [feat] Bundle Inter, Lora, Space Grotesk, Orbitron, Monoton and Tilt Neon with their OFL licenses for offline typography choices, alongside the four local font stacks. Browser checks verify loading all six fonts, independent preview roles and narrow layout.
+
+## 2026-10-12
+- [feat] Appearance now previews all palettes in light/dark pairs and adds Neon/Terminal. Font specimens offer four local font sets and independent normal text, heading/emphasis and saved-highlight quote roles. Settings v8 migrates existing choices without changing document typography. Six settings/palette tests and real browser persistence/mobile checks pass.
+
+## 2026-10-12
+- [fix] PDF/EPUB page navigation reserves its full width and grows for long numbers; neighboring controls wrap instead of squeezing the counter. EPUB counting now has an explicit label instead of an ambiguous ellipsis. Existing navigation test, Chromium narrow/wide layout checks and production budgets pass. Reinstalled locally; signature/archive equality and app/backend health verified after clean relaunch.
+
+## 2026-10-11
+- [fix] EPUB arrow keys now work from the toolbar as well as book iframes; repeated navigation is coalesced and background pagination yields to input. Stabilized counter width to stop a toolbar resize/recount loop.
+- [feat] EPUB supports continuous vertical scrolling plus horizontal single/two-page reading; paginated mode accepts vertical/horizontal wheel gestures, and the selected layout persists.
+- [test] 54 reader tests and production budgets pass. Reinstalled locally; installed actual-book Part 1 keyboard, vertical scrolling, horizontal wheel and single/two-page checks pass. Verified signature/archive equality and app/backend health after clean relaunch.
+
+## 2026-10-11
+- [fix] Installed whole-book EPUB navigation, stable text selection, removed selection warning/footer, and PDF/EPUB hover page sliders locally. Production build/budgets, signature/archive equality and backend health pass; installed exact-book selection, page jump and font repagination verified.
+
+## 2026-10-11
+- [fix] Keep EPUB selection actions from resizing the book; accept long selections and remove the bottom-left chapter/page footer.
+- [feat] Show measured whole-book EPUB page numbers and share full-width page entry plus hover/focus navigation sliders with PDF. Recompute EPUB pagination for text-size/window/layout changes without moving the visible reader. 76 focused tests and real EPUB/PDF navigation/selection checks pass.
+
+## 2026-10-11
+- [infra] Reinstall latest local 0.1.5 reader build again at user request; relaunch, signature/archive equality, and app/backend health verified. Preserve user data and rollback.
+
+## 2026-10-11
+- [infra] Install and launch final local EPUB file-drop/reference-parity build. Installed Electron check verifies real book rendering, PDF pill styling, drag/keyboard rearrangement, hover previews and file drop inside the iframe. Signature/archive equality and backend/proxy health pass; rollback/data preserved.
+
+## 2026-10-11
+- [fix] Open file drops over EPUB iframe content through the existing file opener.
+- [feat] Match EPUB References to PDF tray/chip styling and grouped hover/hold previews, drag/keyboard arrangement and editing. 75 focused tests and production build/budgets pass; browser iframe-drop, grouping and preview checks pass.
+
+## 2026-10-11
+- [infra] Install local EPUB reference follow-up and relaunch; preserve user data and rollback. Installed saved-layout check verifies book rendering, hover/pointer/pinning and stable page geometry; signature/archive equality and direct/proxy health pass. Temporary diagnostic profile removed.
+
+## 2026-10-11
+- [infra] Install fractional-width EPUB repair locally; exact-book saved-layout rendering, signature/archive equality and app-owned backend health verified.
+- [fix] Restore EPUB References hover/focus opening, click-to-pin, pointer feedback and saved-location previews; float the panel to prevent reading-page shifts. Regression and build/budgets pass.
+
+## 2026-10-11
+- [fix] Prevent fractional-width EPUB panes from clearing their first page before relocation. Reproduced with saved app state and the exact book; lifecycle regression and 73 existing reader/document tests pass.
+- [feat] Replace EPUB A−/A+ with −/+ and show current/total chapter pages between navigation arrows. Production build/budgets and Electron compilation pass; local installation requested.
+
+## 2026-10-11
+- [infra] Install local 0.1.5 with archive-cleanup repair and preserve rollback/data. Signature and archive equality pass; app-owned backend and direct/proxy health pass after relaunch.
+- [fix] Use Electron original-fs for physical update bundle cleanup, preventing ENOTEMPTY after successful staging. Ten updater tests, real Electron ASAR cleanup regression, production build/budgets and Electron compilation pass.
+
 ## 2026-10-11
 - [infra] Publish v0.1.5 (`501685ed`): hidden-pane EPUB fix, shared reader controls and PDF page/chapter navigation. 73 reader/document tests, ten publisher tests, isolated build/budgets and Electron compilation pass; Actions 38138382110 succeeds and public update manifest verifies.
 
@@ -3774,7 +3893,7 @@
 - [fix] **Chat flow audit: 10 patches across server + UI.** Comprehensive review of the message→classification→handler→LLM→stream→render pipeline. Fixes: (1) **Suspended response after tool calls:** follow-up LLM call had no heartbeat — added 25s heartbeat wrapper with `progress_ack` keepalive, matching the codegen path pattern. (2) **Empty assistant bubble:** added fallback content when LLM returns nothing after tool execution. (3) **WS keepalive:** `chat_events_ws` now sends `{"type":"ping"}` every 25s of silence to prevent proxy/browser timeout disconnects. (4) **Graph not refreshing:** ChatPanel now handles `chat_graph_created` events and calls `loadGraph()`. (5) **Validation errors silently swallowed:** ChatPanel now handles `chat_validation_result` and shows error toast. (6) **File attachments invisible:** ChatPanel now handles `chat_file_attachment` and appends file info to message content. (7) **HandlerRegistry KeyError crash:** `get()` now falls back to CONVERSATION handler instead of crashing. (8) **Opaque dispatcher errors:** all 3 dispatcher catch blocks now include `type(exc).__name__` in the user-facing message. (9) **Silent tool-calling degradation:** fallback to text-only stream now logged at WARNING instead of DEBUG. (10) **Max tool turns raw dump:** forces a `tool_choice="none"` synthesis call when the loop ends with tool-only output. ChatPanel also handles `ping` events as no-ops.
 - [fix] **WhatsApp Web `allowed_jids` is now exact and outbound-enforced.** The live-smoke safety control already existed, but it only filtered inbound messages by sender substring, so a guarded run could still send to another chat and allowed-sender messages from group chats leaked through. The adapter now: (1) canonicalizes bare numbers / JIDs with `:device` suffix stripping for `s.whatsapp.net` only, (2) rejects cross-server matches (`@lid`, `@g.us` no longer match phone-number allowlist entries), (3) guards inbound on `chat_jid` before media download instead of `sender_jid` after processing, (4) blocks disallowed text/file/fallback sends before recipient resolution. Verification: `tests/test_adapters/test_whatsapp_web.py` (`27`) + `tests/test_cli_whatsapp_messaging.py` (`15`) = `42` passing.
 - [feat] **3 practical real-world test prompts added (prac-01, prac-02, prac-03).** Supply-chain risk monitor with multi-turn follow-ups (add review loop, fan out by region), competitive intelligence pipeline (fan-out across 3 competitors, code-based feature comparison, review cycle), weekly meeting prep (file read, web search, code parsing). All tagged `practical` for `--tag practical` filtering. Also added `--tag` CLI flag to eval harness for tag-based prompt filtering. Documented in 33-4 and eval-run-guide with overnight run command.
-- [docs] **33-1 through 33-5 updated for post-33-9/33-10 re-run.** Updated all five eval plan files to reflect pipeline patches since Cycle 2: (1) 33-1 marked as superseded by post-patch runs. (2) 33-2 documents new harness capabilities (fixture enforcement, granular failure categories, generation summary, multi-run flakiness, LLM-as-judge, chat_queued redirect). (3) 33-3 updated validation criteria to two-gate model (structural + expectation-fit), added post-33-9/10 re-run tasks (10-14), updated notes for tool_id inference/extraction tool-awareness/generation summary. (4) 33-4 updated T4 validation for fixture enforcement/tool_id/code quality/condition polarity, added re-run tasks (10-14) including agent lane. (5) 33-5 changed status to in-progress, added Cycle 3 analysis tasks (10-15) with new failure modes (expectation_mismatch, codegen_failed, wrong_tool_id, condition_polarity). Parent plan 33 success criteria updated with 33-10 A-F completion status.
+- [docs] **33-1 through 33-5 updated for post-33-9/33-10 re-run.** Updated all six eval plan files to reflect pipeline patches since Cycle 2: (1) 33-1 marked as superseded by post-patch runs. (2) 33-2 documents new harness capabilities (fixture enforcement, granular failure categories, generation summary, multi-run flakiness, LLM-as-judge, chat_queued redirect). (3) 33-3 updated validation criteria to two-gate model (structural + expectation-fit), added post-33-9/10 re-run tasks (10-14), updated notes for tool_id inference/extraction tool-awareness/generation summary. (4) 33-4 updated T4 validation for fixture enforcement/tool_id/code quality/condition polarity, added re-run tasks (10-14) including agent lane. (5) 33-5 changed status to in-progress, added Cycle 3 analysis tasks (10-15) with new failure modes (expectation_mismatch, codegen_failed, wrong_tool_id, condition_polarity). Parent plan 33 success criteria updated with 33-10 A-F completion status.
 - [feat] **33-10 implemented: Semantic Correctness Patch (all 6 task groups).** (A) Fixed review-loop condition polarity: `ReviewRequirement.condition` default flipped from `"quality_score >= 8"` to `"quality_score < 8"`, few-shot examples updated, `_normalize_review_condition()` helper validates condition variables against state schema (`{draft, quality_score, feedback}`) and flips `>=`/`>` to `<`/`<=` — 6 call sites patched, 6 unit tests. (B) Eval expectation-fit gate: `_determine_status()` now checks `fixture.expected` (min_nodes, max_nodes, node_types, topology) — graphs violating expectations fail with `failure_mode="expectation_mismatch"`. (C) Tool/code defaults: `_infer_tool_id()` maps 30+ keywords to correct tool_ids instead of universal `web_search`; code stubs now emit descriptive `{"status": "placeholder", "task": "..."}` instead of `result = 'done'`. (D) Codegen prompt tool catalog: 17 registered tool_ids with descriptions injected into `CodegenPromptBuilder._SYSTEM_PROMPT`. (E) LLM-as-judge: `--judge` flag, `tests/eval/judge.py` with 4-dimension scoring rubric (prompt_faithfulness, node_specificity, data_flow_correctness, executability), advisory only. (F) Intent extraction tool-awareness: 19 tool_ids in extraction system prompt, new few-shot example with csv_read/send_email/code_execution.
 - [docs] **33-10 plan: Semantic Correctness Patch.** Created `docs/plans/33-10-semantic-correctness-patch.md` — 6 focused patches to fix contract bugs and eval blind spots found by LLM-as-judge review of all stored eval graphs. (A) Review-loop condition polarity mismatch: `ReviewRequirement.condition` defaults to `"quality_score >= 8"` (stop condition) but `Builder.review_loop()` interprets it as continue-while — loops run backwards. (B) Eval pass/fail ignores fixture expectations (`min_nodes`, `topology`, `node_types`): any valid graph passes, inflating reported rates. (C) Tool nodes default to `web_search` / code nodes default to `result = 'done'` — add keyword inference and descriptive placeholders. (D) Codegen prompt has no tool catalog — inject registered tool IDs. (E) LLM-as-judge scoring via `--judge` flag. (F) Intent extraction tool-awareness. Implementation order: A+B in parallel (highest ROI), then C+D+F (generation quality), then E (diagnostic).
 - [fix] **Tool-use responses now show planning text and don't stop silently.** Two issues with the multi-turn tool-call loop in `send_message_with_tools()`: (1) when the LLM produced text alongside tool calls (e.g. "Now let me search for..."), that text was only appended to the message history for the next LLM call but never emitted to the UI as a `ChatTokenEvent`, so the user saw tool calls starting with no context; (2) when the follow-up LLM call after tool execution returned empty text, the `ChatCompleteEvent` had empty content that overwrote any previously shown text. Fixed by emitting a `ChatTokenEvent` with the LLM's planning text before executing tool calls, falling back to accumulated tool results when the follow-up response is empty, and using `||` instead of `??` in the ChatPanel content update so empty final events don't wipe out existing content.
@@ -5054,7 +5173,7 @@
   - **17-3 extended (task 6):** Parameter mutations (level 2 repair) — RuleGenerator handles `parameter_fix` principles, model override rules, `get_active_mutations()`, safe-field guards.
   - **17-5 (new):** Workflow Experience Summaries — `WorkflowExperience` model, `ExperienceAggregator`, `ExperienceIndex` (global RAG), auto-describe/auto-tag workflows, REST endpoints for experience CRUD + semantic search. Bridge to future meta-orchestrator.
 
-- [docs] **Plan 18 philosophy rework — no brute-force, agent-directed, externalized state.** Major reframe of all five token-optimization plans after competitive landscape review (Cursor, MemGPT/Letta, Beads, OpenAI Agents SDK, CrewAI, LangChain ACE, GPTCache, LLMLingua, production patterns). Key changes:
+- [docs] **Plan 18 philosophy rework — no brute-force, agent-directed, externalized state.** Major reframe of all six token-optimization plans after competitive landscape review (Cursor, MemGPT/Letta, Beads, OpenAI Agents SDK, CrewAI, LangChain ACE, GPTCache, LLMLingua, production patterns). Key changes:
   - **18 (high-level):** Added "Design Philosophy" section establishing three principles: (1) agent-controlled context (MemGPT pattern), (2) externalized structured state (Beads pattern), (3) mechanical format efficiency. Renamed sub-plans: 18-1 → "Smart Context Assembly", 18-3 → "Agent-Directed Context Architecture". Updated success criteria to ban brute-force truncation.
   - **18-1:** Renamed from "Prompt Compression" to "Smart Context Assembly." Reframed `max_input_tokens` as advisory `target_input_tokens` (never blocks). Replaced `ContextPruner` with `ContextSelector` (defers low-relevance inputs to tool-accessible storage, never deletes). Added 3 new tasks: (7) JIT tool/schema loading — 20-40% context savings on tool-heavy workflows; (8) Schema/format pruning — mechanically strip unused fields, optional compact serialization; (9) Agent context tools (MemGPT pattern) — `search_context`, `read_context`, `read_state`, `list_available_context`.
   - **18-2:** Added query normalization before semantic cache embedding (GPTCache pattern — 61-68% hit rates).
@@ -5077,7 +5196,7 @@
   - C5: Path traversal fix — `_safe_segment()` validation in `RuleLifecycleManager` filesystem paths + `_validate_path_segment()` on all `/api/rules/` endpoints (`rule_generator.py`, `app.py`)
   - S1: Removed duplicate `node_started`/`node_completed` event emissions from `ReflectionExecutor` (scheduler already emits these) (`reflection.py`)
 
-- [docs] **Plan 18 memory & RAG integration pass.** Audited all five token-optimization plans (`18`, `18-1`, `18-2`, `18-3`, `18-4`) to wire them into the existing memory (14-1/14-2/14-3) and RAG (9-1) infrastructure. Key additions:
+- [docs] **Plan 18 memory & RAG integration pass.** Audited all six token-optimization plans (`18`, `18-1`, `18-2`, `18-3`, `18-4`) to wire them into the existing memory (14-1/14-2/14-3) and RAG (9-1) infrastructure. Key additions:
   - **18 (high-level):** Added "Integration with Memory & RAG Systems" section with 7 cross-cutting integration points (embedding-based relevance, encode-to-memory pattern, compaction-to-memory pipeline, unified prompt budget, memory-aware cache coordination, memory/RAG token decomposition, summarization sharing). Updated baseline table with memory pipeline, session memory, RAG, and `estimate_tokens()` components. Upgraded dependency/sequencing item 5 from "independent" to "tightly integrated." Added memory/RAG success criteria.
   - **18-1 (prompt compression):** Task 1-4 now reuses existing `dan.utils.tokens.estimate_tokens()` (no new utility). Task 2-2 strengthened RAG embedding link for semantic relevance scoring. Task 4 expanded with encode-to-memory pattern (store large outputs in long-term memory, retrieve via `MemoryQuery` instead of inline passing). Task 5 now feeds summaries into `ShortTermMemory` and shares LLM summarization with 14-3's `ConsolidationPipeline`.
   - **18-2 (caching):** Task 2-3 adds session memory coordination — cross-run memoized results stored as 14-1 session memory entries. Task 2-5 adds memory-aware cache invalidation (`memory_dependency_keys`). Task 3-2 explicitly references `EmbeddingProvider`, `VectorStore`, and `VectorStoreFactory` from 9-1.

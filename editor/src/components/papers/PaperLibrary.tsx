@@ -44,8 +44,8 @@ export function PaperSearch({ onOpen, onBrowse, onClose }: Pick<Props, 'onOpen' 
   const input = useRef<HTMLInputElement>(null);
   const matches = useMemo(() => findPapers(library.papers, library.sessions, { ...defaultFilters, query }), [library.papers, library.sessions, query]);
   const recentIds = new Set(library.sessions.map(session => session.paper_id));
-  const results = (query.trim() ? matches : matches.filter(paper => recentIds.has(paper.id))).slice(0, 12);
-  useEffect(() => { const previous = document.activeElement as HTMLElement; dialog.current?.showModal(); input.current?.focus(); return () => { dialog.current?.close(); previous?.focus(); }; }, []);
+  const results = query.trim() ? matches : matches.filter(paper => recentIds.has(paper.id));
+  useEffect(() => { const previous = document.activeElement as HTMLElement; const node = dialog.current; node?.showModal(); input.current?.focus(); return () => { node?.close(); previous?.focus(); }; }, []);
   useEffect(() => { setIndex(0); }, [query]);
   useEffect(() => { document.getElementById(`paper-result-${index}`)?.scrollIntoView({ block: 'nearest' }); }, [index]);
   const selectedIndex = Math.min(index, Math.max(0, results.length - 1));

@@ -124,3 +124,41 @@
 - [x] Verify 73 reader/document tests, TypeScript, real-book rendering/chapter navigation, responsive toolbar, production build and budgets.
 - Exact book: 56 navigation options including the placeholder, valid cover image, Introduction navigation; hidden initial mount reproduces zero iframes before the fix and renders after it. Installed app's file endpoint returns identical bytes; ordinary installed-UI opening also works in an isolated profile. Original live-window state remains unverified.
 - Synthetic PDF: detected chapter jumps to page 8; 430px EPUB/PDF controls fit, and references open below the wrapped bar. Private fixtures removed. Source changes only; running installed app unchanged.
+
+## October 11 — fractional-width EPUB startup and local install
+- [x] Reproduce blank pages using saved app layout and fractional-width reader (871.25px); zero iframes despite display resolving.
+- [x] Wait for the first relocated page before enabling controls/resizing; retain timeout until that event. Early resize clears EPUB.js views before a location exists to restore.
+- [x] Use −/+ and add ← current/total → navigation. EPUB's counter is the current chapter's reflowed pages; the chapter menu remains available.
+- [x] Verify new lifecycle regression, existing 73 tests, exact-book rendering, production build/budgets and Electron compile.
+- [x] Install locally at user request; signature/archive match, saved-layout exact-book rendering, and app-owned backend/direct+proxy health pass.
+
+- [x] Restore EPUB References hover/focus opening, delayed close and click-to-pin; hover saved locations for previews, show pointer cursor, and keep editing pinned.
+- [x] Float the reference panel above the book to avoid repagination on hover; lifecycle/hover regression passes.
+- [x] Install the reference follow-up locally. Real Electron against installed assets and the saved layout confirms hover-open, pointer cursor, delayed close, pinning and unchanged book height; exact EPUB renders. Signature/archive equality and backend/proxy health pass. Temporary saved-profile copy removed.
+
+## October 11 — EPUB reference parity and file drops
+- [x] Forward file drag events from EPUB iframe documents into the existing FileOpener, preserving native DataTransfer objects and leaving text/reference drags untouched.
+- [x] Reuse PDF tray/chip styles for EPUB References: + Line/+ Keep, editable lines, pill chips, hover/hold previews, dragging, Alt-arrow moves, rename/remove/open.
+- [x] Verify 75 reader/document tests, production build/budgets, browser file drop through the iframe, line grouping and hover previews.
+- [x] Installed and relaunched locally. Installed-asset Electron checks pass for pill styling, chip drag rearrangement, Alt-arrow moves, hover previews, and opening a file dropped inside the EPUB iframe. Signature/archive match and direct/proxy health pass; rollback retained.
+
+- [x] Repeat local reinstall at user request; latest tested archive/signature and direct/proxy backend health verified after relaunch.
+
+## October 11 — stable selection and whole-book page navigation
+- [x] Move EPUB selection/OCR actions out of flow; remove the 700-character selection rejection and bottom-left section/page footer.
+- [x] Measure whole-book pages with a separate offscreen EPUB rendition using the current viewport/font/layout; retain page CFIs for direct jumps and recalculate on size changes.
+- [x] Share full-width page entry and a hover/focus page slider between PDF/EPUB. Preview while dragging and commit on release; leave the slider open during capture.
+- [x] Verify 76 reader/document tests; exact-book 1,071-character selection and real mouse drag preserve page/viewport/CFI; page 194 jump is exact; font increase recalculates 324 to 375 pages. PDF 205 is fully visible and slider jumps to 100.
+- [x] Verify final production package and install locally. Build/budgets, installed signature/archive equality and direct/proxy health pass. Installed exact-book check: 410 total pages at the app viewport, stable 1,071-character/native mouse selection, slider jump to 246, and font resize recalculates 469 pages. Rollback: `/Applications/.Diane-previous-8b02db16-a558-4d88-be07-949f78027956.app`.
+
+## October 11 — EPUB keyboard and scrolling
+- [x] Handle navigation keys in the toolbar as well as book iframes, preserving editing and selection-extension keys.
+- [x] Add continuous vertical scrolling and retain single/two-page layouts with throttled wheel navigation.
+- [x] Prioritize visible input over background pagination; yield between every measured page and prevent queued page-turn bursts.
+- [x] Verify the Part 1 divider with native keyboard/wheel input, production build, and reinstall after this round. Installed checks pass for toolbar Right, native vertical scroll, horizontal wheel, single/two-page layout and stable two-page advancement (45→47). 54 reader tests, production budgets, signature/archive equality and direct/proxy health pass. Rollback: `/Applications/.Diane-previous-f7918e63-611d-4f91-9842-3c298cda68d7.app`.
+
+## October 12 — page counter sizing
+- [x] Keep the navigation group and total from shrinking; grow number entry by current/total digits and allow other toolbar controls to wrap.
+- [x] Replace ambiguous loading ellipsis with Counting… and distinguish an unavailable count.
+- [x] Verify existing navigation test and Chromium widths 320/430/1000 with loading and 3–7 digit totals; all labels fit without toolbar overflow.
+- [x] Build and reinstall locally after verification. Production budgets, signature/archive equality and both health endpoints pass after restarting the stalled automatic launch; rollback retained at `/Applications/.Diane-previous-c68bb1df-3aa2-4f50-9a71-323f43e5c50b.app`.

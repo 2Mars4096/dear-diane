@@ -56,3 +56,19 @@ it('moves between results with Up/Down while retaining input focus and opens the
   await press('Enter');
   expect(onOpen).toHaveBeenCalledWith(secondPaper);
 });
+
+
+it('makes every matching paper reachable beyond the twelfth result', async () => {
+  const papers = Array.from({ length: 25 }, (_, i) => ({ ...paper, id: `p${i}`, title: `Network ${String(i).padStart(2, '0')}`, key: `paper${i}` }));
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ papers, sessions: [], settings: { sources: [] }, warnings: [] }) })));
+  const onOpen = vi.fn(async () => {});
+  await act(async () => root.render(createElement(PaperSearch, { onOpen, onClose: vi.fn(), onBrowse: vi.fn() })));
+  const input = host.querySelector('input')!;
+  await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'network'); input.dispatchEvent(new Event('input', { bubbles: true })); });
+  expect(host.querySelectorAll('[role=option]')).toHaveLength(25);
+  expect(host.textContent).toContain('25 matching papers');
+  for (let i = 0; i < 24; i++) await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })); });
+  expect(input.getAttribute('aria-activedescendant')).toBe('paper-result-24');
+  await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+  expect(onOpen).toHaveBeenCalledWith(papers[24]);
+});

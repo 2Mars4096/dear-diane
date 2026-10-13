@@ -1,3 +1,4 @@
+import { physicalFs } from "./physicalFs";
 import { findPreparedBuild, updateErrorMessage } from "./preparedBuild";
 import { app, ipcMain, dialog, type BrowserWindow } from "electron";
 import { autoUpdater } from "electron-updater";
@@ -93,7 +94,7 @@ export function registerDesktopUpdates(options: {
   const prepare = async (source: string) => {
     state = { ...state, phase: "staging", message: "Preparing the local update…" };
     const prepared = await stageBundle(source, target(), updatesDir);
-    if (local) await fs.rm(local.staged, { recursive: true, force: true });
+    if (local) await physicalFs.promises.rm(local.staged, { recursive: true, force: true, maxRetries: 3 });
     local = prepared;
     await fs.writeFile(path.join(updatesDir, "local-source.json"), JSON.stringify({path:source}), {mode:0o600});
     state = { ...state, phase: "ready", source: "local", version: local.version, message: "Local update ready. Your chats, settings, and icon will be kept." };

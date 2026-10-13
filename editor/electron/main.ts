@@ -1,3 +1,4 @@
+import { startupDiagnostics, reportStartupFailure } from "./startupDiagnostics";
 import { registerNavigation, installNavigationMenu } from './navigation';
 import { sessionWindowDestination } from "./sessionWindows";
 import { handleStickyTodoOpen } from "./stickyTodo";
@@ -23,6 +24,7 @@ import { registerWindowControls } from "./windowControls";
 // Keep the existing profile when the package/display name changes.
 app.setPath("userData", path.join(app.getPath("appData"), "dan"));
 app.setName("Dear Diane");
+const startupLog = startupDiagnostics(path.join(app.getPath("userData"), "logs"));
 
 let mainWindow: BrowserWindow | null = null;
 let revealMainWindow: (() => void) | null = null;
@@ -133,6 +135,7 @@ function isPortInUse(port: number): Promise<boolean> {
 let backendOwnedByUs = false;
 
 async function startBackend(): Promise<void> {
+  startupLog.record(`Checking backend port ${BACKEND_PORT}`);
   const alreadyRunning = await isPortInUse(BACKEND_PORT);
   if (alreadyRunning) {
     const portResolution = await waitForBackendHealthOrRelease({
@@ -180,6 +183,7 @@ async function startBackend(): Promise<void> {
         stdio: ["ignore", "pipe", "pipe"],
       });
 
+  startupLog.record(`Backend spawned: pid=${proc.pid ?? "unavailable"}, executable=${proc.spawnfile}, workspace=${workspaceRoot}`);
   backendProcess = proc;
   backendOwnedByUs = true;
   backendReady = false;
@@ -196,6 +200,7 @@ async function startBackend(): Promise<void> {
 
   proc.stderr?.on("data", (d: Buffer) => {
     const text = d.toString();
+    if (!backendReady) startupLog.record(text.trimEnd());
     console.error("[backend]", text.trimEnd());
     mainWindow?.webContents.send("backend:log", { text, stream: "stderr" });
   });
@@ -226,12 +231,8 @@ async function startBackend(): Promise<void> {
   const startupResult = await Promise.race([startupFailure, healthReady]);
   if (startupResult instanceof Error) {
     backendReady = false;
-    if (backendProcess === proc) {
-      backendProcess = null;
-    }
-    if (!proc.killed) {
-      try { proc.kill(); } catch {}
-    }
+    startupLog.record(String(startupResult));
+    // Retain ownership until shutdown has reaped the failed startup process.
     sendBackendStatus();
     throw startupResult;
   }
@@ -676,6 +677,7 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(async () => {
+    startupLog.record(`Starting desktop ${app.getVersion()}, pid=${process.pid}`);
     installNavigationMenu();
     registerDesktopUpdates({
       window: () => mainWindow,
@@ -689,14 +691,13 @@ if (!hasSingleInstanceLock) {
         await startBackend();
         console.log("Backend server started.");
         await startProductionServer(distDir);
+        startupLog.record(`Healthy: backend=${BACKEND_PORT}, desktop=${prodServerPort}`);
         console.log(`Production UI server started on http://127.0.0.1:${prodServerPort}`);
       } catch (err) {
         console.error("Dear Diane local services failed to start:", err);
-        dialog.showErrorBox(
-          "Dear Diane Startup Failed",
-          `Dear Diane could not start its local services.\n\n${String(err)}`,
-        );
-        app.quit();
+        startupLog.record(`Startup failed: ${String(err)}`);
+        await reportStartupFailure(options => dialog.showMessageBox(options), () => app.quit(), err, startupLog.file);
+
         return;
       }
     }

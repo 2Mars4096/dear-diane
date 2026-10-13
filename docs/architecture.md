@@ -1,5 +1,16 @@
 # Architecture
 
+## Session Plan mode
+- Composer slash-command suggestions expose `/plan` independently of `$skill` mentions. The command toggles session mode (or enters it with a request); a conditional, noninteractive composer status reflects the saved mode.
+- `server/plan_mode.py` owns validated review documents, compare-and-swap versions, revision history, question budgeting, conflicting proposals, and immutable execution claims. Atomic `.plan.json` files live beside chat snapshots; chat discovery skips them and deletion removes them.
+- Session GET/PUT `/api/chats/{workflow}/{thread}/plan` APIs are independent of transcript saves and skill selection. `surface_context.plan_review` survives V2 normalization and carries action/workflow/revision into the existing admission/backend path. Stale-window requests cannot append planning/start work to an active session run.
+- Planning overrides native permission/sandbox policy after normalization; the API planner calls the configured model without a tool executor. Valid structured output updates the review document and emits a short transcript summary. Start claims the exact saved revision and supplies it as execution instructions without widening the selected permission policy.
+- `workbench/sessionPlan.ts` handles session-scoped loading/saving/polling in its own production chunk. `WorkbenchConversation` places the lazy `PlanPanel` content inside its originating assistant response using `last_run_id`, with a transcript fallback for restored drafts. There is no Plan side tab or separate scroller.
+- Planning questions declare `selection_mode` (`single` by default for older saved plans, or `multiple`). The inline form requires explicit selection/submission; a question occupies the reply until resolved, then the saved plan and guarded start action appear. Section-edit and discussion UI has been removed; backend revision/conflict preservation remains.
+- Native process bridge permissions follow the lead: Plan may list processes/read logs, but cannot start or stop them.
+
+- Desktop update bundle operations use `original-fs` inside Electron to treat ASAR archives as physical files. `scripts/check-release-cleanup.cjs` verifies extraction cleanup in real Electron.
+
 ## Sticky Todo Integration
 
 - `server/routers/sticky_todo.py` implements local-only project discovery, desktop-default publication, immutable UUID dispatch receipts under the graphs store, current-session status and acknowledged stop. Reuses ChatStore and V2 admission/execution; does not create a parallel runtime.
@@ -315,7 +326,7 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - `dan/processes.py` (ProcessManager) + `/api/processes*`: DAN-owned long-running processes (own session, log file, PID re-attach). `native_workers/proc_bridge.py` is the sandbox-safe file RPC every native lead gets; `tools/managed_process.py` is the DAN-lead tool; `workbench/ProcessesPanel.tsx` + `processes.ts` are the side tab.
 - `native_workers/skills.py` + `GET/PUT /api/skills`: cross-CLI skill pool (symlinks under `graphs/skill_pool/<runtime>/`, passed to Claude via `--add-dir`); `workbench/SkillPool.tsx` is its settings section.
 - `native_workers/token_usage.py` + `/api/token-usage/{sessions,session,overview,classify,settings}`: per-session token profiler over native transcripts (`<claude home>/projects/*/*.jsonl` + `subagents/`, Codex `sessions/YYYY/MM/DD/rollout-*.jsonl` + children by `parent_thread_id`). Normal form: session → rounds → model calls and steps; step cost = tokens added × later calls before the next compaction. Claude usage is deduped by API message id. Labels come from `ACTIONS`/`STAGES` rules; `classify()` refines stages with a decision model via OpenRouter `POST /api/alpha/decisions` (default `jev-latest`, confidence ≥ 0.4, otherwise the rule stands). State lives in `graphs/token_usage/` (`summaries.json` keyed by path+mtime+size+`CACHE_VERSION`, `labels/`, `settings.json`). DAN runs join through `native_session_id`. UI: `workbench/TokenUsage.tsx` (lazy Settings section + analyzer dialog), pure helpers in `tokenUsageFormat.ts`.
-- `native_workers/usage.py` + `GET /api/usage`: quota per recently used account (Codex rollout rate limits; Claude OAuth usage via keychain token read server-side). `workbench/UsagePanel.tsx` is the hover panel in the sidebar footer.
+- `native_workers/usage.py` + `GET /api/usage`: quota for all discovered logins/configured providers (Codex per-login app-server reads, Claude OAuth usage, OpenRouter current-key spending). Credential-location aliases merge; shared rollout directories never determine account identity. Per-account observation timestamps survive caching; one failed provider does not hide others. `workbench/UsagePanel.tsx` is the hover panel in the sidebar footer.
 - `workbench/SideTabs.tsx`: the single right side panel. `ChunkWorkspaceApp` keeps one `sideTab` value; the old per-panel booleans are derived views of it.
 - `NativeWorkers.tsx` renders capability-aware settings. `TeamProgress.tsx` (strip + Team panel) and `teamPresentation.ts` (pure state/priority/wording rules) show team progress; `service.describe()` turns native events into the short `activity`/`actions` fields they read. `ImportNativeSessions.tsx` requires an explicit source selection and Import as fork; no automatic import. Native history matching uses canonical recorded cwd, not project names.
 - Authentication/live fork acceptance, cross-restart native resume UI, and approval transport remain pending. Antigravity requires installed/authenticated agy; its imports remain disabled until a headless fork is verified.
@@ -423,3 +434,35 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - `reader/ReaderToolbar.tsx` and `reader-toolbar.css` provide the shared responsive control order. PDF keeps page/zoom navigation; EPUB keeps reflow sizing. PDF reference overlays use the document grid row so wrapped controls cannot overlap them.
 - `reader/lib/pdf-chapters.ts` resolves nested PDF destinations and conservatively detects explicit headings when an outline is absent. Text extraction preserves line breaks; existing OCR can supply headings on empty/number-only pages, without scheduling additional OCR.
 - `reader/lib/reader-size.ts` waits for measurable EPUB host dimensions before engine initialization. Hidden panes previously let EPUB.js resolve display without creating any views. Waiting is abortable on close; the opening timeout starts only after the pane becomes visible.
+
+- EPUB startup readiness requires the first `relocated` event, not `display()` resolution. Resize callbacks remain gated until that location exists because EPUB.js clears views on resize. The toolbar counter reports the current chapter’s reflowed page/total.
+
+- EPUB References uses an absolute panel anchored below the toolbar: hover/focus opens it, a delayed close permits entering it, and click/editing pins it. Saved-location hover previews do not alter the book viewport.
+
+- `reader/EpubReferences.tsx` uses the PDF CSS module for the tray, grouped chips and actions; EPUB CFI destinations/previews remain format-specific. `reader/lib/reader-file-drop.ts` bridges native file drag events from the iframe to the reader root and existing global FileOpener, preserving the DataTransfer for Electron path resolution.
+
+- `ReaderPageNavigation.tsx` shares untruncated page entry and a hover/focus range slider between PDF and EPUB; slider input previews locally and release commits navigation.
+- `lib/epub-pagination.ts` measures each linear spine section in an offscreen rendition at the live viewport/font/spread and maps page boundaries to CFIs. `useEpubPagination.ts` debounces resize, aborts stale work, and publishes whole-book pages. It never navigates or resizes the visible rendition. EPUB.js default-manager geometry is isolated behind a typed adapter; work yields before every page and pauses briefly during visible navigation.
+- EPUB selection/OCR actions float above the page so selecting text does not repaginate it. Full selections are accepted; persisted comment excerpts retain the existing storage limits and EPUB CFIs retain the full selected range. The chapter-page footer is removed; the toolbar reports whole-book pages.
+
+- EPUB defaults to continuous vertical scrolling; Single page/Two pages use horizontal pagination. Layout choice persists with the CFI. Scrolled locations map to whole-book page boundaries by CFI, while paginated locations use section/page geometry. `lib/epub-input.ts` handles outer/iframe keyboard navigation, coalesces paginated wheel events, and prioritizes navigation over background measurement.
+
+- Page navigation is a non-shrinking max-content toolbar group. Entry width follows current/total digits; the total reserves room for its loading label and grows for longer numbers, keeping counting/ready transitions from squeezing the counter.
+
+- `workbench/AppearanceChoices.tsx` provides dropdowns and one shared live preview. `lib/workbenchFonts.ts` owns four local fallback stacks plus six bundled families and independent text/heading/highlight CSS variables, applied at boot and on settings changes. Settings v8 adds three font roles; PDF/EPUB page typography is untouched. Palette IDs now include Neon. Saved reference labels/Notes quotes use the highlight role.
+
+- `styles/workbenchFonts.css` registers on-demand local fonts from `public/fonts` with accompanying OFL licenses and source attribution. No runtime CDN requests. Decorative fonts are independently selectable for headings while body text remains readable.
+
+## Native history discovery follow-up
+- `catalog.claude_provider_home` is shared by launch and read-only history enumeration. `claude_history_profiles` adds existing provider/account stores to session and usage discovery without registering login accounts or reading credentials.
+- API-provider Claude imports carry provider identity and `continuation: history`; native and DAN leads respect this boundary. Cursor modern headers take precedence over legacy indexes; transcripts above 20,000 bubbles are rejected before import.
+- Paper search renders all matching/recent records in the existing bounded scrolling list; it no longer truncates at 12. Long identifiers wrap within each result.
+
+- Desktop startup: `electron/startupDiagnostics.ts` stores a bounded latest-launch receipt and presents asynchronous errors; failed backend ownership remains with the existing process-tree shutdown. `physicalFs.ts` centralizes real archive filesystem access.
+- Composer shortcuts: `lib/composerShortcuts.ts` gives Enter explicit steer placement, Cmd/Ctrl+Enter queue placement only while active, and preserves newline/IME events. `workbench/usageFormat.ts` contains quota time/severity formatting; account panel remains scrollable at narrow widths.
+
+- Queue display uses `command_payload.display_text` when available. `queuedTranscript.readableQueueText` formats recognized older reference envelopes; execution uses the unchanged queue text and metadata.
+
+- Planning follow-up: show up to three MCQs together within the existing session question budget. Every question has Other with a custom answer and optional comments. Submit all answers together. Empty Plan mode adds no greeting to the transcript. `questions` is the batch field; legacy `question` remains readable.
+
+- Planning comment input selects Other automatically. Single-choice questions use native radio semantics with a rounded check-mark presentation; multiple choice keeps native checkboxes and existing selections when Other is entered.

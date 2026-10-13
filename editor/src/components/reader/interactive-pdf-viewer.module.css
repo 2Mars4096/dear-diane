@@ -757,3 +757,5 @@
 
 /* Reference panels start below the shared toolbar, including wrapped controls. */
 .referenceOverlay { grid-row: 2; top: 8px; bottom: 10px; height: auto; }
+
+.referenceTags strong { font-family:var(--dan-font-highlight,inherit); }

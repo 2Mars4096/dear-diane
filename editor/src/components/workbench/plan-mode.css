@@ -1,0 +1,44 @@
+.wb-plan-inline { color:var(--wb-ink); font-size:inherit; }
+.wb-plan-inline h2 { font-size:20px; font-weight:600; margin:12px 0; }
+.wb-plan-inline h3,.wb-plan-question legend { font-size:inherit; font-weight:600; }
+.wb-plan-inline p { margin:10px 0; line-height:1.65; }
+.wb-plan-text { white-space:pre-wrap; overflow-wrap:anywhere; }
+.wb-plan-section { margin:20px 0; }
+.wb-plan-muted,.wb-plan-inline small { color:var(--wb-muted); font-size:12px; }
+.wb-plan-inline button { border:1px solid var(--wb-line); border-radius:6px; padding:7px 12px; font-size:13px; }
+.wb-plan-inline button:hover:not(:disabled) { background:var(--wb-soft); }
+.wb-plan-inline button:disabled { opacity:.5; }
+.wb-plan-inline button:focus-visible,.wb-plan-option input:focus-visible { outline:2px solid var(--wb-accent); outline-offset:3px; }
+.wb-plan-question fieldset { border:0; padding:0; min-width:0; }
+.wb-plan-option { display:flex; align-items:flex-start; gap:10px; padding:10px 0; cursor:pointer; }
+.wb-plan-option input { flex-shrink:0; margin-top:5px; accent-color:var(--wb-ink); }
+.wb-plan-option span { min-width:0; overflow-wrap:anywhere; }
+.wb-plan-option small { display:block; }
+.wb-plan-question button { margin-top:12px; }
+.wb-plan-actions { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
+
+.wb-plan-question fieldset + fieldset { margin-top:28px; }
+.wb-plan-comment { display:block; font-size:13px; margin:12px 0; }
+.wb-plan-comment textarea,.wb-plan-comment input { display:block; box-sizing:border-box; width:100%; margin-top:6px; padding:8px 10px; border:1px solid var(--wb-line); border-radius:6px; background:transparent; color:var(--wb-ink); font:inherit; }
+.wb-plan-comment textarea { resize:vertical; }
+
+.wb-plan-other { margin:8px 0 16px; padding:0 12px 4px; border:1px solid var(--wb-line); border-radius:6px; }
+.wb-plan-other .wb-plan-comment { margin-top:0; }
+.wb-plan-option { box-sizing:border-box; margin:8px 0; padding:12px 14px; border:1px solid var(--wb-line); border-radius:8px; transition:background-color 120ms ease-out,border-color 120ms ease-out; }
+.wb-plan-option:hover { background:var(--wb-soft); }
+.wb-plan-option:has(input:checked),.wb-plan-other:has(> .wb-plan-option input:checked) { border-color:var(--wb-accent); background:var(--wb-soft); }
+.wb-plan-option:focus-within,.wb-plan-other:focus-within { outline:2px solid var(--wb-accent); outline-offset:2px; }
+.wb-plan-other { padding:0 14px 4px; border-radius:8px; }
+.wb-plan-other > .wb-plan-option { border:0; border-radius:0; padding:12px 0; margin:0; outline:none; background:transparent; }
+
+.wb-plan-option small { display:inline; margin-left:8px; white-space:nowrap; }
+.wb-plan-other { display:flex; align-items:center; gap:12px; padding:10px 14px; }
+.wb-plan-other > .wb-plan-option { flex-shrink:0; padding:0; }
+.wb-plan-other .wb-plan-comment { flex:1; min-width:0; margin:0; }
+.wb-plan-other .wb-plan-comment textarea { margin:0; min-height:36px; }
+
+.wb-plan-selection { display:flex; flex-wrap:wrap; gap:4px 10px; align-items:baseline; font-size:12px; color:var(--wb-muted); }
+.wb-plan-selection strong { color:var(--wb-ink); font-weight:600; }
+.wb-plan-option input[type=radio] { appearance:none; width:15px; height:15px; border:1px solid var(--wb-muted); border-radius:6px; display:grid; place-content:center; background:transparent; }
+.wb-plan-option input[type=radio]:checked { border-color:var(--wb-accent); background:var(--wb-accent); }
+.wb-plan-option input[type=radio]:checked::before { content:""; width:7px; height:4px; border-left:2px solid var(--wb-paper); border-bottom:2px solid var(--wb-paper); transform:translateY(-1px) rotate(-45deg); }

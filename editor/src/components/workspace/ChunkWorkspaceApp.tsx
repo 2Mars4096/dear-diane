@@ -1,3 +1,5 @@
+import { composerEnterPlacement } from "../../lib/composerShortcuts";
+import { useSessionPlan, getSessionPlan, saveSessionPlan, type PlanReview } from "../workbench/sessionPlan";
 import { reconcileRunState } from '../workbench/reconcileRunState';
 import type { FileOpenRequest } from '../../lib/openFile';
 import { useSessionPreferences } from "../workbench/sessionPreferences";
@@ -6,7 +8,7 @@ import { fileName, normalizeRootPath } from "../../lib/workspacePaths";
 import { ensureProjectForRoot, saveWorkbenchProject, selectWorkbenchProject } from "../workbench/projects";
 import type { Paper } from "../papers/library";
 import type { DocumentFile } from "../documents/documents";
-import { attachFollowupReply, queueItemIsWaiting, visibleQueuedTranscript, withQueueReceipts } from "../workbench/queuedTranscript";
+import { attachFollowupReply, queueItemIsWaiting, readableQueueText, visibleQueuedTranscript, withQueueReceipts } from "../workbench/queuedTranscript";
 import { ProjectMenu } from "../workbench/ProjectMenu";
 import { LeadAgentMenu } from "../workbench/LeadAgentMenu";
 import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from "../workbench/NativeWorkers";
@@ -42,6 +44,7 @@ import {
   type SyntheticEvent,
   type WheelEvent,
 } from "react";
+const PlanPanel = lazy(() => import("../workbench/PlanPanel"));
 const SessionTitles = lazy(() => import("../workbench/SessionTitles"));
 const NavigationHistory = lazy(() => import('../workbench/NavigationHistory'));
 const MainTabs = lazy(() => import('../workbench/MainTabs').then(module => ({ default: module.MainTabs })));
@@ -254,7 +257,7 @@ const DEFAULT_AGENT_SELECTION_ID: WorkspaceAgentSelectionId = "native";
 const DEFAULT_AUTONOMY_MODE: WorkspaceAutonomyMode = "auto";
 // One Diane mode per intent; each maps to the closest Codex sandbox / Claude permission mode.
 const WORKSPACE_AUTONOMY_OPTIONS: WorkspaceAutonomyOption[] = [
-  { id: "plan", label: "Plan", shortLabel: "Plan", description: "Read and propose. Nothing changes until you decide." },
+  { id: "plan", label: "Read only", shortLabel: "Read only", description: "Inspect without changing project files. Use /plan to shape the work." },
   { id: "auto", label: "Auto", shortLabel: "Auto", description: "Edit files and run commands inside this project." },
   { id: "full", label: "Full access", shortLabel: "Full", description: "No sandbox or approvals. Use only in trusted projects." },
 ];
@@ -654,7 +657,7 @@ const DEFAULT_PLAN_GENERATION_QUEUE_LENGTH = 4;
 const DEFAULT_PLAN_EXECUTION_QUEUE_LENGTH = 4;
 const DEFAULT_TASK_EXECUTION_QUEUE_LENGTH = 4;
 const WORKSPACE_COMPOSER_COMMANDS: Array<{ command: string; description: string }> = [
-  { command: "/plan", description: "Show the deterministic contract" },
+  { command: "/plan", description: "Toggle Plan mode; add a request to draft a plan" },
   { command: "/progress", description: "Narrate current or recent work" },
   { command: "/tasks", description: "Show active, queued, and recent work" },
   { command: "/status", description: "Show visible task status" },
@@ -3393,6 +3396,7 @@ function sessionHasNewReadyResponse(tasks: ChatV2TaskSnapshot[], seenAt?: string
 }
 
 function shouldAutoRestoreSession(args: {
+  projectSelected?: boolean;
   activeThreadPresent: boolean;
   creatingSession: boolean;
   loadingThreadId?: string | null;
@@ -3401,6 +3405,7 @@ function shouldAutoRestoreSession(args: {
   threadCount: number;
 }) {
   return Boolean(
+    !args.projectSelected &&
     !args.activeThreadPresent &&
       !args.creatingSession &&
       !args.loadingThreadId &&
@@ -9104,7 +9109,9 @@ function queueRowsFromTasks(tasks: ChatV2TaskSnapshot[], waitingOnly = false) {
       const status = item.status || "queued";
       if (terminalQueueStatuses.has(status.toLowerCase())) continue;
       if (waitingOnly && !queueItemIsWaiting(item)) continue;
-      const rawDetail = item.text.trim() || "Queued message";
+      const payload = item.metadata?.command_payload as Record<string, unknown> | undefined;
+      const displayText = typeof payload?.display_text === "string" ? payload.display_text : item.text;
+      const rawDetail = readableQueueText(displayText).trim() || "Queued message";
       rows.push({
         id: `queue:${item.id}`,
         label: item.lane === "continue_after_current" ? "Next message" : "Steering message",
@@ -13395,6 +13402,7 @@ export default function ChunkWorkspaceApp() {
   const sessionSelectionSeqRef = useRef(0);
   const creatingSessionRef = useRef(false);
   const autoRestoringThreadIdRef = useRef<string | null>(null);
+  const projectSelectedRef = useRef(false);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const composerDraftsRef = useRef<Record<string, string>>(initialComposerDrafts);
   const noteEditorRef = useRef<HTMLTextAreaElement | null>(null);
@@ -13410,6 +13418,8 @@ export default function ChunkWorkspaceApp() {
 
   const referenceKey = activeThread ? `${activeThread.workflowId}:${activeThread.id}` : "new";
   const composerReference = composerReferences[referenceKey];
+  const sessionPlan = useSessionPlan(activeThread);
+  const planStartingRef = useRef(false);
   useLayoutEffect(() => {
     const node = composerRef.current;
     if (!node) return;
@@ -14138,6 +14148,7 @@ export default function ChunkWorkspaceApp() {
     const match = restorableThreadTarget(threads, targetThreadId, targetWorkflowId);
     if (
       !shouldAutoRestoreSession({
+        projectSelected: projectSelectedRef.current,
         activeThreadPresent: Boolean(activeThread),
         creatingSession: creatingSessionRef.current,
         loadingThreadId,
@@ -15641,7 +15652,7 @@ export default function ChunkWorkspaceApp() {
   }, [applyDevelopmentRoot, developmentRoot, rootOptions]);
 
   const startNewSession = useCallback(async (workspaceIdOverride?: string | null) => {
-    const targetWorkspaceId = workspaceIdOverride ?? workspace?.id ?? activeWorkspaceId;
+    const targetWorkspaceId = workspaceIdOverride ?? (workspaceProjectScope !== "*" ? workspaceProjectScope : null) ?? workspace?.id ?? activeWorkspaceId;
     const activeThreadWorkspaceKey = activeThread
       ? threadWorkspaceKey(activeThread.workflowId, activeThread.id)
       : "";
@@ -15748,6 +15759,7 @@ export default function ChunkWorkspaceApp() {
     threadWorkspaces,
     workspace?.activeThreadId,
     workspace?.id,
+    workspaceProjectScope,
   ]);
 
   const openSession = useCallback(
@@ -15886,6 +15898,9 @@ export default function ChunkWorkspaceApp() {
     setWorkspaceProjectScope(id);
     const selected = selectWorkbenchProject(id, threads);
     if (!selected) return;
+    projectSelectedRef.current = true;
+    window.sessionStorage.removeItem(LAST_THREAD_STORAGE_KEY);
+    window.localStorage.removeItem(LAST_THREAD_STORAGE_KEY);
     setPhonePage("chat");
     if (selected.thread) void openSession(selected.thread, id, selected.root);
     else {
@@ -15895,6 +15910,9 @@ export default function ChunkWorkspaceApp() {
   }, [threads, openSession, clearActiveSessionView]);
 
   const resetCreatedProject = (id: string) => {
+    projectSelectedRef.current = true;
+    window.sessionStorage.removeItem(LAST_THREAD_STORAGE_KEY);
+    window.localStorage.removeItem(LAST_THREAD_STORAGE_KEY);
     setWorkspaceProjectScope(id);
     ++sessionSelectionSeqRef.current;
     clearActiveSessionView("Ready");
@@ -16284,6 +16302,7 @@ export default function ChunkWorkspaceApp() {
         displayText?: string;
         regenerate?: boolean;
         replaceRequestId?: string;
+        planReview?: PlanReview;
       } = {},
     ) => {
       if (activeRunId && !canSteer) queueCommand = "continue_after_current";
@@ -16294,6 +16313,13 @@ export default function ChunkWorkspaceApp() {
           ?.path ?? null;
       const displayText = options.displayText || prompt;
       const thread = await ensureThread(prompt);
+      // Always read the session mode at dispatch, including regenerate/edit actions.
+      const savedPlan = await getSessionPlan(thread);
+      const planReview = options.planReview ?? (savedPlan.mode === "plan"
+        ? { action: "refine" as const, workflow_id: thread.workflowId, revision: savedPlan.revision } : undefined);
+      if (planReview?.action === "start" && savedPlan.revision !== planReview.revision) throw new Error("The plan changed. Reopen Plan and review the current revision before starting.");
+      if (planReview?.action === "start" && !options.selectedSkills?.length) options = { ...options, selectedSkills: savedPlan.selected_skills || [] };
+      if (planReview && activeRunId) throw new Error("Wait for the current run to finish before refining or starting a plan.");
       if (options.replaceRequestId && (activeThreadRef.current?.id !== thread.id || activeRunId
           || [...messagesRef.current].reverse().find((message) => message.role === "user")?.id !== options.replaceRequestId)) {
         throw new Error("This message can no longer be edited. Reopen the latest request.");
@@ -16354,6 +16380,7 @@ export default function ChunkWorkspaceApp() {
           idempotency_key: nowId(queueCommand),
           payload: {
             text: prompt,
+            display_text: displayText,
             client_message_id: user.id,
             attachments: attachmentPayloads,
             surface_context: buildSurfaceContext({
@@ -16393,7 +16420,7 @@ export default function ChunkWorkspaceApp() {
           : appendRequest(nextMessages);
         await initialPersist;
         await persistMessages(thread, finalMessages, "agent");
-        if (isStillSelectedThread()) setStatus("Added to Up next");
+        if (isStillSelectedThread()) setStatus("");
         return;
       }
 
@@ -16408,7 +16435,7 @@ export default function ChunkWorkspaceApp() {
         surface_type: WORKSPACE_SURFACE_TYPE,
         surface_id: WORKSPACE_SURFACE_ID,
         attachment_path: firstAttachmentPath,
-        surface_context: { ...(options.regenerate ? { regenerate: true } : {}), ...buildSurfaceContext({
+        surface_context: { ...(planReview ? { plan_review: planReview } : {}), ...(options.regenerate ? { regenerate: true } : {}), ...buildSurfaceContext({
           note: activeNote,
           selectedChunk,
           selectedBlueprintNode,
@@ -16426,6 +16453,16 @@ export default function ChunkWorkspaceApp() {
           mentionedFiles: options.mentionedFiles ?? [],
           attachments,
         }) },
+      }).catch(async (error) => {
+        if (planReview) {
+          const failed = (items: ChatMessage[]) => items.map(message => message.id === assistant.id
+            ? { ...message, content: error instanceof Error ? error.message : "Plan request failed." } : message);
+          const recovered = isStillSelectedThread() ? applyMessages(failed) : failed(nextMessages);
+          if (isStillSelectedThread()) setPendingAssistantIds(previous => { const next = { ...previous }; delete next[assistant.id]; return next; });
+          await initialPersist;
+          await persistMessages(thread, recovered, "agent");
+        }
+        throw error;
       });
       const createdTaskWorkspaceId =
         (created.task ? workspaceIdForTask(created.task, workspaces) : "") ||
@@ -16506,7 +16543,12 @@ export default function ChunkWorkspaceApp() {
         (() => {
           const payload = withLeadSelection(buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode), selectedAgentId, leadProfiles);
           payload.profile_policy.native_workers = nativeWorkerProfiles;
-          return payload;
+          // Plan is temporary read-only work; do not alter the user's execution preference.
+          if (planReview?.action === "refine") {
+            payload.profile_policy.permission_mode = "plan";
+            payload.profile_policy.codex_sandbox = "read-only";
+          }
+          return { ...payload, ...(planReview ? { auto_execute_continuations: false } : {}) };
         })(),
       );
       if (executed.task) {
@@ -16743,9 +16785,48 @@ export default function ChunkWorkspaceApp() {
     }
   };
 
+  const setPlanningMode = async (enabled: boolean) => {
+    if (hasActiveRun || sending) return false;
+    try {
+      const thread = activeThread || await ensureThread("New chat");
+      const current = await getSessionPlan(thread);
+      await saveSessionPlan(thread, { version: current.version, action: "mode", mode: enabled ? "plan" : "work" });
+      await sessionPlan.reload();
+      if (enabled) { setWorkbenchOutline(false); setPhonePage("chat"); }
+      setStatus(enabled ? "Planning: refine scope and steps before starting." : "Plan saved. Work mode selected.");
+      return true;
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not change mode"); return false; }
+  };
+  const answerPlan = async (text: string) => {
+    if (hasActiveRun || sending || !activeThread) return;
+    setSending(true);
+    try {
+      await sendAgent(text, "append_followup", { planReview: { action: "refine", workflow_id: activeThread.workflowId, revision: sessionPlan.state.revision } });
+      await sessionPlan.reload();
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not refine plan"); }
+    finally { setSending(false); }
+  };
+  const startPlan = async () => {
+    if (planStartingRef.current || hasActiveRun || sending || !activeThread || !sessionPlan.state.document) return;
+    planStartingRef.current = true; setSending(true);
+    try {
+      await sendAgent(`Start the reviewed plan: ${sessionPlan.state.document.title}`, "append_followup", {
+        planReview: { action: "start", workflow_id: activeThread.workflowId, revision: sessionPlan.state.revision },
+      });
+      await sessionPlan.reload();
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not start plan"); }
+    finally { planStartingRef.current = false; setSending(false); }
+  };
+
   const submit = useCallback(async (modeOverride?: ComposerSubmitMode) => {
     const draftBeforeSubmit = input;
-    const prompt = input.trim();
+    let prompt = input.trim();
+    if (/^\/plan(?:\s|$)/i.test(prompt)) {
+      prompt = prompt.replace(/^\/plan\s*/i, "");
+      if (!await setPlanningMode(prompt ? true : sessionPlan.state.mode !== "plan")) return;
+      if (!prompt) { setComposerInputValue(""); return; }
+    }
+    if (sessionPlan.state.mode === "plan" && hasActiveRun) { setStatus("Wait for the current planning turn to finish."); return; }
     const sourceAttachments = composerAttachments;
     if ((!prompt && sourceAttachments.length === 0) || sending || attachmentBusyRef.current) return;
     if (activePane === "notes" && sourceAttachments.length === 0 && notesComposerRequestsNewDraft(prompt)) {
@@ -16802,6 +16883,8 @@ export default function ChunkWorkspaceApp() {
   }, [
     composerReference,
     referenceKey,
+    sessionPlan.state.mode,
+    setPlanningMode,
     activePane,
     activeRunPlacement,
     composerAttachments,
@@ -16818,6 +16901,7 @@ export default function ChunkWorkspaceApp() {
 
   const handleComposerKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
       if (composerSuggestions.length > 0) {
         if (event.key === "ArrowDown" || event.key === "ArrowUp") {
           event.preventDefault();
@@ -16827,7 +16911,7 @@ export default function ChunkWorkspaceApp() {
           });
           return;
         }
-        if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+        if ((event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) || event.key === "Tab") {
           event.preventDefault();
           if (selectedComposerSuggestion) applyComposerSuggestion(selectedComposerSuggestion);
           return;
@@ -16838,14 +16922,10 @@ export default function ChunkWorkspaceApp() {
           return;
         }
       }
-      if (event.key !== "Enter") return;
-      if (event.shiftKey) return;
+      const placement = composerEnterPlacement(event.nativeEvent, hasActiveRun);
+      if (!placement) return;
       event.preventDefault();
-      if (event.altKey && hasActiveRun) {
-        void submit("queue");
-        return;
-      }
-      void submit();
+      void submit(placement);
     },
     [
       activeComposerToken,
@@ -16925,7 +17005,7 @@ export default function ChunkWorkspaceApp() {
           onClick={handleComposerSelectionChange}
           onSelect={handleComposerSelectionChange}
           onFocus={handleComposerSelectionChange}
-          placeholder={composerPlaceholder}
+          placeholder={sessionPlan.state.mode === "plan" ? "Describe or refine the plan…" : composerPlaceholder}
           rows={1}
           className="max-h-32 min-h-11 w-full resize-none rounded-lg border border-slate-200 bg-slate-50/90 px-3 py-2.5 text-sm leading-6 outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:bg-white focus:shadow-sm dark:border-slate-800 dark:bg-slate-900"
         />
@@ -16947,7 +17027,7 @@ export default function ChunkWorkspaceApp() {
                   title={
                     mode === "steer" && hasActiveRun && !canSteer ? "Live steering is not available for this run" : mode === "queue"
                       ? hasActiveRun
-                        ? "Queue this message after the current run (Option+Enter)"
+                        ? "Queue this message after the current run (Cmd/Ctrl+Enter)"
                         : "Next is available while a run is active"
                       : hasActiveRun
                         ? "Steer the active run now (Enter)"
@@ -17001,7 +17081,7 @@ export default function ChunkWorkspaceApp() {
                 setAutonomyMenuOpen((open) => !open);
               }}
               className="inline-flex h-7 min-w-[4.5rem] max-w-[6.5rem] items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50/95 px-2 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-white dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-700 sm:min-w-20 sm:max-w-[7rem]"
-              aria-label={`Mode: ${selectedAutonomyOption.label}`}
+              aria-label={`Execution permissions: ${selectedAutonomyOption.label}`}
               aria-expanded={autonomyMenuOpen}
             >
               <AutonomyIcon mode={selectedAutonomyOption.id} size={12} />
@@ -17042,6 +17122,9 @@ export default function ChunkWorkspaceApp() {
               </div></div>
             )}
           </div>
+          {sessionPlan.state.mode === "plan" && <span role="status" aria-label="Plan mode"
+            className="text-[11px] font-medium text-[var(--wb-muted)]"
+            title="Planning only. Send /plan to leave this mode.">Plan mode</span>}
           <LeadAgentMenu selected={selectedAgentId} onChange={setSelectedAgentId} disabled={hasActiveRun || sending}
             profiles={leadProfiles} onProfilesChange={setLeadProfiles} />
           <NativeWorkerSettings profiles={nativeWorkerProfiles} onChange={setNativeWorkerProfiles} />
@@ -17270,7 +17353,7 @@ export default function ChunkWorkspaceApp() {
       <Suspense fallback={null}><WorkspaceNavigator
         host={recentSessionHost} groups={sessionGroups} projects={workspaces} tabs={mainTabs} documents={documents} dirty={dirtyDocuments}
         active={activeMainTab.startsWith('file:') || activeMainTab.startsWith('pdf:') || ['papers','settings'].includes(activeMainTab) ? `tab:${activeMainTab}` : activeThread ? threadWorkspaceKey(activeThread.workflowId, activeThread.id) : ''}
-        projectActions={workspace && <ProjectMenu name={workspace.name || 'Project'} onNewChat={() => { void startNewSession(); setPhonePage('chat'); }} onEdit={() => { setCreatingProject(false); setWorkbenchSettings(true); }} onImport={() => setImportNativeSessions({ id: workspace.id, root: workspace.pinnedPaths[0] || '' })} onRemove={() => { for (const thread of threads.filter(thread => threadWorkspaces[threadWorkspaceKey(thread.workflow_id,thread.id)] === workspace.id)) clearStoredThreadSelection(thread); sessionSelectionSeqRef.current += 1; clearActiveSessionView('Project removed from Dear Diane'); hideWorkspace(workspace.id); }} />}
+        projectActions={workspace && <ProjectMenu name={workspace.name || 'Project'} onNewProject={() => { setCreatingProject(true); setWorkbenchSettings(true); }} onNewChat={() => { void startNewSession(); setPhonePage('chat'); }} onEdit={() => { setCreatingProject(false); setWorkbenchSettings(true); }} onImport={() => setImportNativeSessions({ id: workspace.id, root: workspace.pinnedPaths[0] || '' })} onRemove={() => { for (const thread of threads.filter(thread => threadWorkspaces[threadWorkspaceKey(thread.workflow_id,thread.id)] === workspace.id)) clearStoredThreadSelection(thread); sessionSelectionSeqRef.current += 1; clearActiveSessionView('Project removed from Dear Diane'); hideWorkspace(workspace.id); }} />}
         project={workspaceProjectScope} onOpenProjects={() => setProjectPickerRequest(value => value + 1)} onQuery={setThreadQuery}
         query={threadQuery} archived={sessionShelfScope === 'archived'} preferences={sessionPreferences}
         running={[...runningTaskByThreadId.keys()]} unread={threads.filter(thread => sessionHasNewReadyResponse(tasksByThreadId.get(thread.id) || [], sessionResponseSeen[threadWorkspaceKey(thread.workflow_id,thread.id)])).map(thread => thread.id)}
@@ -18421,7 +18504,6 @@ export default function ChunkWorkspaceApp() {
               {!documentsRestored && (activeMainTab.startsWith("pdf:") || /\.epub$/i.test(mainTabs.find(tab => tab.id === activeMainTab)?.label || "")) ? <p className="dan-document-message">Restoring reading session…</p> : activeMainTab === "papers" || activeMainTab === "file-error" || (activeMainTab.startsWith("file:") && !readerFile) ? null : activeMainTab === "settings" ? <Suspense fallback={null}><DianeSettings page onPapers={openPaperLibrary} onClose={() => closeTab("settings")} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} /></Suspense> : readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView key={readerFile.path} file={readerFile} onAsk={askFromReader} onNotes={() => openSideTab("notes")} /></Suspense> : <>
               <div className="wb-conversation-heading"><div className="wb-conversation-actions">
                 {activeThread && <button title={`Copy session ID: ${activeThread.id}`} onClick={() => { void navigator.clipboard.writeText(activeThread.id).then(() => setStatus("Session ID copied"), () => setStatus(`Session ID: ${activeThread.id}`)); }}>Session <code>{activeThread.id}</code></button>}
-                {activeRunningTask && activeThread && <button className="wb-stop" onClick={() => void stopSessionRun({ id: activeThread.id, workflow_id: activeThread.workflowId, title: activeThread.title || "Active session", message_count: messages.length, created_at: "", updated_at: "" }, activeRunningTask)}><Square size={11} />Stop run</button>}
                 <button aria-pressed={workbenchOutline} onClick={() => setWorkbenchOutline(!workbenchOutline)}>{workbenchOutline ? "Conversation" : "Task detail"}</button></div></div>
 
               <TeamStrip workers={team.workers} lead={selectedAgentOption.shortLabel} leadRunning={Boolean(activeRunningTask)} open={teamPanel} onToggle={() => { setTeamPanel(!teamPanel); setWorkbenchActivity(false); setSidecarChat(false); setShowSidecarPreview(false); }} />
@@ -18462,7 +18544,12 @@ export default function ChunkWorkspaceApp() {
                 />
               </div>
 ) : (
-                <WorkbenchConversation timings={Object.fromEntries(workPanelTasks.map(task => [task.task_id, { start:timestampValue(task.metadata?.run_created_at || task.metadata?._run_created_at, 0), end:isTaskRunning(task) ? undefined : timestampValue(taskRunUpdatedAt(task), 0) }]))} key={activeThread?.id ?? "new"} messages={visibleQueuedTranscript(messages, workPanelTasks, pendingAssistantIds)} pending={pendingAssistantIds} loading={loadingThreadId !== null} status={status} liveActions={liveActions} onEdit={activeThread ? editLastRequest : undefined} actionsDisabled={Boolean(activeRunningTask) || sending || Object.values(pendingAssistantIds).some(Boolean)} onRegenerate={activeThread && !activeRunningTask && !sending ? () => void regenerateLastRequest() : undefined} onFork={activeThread && !activeRunningTask && !sending ? () => void forkConversation() : undefined} onSidecar={activeThread ? (text) => { setSidecarSelection({text, token:Date.now()}); setSidecarChat(true); setWorkbenchActivity(false); setTeamPanel(false); setShowSidecarPreview(false); } : undefined} onQuote={(text, messageIds) => {
+                <WorkbenchConversation planReview={sessionPlan.state.document || sessionPlan.state.question || sessionPlan.state.questions?.length ? { runId: sessionPlan.state.last_run_id, content: (<Suspense fallback={<p className="wb-side-empty">Opening plan…</p>}><PlanPanel key={referenceKey}
+                state={sessionPlan.state} loaded={sessionPlan.loaded || !activeThread} saving={sessionPlan.saving} busy={hasActiveRun || sending}
+                error={sessionPlan.error} permission={selectedAutonomyOption.label}
+                onReload={sessionPlan.reload} onProposal={accept => sessionPlan.update({ action: accept ? "accept_proposal" : "dismiss_proposal" })}
+                onAnswer={text => { void answerPlan(text); }} onStart={() => { void startPlan(); }}
+              /></Suspense>), version: sessionPlan.state.version } : undefined} timings={Object.fromEntries(workPanelTasks.map(task => [task.task_id, { start:timestampValue(task.metadata?.run_created_at || task.metadata?._run_created_at, 0), end:isTaskRunning(task) ? undefined : timestampValue(taskRunUpdatedAt(task), 0) }]))} key={activeThread?.id ?? "new"} messages={visibleQueuedTranscript(messages, workPanelTasks, pendingAssistantIds)} pending={pendingAssistantIds} loading={loadingThreadId !== null} status={status} liveActions={liveActions} onEdit={activeThread ? editLastRequest : undefined} actionsDisabled={Boolean(activeRunningTask) || sending || Object.values(pendingAssistantIds).some(Boolean)} onRegenerate={activeThread && !activeRunningTask && !sending ? () => void regenerateLastRequest() : undefined} onFork={activeThread && !activeRunningTask && !sending ? () => void forkConversation() : undefined} onSidecar={activeThread ? (text) => { setSidecarSelection({text, token:Date.now()}); setSidecarChat(true); setWorkbenchActivity(false); setTeamPanel(false); setShowSidecarPreview(false); } : undefined} onQuote={(text, messageIds) => {
                   if (!activeThread) return;
                   setComposerReferences((current) => ({ ...current, [referenceKey]: { text, messageIds, title: activeThread.title || "Conversation", threadId: activeThread.id, workflowId: activeThread.workflowId } }));
                   // The reply button's click clears the selection after this handler; focus once that has settled.

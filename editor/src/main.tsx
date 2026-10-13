@@ -1,13 +1,14 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
+import "./styles/workbenchFonts.css";
 import "./styles/workspaceSurfaceThemes.css";
 import App from "./App";
 import { applyAppearanceTheme } from "./lib/appearanceTheme";
 import { useSettingsStore } from "./store/useSettingsStore";
 
 const initialSettings = useSettingsStore.getState();
-applyAppearanceTheme(initialSettings.theme, initialSettings.workspaceSurfaceTone, initialSettings.workbenchColorScheme);
+applyAppearanceTheme(initialSettings.theme, initialSettings.workspaceSurfaceTone, initialSettings.workbenchColorScheme, initialSettings);
 
 // Hydrate the remote project directory before the workbench chooses a session.
 void import("./lib/remoteProjects").then(module => module.startRemoteProjects()).then(() => createRoot(document.getElementById("root")!).render(

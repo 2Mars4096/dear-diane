@@ -3,7 +3,7 @@ import { lazy, Suspense, useEffect, useId, useRef, useState, type ReactNode } fr
 import { X } from "lucide-react";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { NativeWorkerSettings, type WorkerProfiles } from "./NativeWorkers";
-import { WORKBENCH_PALETTES, workbenchPalette } from "../../lib/workbenchPalette";
+import { AppearanceChoices } from "./AppearanceChoices";
 import "./settings.css";
 
 const DesktopUpdates = lazy(() => import("./DesktopUpdates").then(module => ({ default: module.DesktopUpdates })));
@@ -52,13 +52,7 @@ export function DianeSettings({ onClose, profiles, onProfilesChange, onPapers, p
           <option value="system">System</option><option value="vs">Light</option><option value="vs-dark">Dark</option>
           {settings.theme === "hc-black" && <option value="hc-black">High contrast (legacy)</option>}
         </select></Preference>
-        <Preference title="Color scheme" description="Applies to both light and dark themes."><select aria-label="Color scheme" value={workbenchPalette(settings.workbenchColorScheme).id} onChange={event => settings.updateSetting("workbenchColorScheme", workbenchPalette(event.target.value).id)}>
-          {WORKBENCH_PALETTES.map(palette => <option key={palette.id} value={palette.id}>{palette.label}</option>)}
-        </select></Preference>
-        <div className="wb-theme-sample" role="img" aria-label="Preview of the current workspace color scheme">
-          <div className="wb-theme-sample-sidebar"><span>Diane</span><span className="wb-theme-sample-selected">Research notes</span><span>New conversation</span></div>
-          <div className="wb-theme-sample-chat"><strong>A little room to think.</strong><span>Your workspace, in your colors.</span><div>Ask Diane anything<span aria-hidden="true">↑</span></div></div>
-        </div>
+        <AppearanceChoices />
         <h3>Notes</h3>
         <Preference title="Surface"><select aria-label="Notes surface" value={settings.workspaceSurfaceTheme} onChange={event => settings.updateSetting("workspaceSurfaceTheme", event.target.value as typeof settings.workspaceSurfaceTheme)}><option value="original">Original</option><option value="industrial">Industrial</option><option value="factory-worn">Factory worn</option></select></Preference>
         <Preference title="Color mode" description="Set the appearance of your Notes workspace."><select aria-label="Notes color mode" value={settings.workspaceSurfaceTone} onChange={event => settings.updateSetting("workspaceSurfaceTone", event.target.value as typeof settings.workspaceSurfaceTone)}><option value="system">System</option><option value="day">Day</option><option value="night">Night</option></select></Preference>

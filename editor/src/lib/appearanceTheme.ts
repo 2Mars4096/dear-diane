@@ -1,3 +1,4 @@
+import { applyWorkbenchFonts, type WorkbenchTypography } from "./workbenchFonts";
 import type { EditorSettings } from "../store/useSettingsStore";
 import { applyWorkbenchPalette, type WorkbenchPaletteId } from "./workbenchPalette";
 
@@ -32,6 +33,7 @@ export function applyAppearanceTheme(
   theme: AppearanceTheme,
   surfaceTone: WorkspaceSurfaceTone = "system",
   colorScheme: WorkbenchPaletteId = "warm",
+  typography: WorkbenchTypography = {},
 ) {
   if (typeof document === "undefined") return;
 
@@ -46,6 +48,7 @@ export function applyAppearanceTheme(
   root.dataset.resolvedSurfaceAppearance = resolveSurfaceAppearance(theme, surfaceTone);
   root.style.colorScheme = dark ? "dark" : "light";
   applyWorkbenchPalette(colorScheme, dark);
+  applyWorkbenchFonts(typography);
 }
 
 export function subscribeToSystemAppearance(

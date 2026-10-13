@@ -7,6 +7,7 @@ export const WORKBENCH_PALETTES = [
   { id: "warm", label: "Warm charcoal / Warm ivory", light: ["#FAF9F7", "#FFFFFF", "#E5E0DC", "#292421", "#7C726C", "#D97706"], dark: ["#12100F", "#1C1917", "#393330", "#FAF7F4", "#AAA29C", "#F59E0B"] },
   { id: "graphite", label: "Graphite + electric blue", light: ["#F7F8FA", "#FFFFFF", "#D9DCE2", "#1B1E24", "#69717D", "#2563EB"], dark: ["#101114", "#181A1F", "#30343C", "#F1F3F5", "#9299A3", "#4D9CFF"] },
   { id: "oled", label: "OLED / Crisp minimal", light: ["#F8F9F9", "#FFFFFF", "#DDE2E1", "#141716", "#69726F", "#0F9F8F"], dark: ["#050505", "#101010", "#292929", "#EEEEEE", "#888888", "#5EEAD4"] },
+  { id: "neon", label: "Neon / Terminal", light: ["#EFFBF9", "#F8FFFE", "#B9DCD9", "#132C35", "#53777C", "#087F70"], dark: ["#090D18", "#101629", "#293650", "#DAF4FF", "#8B9CB5", "#55F6D0"] },
 ] as const;
 
 export type WorkbenchPaletteId = typeof WORKBENCH_PALETTES[number]["id"];

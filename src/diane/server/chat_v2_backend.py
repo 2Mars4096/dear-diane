@@ -818,7 +818,7 @@ class SuperDanBackendAdapter:
         if request.thread_id and Path(request.thread_id).name == request.thread_id and import_path.is_file():
             source = json.loads(import_path.read_text())
             from diane.native_workers.sessions import same_folder
-            if same_folder(source["workspace"], request.workspace_root):
+            if source.get("continuation") != "history" and same_folder(source["workspace"], request.workspace_root):
                 backend = source["backend"]
                 profiles[backend] = {**profiles.get(backend, {}), "enabled": True, "account": source["account"], "source_session": source["session_id"]}
 
@@ -1221,6 +1221,10 @@ async def run_agent_backend(
         raise KeyError(run_id)
     task = store.get_task(run.task_id)
     request = build_agent_backend_request(run, task, overrides=overrides)
+    from diane.server.plan_mode import PlanStore, plan_context, planning_instructions, parse_proposal, run_api_planner
+    from diane.server.chat_store import ChatStore
+    review = plan_context(request)
+    plan_store = PlanStore(ChatStore(str(store.base_dir.parent)))
     if request.workspace_root and request.thread_id:
         from diane.workspace_changes import capture
         from diane.server.paths import resolve_graphs_dir
@@ -1313,10 +1317,51 @@ async def run_agent_backend(
                 "task_id": event.task_id or run.task_id,
             }
         )
+        # Structured plan output belongs in the document, not streamed JSON in chat.
+        if review.get("action") == "refine" and normalized.type in {"model_text_delta", "completed"}:
+            return
         store.record_agent_event(normalized)
 
     try:
-        result = await selected.run(request, _emit, runtime=runtime)
+        if review:
+            workflow = str(review.get("workflow_id") or "")
+            revision = int(review.get("revision", -1))
+            state = plan_store.read(workflow, request.thread_id)
+            if review["action"] == "start":
+                previous = state.get("execution")
+                previous_run = store.get_run(previous["run_id"]) if previous else None
+                if previous_run and previous_run.status in {"running", "queued", "paused", "needs_input", "blocked"}:
+                    raise ValueError("The previous plan run still needs attention. Stop or finish it before starting another revision.")
+                if request.profile_policy.get("permission_mode") == "plan":
+                    raise ValueError("Execution permissions are Read only. Choose execution permissions before starting.")
+                state = plan_store.claim(workflow, request.thread_id, revision, run_id)
+                request.surface_context["approved_plan"] = state["execution"]
+                request.metadata["plan_instructions"] = (
+                    "Implement this exact reviewed plan revision. Preserve the selected permissions. "
+                    "Report observed progress and validation; do not expand scope silently.\n"
+                    + json.dumps(state["execution"]["document"], ensure_ascii=False)
+                )
+                request.mutation_policy = _recompute_run_mutation_policy(request)
+            else:
+                if state["mode"] != "plan":
+                    raise ValueError("Enter Plan mode before refining this plan")
+                request.metadata["plan_instructions"] = planning_instructions(state)
+        if review.get("action") == "refine" and selected.backend_name == "super_dan":
+            result = await run_api_planner(request, runtime)
+        else:
+            result = await selected.run(request, _emit, runtime=runtime)
+        if review.get("action") == "refine" and result.status == "completed":
+            try:
+                proposal = parse_proposal(result.summary)
+            except ValueError as exc:
+                store.update_run_metadata(run_id, {"plan_format_error": str(exc)})
+                raise ValueError("Diane could not format this plan. Your saved draft is unchanged. Ask to try again.") from exc
+            state = plan_store.receive(workflow, request.thread_id, revision, run_id, proposal,
+                list(request.surface_context.get("selected_skills") or []))
+            result.summary = state["summary"] + " Open Plan to review scope, specifications, and next steps."
+            store.record_agent_event(AgentRunEvent(type="completed", run_id=run_id, task_id=run.task_id,
+                summary=result.summary, source_event_type="plan_review.saved",
+                payload={"final_text": result.summary, "plan_revision": state["revision"]}))
     except AgentBackendStopped as exc:
         result = AgentBackendRunResult(
             status="stopped",
@@ -1512,9 +1557,14 @@ def build_agent_backend_request(
         tool_policy=tool_policy,
         metadata=metadata,
     )
-    return request.model_copy(
-        update={"mutation_policy": _recompute_run_mutation_policy(request)}
-    )
+    request = request.model_copy(update={"mutation_policy": _recompute_run_mutation_policy(request)})
+    from diane.server.plan_mode import plan_context
+    if plan_context(request).get("action") == "refine":
+        # Apply after policy normalization; selected skills cannot widen planning access.
+        request.profile_policy.update(permission_mode="plan", codex_sandbox="read-only",
+                                      auto_backend_continuation=False)
+        request.mutation_policy.update(mode="read_only", permission="forbidden", external_side_effects="deny")
+    return request
 
 
 def _recompute_run_mutation_policy(request: AgentBackendRunRequest) -> dict[str, Any]:
@@ -3470,6 +3520,12 @@ def _drop_empty_nested(value: Any) -> Any:
 
 
 def _objective_with_surface_context(request: AgentBackendRunRequest) -> str:
+    base = _base_objective_with_surface_context(request)
+    instructions = str(request.metadata.get("plan_instructions") or "")
+    return instructions + "\n\n" + base if instructions else base
+
+
+def _base_objective_with_surface_context(request: AgentBackendRunRequest) -> str:
     objective = " ".join(str(request.objective or "").split())
     normalized_request = request.metadata.get("normalized_request")
     if isinstance(normalized_request, dict):

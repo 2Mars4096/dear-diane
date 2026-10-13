@@ -1,4 +1,4 @@
-import { Fragment, lazy, Suspense, useEffect, useRef, useState } from "react";
+import { type ReactNode, Fragment, lazy, Suspense, useEffect, useRef, useState } from "react";
 import { ArrowDown, CornerDownRight, Sparkles, MessageSquareText } from "lucide-react";
 import MarkdownRenderer from "../shared/MarkdownRenderer";
 import type { ChatMessage } from "../../types/chat";
@@ -26,7 +26,8 @@ export function WorkbenchActivity({ events }: { events: ChatV2AgentRunEvent[] })
   </div>;
 }
 
-export function WorkbenchConversation({ messages, pending, loading, status, onQuote, onSidecar, onRegenerate, onFork, onEdit, actionsDisabled, liveActions = {}, timings = {} }: {
+export function WorkbenchConversation({ messages, pending, loading, status, onQuote, onSidecar, onRegenerate, onFork, onEdit, actionsDisabled, liveActions = {}, timings = {}, planReview }: {
+  planReview?: { runId?: string; content: ReactNode; version: number };
   timings?: Record<string, { start?: number; end?: number }>;
   messages: ChatMessage[];
   liveActions?: Record<string, string>;
@@ -46,6 +47,7 @@ export function WorkbenchConversation({ messages, pending, loading, status, onQu
   const [quote, setQuote] = useState("");
   const [quoteMessageIds, setQuoteMessageIds] = useState<string[]>([]);
   const lastMessage = messages.at(-1);
+  const planMessageId = planReview?.runId ? [...messages].reverse().find(message => message.role === "assistant" && message.taskRunRef?.runId === planReview.runId)?.id : undefined;
   let lastRequestIndex = messages.length - 1;
   while (lastRequestIndex >= 0 && messages[lastRequestIndex].role !== "user") lastRequestIndex -= 1;
   const lastRequestId = messages[lastRequestIndex]?.id;
@@ -73,7 +75,7 @@ export function WorkbenchConversation({ messages, pending, loading, status, onQu
       setShowLatest(!following.current);
     }}>
       <div className="wb-transcript" aria-busy={loading}>
-        {loading ? <div className="wb-empty"><p>Opening session…</p></div> : !messages.length ? <div className="wb-empty"><div className="wb-mark"><Sparkles size={26} strokeWidth={1.3} /></div><p className="wb-eyebrow">ROOM TO THINK. TOOLS TO BUILD.</p><h1>What are we working on?</h1><p>Start with a question, a task, or an unfinished idea.<br />Your work stays together in this project.</p></div> : messages.filter((message) => message.role !== "system").map((message) => <Fragment key={message.id}><article className={`wb-message wb-message-${message.role}`} data-message-id={message.id}>
+        {loading ? <div className="wb-empty"><p>Opening session…</p></div> : !messages.length && !planReview ? <div className="wb-empty"><div className="wb-mark"><Sparkles size={26} strokeWidth={1.3} /></div><p className="wb-eyebrow">ROOM TO THINK. TOOLS TO BUILD.</p><h1>What are we working on?</h1><p>Start with a question, a task, or an unfinished idea.<br />Your work stays together in this project.</p></div> : messages.filter((message) => message.role !== "system").map((message) => <Fragment key={message.id}><article className={`wb-message wb-message-${message.role}`} data-message-id={message.id}>
           <div className="wb-message-author">{message.role === "user" ? "You" : message.runEvents?.length ? eventAgentName({ type: "message", payload: (message.runEvents.find((event) => event.detail?.payload || event.detail?.backend)?.detail?.payload ?? message.runEvents.find((event) => event.detail?.backend)?.detail ?? {}) as Record<string, unknown> }) : "Diane"}{pending[message.id] && <span className="wb-live-dot" aria-label="Working" />}</div>
           {message.role === "assistant" && ["failed", "blocked", "stopped"].includes(message.taskRunRef?.status || "") && <p className="wb-muted" role="status">Request {message.taskRunRef!.status}</p>}
           <div className="wb-message-body">{message.content ? <MarkdownRenderer content={message.content} /> : pending[message.id] ? null : <p className="wb-muted">No response content recorded.</p>}</div>
@@ -81,9 +83,11 @@ export function WorkbenchConversation({ messages, pending, loading, status, onQu
           {message.toolCalls?.map((tool) => <details className="wb-event" key={tool.id}><summary><span>{tool.status === "running" ? "◌" : tool.status === "error" ? "!" : "✓"}</span><span>{tool.toolName}</span><span className="wb-muted">{tool.status}</span></summary><pre>{tool.argsPreview}{tool.outputPreview && `\n\n${tool.outputPreview}`}</pre></details>)}
           {(Boolean(message.runEvents?.length) || pending[message.id]) && <Suspense fallback={null}><ActivitySummary events={message.runEvents ?? []} active={Boolean(pending[message.id])} startedAt={timings[message.taskRunRef?.taskId || ""]?.start || message.timestamp} endedAt={timings[message.taskRunRef?.taskId || ""]?.end} live={liveActions[message.id]}>{(message.runEvents ?? []).filter(event => event.type !== "model_text_delta").map((event, index) => <EventDetail key={index} event={{ type: event.type, source_event_type: event.event_type, summary: event.summary, payload: (event.detail?.payload ?? event.detail ?? {}) as Record<string, unknown> }} />)}</ActivitySummary></Suspense>}
           {message.taskRunRef && ["failed", "blocked", "stopped", "needs_input"].includes(message.taskRunRef.status) && <div className="wb-message-state">{{failed:"Could not finish", blocked:"Needs your attention", stopped:"Stopped", needs_input:"Needs your input"}[message.taskRunRef.status]}</div>}
+          {message.id === planMessageId && planReview?.content}
         </article>
         {message.id === lastRequestId && (onEdit || onRegenerate || onFork) && <Suspense fallback={null}><RequestActions key={message.id} text={message.content} disabled={actionsDisabled} onEdit={onEdit ? (text) => onEdit(message.id, text) : undefined} onRegenerate={onRegenerate} onFork={onFork} /></Suspense>}
         {message.id === lastResponseId && lastRequestId && !pending[message.id] && (onEdit || onRegenerate || onFork) && <Suspense fallback={null}><RequestActions response text={messages[lastRequestIndex].content} disabled={actionsDisabled} onEdit={onEdit ? text => onEdit(lastRequestId, text) : undefined} onRegenerate={onRegenerate} onFork={onFork} /></Suspense>}</Fragment>)}
+        {!loading && planReview && !planMessageId && <article className="wb-message wb-message-assistant" aria-label="Diane plan"><div className="wb-message-author">Diane</div>{planReview.content}</article>}
       </div>
     </div>
     {quote && <div className="wb-quote-action" onMouseDown={(event) => event.preventDefault()}><button onClick={() => { onQuote(quote, quoteMessageIds); setQuote(""); window.getSelection()?.removeAllRanges(); }}><CornerDownRight size={15} />Reply to selection</button>{onSidecar && <button onClick={() => { onSidecar(quote); setQuote(""); }}><MessageSquareText size={15} />Sidecar chat</button>}<button onClick={() => setQuote("")} aria-label="Dismiss selected quote">×</button></div>}

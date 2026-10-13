@@ -173,15 +173,18 @@ class NativeLeadAdapter:
             proc_client = Path(temporary.name) / "proc.py"
             proc_client.write_text(Path(proc_bridge.__file__).read_text())
             proc_server = asyncio.create_task(proc_bridge.serve(Path(temporary.name), workspace,
-                workspace_id=str(request.surface_context.get("workspace_id") or ""), thread_id=str(request.thread_id or ""), backend=backend))
+                workspace_id=str(request.surface_context.get("workspace_id") or ""), thread_id=str(request.thread_id or ""), backend=backend, permission=permission))
             proc_command = f"{shlex.quote(sys.executable)} {shlex.quote(str(proc_client))} --queue {shlex.quote(temporary.name)}"
-            prompt += ("\n\nLong-running processes: anything you start from your own shell (dev servers, watchers, tunnels) is "
-                "killed when this run ends. To keep a process running afterwards, start it through Diane instead:\n"
-                + proc_command + " start --name 'dev server' -- npm run dev\n"
-                + proc_command + " list\n"
-                + proc_command + " logs --id ID\n"
-                + proc_command + " stop --id ID\n"
-                "Use this only for commands that must stay up; check logs to confirm startup. The user can see and stop these in Dear Diane's Processes tab.")
+            if permission == "plan":
+                prompt += "\n\nPlan mode process inspection only: " + proc_command + " list or logs --id ID. Starting and stopping processes is disabled."
+            else:
+                prompt += ("\n\nLong-running processes: anything you start from your own shell (dev servers, watchers, tunnels) is "
+                    "killed when this run ends. To keep a process running afterwards, start it through Diane instead:\n"
+                    + proc_command + " start --name 'dev server' -- npm run dev\n"
+                    + proc_command + " list\n"
+                    + proc_command + " logs --id ID\n"
+                    + proc_command + " stop --id ID\n"
+                    "Use this only for commands that must stay up; check logs to confirm startup. The user can see and stop these in Dear Diane's Processes tab.")
             lead = NativeTeam(request.run_id, workspace, {backend: profile}, base / "native_leads", on_lead)
             record = await lead.start(backend, prompt)
             task = lead.tasks[record["worker_id"]]

@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from diane.server.chat_store import ChatMessage, ChatStore
+from diane.server.plan_mode import PlanUpdate
 
 router = APIRouter(tags=["sessions"])
 
@@ -130,3 +131,34 @@ async def summarize_chat_title(workflow_id: str, thread_id: str, request: Reques
     except Exception:
         # Optional title generation never prevents opening or continuing the session.
         return {"title": None}
+
+
+@router.get("/api/chats/{workflow_id}/{thread_id}/plan")
+async def get_session_plan(workflow_id: str, thread_id: str, request: Request) -> dict:
+    from diane.server.plan_mode import PlanStore
+    try:
+        state = PlanStore(_store(request)).read(workflow_id, thread_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    execution = state.get("execution")
+    runs = getattr(request.app.state, "chat_v2_store", None)
+    if execution and runs:
+        run = runs.get_run(execution["run_id"])
+        execution["status"] = run.status if run else "unavailable"
+        execution["progress"] = run.latest_summary if run else "Run is unavailable"
+    return state
+
+
+@router.put("/api/chats/{workflow_id}/{thread_id}/plan")
+async def update_session_plan(workflow_id: str, thread_id: str, update: PlanUpdate, request: Request) -> dict:
+    from diane.server.plan_mode import PlanConflict, PlanStore
+    try:
+        return PlanStore(_store(request)).update(workflow_id, thread_id, update)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PlanConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc

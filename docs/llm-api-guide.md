@@ -10,6 +10,14 @@ Remote execution uses the same API on a machine-specific origin. Remote clients 
 
 SSH setup: local-only `GET /api/remote/ssh-hosts` returns `{hosts: string[]}` with literal SSH config aliases. Profiles accept `ssh_alias` as an alias or `user@host`, optional `ssh_port` (1–65535), and optional absolute/`~` `identity_file` path. Set `relay_enabled: false` and `ssh_via_relay: false` to save/check a host without private addresses; its URL is null and installation is unavailable until relay setup is enabled. Missing flags preserve old relay behavior. Use `If-None-Match: *` on profile PUT when creating to reject an existing ID with 409. No SSH config or key files are written by saving.
 
+## Session plan review
+
+- `GET /api/chats/{workflow_id}/{thread_id}/plan` returns `version`, `revision`, `mode` (`plan` or `work`), `document`, `history`, `question`, `questions_asked`, `proposal`, and `execution`. Execution status/progress comes from its recorded V2 run.
+- `PUT` to the same endpoint requires the last `version` and an `action`: `mode` with `mode`, `edit` with `document`, `accept_proposal`, or `dismiss_proposal`. Stale writes return HTTP 409. Document fields are strings: `title`, `outcome`, `scope`, `specifications`, `steps`, `assumptions`, `blockers`; no blockers is an empty string.
+- Workbench planning uses normal V2 run creation with `surface_context.plan_review = {action: "refine", workflow_id, revision}`. Backend normalization forces native read-only permissions independently of `selected_skills`; the API planner uses no tools. The model returns one fenced `diane-plan` JSON object with `document`, concise `summary`, and optional `question` (`question`, `reason`, `recommended`, up to two `alternatives`). The server persists at most three questions per session.
+- Start uses `{action: "start", workflow_id, revision}` in the same context and the caller's unchanged execution policy. The backend rejects stale/already-started revisions, unresolved blockers, and Read only execution permissions; freezes the reviewed document against the run; and passes it to the existing selected runtime. GUI plan runs disable automatic promoted continuations. Planning does not authorize implementation until this explicit start.
+- Transcript saves do not overwrite plan state. A late model revision becomes a reviewable proposal when the document changed during generation. Skills remain optional expertise, not a mode switch.
+
 ## Browser research tools
 
 Ordinary GUI Super DAN requests expose `browser_open`, `browser_inspect`, `browser_click`, `browser_fill`, `browser_type`, `browser_select`, `browser_wait`, `browser_extract`, `browser_screenshot`, `browser_tabs`, and `browser_download`. Explicit `surface_policy.capability_packs` still controls availability. Native leads receive a run-scoped `browser.py --queue ... ACTION --args JSON` command; its `help` action returns tool schemas.
@@ -238,3 +246,14 @@ Codex-backed native leads and workers run in Diane-owned session storage. Existi
 `GET /requests/{UUID}` returns `{request_id,task_key,session_id,workflow_id,project_name,run_id,status,summary,artifacts,updated_at,stopping}`. Status is `queued|running|attention|ready|stopped|failed`, following the latest run in the linked session. `POST /requests/{UUID}/stop` requests a checkpoint stop; `stopping` remains true until confirmed.
 
 Desktop only: `POST /api/sticky-todo/requests/{UUID}/open` on loopback port 45173 resolves and opens that session in Diane. It rejects Origin-bearing browser requests. Do not treat loss of connectivity as failure or retry by generating another UUID.
+
+### Native history import boundaries
+Claude discovery includes existing Diane API-provider transcript stores for configured accounts. Source metadata includes `provider`; provider histories use `continuation: "history"` and import as independent conversation copies rather than native-session resumes. Native subscription histories retain their existing continuation behavior. Cursor imports reject transcripts above 20,000 bubbles with an explicit error; no partial import or source mutation occurs.
+
+### Account usage
+`GET /api/usage` returns all discovered Codex/Claude logins and configured API providers, ordered by recent use. Optional `limit` truncates explicitly. Rows contain `backend`, `account`, `label`, `aliases`, `windows`, optional `plan`/`observed_at`/`error`; OpenRouter additionally returns `spend` (`usage`, `usage_daily`, `usage_monthly`, `limit`, `limit_remaining`, `limit_reset`). Key budget is not account balance. `fetched_at` timestamps report assembly; `observed_at` timestamps the account reading. Credentials and remote key labels are never returned.
+
+### Planning question choices
+`PlanQuestion.selection_mode` accepts `single` (default) or `multiple`. The recommended string and up to five alternatives are selectable answers; both use square checkboxes; single permits one selected choice and multiple permits several. Keep alternatives exclusive for single and independently compatible for multiple. Questions and final plans appear directly in the assistant conversation.
+
+- Planning follow-up: show up to three MCQs together within the existing session question budget. Every question has Other with a custom answer and optional comments. Submit all answers together. Empty Plan mode adds no greeting to the transcript. `questions` is the batch field; legacy `question` remains readable.

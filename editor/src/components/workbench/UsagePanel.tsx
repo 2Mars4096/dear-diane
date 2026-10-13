@@ -1,31 +1,14 @@
+import { agoLabel, resetsIn, usageLevel } from "./usageFormat";
 import { useEffect, useState } from "react";
 import { Gauge } from "lucide-react";
 import { useDismissDetails } from "./useDismissDetails";
 
 export type UsageWindow = { label: string; used_percent: number; resets_at: number | null };
-export type UsageAccount = { backend: string; account: string; label: string; windows: UsageWindow[]; plan?: string; error?: string; observed_at?: number };
-const NAMES: Record<string, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor", antigravity: "Antigravity", dan: "Diane" };
+export type UsageAccount = { backend: string; account: string; label: string; windows: UsageWindow[]; plan?: string; error?: string; observed_at?: number; aliases?: string[]; spend?: { usage?: number; usage_daily?: number; usage_monthly?: number; limit?: number | null; limit_remaining?: number | null; limit_reset?: string | null } };
+const NAMES: Record<string, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor", antigravity: "Antigravity", dan: "Diane", openrouter: "OpenRouter", openai: "OpenAI API", deepseek: "DeepSeek", moonshot: "Moonshot" };
 const POLL_MS = 5 * 60_000; // refreshed on every hover-open, then every 5 minutes while it stays open
 
-/** Colour by what is left: under 25% warns, under 10% is critical. */
-export function usageLevel(usedPercent: number): "mid" | "high" | undefined {
-  const left = 100 - usedPercent;
-  return left < 10 ? "high" : left < 25 ? "mid" : undefined;
-}
-export function resetsIn(at: number | null, now = Date.now() / 1000): string {
-  if (!at) return "";
-  const seconds = Math.max(0, at - now);
-  if (seconds < 3600) return `resets in ${Math.max(1, Math.round(seconds / 60))}m`;
-  if (seconds < 86400) return `resets in ${Math.round(seconds / 3600)}h`;
-  return `resets in ${Math.round(seconds / 86400)}d`;
-}
-export function agoLabel(at?: number, now = Date.now() / 1000): string {
-  if (!at) return "";
-  const seconds = Math.max(0, now - at);
-  return seconds < 60 ? "just now" : seconds < 3600 ? `${Math.round(seconds / 60)}m ago` : `${Math.round(seconds / 3600)}h ago`;
-}
-
-/** Sidebar footer: hover to see the latest quota for the two most recently used accounts. */
+/** Sidebar footer: hover to see the latest quota for all discovered accounts and configured API providers. */
 export function UsagePanel() {
   const details = useDismissDetails();
   const [open, setOpen] = useState(false);
@@ -36,7 +19,7 @@ export function UsagePanel() {
     let disposed = false;
     const refresh = async () => {
       try {
-        const response = await fetch("/api/usage?limit=2");
+        const response = await fetch("/api/usage");
         if (!response.ok) throw new Error("Usage is unavailable right now.");
         const next = await response.json();
         if (!disposed) { setData(next); setError(""); }
@@ -52,19 +35,25 @@ export function UsagePanel() {
       {error && <p role="alert">{error}</p>}
       {!data && !error && <p>Checking usage…</p>}
       {data?.accounts.map((account) => <section key={`${account.backend}:${account.account}`} className="wb-usage-account">
-        <h4>{NAMES[account.backend] ?? account.backend}<span>{account.account}{account.plan ? ` · ${account.plan}` : ""}</span></h4>
-        {account.error ? <p className="wb-muted">{account.error}</p> : account.windows.map((window) => {
+        <h4>{NAMES[account.backend] ?? account.backend}<span>{account.aliases?.length ? [...new Set(account.aliases)].join(" / ") : account.label}{account.plan ? ` · ${account.plan}` : ""}</span></h4>
+        {account.error ? <p className="wb-muted">{account.error}</p> : account.windows.map((window, index) => {
           const used = Math.min(100, Math.max(0, window.used_percent));
-          return <div key={window.label} className="wb-usage-row" data-level={usageLevel(used)}>
+          return <div key={`${window.label}:${index}`} className="wb-usage-row" data-level={usageLevel(used)}>
             <span className="wb-usage-label">{window.label}</span>
-            <span className="wb-usage-bar" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(100 - used)} aria-label={`${window.label} remaining`}><i style={{ width: `${100 - used}%` }} /></span>
+            <span className="wb-usage-bar" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(100 - used)} aria-label={`${NAMES[account.backend] ?? account.backend} ${account.label} ${window.label} remaining`}><i style={{ width: `${100 - used}%` }} /></span>
             <span className="wb-usage-pct">{Math.round(100 - used)}% left</span>
             <span className="wb-usage-reset">{resetsIn(window.resets_at)}</span>
           </div>;
         })}
-        {!account.error && !account.windows.length && <p className="wb-muted">No limits reported yet.</p>}
+        {account.spend && <div className="wb-usage-spend">
+          {typeof account.spend.usage_daily === "number" && <p>Today <strong>${account.spend.usage_daily.toFixed(2)}</strong></p>}
+          {typeof account.spend.usage_monthly === "number" && <p>This month <strong>${account.spend.usage_monthly.toFixed(2)}</strong></p>}
+          {typeof account.spend.limit_remaining === "number" ? <p>Key budget remaining <strong>${account.spend.limit_remaining.toFixed(2)}</strong>{account.spend.limit_reset ? ` · ${account.spend.limit_reset}` : ""}</p> : <p className="wb-muted">No key spending cap reported; account balance is separate.</p>}
+        </div>}
+        {account.observed_at && <p className="wb-usage-stamp">Checked {agoLabel(account.observed_at)}</p>}
+        {!account.error && !account.spend && !account.windows.length && <p className="wb-muted">No limits reported yet.</p>}
       </section>)}
-      {data?.fetched_at && <p className="wb-usage-stamp">Updated {agoLabel(data.fetched_at)} · refreshes when opened</p>}
+      {data?.fetched_at && <p className="wb-usage-stamp">Accounts checked {agoLabel(data.fetched_at)} · refreshes when opened</p>}
     </div>
   </details>;
 }

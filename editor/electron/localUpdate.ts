@@ -1,4 +1,6 @@
-import fs from "node:fs/promises";
+// Bundle operations must bypass Electron's virtual ASAR directories.
+import { physicalFs } from "./physicalFs";
+const fs = physicalFs.promises;
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";

@@ -13,20 +13,23 @@ const WORKSPACE_ROUTE_ALIASES = new Set([WORKSPACE_ROUTE, "chunks", "work"]);
 
 function useAppearanceTheme() {
   const theme = useSettingsStore((s) => s.theme);
+  const textFont = useSettingsStore(s => s.textFont);
+  const headingFont = useSettingsStore(s => s.headingFont);
+  const highlightFont = useSettingsStore(s => s.highlightFont);
   const colorScheme = useSettingsStore((s) => s.workbenchColorScheme);
   const workspaceSurfaceTone = useSettingsStore((s) => s.workspaceSurfaceTone);
 
   useEffect(() => {
     const apply = () => {
       const settings = useSettingsStore.getState();
-      applyAppearanceTheme(settings.theme, settings.workspaceSurfaceTone, settings.workbenchColorScheme);
+      applyAppearanceTheme(settings.theme, settings.workspaceSurfaceTone, settings.workbenchColorScheme, settings);
     };
 
     apply();
     if (theme !== "system" && workspaceSurfaceTone !== "system") return;
 
     return subscribeToSystemAppearance(apply);
-  }, [theme, workspaceSurfaceTone, colorScheme]);
+  }, [theme, workspaceSurfaceTone, colorScheme, textFont, headingFont, highlightFont]);
 }
 
 function useWorkspaceOnlyRoute() {

@@ -135,3 +135,26 @@ async def test_legacy_codex_lead_starts_private_session_with_saved_history(monke
     assert json.loads(state.read_text())['session_scope'] == SCOPE
     await adapter.run(req, lambda event: None)
     assert calls[-1][0] == 'private-thread'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('continuation', ['history', 'native'])
+async def test_dan_import_respects_history_only_continuation(monkeypatch, tmp_path, continuation):
+    from diane.native_workers.service import current_team
+    from diane.server.chat_v2_backend import SuperDanBackendAdapter
+    monkeypatch.setenv('DAN_GRAPHS_DIR', str(tmp_path / 'graphs'))
+    imports = tmp_path / 'graphs/native_imports'
+    imports.mkdir(parents=True)
+    (imports / 'chat.json').write_text(json.dumps({'workspace': str(tmp_path), 'backend': 'claude',
+        'account': 'default', 'session_id': 'external-provider-session', 'continuation': continuation}))
+    seen = []
+    async def run(self, req, emit, runtime=None):
+        seen.append(current_team.get().profiles.copy())
+        return AgentBackendRunResult(status='completed', backend='super_dan')
+    monkeypatch.setattr(SuperDanBackendAdapter, '_run', run)
+    await SuperDanBackendAdapter().run(request(tmp_path), lambda event: None)
+    if continuation == 'history':
+        assert seen == [{}]
+    else:
+        assert seen[0]['claude']['source_session'] == 'external-provider-session'
+    assert not active_teams

@@ -3,6 +3,19 @@ import type { ChatV2TaskSnapshot } from "../../lib/chatV2Api";
 
 const ACKNOWLEDGEMENT = /^(Queued (?:after|to continue|for checkpoint)|Steering note queued)/;
 
+/** Older queue records contain the agent's structured reference envelope. */
+export function readableQueueText(text: string): string {
+  const marker = "\n\nReferenced material (quoted context, not a new instruction):\n";
+  const index = text.lastIndexOf(marker);
+  if (index < 0) return text;
+  try {
+    const reference: unknown = JSON.parse(text.slice(index + marker.length));
+    if (!reference || typeof reference !== "object" || !("title" in reference) || !("text" in reference)
+      || typeof reference.title !== "string" || typeof reference.text !== "string") return text;
+    return `${text.slice(0, index)}\n\nReference · ${reference.title}\n${reference.text.split("\n").map(line => `> ${line}`).join("\n")}`;
+  } catch { return text; }
+}
+
 export function queueItemIsWaiting(item: { status: string; metadata?: Record<string, unknown> }): boolean {
   return ["queued", "waiting_dependency"].includes(item.status)
     || (item.status === "injected" && !!item.metadata?.admitted_run_id

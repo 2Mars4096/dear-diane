@@ -17,7 +17,7 @@ from pathlib import Path
 import re
 from urllib.request import Request, urlopen
 
-from .catalog import accounts, user_home
+from .catalog import accounts, user_home, claude_history_profiles
 
 ACTIONS = {
     "read": "Open a file or document",
@@ -465,7 +465,7 @@ def _stores() -> list[tuple[str, str, Path]]:
     configured = accounts()
     for backend, default in (("claude", ".claude"), ("codex", ".codex")):
         profiles = configured.get(backend) or {"default": {}}
-        for account, profile in profiles.items():
+        for account, profile in (claude_history_profiles(profiles) if backend == "claude" else profiles.items()):
             env = profile.get("env", {})
             home = Path(env.get("CLAUDE_CONFIG_DIR" if backend == "claude" else "CODEX_HOME") or os.environ.get("CODEX_HOME" if backend == "codex" else "CLAUDE_CONFIG_DIR") or user_home() / default)
             from .codex_home import private_home
