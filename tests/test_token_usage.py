@@ -145,3 +145,133 @@ def test_takeaway_names_the_costliest_stage_and_one_action():
     assert "affected tests" in result["action"]
     assert token_usage.takeaway({"by_stage": []}) is None
     assert set(token_usage.STAGE_REMEDY) == set(token_usage.STAGES)      # every stage has exactly one remedy
+
+
+def _usage_counts(inp=100, output=10, cached=20):
+    return {"input_tokens": inp, "cached_input_tokens": cached, "output_tokens": output,
+            "reasoning_output_tokens": 5, "total_tokens": inp + output}
+
+
+def _count_event(last=None, total=None):
+    info = {}
+    if last is not None:
+        info["last_token_usage"] = last
+    if total is not None:
+        info["total_token_usage"] = total
+    return {"type": "event_msg", "payload": {"type": "token_count", "info": info}}
+
+
+def _usage_record(usage, response_id=None):
+    return {"type": "token_usage_record", "payload": {"response_id": response_id, "usage": usage}}
+
+
+def _parse_usage_rows(tmp_path, rows, backend="codex"):
+    path = tmp_path / "usage.jsonl"
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return tu._finish(tu.parse_codex(path) if backend == "codex" else tu.parse_claude(path))
+
+
+def test_codex_accounting_formats_and_source_handover(tmp_path):
+    a, b, combined = _usage_counts(), _usage_counts(200, 20), _usage_counts(300, 30, 40)
+    cases = {
+        "repeated ping": [_count_event(a, a), _count_event(a, a), _count_event(b, combined)],
+        "last only": [_count_event(a), _count_event(b)],
+        "cumulative only": [_count_event(total=a), _count_event(total=combined)],
+        "mixed": [_count_event(a, a), _count_event(total=combined)],
+        "records only": [_usage_record(a, "a"), _usage_record(b, "b")],
+        "records and twins": [_usage_record(a, "a"), _count_event(a, a), _usage_record(b, "b"), _count_event(b, combined)],
+        "handover after legacy": [_count_event(a, a), _usage_record(b, "b"), _count_event(b, combined)],
+    }
+    for name, rows in cases.items():
+        totals = _parse_usage_rows(tmp_path, rows)["totals"]
+        assert totals["total"] == 330, name
+        assert totals["calls"] == 2, name
+        assert totals["cache_read"] == 40, name
+        assert totals["output"] == 30, name  # reasoning is already included
+
+
+def test_codex_invalid_records_do_not_suppress_legacy_and_response_ids_dedupe(tmp_path):
+    a, b = _usage_counts(), _usage_counts(200, 20)
+    rows = [None, [], "bad row", {"type": "token_usage_record", "payload": []},
+            _usage_record({}), _usage_record({"input_tokens": "100"}),
+            _usage_record({"input_tokens": True}), _usage_record({"input_tokens": -1}),
+            _count_event(a, a), _usage_record(b, "b"), _usage_record(b, "b"),
+            _count_event(b, _usage_counts(300, 30)), _count_event(total=_usage_counts(400, 40))]
+    totals = _parse_usage_rows(tmp_path, rows)["totals"]
+    assert totals["calls"] == 2 and totals["total"] == 330
+
+
+def test_codex_cumulative_reset_and_last_only_reemission(tmp_path):
+    a, b = _usage_counts(), _usage_counts(200, 20, 40)
+    totals = _parse_usage_rows(tmp_path, [_count_event(a), _count_event(a), _count_event(total=b),
+                                        _count_event(total=a)])["totals"]
+    assert totals["total"] == 330 and totals["calls"] == 3
+    assert totals["cache_read"] == 60
+
+
+def test_codex_zero_total_and_unidentified_response_records(tmp_path):
+    zero = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    totals = _parse_usage_rows(tmp_path, [_count_event(zero, zero), _count_event(zero, zero),
+                                        _usage_record(_usage_counts()), _usage_record(_usage_counts())])["totals"]
+    assert totals["total"] == 220 and totals["calls"] == 3
+
+
+def test_claude_revised_usage_preserves_blocks_rounds_and_first_timestamp(tmp_path):
+    def assistant(output, content, inp=100):
+        return {"type": "assistant", "timestamp": f"2026-10-14T01:00:{output:02d}Z", "message": {
+            "id": "streamed", "model": "claude-sonnet-4-5", "usage": {
+                "input_tokens": inp, "cache_read_input_tokens": 200, "cache_creation_input_tokens": 50,
+                "output_tokens": output}, "content": content}}
+    tool = {"type": "tool_use", "id": "read", "name": "Read", "input": {"file_path": "/tmp/demo.py"}}
+    rows = [{"type": "user", "message": {"content": "inspect"}},
+            assistant(1, [tool]),
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "read", "content": "hello"}]}},
+            assistant(20, [tool, {"type": "text", "text": "Done"}], inp=150)]
+    report = _parse_usage_rows(tmp_path, rows, "claude")
+    assert report["totals"]["total"] == 420
+    assert report["totals"]["calls"] == 1 and report["totals"]["tool_calls"] == 1
+    assert report["totals"]["rounds"] == 1
+    step = next(s for s in report["steps"] if s.get("tool") == "Read")
+    assert step["result"] == 2
+    baseline = next(s for s in report["steps"] if s["kind"] == "baseline")
+    assert baseline["added"] == 400 - 2  # corrected input at the original call position
+
+
+def test_claude_unidentified_messages_and_empty_final_usage(tmp_path):
+    def row(usage, id=None):
+        return {"type": "assistant", "message": {"id": id, "model": "claude-sonnet-4-5", "usage": usage, "content": []}}
+    report = _parse_usage_rows(tmp_path, [row({"input_tokens": 10, "output_tokens": 1}),
+                                        row({"input_tokens": 20, "output_tokens": 2}),
+                                        row({"input_tokens": 30, "output_tokens": 3}, "m"), row({}, "m")], "claude")
+    assert report["totals"]["calls"] == 3 and report["totals"]["total"] == 66
+
+
+def test_usage_cache_rebuilds_after_accounting_version_change(monkeypatch, tmp_path):
+    home = tmp_path / ".claude"
+    _claude_session(home)
+    _stores(monkeypatch, tmp_path, claude=home)
+    base = tmp_path / "graphs"
+    version = tu.CACHE_VERSION
+    monkeypatch.setattr(tu, "CACHE_VERSION", version - 1)
+    expected = tu.list_sessions(base)["sessions"][0]["total"]
+    cache_path = base / "token_usage/summaries.json"
+    cache = json.loads(cache_path.read_text())
+    cache["claude-sess-1"]["summary"]["total"] = 0
+    cache_path.write_text(json.dumps(cache))
+    monkeypatch.setattr(tu, "CACHE_VERSION", version)
+    assert tu.list_sessions(base)["sessions"][0]["total"] == expected
+
+
+def test_claude_revision_retains_original_call_timestamp_and_partial_counters(tmp_path):
+    path = tmp_path / "partial.jsonl"
+    path.write_text("\n".join(json.dumps(row) for row in [
+        {"type": "assistant", "timestamp": "2026-10-14T01:00:00Z", "message": {
+            "id": "m", "model": "claude-sonnet-4-5", "usage": {"input_tokens": 100, "output_tokens": 1}}},
+        {"type": "assistant", "timestamp": "2026-10-14T01:00:01Z", "message": {
+            "id": "m", "model": "claude-sonnet-4-5", "usage": {"output_tokens": 20}}},
+    ]) + '\n{"type":')
+    builder = tu.parse_claude(path)
+    calls = [row for row in builder.timeline if row["k"] == "call"]
+    assert len(calls) == 1
+    assert calls[0]["ts"] == "2026-10-14T01:00:00Z"
+    assert calls[0]["context"] == 100 and calls[0]["output"] == 20

@@ -49,7 +49,7 @@ STAGES = {
     "overhead": "System prompt, tool definitions, injected context, retries",
 }
 OVERSIZED = 10_000
-CACHE_VERSION = 4  # bump when parsing changes so cached summaries are rebuilt
+CACHE_VERSION = 5  # bump when parsing changes so cached summaries are rebuilt
 CLAUDE_TOOLS = {
     "Read": "read", "NotebookRead": "read", "Grep": "search", "Glob": "search", "LS": "search", "ToolSearch": "search",
     "Bash": "execute", "BashOutput": "execute", "KillShell": "execute", "Monitor": "execute",
@@ -235,94 +235,165 @@ class _Builder:
         self.pending = 0
 
 
-def parse_claude(path: Path) -> _Builder:
-    build = _Builder()
-    seen: set[str] = set()
+def _transcript_rows(path: Path):
+    """Ignore incomplete lines and non-object JSON in append-only transcripts."""
     with path.open(errors="replace") as stream:
-        for line in stream:
+        for index, line in enumerate(stream):
             try:
                 row = json.loads(line)
             except ValueError:
                 continue
-            kind = row.get("type")
-            message = row.get("message") if isinstance(row.get("message"), dict) else {}
-            if kind == "system" and row.get("subtype") == "compact_boundary" or row.get("isCompactSummary"):
-                if not build.timeline or build.timeline[-1]["k"] != "compact":
-                    build.compact()
-                continue
-            if kind == "assistant":
-                usage = message.get("usage") or {}
-                key = message.get("id") or row.get("requestId") or row.get("uuid")
-                if key not in seen and usage and message.get("model") != "<synthetic>":
-                    # Every content block is its own row repeating the message's usage; count it once.
-                    seen.add(key)
-                    read, write = int(usage.get("cache_read_input_tokens") or 0), int(usage.get("cache_creation_input_tokens") or 0)
-                    build.call(int(usage.get("input_tokens") or 0) + read + write, read, write, int(usage.get("output_tokens") or 0),
-                               ts=row.get("timestamp"), model=message.get("model") or "")
-                for block in message.get("content") or []:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") == "tool_use":
-                        build.tool(block.get("id") or "", block.get("name") or "tool", block.get("input") or {}, row.get("timestamp"))
-                    elif block.get("type") == "text" and build.last_call is not None and (block.get("text") or "").strip():
-                        build.last_call["text"] = True
-            elif kind == "user":
-                content = message.get("content")
-                results = [block for block in content if isinstance(block, dict) and block.get("type") == "tool_result"] if isinstance(content, list) else []
-                for block in results:
-                    build.result(block.get("tool_use_id") or "", _size(block.get("content")), bool(block.get("is_error")))
-                if not results and not row.get("isMeta") and _size(content):
-                    build.prompt(_text(content), _size(content), row.get("timestamp"))
+            if isinstance(row, dict):
+                yield index, row
+
+
+def _claude_message_key(index: int, row: dict, message: dict) -> tuple:
+    for value in (message.get("id"), row.get("requestId"), row.get("uuid")):
+        if isinstance(value, str) and value:
+            return ("id", value)
+    return ("line", index)
+
+
+def _token_counts(value, fields: tuple[str, ...]) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {key: value[key] for key in fields if type(value.get(key)) is int and value[key] >= 0}
+
+
+_CLAUDE_COUNTS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+_CODEX_COUNTS = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens")
+
+
+def parse_claude(path: Path) -> _Builder:
+    # Keep only final counters, not transcript content. Apply them at the first
+    # occurrence so a late streaming update cannot move a call to another round
+    # or change its context baseline. All content rows still contribute tools.
+    final_usage: dict[tuple, dict] = {}
+    for index, row in _transcript_rows(path):
+        message = row.get("message") if isinstance(row.get("message"), dict) else {}
+        if row.get("type") == "assistant" and message.get("model") != "<synthetic>":
+            usage = _token_counts(message.get("usage"), _CLAUDE_COUNTS)
+            if usage:
+                final_usage.setdefault(_claude_message_key(index, row, message), {}).update(usage)
+    build = _Builder()
+    calls: dict[tuple, dict] = {}
+    for index, row in _transcript_rows(path):
+        kind = row.get("type")
+        message = row.get("message") if isinstance(row.get("message"), dict) else {}
+        if kind == "system" and row.get("subtype") == "compact_boundary" or row.get("isCompactSummary"):
+            if not build.timeline or build.timeline[-1]["k"] != "compact":
+                build.compact()
+            continue
+        if kind == "assistant":
+            key = _claude_message_key(index, row, message)
+            usage = final_usage.get(key)
+            if usage and message.get("model") != "<synthetic>":
+                if key not in calls:
+                    read, write = usage.get("cache_read_input_tokens", 0), usage.get("cache_creation_input_tokens", 0)
+                    calls[key] = build.call(usage.get("input_tokens", 0) + read + write, read, write, usage.get("output_tokens", 0),
+                                            ts=row.get("timestamp"), model=message.get("model") or "")
+            # Associate repeated content with its own message, even if rows interleave.
+            previous_call = build.last_call
+            build.last_call = calls.get(key)
+            for block in message.get("content") or []:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use":
+                    tool_id = block.get("id") or ""
+                    if not tool_id or tool_id not in build.tools:
+                        build.tool(tool_id, block.get("name") or "tool", block.get("input") or {}, row.get("timestamp"))
+                elif block.get("type") == "text" and build.last_call is not None and (block.get("text") or "").strip():
+                    build.last_call["text"] = True
+            build.last_call = previous_call
+        elif kind == "user":
+            content = message.get("content")
+            results = [block for block in content if isinstance(block, dict) and block.get("type") == "tool_result"] if isinstance(content, list) else []
+            for block in results:
+                build.result(block.get("tool_use_id") or "", _size(block.get("content")), bool(block.get("is_error")))
+            if not results and not row.get("isMeta") and _size(content):
+                build.prompt(_text(content), _size(content), row.get("timestamp"))
     return build
 
 
 def parse_codex(path: Path) -> _Builder:
     build = _Builder()
-    last_total = -1
+    last_total = None
+    previous_counts: dict[str, int] = {}
+    last_info = None
+    response_records = False
+    seen_responses: set[str] = set()
     spoke = False
     model = ""
-    with path.open(errors="replace") as stream:
-        for line in stream:
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            kind, payload = row.get("type"), row.get("payload") if isinstance(row.get("payload"), dict) else {}
-            sub = payload.get("type")
-            if kind == "compacted" or sub == "context_compacted":
-                build.compact()
-            elif kind == "turn_context":
-                model = payload.get("model") or model
-            elif kind == "event_msg" and sub == "user_message" or kind == "response_item" and sub == "message" and payload.get("role") == "user":
-                # Older rollouts only keep the response item; newer ones write both. Injected context starts with a tag.
-                text = (payload.get("message") or _text(payload.get("content"))).strip()
-                title = _title(text)
-                if text and not text.startswith(("<", "# AGENTS.md instructions")) and not (build.rounds and build.rounds[-1]["title"] == title and build.timeline[-1].get("kind") == "prompt"):
-                    build.prompt(text, len(text), row.get("timestamp"))
-            elif kind == "event_msg" and sub == "agent_message":
-                spoke = True
-            elif kind == "event_msg" and sub == "token_count":
-                info = payload.get("info") or {}
-                last, total = info.get("last_token_usage") or {}, (info.get("total_token_usage") or {}).get("total_tokens", -1)
-                if not last or total == last_total:  # rate-limit pings repeat the previous totals
+    for _, row in _transcript_rows(path):
+        kind, payload = row.get("type"), row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        sub = payload.get("type")
+        if kind == "compacted" or sub == "context_compacted":
+            build.compact()
+        elif kind == "turn_context":
+            model = payload.get("model") or model
+        elif kind == "event_msg" and sub == "user_message" or kind == "response_item" and sub == "message" and payload.get("role") == "user":
+            # Older rollouts only keep the response item; newer ones write both. Injected context starts with a tag.
+            text = (payload.get("message") or _text(payload.get("content"))).strip()
+            title = _title(text)
+            if text and not text.startswith(("<", "# AGENTS.md instructions")) and not (build.rounds and build.rounds[-1]["title"] == title and build.timeline[-1].get("kind") == "prompt"):
+                build.prompt(text, len(text), row.get("timestamp"))
+        elif kind == "event_msg" and sub == "agent_message":
+            spoke = True
+        elif kind == "token_usage_record" or kind == "event_msg" and sub == "token_count":
+            if kind == "token_usage_record":
+                usage = _token_counts(payload.get("usage"), _CODEX_COUNTS)
+                if not usage:
+                    continue  # malformed records must not disable legacy accounting
+                response_records = True
+                response_id = payload.get("response_id")
+                if isinstance(response_id, str) and response_id:
+                    if response_id in seen_responses:
+                        continue
+                    seen_responses.add(response_id)
+            else:
+                if response_records:
+                    continue  # legacy twins and rate-limit pings after the handover
+                info = payload.get("info")
+                if not isinstance(info, dict):
                     continue
+                identity = json.dumps(info, sort_keys=True)
+                if identity == last_info:
+                    continue
+                last_info = identity
+                last = _token_counts(info.get("last_token_usage"), _CODEX_COUNTS)
+                cumulative = _token_counts(info.get("total_token_usage"), (*_CODEX_COUNTS, "total_tokens"))
+                total = cumulative.get("total_tokens")
+                if total is not None and total == last_total:
+                    continue
+                reset = (total is not None and last_total is not None and total < last_total) or any(
+                    cumulative.get(key, previous_counts.get(key, 0)) < previous_counts.get(key, 0)
+                    for key in ("input_tokens", "output_tokens"))
+                usage = last or {key: max(0, value - (0 if reset else previous_counts.get(key, 0)))
+                                 for key, value in cumulative.items() if key in _CODEX_COUNTS}
+                if not usage:
+                    continue
+                if reset:
+                    previous_counts = {}
+                # Advance the delta baseline for both last-usage and cumulative modes.
+                for key in _CODEX_COUNTS:
+                    previous_counts[key] = cumulative.get(key, previous_counts.get(key, 0) + usage.get(key, 0))
                 last_total = total
-                call = build.call(int(last.get("input_tokens") or 0), int(last.get("cached_input_tokens") or 0), int(last.get("cache_write_input_tokens") or 0),
-                                  int(last.get("output_tokens") or 0), int(last.get("reasoning_output_tokens") or 0), ts=row.get("timestamp"), model=model)
-                call["text"], spoke = spoke, False
-            elif kind == "response_item" and sub in ("function_call", "custom_tool_call", "local_shell_call", "web_search_call"):
-                name = payload.get("name") or sub.removesuffix("_call")
-                args = payload.get("arguments") or payload.get("input") or payload.get("action") or {}
-                if name == "exec" and isinstance(args, str) and "apply_patch" in args[:200]:
-                    name = "apply_patch"
-                build.tool(payload.get("call_id") or payload.get("id") or "", name, args, row.get("timestamp"))
-                if build.last_call is not None:
-                    build.last_call["tool"] = True
-            elif kind == "response_item" and sub in ("function_call_output", "custom_tool_call_output"):
-                output = payload.get("output")
-                text = _text(output) if not isinstance(output, str) else output
-                failed = bool(re.search(r"(exit code|exited with code|Exit code:?) [1-9]|\"exit_code\":\s*[1-9]", text[:600]))
-                build.result(payload.get("call_id") or "", _size(output), failed)
+            call = build.call(usage.get("input_tokens", 0), usage.get("cached_input_tokens", 0), usage.get("cache_write_input_tokens", 0),
+                              usage.get("output_tokens", 0), usage.get("reasoning_output_tokens", 0), ts=row.get("timestamp"), model=model)
+            call["text"], spoke = spoke, False
+        elif kind == "response_item" and sub in ("function_call", "custom_tool_call", "local_shell_call", "web_search_call"):
+            name = payload.get("name") or sub.removesuffix("_call")
+            args = payload.get("arguments") or payload.get("input") or payload.get("action") or {}
+            if name == "exec" and isinstance(args, str) and "apply_patch" in args[:200]:
+                name = "apply_patch"
+            build.tool(payload.get("call_id") or payload.get("id") or "", name, args, row.get("timestamp"))
+            if build.last_call is not None:
+                build.last_call["tool"] = True
+        elif kind == "response_item" and sub in ("function_call_output", "custom_tool_call_output"):
+            output = payload.get("output")
+            text = _text(output) if not isinstance(output, str) else output
+            failed = bool(re.search(r"(exit code|exited with code|Exit code:?) [1-9]|\"exit_code\":\s*[1-9]", text[:600]))
+            build.result(payload.get("call_id") or "", _size(output), failed)
     return build
 
 
