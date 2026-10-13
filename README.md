@@ -2,7 +2,7 @@
 
 Dear Diane is a desktop workspace for working with AI agents, reading papers, and keeping research notes. You can give an agent a project folder, follow its progress, review its edits, and ask follow-up questions alongside the files you are working on.
 
-The app brings conversations, documents, and notes into one workspace. It supports native coding agents such as Codex and Claude Code, as well as models accessed through an API.
+The app brings conversations, documents, and notes into one workspace. It supports native coding agents such as Codex and Claude Code, as well as models accessed through an API. Native agent runs have no fixed overall time limit in Diane; use Stop when you want to end a run.
 
 ## Get started
 

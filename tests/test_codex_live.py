@@ -46,7 +46,12 @@ for line in sys.stdin:
 
 
 @pytest.mark.asyncio
-async def test_live_steer_stays_in_same_turn_and_streams_result(tmp_path, app_server):
+async def test_live_steer_stays_in_same_turn_and_streams_result(tmp_path, app_server, monkeypatch):
+    # Compress the former whole-turn deadline so this fixture catches its return.
+    wait_for = asyncio.wait_for
+    async def accelerated_wait_for(awaitable, timeout):
+        return await wait_for(awaitable, 0 if timeout == 1800 else timeout)
+    monkeypatch.setattr(asyncio, "wait_for", accelerated_wait_for)
     team = NativeTeam("run",str(tmp_path),{"codex":{"enabled":True,"_live_steering":True,"permission":"plan","model":"test-model","effort":"low"}}, tmp_path/"records")
     row = await team.start("codex","Wait for my correction")
     try:

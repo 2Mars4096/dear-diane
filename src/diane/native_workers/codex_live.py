@@ -169,7 +169,8 @@ async def run_live(team, record, command, env):
         if not client.finished.done():
             client.turn_id = result["turn"]["id"]
             team.steering[worker_id] = client
-        terminal = await asyncio.wait_for(asyncio.shield(client.finished), 1800)
+        # A turn can keep working until completion or explicit cancellation.
+        terminal = await asyncio.shield(client.finished)
         record["status"] = {"completed":"completed", "interrupted":"stopped"}.get(terminal["status"], "failed")
         record["error"] = str((terminal.get("error") or {}).get("message", ""))
     except asyncio.CancelledError:

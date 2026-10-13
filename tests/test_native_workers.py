@@ -38,6 +38,9 @@ def test_missing_runtime_never_falls_back(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_parallel_workers_are_scoped_and_capture_sessions(monkeypatch, tmp_path):
+    # Compress the former worker lifetime limit while preserving test deadlines.
+    timeout = asyncio.timeout
+    monkeypatch.setattr(asyncio, "timeout", lambda delay: timeout(0 if delay == 1800 else delay))
     def launch(backend, profile, objective, workspace, session=""):
         code = 'import json,time; print(json.dumps({"type":"system","session_id":"native-123"}),flush=True); time.sleep(0.05); print(json.dumps({"type":"result","result":"done"}),flush=True)'
         return [sys.executable, "-c", code], {}

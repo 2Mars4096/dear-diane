@@ -172,50 +172,49 @@ class NativeTeam:
                     tail = (tail + chunk)[-16000:]
                 return tail.decode(errors="replace")
             stderr_task = asyncio.create_task(drain_errors())
-            async with asyncio.timeout(1800):
-                async for raw in process.stdout:
-                    try:
-                        row = json.loads(raw)
-                    except ValueError:
-                        row = {"type": "stdout", "text": raw.decode(errors="replace")}
-                    if not isinstance(row, dict):
-                        continue
-                    result = row.get("result") if isinstance(row.get("result"), dict) else row
-                    if row.get("type") in {"result", "turn.completed"} or row.get("event") == "result":
-                        terminal = str(result.get("status") or "SUCCESS")
-                    session = row.get("session_id") or row.get("thread_id") or result.get("conversation_id")
-                    if session:
-                        record["native_session_id"] = session
-                    step = row.get("step_update") or {}
-                    if isinstance(step, dict) and step.get("step_type") == "agent_response":
-                        record["response"] += str(step.get("text_delta") or "")
-                    partial = row.get("event")
-                    if isinstance(partial, dict) and partial.get("type") == "content_block_delta":
-                        record["response"] += str(partial.get("delta", {}).get("text") or "")
-                    if row.get("type") == "assistant":
-                        content = row.get("message", {}).get("content", [])
-                        if isinstance(content, list):
-                            record["response"] = "\n".join(block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text")
-                    item = row.get("item") or {}
-                    if item.get("type") == "agent_message":
-                        record["response"] = str(item.get("text", ""))
-                    if isinstance(row.get("result"), str):
-                        record["response"] = row["result"]
-                    if result.get("response"):
-                        record["response"] = result["response"]
-                    if row.get("is_error") or row.get("type") in {"error", "turn.failed"} or result.get("status") in {"ERROR", "INVALID"}:
-                        record["error"] = str(result.get("error") or row.get("result") or "Native worker failed")[:16000]
-                    self.event(record, row)
-                    self.save(record)
-                code = await process.wait()
-                stderr = await stderr_task
-                if code and not record["error"]:
-                    record["error"] = stderr or f"CLI exited with status {code}"
-                if not terminal and not record["error"]:
-                    record["error"] = "CLI exited without a completion result"
-                record["status"] = "failed" if code or record["error"] else "completed"
-                if terminal in {"WAITING", "CANCELED", "INTERRUPTED", "RUNNING", "INVALID"}:
-                    record["status"] = {"WAITING": "needs_input", "CANCELED": "stopped", "INTERRUPTED": "interrupted"}.get(terminal, "failed")
+            async for raw in process.stdout:
+                try:
+                    row = json.loads(raw)
+                except ValueError:
+                    row = {"type": "stdout", "text": raw.decode(errors="replace")}
+                if not isinstance(row, dict):
+                    continue
+                result = row.get("result") if isinstance(row.get("result"), dict) else row
+                if row.get("type") in {"result", "turn.completed"} or row.get("event") == "result":
+                    terminal = str(result.get("status") or "SUCCESS")
+                session = row.get("session_id") or row.get("thread_id") or result.get("conversation_id")
+                if session:
+                    record["native_session_id"] = session
+                step = row.get("step_update") or {}
+                if isinstance(step, dict) and step.get("step_type") == "agent_response":
+                    record["response"] += str(step.get("text_delta") or "")
+                partial = row.get("event")
+                if isinstance(partial, dict) and partial.get("type") == "content_block_delta":
+                    record["response"] += str(partial.get("delta", {}).get("text") or "")
+                if row.get("type") == "assistant":
+                    content = row.get("message", {}).get("content", [])
+                    if isinstance(content, list):
+                        record["response"] = "\n".join(block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text")
+                item = row.get("item") or {}
+                if item.get("type") == "agent_message":
+                    record["response"] = str(item.get("text", ""))
+                if isinstance(row.get("result"), str):
+                    record["response"] = row["result"]
+                if result.get("response"):
+                    record["response"] = result["response"]
+                if row.get("is_error") or row.get("type") in {"error", "turn.failed"} or result.get("status") in {"ERROR", "INVALID"}:
+                    record["error"] = str(result.get("error") or row.get("result") or "Native worker failed")[:16000]
+                self.event(record, row)
+                self.save(record)
+            code = await process.wait()
+            stderr = await stderr_task
+            if code and not record["error"]:
+                record["error"] = stderr or f"CLI exited with status {code}"
+            if not terminal and not record["error"]:
+                record["error"] = "CLI exited without a completion result"
+            record["status"] = "failed" if code or record["error"] else "completed"
+            if terminal in {"WAITING", "CANCELED", "INTERRUPTED", "RUNNING", "INVALID"}:
+                record["status"] = {"WAITING": "needs_input", "CANCELED": "stopped", "INTERRUPTED": "interrupted"}.get(terminal, "failed")
         except asyncio.CancelledError:
             record["status"] = "stopped"
         except Exception as exc:
