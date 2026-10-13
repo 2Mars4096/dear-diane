@@ -8,6 +8,26 @@ ipcRenderer.on('navigation:move', (_event, direction: number) => {
 window.addEventListener("DOMContentLoaded", () => {
   if (process.platform === "darwin") {
     document.documentElement.dataset.nativeTitlebar = "mac";
+    // Native buttons use window points; the header is measured in zoomed CSS pixels.
+    let header: HTMLElement | null = null;
+    const alignButtons = () => {
+      const anchor = header?.querySelector<HTMLElement>(".wb-sidebar-toggle") || header;
+      if (!anchor) return;
+      const box = anchor.getBoundingClientRect();
+      if (box.height > 0) ipcRenderer.send("window:titlebar", "align", box.top + box.height / 2);
+    };
+    const headerSize = new ResizeObserver(alignButtons);
+    const findHeader = () => {
+      const next = document.querySelector<HTMLElement>(".dan-native-window .wb-header, .dan-native-window > .dan-workspace-header");
+      if (next === header) return;
+      headerSize.disconnect();
+      header = next;
+      if (header) headerSize.observe(header);
+      alignButtons();
+    };
+    new MutationObserver(findHeader).observe(document.body, { childList: true, subtree: true });
+    window.addEventListener("resize", alignButtons);
+    findHeader();
     const caption = (target: EventTarget | null) => {
       if (!(target instanceof Element) || target.closest('button,a,input,select,textarea,summary,dialog,[role="button"],[contenteditable]')) return null;
       return target.closest<HTMLElement>(".dan-native-window .wb-header, .dan-native-window > .dan-workspace-header");

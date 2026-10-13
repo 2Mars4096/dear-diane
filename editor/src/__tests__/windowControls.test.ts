@@ -6,7 +6,7 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('process', { ...process, pl
 afterEach(() => vi.unstubAllGlobals());
 function fixture() {
   const window = {
-    webContents: { mainFrame: {} }, isDestroyed: () => false, isFullScreen: vi.fn(() => false),
+    webContents: { mainFrame: {}, getZoomFactor: vi.fn(() => 1) }, getWindowButtonPosition: vi.fn(() => ({ x: 14, y: 24 })), setWindowButtonPosition: vi.fn(), isDestroyed: () => false, isFullScreen: vi.fn(() => false),
     isFocused: vi.fn(() => true), isMaximized: vi.fn(() => false),
     maximize: vi.fn(), unmaximize: vi.fn(), setPosition: vi.fn(),
     getBounds: vi.fn(() => ({ x: 100, y: 80, width: 1000, height: 650 })),
@@ -14,7 +14,7 @@ function fixture() {
   registerWindowControls(() => window as any);
   const handler = native.on.mock.calls[0][1];
   const event = { sender: window.webContents, senderFrame: window.webContents.mainFrame };
-  return { window, send: (action: string, source = event) => handler(source, action) };
+  return { window, send: (action: string, source = event, center?: number) => handler(source, action, center) };
 }
 it('expands and restores, without leaving fullscreen', () => {
   const { window, send } = fixture();
@@ -51,4 +51,22 @@ it('uses the sending window for titlebar controls in a multiwindow app', () => {
   registerWindowControls(sender => (sender === second.webContents ? second : first) as any);
   native.on.mock.calls[0][1]({ sender: second.webContents, senderFrame: second.webContents.mainFrame }, 'toggle');
   expect(second.maximize).toHaveBeenCalledOnce(); expect(first.maximize).not.toHaveBeenCalled();
+});
+
+it('aligns native buttons with the header at the current renderer zoom', () => {
+  const { window, send } = fixture();
+  send('align', undefined, 31);
+  expect(window.setWindowButtonPosition).not.toHaveBeenCalled();
+  window.webContents.getZoomFactor.mockReturnValue(0.9);
+  send('align', undefined, 31);
+  expect(window.setWindowButtonPosition).toHaveBeenLastCalledWith({ x: 14, y: 21 });
+  window.webContents.getZoomFactor.mockReturnValue(1.25);
+  send('align', undefined, 31);
+  expect(window.setWindowButtonPosition).toHaveBeenLastCalledWith({ x: 14, y: 32 });
+});
+it('rejects invalid geometry and alignment from child frames', () => {
+  const { window, send } = fixture();
+  for (const center of [NaN, Infinity, -5, 1000]) send('align', undefined, center);
+  send('align', { sender: window.webContents, senderFrame: {} }, 25);
+  expect(window.setWindowButtonPosition).not.toHaveBeenCalled();
 });

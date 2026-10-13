@@ -3,12 +3,20 @@ import { ipcMain, screen, BrowserWindow } from "electron";
 /** Mac custom caption areas do not reliably receive AppKit double-click zoom. */
 export function registerWindowControls(getWindow: (sender: Electron.WebContents) => BrowserWindow | null) {
   let drag: { window: BrowserWindow; cursor: Electron.Point; bounds: Electron.Rectangle; moving: boolean } | null = null;
-  ipcMain.on("window:titlebar", (event, action: unknown) => {
+  ipcMain.on("window:titlebar", (event, action: unknown, center: unknown) => {
     const window = getWindow(event.sender);
     if (process.platform !== "darwin" || !window || window.isDestroyed()
       || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) return;
     if (action === "end") { drag = null; return; }
     if (window.isFullScreen()) { drag = null; return; }
+    if (action === "align") {
+      if (typeof center !== "number" || !Number.isFinite(center) || center < 8 || center > 100) return;
+      const y = Math.round(center * window.webContents.getZoomFactor() - 7);
+      if (y < 0 || y > 150) return;
+      const position = window.getWindowButtonPosition();
+      if (position?.x !== 14 || position?.y !== y) window.setWindowButtonPosition({ x: 14, y });
+      return;
+    }
     if (action === "toggle") {
       drag = null;
       if (window.isMaximized()) window.unmaximize();
