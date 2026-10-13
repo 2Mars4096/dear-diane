@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Humanize and structure README; remove repeated descriptions and internal implementation commentary — [UI documentation](UI-plans/1-work-notes-gui.md).
+
 - [x] Align macOS traffic lights with the header across zoom levels; verify native geometry at 90%, 100% and 125%.
 - [ ] Install title-bar alignment fix later; user explicitly deferred installation on October 14.
 

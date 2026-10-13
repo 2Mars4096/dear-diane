@@ -128,3 +128,7 @@
 - [x] Follow the rendered sidebar-toggle center at current zoom; retain native controls and caption dragging.
 - [x] Eleven tests and isolated Electron geometry checks at three zoom levels pass; signed build ready.
 - [ ] Installation explicitly deferred by user after active-work guard rejected restart.
+
+## October 14 — README editing
+- [x] Group task instructions, split reader controls and settings, and remove duplicated/internal commentary.
+- [x] Verify command blocks and retained inline code unchanged; preserve user-facing limitations.

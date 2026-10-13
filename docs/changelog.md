@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-10-14
+- [docs] Restructure README around setup, agent work, reading and settings. Merge repeated descriptions, relocate misplaced appearance/planning notes and remove internal schema commentary. Preserve commands, configuration examples, shortcuts and practical limitations; prose-only verification passes.
+
+## 2026-10-14
 - [fix] Align macOS traffic lights with the rendered title-bar controls at the current renderer zoom; follow header replacement/resize through the existing main-frame-only window-control IPC.
 - [test] Eleven window-control/appearance tests, Electron compilation and a real isolated Electron check at 90%, 100% and 125% zoom pass. Signed local build prepared. Installation was blocked by active work, then explicitly deferred by the user.
 

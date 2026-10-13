@@ -1,21 +1,21 @@
 # Dear Diane
 
-Dear Diane is a desktop workspace for working with AI agents, reading papers, and keeping research notes. You can give an agent a project folder, follow its progress, review its edits, and ask follow-up questions alongside the files you are working on.
-
-The app brings conversations, documents, and notes into one workspace. It supports native coding agents such as Codex and Claude Code, as well as models accessed through an API. Native agent runs have no fixed overall time limit in Diane; use Stop when you want to end a run.
+Dear Diane is a desktop workspace for AI agents, papers, and research notes. Give an agent a project folder, follow its work, and review edits alongside your files. Use native agents such as Codex and Claude Code or models from an API provider.
 
 ## Get started
 
-The current setup requires a Python backend and the desktop or browser interface. Desktop updates replace the app; they do not install or upgrade Python and its dependencies.
+Diane runs a Python backend with a desktop or browser interface.
 
-You need:
+### Requirements
 
 - Python 3.11 or newer.
 - Node.js 22.12 or newer for the desktop or browser interface.
 - An OpenRouter API key for the app's initial setup.
 - Any native agent CLI you want to use, installed and authenticated separately.
 
-Run the installation commands from the repository root:
+### Install
+
+From the repository root:
 
 ```bash
 pip install -e ".[dev]"
@@ -32,9 +32,9 @@ OPENAI_API_KEY=...
 DAN_LLM_MODEL=gpt-5.4
 ```
 
-Replace the example key and choose a model available to your account. These settings configure the built-in agent. Native agents can use their own authenticated accounts, and the app's Lead menu lets you choose the agent and model for a conversation.
+Replace the example key and choose a model available to your account. These settings configure the built-in agent. Native agents can use their own authenticated accounts. Choose the agent and model in the Lead menu.
 
-You can set workspace and data locations explicitly:
+To set workspace and data locations:
 
 ```env
 DAN_WORKSPACE_ROOT=/absolute/path/to/workspace
@@ -53,7 +53,7 @@ diane-up
 # or: diane serve --no-reload
 ```
 
-In a second terminal, also starting from the repository root, launch the browser interface:
+In a second terminal, start the browser interface from the repository root:
 
 ```bash
 cd editor
@@ -71,10 +71,12 @@ npm run electron:dev
 
 If the interface cannot connect, check that the backend terminal is still running. Native agent sign-in and API provider keys are separate from the app's connection to its backend.
 
-## Your first task
+## Working with agents
+
+### Start a task
 
 1. Create a project from the sidebar and select its working folder. In the desktop app, you can also drop a folder into the workspace.
-2. Choose New chat, or click + beside the project’s three-dot menu. To add a project directly, choose **New project** in that menu. Select the Lead agent and its model before sending a request.
+2. Choose New chat, or click + beside the project's three-dot menu. To add a project directly, choose New project in that menu. Select the Lead agent and its model before sending a request.
 3. Describe the task and any constraints. Use Plan mode to inspect and discuss work before allowing changes.
 4. Follow the activity indicator while the agent works. Expand Work details to inspect recorded actions.
 5. Review the reply and any file changes. Use the Changes side panel to inspect project text edits and send selected differences back as feedback.
@@ -83,23 +85,27 @@ Conversations and drafts survive switching between projects. Session titles stay
 
 ### Plan the work first
 
-Send `/plan` to toggle planning, or `/plan <request>` to enter planning with a task. A **Plan mode** status appears while active. Type `/` to discover commands; `$` selects skills. Planning happens in the conversation. Answer inline multiple-choice questions with square checkboxes, then submit. Diane presents the outcome, scope, specifications, and next steps as a chat reply. Plans stay with the session.
+Send `/plan` to toggle Plan mode, or `/plan <request>` to start planning a task. Type `/` to browse commands or `$` to select skills. The Plan mode status appears while planning is active. Plans stay in the session conversation.
 
-Diane drafts with at most three clarification questions across the planning session. Recommendations are labeled but never preselected. Questions specify whether to choose one or several options; you can also reply in chat. **Start this plan** executes the reviewed revision once blocking decisions are resolved. Plan mode is separate from skills and execution permissions; starting preserves those settings. The **Read only** permission setting must be changed explicitly before execution.
+Diane asks at most three clarification questions, which can appear together. Each question says Choose one or Choose multiple. Recommendations are labelled but never preselected. Use Other for a custom answer; typing a comment selects it automatically. Submit the answers together, or reply in chat.
 
-Native agents can inspect the project while planning. The built-in API planner drafts from supplied conversation/context without running tools.
+Diane then presents the outcome, scope, specifications, and next steps. Choose Start this plan once blocking decisions are resolved. Starting a plan preserves the selected skills and execution permissions. Change Read only explicitly before execution.
+
+Native agents can inspect the project while planning. The built-in API planner uses the supplied conversation and context without running tools.
 
 ### Follow-ups and side conversations
 
-Use Next to queue a separate follow-up. Waiting messages appear in Up next and enter the conversation when delivered. Supported Codex runs also offer Steer for sending a request into the active turn. Stop ends the lead and its managed team.
+Use Next to queue a follow-up, or Steer to send a request into a supported active Codex turn. Waiting messages appear in Up next until delivered. Enter steers an active run, Cmd/Ctrl+Enter queues a follow-up, and Shift+Enter inserts a newline.
+
+Native agent runs have no fixed overall time limit in Diane. Stop ends the lead and its managed team.
 
 The Chat side panel is a separate saved conversation with its own Lead, Team, and access settings. Select text in a message or document to stage a reference for your next question. In Reading, the chat already has the active document's identity, so you can ask about it without repeating its filename.
 
 Attachments can be added with the paperclip, drag-and-drop, or clipboard file items. A message supports up to four files, each up to 20 MB. Browser and remote attachments are saved on the machine that runs the task.
 
-## Choose agents and models
+### Agents and models
 
-Lead runs the main conversation. Team configures agents that the lead can delegate to. Both use the same model controls.
+Lead runs the main conversation. Team selects agents it can delegate to. Both use the same model controls.
 
 Choose a native account or an API provider for each supported agent. API providers include OpenAI, DeepSeek, Moonshot / Kimi, and OpenRouter. Each provider remembers its model and reasoning choice. Unsupported controls remain disabled.
 
@@ -110,13 +116,17 @@ Choose a native account or an API provider for each supported agent. API provide
 | Default | Built-in agent configuration and supported API models |
 | Cursor and Antigravity | Native configuration |
 
-The Default agent currently limits official OpenAI selections to GPT-4.1 models. Use Codex for GPT-6 tool calling. API models do not support the native fast-mode control.
+The Default agent limits official OpenAI selections to GPT-4.1 models. Use Codex for GPT-6 tool calling. API models do not support the native fast-mode control.
+
+### Provider keys and skills
 
 In Settings > Providers, choose Connect or Manage to add, replace, or remove a key. Keys stay on the backend host and are not returned to the browser. A saved key takes precedence over an environment key; removing it restores any environment fallback. Saving a key does not require a backend restart.
 
 Settings > Skills controls sharing of installed skills across supported agents. Each CLI's own skill folders stay unchanged.
 
-To bring an existing conversation into a project, open its menu and choose Import native sessions. Select the conversations and import them as forks. Native originals remain intact. Diane’s isolated Claude API-provider histories are available as independent history copies. Available import and resume behavior depends on the agent; Antigravity imports are not currently supported.
+### Import conversations
+
+Open a project's menu and choose Import native sessions. Select the conversations and import them as forks. Native originals remain intact. Diane's isolated Claude API-provider histories are available as independent history copies. Available import and resume behavior depends on the agent; Antigravity imports are not currently supported.
 
 ## Work with files
 
@@ -140,19 +150,23 @@ Reading position, annotations, references, and chat links are remembered. Open r
 
 Scanned PDFs use local OCR to make text selectable. Comments and highlights save immediately, including offline. Transcription of selected scan pixels uses OpenRouter; pending quotes retry when connected. Native text PDFs use their existing text directly. Export saves an annotated copy and preserves the original.
 
-PDFs and EPUBs share a reading toolbar with chapters, sizing, page layout, references, notes, export, and download. PDF chapters use embedded bookmarks or labelled headings detected from available text/OCR; scanned pages become eligible as you read them. Both readers support direct page jumps and a page slider on hover. EPUB supports continuous vertical scrolling or horizontal single/two-page reading, with keyboard and wheel navigation. EPUB page numbers cover the whole book and recalculate for the current window, text size, and layout. EPUBs support text-size controls and single-page or two-page layouts. You can select text, annotate, and export an annotated EPUB. Illustrations support local OCR. EPUBs must be unencrypted and no larger than 150 MB compressed or expanded. The paper catalogue and literature importer currently handle PDFs.
+### Reader controls
+
+PDFs and EPUBs share a toolbar for chapters, sizing, page layout, references, notes, export, and download. Jump to a page directly or use the slider that appears on hover.
+
+PDF chapters come from embedded bookmarks or labelled headings detected in text or OCR. Scanned pages become eligible as you read them.
+
+EPUBs support continuous vertical scrolling and horizontal single-page or two-page layouts, with keyboard and wheel navigation. Text-size controls adjust the type, and whole-book page numbers recalculate for the window, text size, and layout. You can annotate text, export an annotated EPUB, and use local OCR on illustrations. EPUBs must be unencrypted and no larger than 150 MB compressed or expanded.
 
 ### Paper library
 
-Paper search (Cmd/Ctrl+K) supports scrolling and keyboard navigation through every match.
+Open Papers in the sidebar, or use Cmd/Ctrl+K to search by title, author, citation key, topic, or notes. Search accepts words in any order and small metadata typos. Scroll or use the keyboard to browse every match. An empty search shows pinned and recent papers.
 
-Open Papers in the sidebar, or use Cmd/Ctrl+K to search by title, author, citation key, topic, or notes. Search accepts words in any order and small metadata typos. An empty search shows pinned and recent papers.
-
-In Settings > Library > Open library, open the library settings to add PDF folders or Hugo paper collections. Source files remain in place. You can filter papers, inspect abstracts and notes, copy citations or BibTeX, and add selected references to a chat before sending.
+Use Settings > Library > Open library to add PDF folders or Hugo paper collections. Source files remain in place. You can filter papers, inspect abstracts and notes, copy citations or BibTeX, and add selected references to a chat before sending.
 
 Each library paper has a resumable reading session. Continue reading restores its position, annotations, references, and Reading conversation. A browser connected to the same backend host can resume that saved state; separate hosts have separate libraries. Failed saves retain a local recovery copy with retry and download controls.
 
-Library search covers metadata, abstracts, knowledge-base notes, and annotations. It does not search the full PDF text or provide semantic search.
+Search covers metadata, abstracts, knowledge-base notes, and annotations, without full-PDF or semantic search. The catalogue and literature importer handle PDFs.
 
 ### Import literature
 
@@ -160,11 +174,13 @@ Choose Literature from the side-panel tool menu, then open Import. Drop in PDFs,
 
 Review the matches and notes before choosing Import ready items. The importer saves verified PDF copies and paper pages while preserving originals and existing notes. You can stop preparation or retry individual documents. Imports survive panel closure and reload; interrupted documents offer Retry after a backend restart. Books can receive a labelled overview.
 
-## Notes and browser research
+## Notes
 
 Notes supports Markdown and Hugo files, rendered previews, collections, and course-progress information. The side panel keeps its drafts, scroll position, and expanded details when you switch tools or reopen it.
 
-To enable browser research, install `pip install -e '.[browser]'` in the backend environment. Diane can use installed Chrome, or you can install managed Chromium with `python -m playwright install chromium`.
+## Browser research
+
+Run `pip install -e '.[browser]'` in the backend environment. Diane can use installed Chrome, or you can install managed Chromium with `python -m playwright install chromium`.
 
 In an Auto-mode project chat, describe the browser task, such as finding a paper's citation and saving `references.bib`. The browser runs on the backend machine in a fresh isolated session and closes when the run finishes. It does not use your existing Chrome profile. Plan mode allows observation and navigation. Login and CAPTCHA challenges may need your help.
 
@@ -182,15 +198,23 @@ For an existing configured remote workspace, use the folder action to open it. N
 
 Sticky Todo can send a request to the project selected in your most recently focused Diane window, using its folder and execution settings. Todo shows progress and a brief result. Open in Diane returns to the same session for questions, approvals, and follow-up. Closing Todo leaves the task running in Diane.
 
-This requires a matching Todo companion build. Paired installed-app validation is still pending; remote and browser-only handoff are not supported.
+The handoff requires a matching Todo companion build. Paired installed-app validation is pending; remote and browser-only handoff are unsupported.
 
 ## Settings and navigation
 
-Settings has separate pages for appearance, notifications, providers, agents, skills, SSH connections, the library, usage, and updates. Appearance changes save automatically. Provider keys have explicit save and remove actions. Switching categories preserves unfinished key entry.
+### Appearance and notifications
 
-Appearance includes eight paired light/dark palettes and independent Notes appearance controls. Notifications can alert you when work finishes or needs attention; browser notifications require permission.
+Appearance settings include eight paired light/dark palettes, a Neon preset, and ten font choices. Set fonts separately for normal text, headings, and saved highlight quotes. Dropdown controls share a live preview, and changes save automatically. Notes has independent appearance controls.
 
-Hover Usage in the sidebar to see each discovered Codex/Claude account and configured API provider. Codex CLI and app profiles have separate quota rows; OpenRouter shows key spending. Unavailable quota is reported explicitly. Enter steers an active run, Cmd/Ctrl+Enter queues a follow-up, and Shift+Enter inserts a newline. Settings > Usage > Open analyzer shows token use across sessions or within one session. Optional model-based classification sends step summaries through OpenRouter, not file contents or command output.
+Notifications alert you when work finishes or needs attention. Browser notifications require permission. Switching Settings categories preserves unfinished provider-key entry; keys have explicit save and remove actions.
+
+### Usage
+
+Hover Usage in the sidebar to see each discovered Codex/Claude account and configured API provider. Codex CLI and app profiles have separate quota rows; OpenRouter shows key spending. Unavailable quota is labelled.
+
+Settings > Usage > Open analyzer shows token use across sessions or within one session. Optional model-based classification sends step summaries through OpenRouter, not file contents or command output.
+
+### Keyboard shortcuts
 
 | Action | Shortcut |
 | --- | --- |
@@ -207,17 +231,21 @@ Hover Usage in the sidebar to see each discovered Codex/Claude account and confi
 
 Hold Cmd or Ctrl to reveal recent-item shortcut numbers in the sidebar. Back and Forward revisit chats and files. Drag the sidebar edge or side-panel divider to resize it.
 
+### Closing Diane
+
 On macOS, closing the window leaves work running. Quit Dear Diane stops the app and the local backend and agents it owns. Separately started backends and remote services have their own lifecycles. Saved conversations remain available after quitting.
 
 ## Desktop updates
 
-Use Settings > About & updates > Check for updates. Checks use the public GitHub release feed and do not require a GitHub account or GitHub CLI. If no release has been published, Diane reports that instead of asking you to sign in.
+Use Settings > About & updates > Check for updates. Checks use the public GitHub release feed without requiring a GitHub account or GitHub CLI. Diane reports when no release is available.
 
-The app also checks at startup and every 15 minutes, with a catch-up check on focus. A dot marks an available or downloaded update. When an update is available, the button changes to Download and install. One click downloads it, installs it, and restarts Diane. During download, the progress bar shows percentage and transferred/total MB. Finish active work and queued messages first. If work starts during the download, Diane keeps the prepared update and asks you to finish before restarting.
+Diane checks at startup and every 15 minutes, catching up when the window regains focus. A dot marks an available or downloaded update. Choose Download and install to download the update and restart. The progress bar shows percentage and transferred/total MB.
+
+Finish active work and queued messages first. If work starts during the download, Diane keeps the prepared update until you finish.
 
 Under Update options, use Install local update for a detected prepared build or choose a build manually; `DAN_LOCAL_UPDATE_PATH` can specify its location. The installer validates the bundle, keeps a rollback copy, and preserves chats and settings.
 
-Desktop updates currently cover the app shell for an existing backend installation. They do not update Python or its dependencies.
+Desktop updates replace the app shell. Update Python and its dependencies separately.
 
 ## Development
 
@@ -234,10 +262,4 @@ npm run build:verify
 
 Live-provider and real-browser evaluations are opt-in. Flutter 3.41 or newer is needed only to build the optional phone client. Planned phone personal-agent features are not yet available.
 
-The Python package is `dear-diane`, with imports under `diane`. Use `dear-diane --help` for commands; existing `dan` aliases and `DAN_*` configuration names remain supported. Existing installations keep their saved data and settings when updating.
-
-Appearance settings include one shared live preview, dropdown controls, a Neon preset, and ten font choices with separate controls for normal text, headings and saved highlight quotes.
-
-- Planning follow-up: show up to three MCQs together within the existing session question budget. Every question has Other with a custom answer and optional comments. Submit all answers together. Empty Plan mode adds no greeting to the transcript. `questions` is the batch field; legacy `question` remains readable.
-
-Planning choices are marked **Choose one** or **Choose multiple**. Typing in the comment field selects **Other** automatically.
+The Python package is `dear-diane`, with imports under `diane`. Use `dear-diane --help` for commands; existing `dan` aliases and `DAN_*` configuration names remain supported.
