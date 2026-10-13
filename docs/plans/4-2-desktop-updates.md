@@ -150,4 +150,4 @@ Release scope remains the desktop shell for existing configured Python-backend i
 ## 0.1.6 release
 - [x] Validate current installed-source snapshot: 506 frontend tests and 61 focused backend tests pass.
 - [x] Prepare 0.1.6 notes and version metadata, including the matching-backend requirement for Plan mode.
-- [ ] Push immutable source/tag and verify published Mac assets and anonymous update manifest.
+- [x] Publish v0.1.6 from `ee2d1cbe`; workflow `38415664390` built and published all five Mac assets. Anonymous update manifest and non-draft release verified.

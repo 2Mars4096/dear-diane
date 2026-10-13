@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-10-13
+- [infra] Publish v0.1.6 from `ee2d1cbe` through GitHub workflow `38415664390`; verify public non-draft release, DMG/ZIP/blockmaps and anonymous 0.1.6 update manifest. Release notes state that Plan mode requires matching Python backend source.
+- [test] Release source passes 506 frontend tests, 61 focused backend tests and ten publisher tests; hosted Mac build and updater checks pass.
+
+## 2026-10-13
 - [fix] Distinguish rounded single-choice selectors from square multi-select checkboxes; retain only Choose one / Choose multiple labels. Typing comments automatically selects Other, replacing the previous single choice or preserving multiple selections.
 - [test] Seven focused frontend tests and production build/budgets pass. Installed locally after idle guard; signed archive matches the build and app/backend health passes.
 

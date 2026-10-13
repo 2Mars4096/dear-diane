@@ -1,6 +1,6 @@
 # Todo
 
-- [ ] Publish v0.1.6 with conversational planning and current installed improvements — [release](plans/4-2-desktop-updates.md).
+- [x] Publish v0.1.6 with conversational planning and current installed improvements — [release](plans/4-2-desktop-updates.md).
 
 - [x] Clarify single/multiple choice controls, remove secondary selection hints, and select Other automatically when comments are typed — [Plan mode](UI-plans/4-plan-mode.md).
 
