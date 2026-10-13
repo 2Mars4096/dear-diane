@@ -1,26 +1,32 @@
 # Idea Cart
 
-Last reviewed: 2026-10-10
+Last reviewed: 2026-10-13
 
 ## Priority and expected gain
 
-Ranked for the next useful discovery or validation step, using expected user benefit and learning value, then effort, dependencies, and confidence. These are qualitative judgments from project records; commercial gains are unvalidated. Items remain carted.
+Ranked for the next bounded step after the remaining runtime and paired Sticky Todo acceptance. Source consolidation and v0.1.6 publication are complete according to the release receipt; live steering is user-confirmed. User workflow benefit, dependencies and effort determine priority; uncertainty determines whether to explore. No deadlines or commercial gains are assumed.
 
-| Order | Item | Priority | Expected gain | Effort for next step | Next useful step / dependency |
-|---|---|---|---|---|---|
-| 1 | IC-030 — Fluid task surfaces | High | High potential for clearer decisions and easier input across current workflows | Medium | Audit existing typed views, then compare one task-specific view with the current interface. Start with existing task contracts. |
-| 2 | IC-029 — Adaptive task-native blueprints | High | High reuse potential across task families; incremental benefit uncertain | Medium | Audit the current substrate and test contrasting task families; identify missing behavior before adding orchestration machinery. |
-| 3 | IC-025 — Meeting Mode | Medium | Medium near-term confidence; potential team coordination gains | Medium–high | Validate one shared-session workflow and its decision record before investing in multi-user infrastructure. |
-| 4 | IC-027 — Factory broker layer | Medium | Medium learning value: establish whether a narrow manufacturing business is viable | Medium | Research one product family, provider interfaces, responsibilities, and unit economics before IC-026. |
-| 5 | IC-026 — Manufacturing compiler | Low for now | Potentially high long-term benefit; low confidence and high delivery effort | High | Defer prototype work until IC-027 supports a viable product family; apply IC-028 before any disclosure or physical order. |
-| Gate | IC-028 — Human-gated physical orders | High when manufacturing starts | Risk reduction and explicit responsibility | Scoped with manufacturing | Mandatory prerequisite for manufacturing execution; define gates alongside IC-027/026. |
+| Order | Item | Priority / impact | Next action and completion criterion |
+|---|---|---|---|
+| 1 | IC-033 — Hybrid paper search | Next / high | Exact/concept query fixtures and a local retrieval comparison. Stop with relevance/latency evidence; user chooses embedding disclosure tradeoffs. The result-cap fix alone is checked out/completed. |
+| 2 | IC-044 — Floating command bar | Next / medium–high | Prototype summon, explicit destination and retained drafts; show value beyond Sticky Todo. |
+| 3 | IC-038 — Selective undo | Next / high potential | Disposable-repo experiment preserving unrelated edits and exposing overlap conflicts; no live rollback. |
+| 4 | IC-030 — Task-specific views | Later / high potential | Compare one research evidence view against chat; retain only demonstrated improvements. |
+| 5 | IC-029 — Adaptive blueprints | Later / uncertain increment | Audit current substrate against real-work failures before proposing new orchestration. |
+| 6 | IC-043 — Configurable panes | Later / medium | Two-pane prototype with unambiguous shared-composer routing and draft retention. |
+| 7 | IC-039 — Voice input | Later / medium | Trial existing OS dictation; identify an unmet need before building capture. |
+| 8 | IC-025 — Meeting Mode | Deferred / uncertain | Draft one shared-session workflow; user decides whether multi-user work becomes a product priority. |
+| 9 | IC-027 — Factory broker | Deferred / speculative | Assess one product family's providers/responsibilities/economics; stop with go/no-go recommendation. |
+| 10 | IC-026 — Manufacturing compiler | Dependency-gated | Only after IC-027: one offline reviewable production package. |
+| Gate | IC-028 — Physical-order approvals | Required if manufacturing starts | Prepare specific disclosure/design/order terms for the user's consequential decisions. |
+| 11 | IC-045 — Tauri | Deferred / low current benefit | Revisit only after a measured Electron limitation. |
 
-IC-031 and IC-032 are checked out into [Plan 7](../docs/plans/7-phone-personal-agent.md). The remaining cart stays exploratory; reassess IC-030/029 against that plan before further checkout.
+IC-031/032 remain checked out into [Plan 7](../docs/plans/7-phone-personal-agent.md); implementation has not started. The 12 active ideas above remain exploratory except the explicitly authorized IC-033 result-cap subtask. IC-043/044 share input-routing concerns; IC-029/030 require auditing the implemented substrate rather than assuming it is absent.
 
 Review notes:
-- Plan 7 combines IC-031 mobile delivery and IC-032 personal-agent capabilities. International positioning remains a discovery question in that plan, not a validated market claim.
-- IC-029/030 overlap with the historical implemented substrate described in `docs/business/meeting-mode-to-manufacturing-vision.md`. Its Plan 59 link predates the current cutover; inspect current code before deciding what is complete or still missing. Keep only unresolved acceptance work at checkout.
-- IC-026 remains low priority for near-term work. IC-028 retains high priority as a conditional gate.
+- Close current commitments before opening several exploratory tracks. The cart is at the preferred 12-item ceiling; select one candidate and keep manufacturing deferred rather than adding more ideas.
+- The historical Plan 59 link in the manufacturing vision predates cutover. Verify current code before checkout.
+- Full IC-033 checkout, external embeddings, live rollback, manufacturing orders and shell migration are not authorized by the low-risk batch.
 
 ## Active Items
 
@@ -91,19 +97,19 @@ Review notes:
 
 ### IC-033 - Responsive hybrid paper search
 - Status: carted
-- Priority: medium
+- Priority: high
 - Kind: idea
 - Scope: Dear Diane Cmd+K paper search
 - Point: Combine immediate keyword results with asynchronous semantic retrieval over titles, abstracts, and note sections, keeping exact title/citation matches first and showing useful matching excerpts.
 - Why: Both Simchi-Levi papers are indexed correctly but lack the word “resilience”; lexical matching misses their related robustness and disruption-mitigation concepts.
 - Constraints: Precompute and locally cache embeddings, refresh changed files only, debounce query embedding, reuse repeated queries, and ignore stale responses; retain keyword fallback. Choose local versus API embeddings explicitly based on latency and text-disclosure tradeoffs; no vector database or answer-generation call needed for the current catalogue.
-- Checkout target: paper-search implementation plan when selected; also address the silent 12-result cap.
+- Checkout target: semantic-search evaluation/implementation plan when selected. Result-cap subtask completed in Plan 4-7 on October 12; remaining semantic work stays carted.
 - Acceptance: “Resilience” retrieves both relevant Simchi-Levi papers; representative exact and conceptual queries retain useful ranking; measure cold/warm semantic latency while keyword results remain responsive, including provider failure.
-- Source: 2026-09-29 search diagnosis and latency discussion. Deferred by user; implementation not started.
+- Source: 2026-09-29 search diagnosis and latency discussion. Semantic retrieval remains deferred; only the result-cap subtask was authorized in the October 12 low-risk batch.
 
 ### IC-030 - Fluid task surfaces
 - Status: carted
-- Priority: high
+- Priority: medium
 - Kind: idea
 - Scope: adaptive interaction design
 - Point: Project the current task graph, artifact, and decision point into task-appropriate typed views and request-input controls within a stable conversational shell.
@@ -114,7 +120,7 @@ Review notes:
 
 ### IC-029 - Adaptive task-native blueprints
 - Status: carted
-- Priority: high
+- Priority: medium
 - Kind: idea
 - Scope: orchestration and task representation
 - Point: Compile each request into the smallest useful, revisionable semantic task graph for its goal, evidence, risk, and artifact; treat plan-execute-validate as one reusable topology rather than a mandatory shell.
@@ -167,7 +173,31 @@ Review notes:
 - Acceptance: Any future prototype flow has named approval gates for supplier disclosure, design release, payment, sample acceptance, and production scale-up.
 - Links: `docs/business/meeting-mode-to-manufacturing-vision.md`
 
+## Closed and transferred ideas
+
+| Item | Status | Completion or remaining boundary |
+|---|---|---|
+| IC-034 | Done | Worker history, scoped interaction and recovery — [4-11](../docs/plans/4-11-workflow-friction.md). Adapter-specific live checks remain separately tracked. |
+| IC-035 | Done | Quiet completion/attention notifications — [4-11](../docs/plans/4-11-workflow-friction.md). Native notification delivery remains an acceptance limitation. |
+| IC-036 | Done | Changes review and anchored feedback — [4-11](../docs/plans/4-11-workflow-friction.md). Selective filesystem undo is separate IC-038. |
+| IC-037 | Done | Delegated Git isolation and reviewed integration — [4-11](../docs/plans/4-11-workflow-friction.md). |
+| IC-040 | Done | Independent session views/windows — [4-12](../docs/plans/4-12-session-actions.md); later unified navigation retained. |
+| IC-041 | Done | Optional persistent session pins — [4-12](../docs/plans/4-12-session-actions.md). |
+| IC-042 | Done | Shared session actions menu — [4-12](../docs/plans/4-12-session-actions.md). |
+| IC-033 result cap | Done, subtask only | All lexical matches reachable — [4-7](../docs/plans/4-7-paper-library.md). Semantic retrieval remains carted. |
+| IC-031/032 | Transferred, not implemented | [Plan 7](../docs/plans/7-phone-personal-agent.md) owns the phone/personal-agent backlog. |
+
+All 12 current Active Items remain unresolved; none is silently marked complete because an adjacent feature shipped. Historical IC-001–024 receipts below retain their original implemented/committed distinction.
+
 ## Checkout Log
+
+### 2026-10-13
+- Explicitly close IC-034–037 and IC-040–042 from completed/installed plans; close only IC-033’s result-cap subtask. Retain IC-031/032 as transferred, not delivered. Preserve every historical receipt.
+- Runtime update: user confirmed live Codex steering delivery; continue-after-current, refresh, Regenerate/Fork, Team, reader Ask and paired Todo remain acceptance work. Recent installations/publication supersede the earlier prepared-only receipt below.
+
+### 2026-10-12
+- IC-033 -> partial checkout to [Plan 4-7](../docs/plans/4-7-paper-library.md): remove silent 12-result cap and verify all matches are reachable. Semantic retrieval remains active/carted.
+- Reviewed all 12 active items using decision-triage; no other checkout. Manufacturing and Tauri remain deferred; no historical receipts deleted.
 
 ### 2026-10-01
 - IC-040 -> implemented in [Plan 4-12](../docs/plans/4-12-session-actions.md): session tabs share the existing row; independent native/browser windows preserve selection and text drafts through reload. Closing views leaves running work intact.
@@ -206,3 +236,8 @@ Review notes:
 - IC-015 and IC-016 -> originally carted from skill invocation UX discussion.
 - IC-014 -> originally carted from planner/executor progress UX discussion.
 - IC-001 through IC-013 -> originally carted from Super DAN UX/message-queue review.
+
+## October 13 execution receipt
+- Authorized priorities 1/3/4/5: startup error/diagnostic fix and targeted cleanup prepared; runtime regressions and current Todo fixtures pass; companion already merged/installed. Idle installation, full runtime live battery and paired authenticated handoff remain open in their existing plans.
+- User follow-ups implemented in source: account-specific multi-provider Usage, Enter steer / Cmd+Enter queue, remove queue-status text and duplicate header Stop. No new exploratory idea checkout.
+- Preserve concurrent Plan mode work; reviewed snapshot is prepared separately, not committed/published or installed over the active run.

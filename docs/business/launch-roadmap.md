@@ -1,5 +1,29 @@
 # Launch Roadmap — Incorporation to Product Launch
 
+## October 13, 2026 — current commercial direction
+
+Source: Codex discussion “how to make money based on this.. let me know your thoughts.” (`01a134d8-9f8d-7313-a09f-af0c8a3bf687`). This update supersedes conflicting positioning/pricing recommendations in the historical roadmap below. Historical legal, provider, price and timeline claims have not been revalidated.
+
+### Confirmed preferences
+- Sustainable small business; self-service subscriptions; general audience rather than a researcher-only commitment.
+- Core value: intuitive, low-friction access to multiple agents in one workspace, with a personal-assistant direction.
+- Start with customer-supplied API keys; included model access is a possible later stage.
+- Mac first; no existing audience; use actual-workflow demos and public posts to recruit.
+- One-month validation horizon and three paying repeat users as the selected target. No start date or deadline was set.
+- $10/month was selected as an offer to test, not validated demand or finalized pricing.
+- User judged current installation/setup/lifecycle flows adequate for now; do not make broad launch hardening a prerequisite without observed blockers.
+
+### Unresolved decisions and proposed next actions
+- [ ] Define the paid benefit and trial/free boundary. User questioned charging BYOK users and asked about service tiers; neither a 14-day trial nor a specific tier structure was approved. Prepare two concrete offers using existing capabilities for user choice.
+- [ ] Select one recurring everyday workflow for the first demonstration and user test. The earlier first-assistant-task question was unanswered. Candidate: Todo capture → Diane execution → reviewed result → next-day continuation; this is a proposal, not a chosen market.
+- [ ] Prepare a short demonstration and a test script around that workflow; use public/test data. Publication and outreach remain separate actions requiring authorization.
+- [ ] Observe unfamiliar users and record repeat use, completed useful work, payment decisions and support time. Address demonstrated blockers before adding broad features.
+- [ ] Check offer economics using actual support time and any Diane-paid service costs. Do not assume BYOK means zero operating cost or infer profit from gross subscription revenue.
+
+Build billing/entitlements only after the paid boundary is chosen. Hosted inference, cloud sync, connectors and elaborate tiers are options, not committed prerequisites. Semantic paper search retains personal-workflow value; commercial priority depends on evidence from the intended users.
+
+---
+
 **Last updated:** 2026-03-27
 
 This document covers every step from company formation to product launch. Phases are roughly chronological but many steps can run in parallel.
