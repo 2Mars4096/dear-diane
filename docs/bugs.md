@@ -1,5 +1,7 @@
 # Known Issues & Failed Approaches
 
+- **Local reinstall startup 2026-10-14:** initial backend PID 82030 exceeded the 30-second health deadline; a short native stack sample showed Python site/import initialization in `os_listdir → __opendir2 → __open_nocancel`. This does not identify the directory or establish a permissions cause. A subsequent desktop launch (82612) started owned backend 82615 and both health endpoints passed. Startup reliability remains open.
+
 - **Folder-link build blocker resolved 2026-10-14:** complete the alternate-window mock with `getZoomFactor`; renderer and Electron compilation now pass, as do all 16 focused tests. Prior failure below retained for context.
 
 - **Folder-link validation 2026-10-14:** broader renderer typecheck reports TS2741 at `editor/src/__tests__/windowControls.test.ts:28`: its alternate `webContents` mock lacks required `getZoomFactor`. File-link focused tests pass; unrelated test fixture left unchanged.

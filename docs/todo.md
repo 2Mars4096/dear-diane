@@ -1,16 +1,17 @@
 # Todo
 
-- [x] Fix desktop folder links opening as unreadable text files; route directories to the system file manager — [UI](UI-plans/1-work-notes-gui.md). Installation pending.
+- [x] Fix and locally install desktop folder links opening in the system file manager — [UI](UI-plans/1-work-notes-gui.md). Signature/archive/backend/proxy verified.
 
 - [x] Review cell-derived native management integration; fix built-in lead guidance exposure and document its optional, managed-Team-only scope — [review](UI-plans/2-1-native-session-management.md).
 
 - [x] Archive/prune the simplified-cell worktree and apply its task-contract, compact-handoff and attempt-specific review lessons to native session management — [review](UI-plans/2-1-native-session-management.md).
-- [ ] Activate native session management changes on the next safe backend restart and verify one live delegation/review/follow-up — [acceptance](UI-plans/2-1-native-session-management.md).
+- [x] Activate native session management changes during the October 14 local reinstall/backend restart.
+- [ ] Verify one live delegation/review/follow-up — [acceptance](UI-plans/2-1-native-session-management.md).
 
 - [x] Humanize and structure README; remove repeated descriptions and internal implementation commentary — [UI documentation](UI-plans/1-work-notes-gui.md).
 
 - [x] Align macOS traffic lights with the header across zoom levels; verify native geometry at 90%, 100% and 125%.
-- [ ] Install title-bar alignment fix later; user explicitly deferred installation on October 14.
+- [x] Include title-bar alignment fix in the October 14 reinstall subsequently requested by the user.
 
 - [x] Add About & updates navigation dot and move Back/Forward into the top bar beside the sidebar toggle; remove redundant history row — [UI](UI-plans/1-work-notes-gui.md).
 - [x] Install updated Settings/navigation frontend; signed archive equality and backend/proxy health verified.

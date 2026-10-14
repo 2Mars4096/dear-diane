@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-10-14
+- [infra] Install signed local 0.1.6 with folder-link handling and current source changes after idle/stopped checks. Installed/source ASAR SHA-256 matches; signature and backend/desktop-proxy health pass. App PID 82612 owns backend PID 82615. Rollback retained at `/Applications/.Diane-previous-28657d91-e377-4576-8724-4ad85822204c.app`.
+- [test] First launch timed out while Python initialization waited in directory enumeration; a subsequent launch became healthy. Preserve this as an unresolved startup issue rather than claiming repeatable launch reliability. No live agent acceptance run was performed.
+
+## 2026-10-14
 - [test] Correct the alternate-window test mock to include `getZoomFactor`, clearing the folder-link build blocker. All 16 focused file-link/window-control tests, production typecheck/build/bundle budgets and Electron compilation pass.
 
 ## 2026-10-14
