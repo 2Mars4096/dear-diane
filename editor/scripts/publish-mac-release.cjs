@@ -45,7 +45,18 @@ try {
     const taggedCommit = gh(['api', `repos/${repo}/commits/${tag}`, '--jq', '.sha']).trim();
     if (taggedCommit !== commit) throw Error('Release tag does not match the built source commit.');
   }
-  const existing = findRelease();
+  let existing = findRelease();
+  // Explicit release-note authorization is bound to the exact prior source.
+  // Artifact hashes and the new tag were validated before this mutation.
+  const noteText = fs.readFileSync(notes, 'utf8');
+  const replacement = noteText.match(/<!-- diane-replaces-source: ([a-f0-9]{40}) -->/);
+  if (existing && !existing.draft && replacement && replacement[1] !== commit
+      && String(existing.body || '').includes(`<!-- diane-source: ${replacement[1]} -->`)) {
+    const body = noteText + `\n\n${sourceMarker}\n`;
+    fs.writeFileSync(publishNotes, body, { mode: 0o600 });
+    gh(['release', 'edit', tag, '--repo', repo, '--draft=true', '--notes-file', publishNotes]);
+    existing = { ...existing, draft: true, body };
+  }
   if (existing) {
     if (!existing.draft || (existing.target_commitish !== commit && !String(existing.body || '').includes(sourceMarker))) throw Error('Refusing to replace a published release or a draft from different source.');
     gh(['release', 'upload', tag, ...files, '--repo', repo, '--clobber']);

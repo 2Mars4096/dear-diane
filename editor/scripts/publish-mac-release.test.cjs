@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, 'publish-mac-release.cjs'), 'utf8');
 const commit = 'a'.repeat(40);
-function exercise({ existing, tagCommit = commit, corrupt = false, missingAsset = false, tag = 'v0.1.1', apiError = '' } = {}) {
+function exercise({ existing, tagCommit = commit, corrupt = false, missingAsset = false, tag = 'v0.1.1', apiError = '', replacement = '' } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'diane-publish-test-'));
   const calls = [];
   const errors = [];
@@ -17,7 +17,7 @@ function exercise({ existing, tagCommit = commit, corrupt = false, missingAsset 
     const asset = { url: 'Dear-Diane-0.1.1-mac-arm64.zip', size: bytes.length, sha512: crypto.createHash('sha512').update(bytes).digest('base64') };
     fs.writeFileSync(path.join(dir, asset.url), corrupt ? 'bad' : bytes);
     fs.writeFileSync(path.join(dir, 'latest-mac.yml'), JSON.stringify({ version: '0.1.1', files: [asset] }));
-    fs.writeFileSync(path.join(dir, 'notes.md'), 'Release');
+    fs.writeFileSync(path.join(dir, 'notes.md'), 'Release' + (replacement ? `\n<!-- diane-replaces-source: ${replacement} -->` : ''));
     let uploaded = false;
     const mockRequire = name => name === 'node:child_process' ? { execFileSync: (_file, args) => {
       calls.push(args);
@@ -91,4 +91,20 @@ test('finds and verifies drafts through paginated release listing, not published
   assert.equal(result.failed, false);
   assert.equal(result.calls.some(args => String(args[1]).includes('/releases/tags/')), false);
   assert.equal(result.calls.filter(args => args[0] === 'api' && args[1].endsWith('/releases') && args.includes('--paginate')).length, 2);
+});
+
+
+test('replaces only the exact published source explicitly named in release notes', () => {
+  const old = 'b'.repeat(40);
+  const result = exercise({ replacement: old, existing: { draft: false, body: `<!-- diane-source: ${old} -->` } });
+  assert.equal(result.failed, false);
+  const edits = result.calls.filter(args => args[0] === 'release' && args[1] === 'edit');
+  assert.ok(edits[0].includes('--draft=true'));
+  assert.ok(edits.at(-1).includes('--draft=false'));
+  assert.ok(result.calls.some(args => args[1] === 'upload' && args.includes('--clobber')));
+});
+test('replacement authorization cannot overwrite a different published source', () => {
+  const result = exercise({ replacement: 'b'.repeat(40), existing: { draft: false, body: `<!-- diane-source: ${'c'.repeat(40)} -->` } });
+  assert.equal(result.failed, true);
+  assert.equal(result.calls.some(args => args[0] === 'release'), false);
 });

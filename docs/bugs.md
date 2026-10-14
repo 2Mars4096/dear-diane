@@ -2452,3 +2452,5 @@ When renaming workflows or moving error data between environments:
 - October 14: rolling last-20 raw events caused hidden streaming fragments to evict visible rows; status changes also triggered bottom scrolling. Retain up to 100 meaningful events with stable IDs, stabilize live detail height and pause auto-follow during inspection. Regression verifies 100 hidden deltas preserve activity and status-only updates preserve scroll.
 
 - October 14: worker elapsed timer used actions[0] before created_at; pruning the rolling history advanced its start and reduced elapsed time. Use durable attempt_started_at, falling back to session creation, and tick independently of polling. Existing records without attempt timestamps show session age.
+
+- October 14: Claude leads used one-shot stdin=DEVNULL and never advertised live_steering, so Enter became queued continuation. Use persistent stream-json input and acknowledgment-based interruption/redirection. Fix cleanup race where the process exited between returncode inspection and killpg.

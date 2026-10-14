@@ -504,3 +504,6 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
 - [x] Publish v0.1.7 (`ffbe972a`); workflow 38555602711 succeeds, five public assets and 0.1.7 update manifest verified.
 
 - [x] Fix worker elapsed timer decreasing when rolling action entries expire; durable attempt clock and independent ticking. Post-v0.1.7 follow-up, not yet installed.
+
+- [x] Implement and live-verify acknowledged Claude lead steering; include stable worker timer in requested v0.1.7 replacement.
+- [ ] Publish replacement v0.1.7 and verify refreshed asset hashes and source marker; activate locally only when safe.

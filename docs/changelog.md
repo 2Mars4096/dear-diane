@@ -1,6 +1,11 @@
 # Changelog
 
 ## 2026-10-14
+- [feat] Add live Claude lead steering through stream-json stdin: interrupt the active generation, send follow-up in the same process/session, acknowledge only after replay, and preserve queued messages on disconnect. Expected intermediate interrupt results do not fail the run.
+- [test] Real isolated Claude production-transport diagnostic completed DIANE_STEER_CONFIRMED with acknowledgment and unchanged session ID. Regression covers queue receipts, stop/disconnect and interrupted-result handling; fix a process-exit cleanup race.
+- [infra] At explicit user request, prepare replacement v0.1.7 containing Claude steering and the timer fix. Publisher replacement requires a release-note authorization bound to the exact old source, with local artifact/tag checks before temporarily unpublishing and replacing assets.
+
+## 2026-10-14
 - [infra] Publish v0.1.7 from ffbe972a; Actions 38555602711 build/publish succeed. Verify public stable release with DMG/ZIP, both blockmaps and downloadable version 0.1.7 update manifest. Timer follow-up is subsequent source work and is not included in the immutable v0.1.7 tag.
 - [test] Worker timer follow-up passes 12 frontend and 28 backend checks plus production build/budgets.
 

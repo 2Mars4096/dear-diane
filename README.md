@@ -281,3 +281,6 @@ Team changes apply with your next message: steering updates the active lead’s 
 
 
 Editing workers in Git projects use separate worktrees. The lead inspects their changes and records a review before merging them back; conflicting project changes are preserved. Shared-workspace workers are for read-only inspection.
+
+
+Codex and Claude Code leads support live steering from the composer. Claude steering interrupts the current generation and delivers the correction in the same native session; queued messages remain separate.

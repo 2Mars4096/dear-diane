@@ -176,3 +176,9 @@ Release scope remains the desktop shell for existing configured Python-backend i
 ## 0.1.7 release
 - [x] Prepare release notes and desktop version metadata.
 - [x] Publish tag v0.1.7 (`ffbe972a`); workflow 38555602711 succeeds. Non-draft stable release has five nonempty assets; anonymous latest-mac.yml reports 0.1.7.
+
+
+### User-authorized v0.1.7 replacement
+- [x] Prepare corrected source with Claude live steering and stable worker timers.
+- [x] Bind replacement authorization to previous exact source in release notes; test replacement rejection for wrong source.
+- [ ] Replace tag/assets and verify public source marker, fresh downloads and manifest. Already-installed 0.1.7 clients may require manual reinstall.

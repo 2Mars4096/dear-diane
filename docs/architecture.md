@@ -505,3 +505,5 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - Managed Git editing workers cannot opt into shared writable checkout execution. The CLI bridge maps --shared-workspace to read_only; native and built-in worker policies narrow accordingly. Agent integration uses changes → current-attempt accepted review → apply with a pinned worker tree; source fingerprint conflicts still reject. Human diff-preview/apply remains an explicit separate path. Integrated attempt provenance is recorded for UI reporting.
 
 - Built-in worker read_only uses a scoped ContextVar to constrain LocalOrganismToolRuntime to read-only tools. Managed changes stores inspected_tree/inspected_attempt; acceptance checks both against current state, and resume invalidates inspection receipts.
+
+- `native_workers/claude_live.py` owns stream-json input/output for steerable Claude leads. It exposes the existing steering contract, awaits interrupt control response and user-message replay, distinguishes intermediate interruption from final completion, and cleans up the process. Existing workers retain the one-shot transport unless explicitly marked live.
