@@ -1,5 +1,11 @@
 # Known Issues & Failed Approaches
 
+- **Folder-link build blocker resolved 2026-10-14:** complete the alternate-window mock with `getZoomFactor`; renderer and Electron compilation now pass, as do all 16 focused tests. Prior failure below retained for context.
+
+- **Folder-link validation 2026-10-14:** broader renderer typecheck reports TS2741 at `editor/src/__tests__/windowControls.test.ts:28`: its alternate `webContents` mock lacks required `getZoomFactor`. File-link focused tests pass; unrelated test fixture left unchanged.
+
+- **Folder links 2026-10-14:** desktop resolve-only IPC returned a path without its type. `art-directions` was consequently treated as extensionless text and failed with “File could not be read.” Preserve directory identity and launch the system file manager before document registration. Applies to local Electron links; browser/remote folder browsing is unchanged.
+
 - **Native management guidance 2026-10-14:** the built-in runtime exports tool description/parameters but omits metadata `returns`. Review/handoff guidance initially placed only in `returns` reached native bridge leads but not built-in leads before a status call. Moved guidance into the actual tool description; do not rely on return metadata for agent instructions.
 
 - **Cell experiment review 2026-10-14:** the archived hyperstructure trial reports ~6x direct-baseline tokens, output-limit repairs, an initially ambiguous hidden oracle and broad executor replay. Do not treat its quality-passing artifacts as proof of reliable/efficient orchestration. Preserve explicit criteria, compact handoffs, separate runtime/acceptance state and worker-specific repair; see [review/archive](UI-plans/2-1-native-session-management.md). Historical trials were not rerun.

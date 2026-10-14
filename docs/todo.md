@@ -1,5 +1,7 @@
 # Todo
 
+- [x] Fix desktop folder links opening as unreadable text files; route directories to the system file manager — [UI](UI-plans/1-work-notes-gui.md). Installation pending.
+
 - [x] Review cell-derived native management integration; fix built-in lead guidance exposure and document its optional, managed-Team-only scope — [review](UI-plans/2-1-native-session-management.md).
 
 - [x] Archive/prune the simplified-cell worktree and apply its task-contract, compact-handoff and attempt-specific review lessons to native session management — [review](UI-plans/2-1-native-session-management.md).

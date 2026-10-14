@@ -16,7 +16,7 @@ export default function FileSidecar({ request, active, onAsk }: { request: FileO
   useEffect(() => {
     if (!request) return;
     let cancelled = false; setOpening(true); setError(''); setNotes(false);
-    void resolveFileRequest(request).then(file => { if (!cancelled) openDocument(file); }).catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'Could not open this file.'); }).finally(() => { if (!cancelled) setOpening(false); });
+    void resolveFileRequest(request).then(file => { if (!cancelled && file) openDocument(file); }).catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'Could not open this file.'); }).finally(() => { if (!cancelled) setOpening(false); });
     return () => { cancelled = true; };
   }, [request, attempt, openDocument]);
   const file = documents[activeMainTab];

@@ -5,13 +5,19 @@ export function openFile(request: FileOpenRequest) {
   window.dispatchEvent(new CustomEvent<FileOpenRequest>('dan:open-file', { detail: request }));
 }
 
-export async function resolveFileRequest(request: FileOpenRequest): Promise<FileTarget> {
+/** Null means a folder was opened in the local file manager; no document tab is needed. */
+export async function resolveFileRequest(request: FileOpenRequest): Promise<FileTarget | null> {
   if (request.file) return request.file;
   const href = request.href || '';
   const root = request.root || '';
   if (currentFileHost() === 'local' && window.electronAPI?.shell.fileLink) {
     const result = await window.electronAPI.shell.fileLink({ href, root, resolveOnly: true });
     if (!result.ok || !result.path) throw Error(result.error || 'Could not resolve this file.');
+    if (result.isDirectory) {
+      const opened = await window.electronAPI.shell.fileLink({ href: result.path, root });
+      if (!opened.ok) throw Error(opened.error || 'Could not open this folder.');
+      return null;
+    }
     return pathFileTarget(result.path);
   }
   let path = decodeURIComponent(href).replace(/(?::\d+(?::\d+)?|#L\d+(?:C\d+)?(?:-L?\d+)?)$/, '');

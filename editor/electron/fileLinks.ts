@@ -30,7 +30,10 @@ export function registerFileLinks(getWindow: (sender: Electron.WebContents) => B
     if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw Error('Unsupported file link sender.');
     try {
       const target = resolveFileLink(request.href, request.root);
-      if (request.resolveOnly) return { ok: true, path: target };
+      if (request.resolveOnly) {
+        const info = await fs.stat(target).catch(() => null);
+        return { ok: true, path: target, ...(info?.isDirectory() ? { isDirectory: true } : {}) };
+      }
       const stat = await fs.stat(target).catch(() => { throw Error(`File or folder not found: ${target}`); });
       if (!stat.isFile() && !stat.isDirectory()) throw Error('This link is not a regular file or folder.');
       const open = async () => { const error = await shell.openPath(target); if (error) throw Error(error); };

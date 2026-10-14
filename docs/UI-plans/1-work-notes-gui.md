@@ -4,6 +4,7 @@
 **Goal:** Refine one calm workspace for Super DAN sessions, task state, artifacts, previews, and notes.
 
 ## Tasks
+- [x] Recognize desktop folder links during native resolution and open them in the system file manager without creating a text-document tab; preserve normal file previews and remote-host isolation. Nine focused tests pass; installation pending.
 - [x] Delete rejected icon variants, retain v7 source/prompt, reinstall signed DAN with v7, and verify launch/backend health.
 - [x] Adopt user-selected ivory v7 for desktop packaging (PNG/ICNS/ICO) and browser favicon; retain existing local-updater icon preservation.
 - [x] Replace v4's purple palette with three painted-icon alternatives: blush pink v5, slate blue v6, and warm ivory v7; save artwork and prompts.

@@ -43,3 +43,10 @@ it('resolves missing targets for sidecar errors without opening an external app'
   expect(await handler(event, { href: 'missing.tex:8', root: dir, resolveOnly: true })).toEqual({ ok: true, path: path.join(dir, 'missing.tex') });
   expect(mock.openPath).not.toHaveBeenCalled();
 });
+
+it('identifies folders without opening them during resolution', async () => {
+  const { dir, event, handler } = await fixture();
+  expect(await handler(event, { href: dir, root: '', resolveOnly: true })).toEqual({ ok: true, path: dir, isDirectory: true });
+  expect(await handler(event, { href: 'notes.md', root: dir, resolveOnly: true })).toEqual({ ok: true, path: path.join(dir, 'notes.md') });
+  expect(mock.openPath).not.toHaveBeenCalled();
+});

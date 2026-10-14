@@ -1,5 +1,7 @@
 # Architecture
 
+- Desktop local-link resolution preserves directory identity through `shell:fileLink`. `resolveFileRequest` opens directories via the system file manager and returns null; both document consumers skip tab registration. Regular files retain internal previews. Remote-marked pages bypass local shell resolution.
+
 ## Session Plan mode
 - Composer slash-command suggestions expose `/plan` independently of `$skill` mentions. The command toggles session mode (or enters it with a request); a conditional, noninteractive composer status reflects the saved mode.
 - `server/plan_mode.py` owns validated review documents, compare-and-swap versions, revision history, question budgeting, conflicting proposals, and immutable execution claims. Atomic `.plan.json` files live beside chat snapshots; chat discovery skips them and deletion removes them.

@@ -1,6 +1,13 @@
 # Changelog
 
 ## 2026-10-14
+- [test] Correct the alternate-window test mock to include `getZoomFactor`, clearing the folder-link build blocker. All 16 focused file-link/window-control tests, production typecheck/build/bundle budgets and Electron compilation pass.
+
+## 2026-10-14
+- [fix] Preserve directory identity when resolving desktop conversation links; open folders in the system file manager without registering a document tab. Regular files remain in Diane, launch failures remain visible, and remote paths never use the local shell. The reported `art-directions` path was verified as a directory.
+- [test] Nine focused file-link/resolution tests pass. Broader renderer typecheck is blocked by an unrelated `windowControls.test.ts:28` mock missing `getZoomFactor`. Desktop installation remains deferred.
+
+## 2026-10-14
 - [fix] Integration review found that the built-in lead omits tool return metadata. Put compact-handoff and attempt-specific review instructions in the native-worker tool description it actually receives; clarify optional managed-Team scope and the distinction between lead assessment and independent verification.
 
 ## 2026-10-14

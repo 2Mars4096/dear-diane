@@ -25,7 +25,7 @@ it('expands and restores, without leaving fullscreen', () => {
 it('rejects child frames and other windows', () => {
   const { window, send } = fixture();
   send('toggle', { sender: window.webContents, senderFrame: {} });
-  send('toggle', { sender: { mainFrame: {} }, senderFrame: window.webContents.mainFrame });
+  send('toggle', { sender: { mainFrame: {}, getZoomFactor: vi.fn(() => 1) }, senderFrame: window.webContents.mainFrame });
   expect(window.maximize).not.toHaveBeenCalled();
 });
 it('ignores click jitter, moves by cursor delta, and stops on release or blur', () => {

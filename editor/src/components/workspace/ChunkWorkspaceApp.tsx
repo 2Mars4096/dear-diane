@@ -14639,7 +14639,7 @@ export default function ChunkWorkspaceApp() {
   useEffect(() => {
     const receive = (event: Event) => {
       const request = (event as CustomEvent<FileOpenRequest>).detail;
-      void import('../../lib/openFile').then(module => module.resolveFileRequest(request)).then(openDocument).catch(error => {
+      void import('../../lib/openFile').then(module => module.resolveFileRequest(request)).then(file => { if (file) openDocument(file); }).catch(error => {
         setFileOpenError({ request, message: error instanceof Error ? error.message : 'Could not open file.' });
         openTab({ id:'file-error', kind:'file', label:'File opening error' }); openSideTab(null); setActivePane('work'); setPhonePage('chat');
       });
