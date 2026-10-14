@@ -181,4 +181,4 @@ Release scope remains the desktop shell for existing configured Python-backend i
 ### User-authorized v0.1.7 replacement
 - [x] Prepare corrected source with Claude live steering and stable worker timers.
 - [x] Bind replacement authorization to previous exact source in release notes; test replacement rejection for wrong source.
-- [ ] Replace tag/assets and verify public source marker, fresh downloads and manifest. Already-installed 0.1.7 clients may require manual reinstall.
+- [x] Replace v0.1.7 with ad502d24; Actions 38557381340 build/publish succeed. Verify five changed asset IDs, corrected source marker and changed public 0.1.7 manifest. Already-installed 0.1.7 clients may require manual reinstall.

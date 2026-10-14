@@ -1,6 +1,12 @@
 # Changelog
 
 ## 2026-10-14
+- [infra] Replace published v0.1.7 at explicit user request with ad502d244115e5938073e3fd0c59454798619c7c. Actions 38557381340 succeeds; verify five fresh asset IDs, corrected source marker and changed downloadable update manifest. Includes Claude steering and stable worker timer; subsequent Up next caption removal is not in this tag.
+
+## 2026-10-14
+- [fix] Remove the expanded Up next timing caption; retain message expansion and delivery controls. This follow-up is after the corrected v0.1.7 release source.
+
+## 2026-10-14
 - [feat] Add live Claude lead steering through stream-json stdin: interrupt the active generation, send follow-up in the same process/session, acknowledge only after replay, and preserve queued messages on disconnect. Expected intermediate interrupt results do not fail the run.
 - [test] Real isolated Claude production-transport diagnostic completed DIANE_STEER_CONFIRMED with acknowledgment and unchanged session ID. Regression covers queue receipts, stop/disconnect and interrupted-result handling; fix a process-exit cleanup race.
 - [infra] At explicit user request, prepare replacement v0.1.7 containing Claude steering and the timer fix. Publisher replacement requires a release-note authorization bound to the exact old source, with local artifact/tag checks before temporarily unpublishing and replacing assets.

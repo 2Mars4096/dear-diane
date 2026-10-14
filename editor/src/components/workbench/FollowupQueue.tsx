@@ -22,7 +22,6 @@ export function FollowupQueue({rows, runId, canSteer, onTask, onRemoved}: {rows:
     <ol>{rows.map((row,index)=><li key={row.id}>
       <span className="wb-queue-position" aria-hidden="true">{index+1}</span>
       <details className="wb-queue-message"><summary><span>{row.rawDetail || row.detail}</span><ChevronDown size={12}/></summary>
-        <p>{row.status === "waiting_dependency" ? "Waiting for an earlier task" : row.kind === "task" ? "Waiting to start" : row.lane === "append" && canSteer ? "Sending to the current run" : "Starts after the current run completes"}</p>
       </details>
       {row.kind === "followup" && row.runId === runId && row.lane !== "append" && <button className="wb-queue-steer" type="button" disabled={!canSteer || Boolean(sending)} title={canSteer ? "Send to the current run before the other waiting messages" : "Live steering is not available for this run"} onClick={()=>void steer(row)}>{sending===row.id ? "Sending…" : "Steer now"}</button>}
       {row.kind === "followup" && row.lane === "append" && <small className="wb-muted">{canSteer ? "Sending…" : "Queued"}</small>}
