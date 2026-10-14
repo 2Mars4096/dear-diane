@@ -69,7 +69,6 @@ export function TeamPanel({ workers, error, onStop, onClose, header, onChange, s
     {header ?? <div className="wb-panel-heading"><span>Team</span><button onClick={onClose} aria-label="Close team"><X size={17} /></button></div>}
     {error && <p className="wb-team-error" role="alert">{error}</p>}
     <div className="wb-team-lanes">
-      <p className="wb-team-guide">The lead assigns work and reviews results. Open a worker to inspect its own session.</p>
       {runs.map(run => <TeamRunBranch key={run.id} title={run.title} startedAt={run.startedAt} current={run.id === activeRunId} count={run.workers.length} selected={run.workers.some(worker => worker.worker_id === selectedWorker)} onOpenLead={onOpenLead ? () => onOpenLead(run.id) : undefined}>
         <ul className="wb-team-children" aria-label="Workers">{branches(run.workers)}</ul>
         {!run.workers.length && <p className="wb-activity-empty">No delegated workers in this run.</p>}

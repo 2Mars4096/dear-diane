@@ -45,3 +45,22 @@ it("drains a final burst of events after the worker finishes", async () => {
     expect(host.textContent).toContain("Final response");
   } finally { act(() => root.unmount()); vi.unstubAllGlobals(); }
 });
+
+it('shows readable completed messages without streaming IDs or raw JSON', async () => {
+  const worker: TeamWorker = { worker_id: 'w', parent_run_id: 'p', backend: 'codex', status: 'completed', prompt: 'Work', response: '', error: '', native_session_id: 'saved' };
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ entries: [
+    { cursor: 0, event: { type: 'item.agentMessage.delta', delta: 'partial' } },
+    { cursor: 1, event: { type: 'thread.tokenUsage.updated', tokenUsage: {} } },
+    { cursor: 2, event: { type: 'item.completed', threadId: 'internal-id', item: { type: 'agentMessage', text: '**Review complete**' } } },
+    { cursor: 3, event: { type: 'error', error: { message: 'Selected model is at capacity.' } } },
+  ], before: null }))));
+  const host = document.createElement('div'), root = createRoot(host);
+  try {
+    await act(async () => root.render(createElement(WorkerConversation, { worker })));
+    expect(host.querySelectorAll('.wb-worker-event')).toHaveLength(2);
+    expect(host.textContent).toContain('Review complete');
+    expect(host.textContent).toContain('Selected model is at capacity.');
+    expect(host.textContent).not.toMatch(/item\.agentMessage|tokenUsage|internal-id|Technical data/);
+    expect(host.querySelector('strong')?.textContent).toBe('Review complete');
+  } finally { act(() => root.unmount()); vi.unstubAllGlobals(); }
+});

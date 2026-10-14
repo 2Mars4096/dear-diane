@@ -17,7 +17,6 @@ function EventDetail({ event }: { event: ChatV2AgentRunEvent }) {
     {display.command && <pre>{display.command}</pre>}
     {display.exitCode !== undefined && <p className="wb-event-meta">Exit code: {display.exitCode}</p>}
     {display.body && (display.output ? <pre>{display.body}</pre> : <div className="wb-event-body"><MarkdownRenderer content={display.body} /></div>)}
-    <details className="wb-raw-event"><summary>Technical data</summary><div className="wb-event-meta">{event.type}{event.run_id && ` · ${event.run_id}`}</div>{event.payload && <pre>{JSON.stringify(event.payload, null, 2)}</pre>}</details>
   </details>;
 }
 
@@ -45,6 +44,7 @@ export function WorkbenchConversation({ messages, pending, loading, status, onQu
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const following = useRef(true);
+  const readingDetails = useRef(false);
   const [showLatest, setShowLatest] = useState(false);
   const [quote, setQuote] = useState("");
   const [quoteMessageIds, setQuoteMessageIds] = useState<string[]>([]);
@@ -58,8 +58,8 @@ export function WorkbenchConversation({ messages, pending, loading, status, onQu
     const selection = window.getSelection();
     if (selection && !selection.isCollapsed && scroller.current?.contains(selection.anchorNode)) return;
     if (following.current && scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
-  }, [messages.length, lastMessage?.content, status]);
-  useEffect(() => { setQuote(""); following.current = true; }, [messages[0]?.id]);
+  }, [messages.length, lastMessage?.content]);
+  useEffect(() => { setQuote(""); following.current = true; readingDetails.current = false; }, [messages[0]?.id]);
   const captureSelection = () => {
     const selection = window.getSelection();
     const container = scroller.current;
@@ -70,10 +70,12 @@ export function WorkbenchConversation({ messages, pending, loading, status, onQu
     } else setQuote("");
   };
   return <div className="wb-conversation-wrap">
-    <div ref={scroller} className="wb-conversation-scroll" onMouseUp={captureSelection} onKeyUp={captureSelection} onTouchEnd={() => window.setTimeout(captureSelection, 60)} onScroll={() => {
+    <div ref={scroller} className="wb-conversation-scroll" onClickCapture={event => {
+      if ((event.target as Element).closest("summary")) { readingDetails.current = true; following.current = false; setShowLatest(true); }
+    }} onMouseUp={captureSelection} onKeyUp={captureSelection} onTouchEnd={() => window.setTimeout(captureSelection, 60)} onScroll={() => {
       const node = scroller.current;
       if (!node) return;
-      following.current = node.scrollHeight - node.scrollTop - node.clientHeight < 100;
+      following.current = !readingDetails.current && node.scrollHeight - node.scrollTop - node.clientHeight < 100;
       setShowLatest(!following.current);
     }}>
       <div className="wb-transcript" aria-busy={loading}>
@@ -83,7 +85,7 @@ export function WorkbenchConversation({ messages, pending, loading, status, onQu
           <div className="wb-message-body">{message.content ? <MarkdownRenderer content={message.content} /> : pending[message.id] ? null : <p className="wb-muted">No response content recorded.</p>}</div>
           {message.attachments?.map((attachment, index) => <Suspense key={`${attachment.filename}-${index}`} fallback={<div className="wb-attachment">{attachment.filename}</div>}><MessageAttachment attachment={attachment} /></Suspense>)}
           {message.toolCalls?.map((tool) => <details className="wb-event" key={tool.id}><summary><span>{tool.status === "running" ? "◌" : tool.status === "error" ? "!" : "✓"}</span><span>{tool.toolName}</span><span className="wb-muted">{tool.status}</span></summary><pre>{tool.argsPreview}{tool.outputPreview && `\n\n${tool.outputPreview}`}</pre></details>)}
-          {(Boolean(message.runEvents?.length) || pending[message.id]) && <Suspense fallback={null}><ActivitySummary events={message.runEvents ?? []} active={Boolean(pending[message.id])} startedAt={timings[message.taskRunRef?.taskId || ""]?.start || message.timestamp} endedAt={timings[message.taskRunRef?.taskId || ""]?.end} live={liveActions[message.id]}>{(message.runEvents ?? []).filter(event => event.type !== "model_text_delta").map((event, index) => <EventDetail key={index} event={{ type: event.type, source_event_type: event.event_type, summary: event.summary, payload: (event.detail?.payload ?? event.detail ?? {}) as Record<string, unknown> }} />)}</ActivitySummary></Suspense>}
+          {(Boolean(message.runEvents?.length) || pending[message.id]) && <Suspense fallback={null}><ActivitySummary events={message.runEvents ?? []} active={Boolean(pending[message.id])} startedAt={timings[message.taskRunRef?.taskId || ""]?.start || message.timestamp} endedAt={timings[message.taskRunRef?.taskId || ""]?.end} live={liveActions[message.id]}>{(message.runEvents ?? []).filter(event => event.type !== "model_text_delta").map((event, index) => <EventDetail key={event.activity_id ?? `${event.event_type}:${event.summary}:${index}`} event={{ type: event.type, source_event_type: event.event_type, summary: event.summary, payload: (event.detail?.payload ?? event.detail ?? {}) as Record<string, unknown> }} />)}</ActivitySummary></Suspense>}
           {message.taskRunRef && ["failed", "blocked", "stopped", "needs_input"].includes(message.taskRunRef.status) && <div className="wb-message-state">{{failed:"Could not finish", blocked:"Needs your attention", stopped:"Stopped", needs_input:"Needs your input"}[message.taskRunRef.status]}</div>}
           {message.id === planMessageId && planReview?.content}
         </article>
@@ -93,7 +95,7 @@ export function WorkbenchConversation({ messages, pending, loading, status, onQu
       </div>
     </div>
     {quote && <div className="wb-quote-action" onMouseDown={(event) => event.preventDefault()}><button onClick={() => { onQuote(quote, quoteMessageIds); setQuote(""); window.getSelection()?.removeAllRanges(); }}><CornerDownRight size={15} />Reply to selection</button>{onSidecar && <button onClick={() => { onSidecar(quote); setQuote(""); }}><MessageSquareText size={15} />Sidecar chat</button>}<button onClick={() => setQuote("")} aria-label="Dismiss selected quote">×</button></div>}
-    {showLatest && <button className="wb-jump" onClick={() => { following.current = true; scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "instant" }); }}><ArrowDown size={14} />Latest</button>}
+    {showLatest && <button className="wb-jump" onClick={() => { readingDetails.current = false; following.current = true; setShowLatest(false); scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "instant" }); }}><ArrowDown size={14} />Latest</button>}
     {workbenchStatus(status) && <div className="wb-status" role="status">{workbenchStatus(status)}</div>}
   </div>;
 }

@@ -1,14 +1,10 @@
+import { eventDisclosure } from "./eventPresentation";
+import MarkdownRenderer from "../shared/MarkdownRenderer";
 import { useEffect, useRef, useState } from "react";
 import { requestJson } from "../../lib/http";
 import type { TeamWorker, WorkerRequest } from "./teamPresentation";
 
 type Entry = { cursor: number; event: Record<string, unknown> };
-function eventText(row: Record<string, unknown>): string {
-  const item = row.item as Record<string, unknown> | undefined;
-  const message = row.message as { content?: { text?: string }[] } | undefined;
-  return String(row.text || item?.text || item?.command || row.summary ||
-    (typeof row.result === "string" ? row.result : "") || message?.content?.map(block => block.text || "").filter(Boolean).join("\n") || "");
-}
 export function workerUrl(worker: TeamWorker) {
   return `/api/native-workers/${encodeURIComponent(worker.parent_run_id)}/${encodeURIComponent(worker.worker_id)}`;
 }
@@ -61,10 +57,16 @@ export default function WorkerConversation({ worker, onChange }: { worker: TeamW
   return <section className="wb-worker-conversation" aria-label="Worker conversation">
     {worker.requests?.map(request => <WorkerQuestion key={String(request.id)} request={request} busy={busy} onAnswer={body => void send("answer", body)} />)}
     {before !== null && <button disabled={busy} onClick={() => void load(true).catch(e => setError(e.message))}>Load earlier</button>}
-    {entries.map(({ cursor, event }) => <details key={cursor} className="wb-worker-event">
-      <summary>{eventText(event) || String(event.type || "Event")}</summary>
-      <pre>{JSON.stringify(event, null, 2)}</pre>
-    </details>)}
+    {entries.map(({ cursor, event }) => {
+      const display = eventDisclosure({ type: "status_reported", payload: { raw: event } });
+      if (display.hidden) return null;
+      return <details key={cursor} className="wb-worker-event">
+        <summary>{display.label}</summary>
+        {display.command && <pre>{display.command}</pre>}
+        {display.exitCode !== undefined && <p>Exit code: {display.exitCode}</p>}
+        {display.body && (display.output ? <pre>{display.body}</pre> : <MarkdownRenderer content={display.body} />)}
+      </details>;
+    })}
     {worker.source_workspace && <p>Working copy: <code>{worker.workspace_root}</code></p>}
     {worker.can_apply && <button disabled={busy} onClick={() => void reviewWorktree()}>Review changes</button>}
     {worktree && <><pre>{worktree.diff || "No changes to apply."}</pre>{worktree.truncated && <p>Large diff shortened. Review the working copy for the complete changes.</p>}

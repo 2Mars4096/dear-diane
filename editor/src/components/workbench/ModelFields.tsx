@@ -32,12 +32,12 @@ export function ModelFields({ runtime, profile, onChange, disabled = false }: {
       onChange(withModel(runtime, next, next.model));
     }}>{apiSources.map(item => <option key={item.id} value={item.id} disabled={!item.supported}>{item.label}{!item.supported ? " · unavailable" : ""}</option>)}</select></label>}
     {sourceId === "native" && runtime.id !== "dan" && <label>Account<select disabled={disabled} value={profile.account} onChange={event => onChange({ ...profile, account: event.target.value })}>{runtime.accounts.map(account => <option key={account.id} value={account.id}>{account.label}</option>)}</select></label>}
-    <label>Model{editModel ? <input aria-label="Model" disabled={disabled} value={profile.model} placeholder={sourceId === "openrouter" ? "provider/model-id" : "Default or model ID"} onChange={event => onChange(withModel(runtime, profile, event.target.value))} /> :
-      <select aria-label="Model" disabled={disabled} value={profile.model} onChange={event => {
-        if (event.target.value === "__custom__") { setCustom(true); return; }
-        onChange(withModel(runtime, profile, event.target.value));
-      }}>{sourceId === "native" && <option value="">Default</option>}{models.map(model => <option key={model} value={model}>{labels?.[model] ?? model}</option>)}<option value="__custom__">Custom model…</option></select>}</label>
-    {editModel && models.length > 0 && <button type="button" disabled={disabled} onClick={() => { setCustom(false); onChange(withModel(runtime, profile, sourceId === "native" ? "" : models[0])); }}>Choose a listed model</button>}
+    {models.length > 0 && <label>Model<select aria-label="Model" disabled={disabled} value={editModel ? "__custom__" : profile.model} onChange={event => {
+      if (event.target.value === "__custom__") { setCustom(true); return; }
+      setCustom(false);
+      onChange(withModel(runtime, profile, event.target.value));
+    }}>{sourceId === "native" && <option value="">Default</option>}{models.map(model => <option key={model} value={model}>{labels?.[model] ?? model}</option>)}<option value="__custom__">{editModel && profile.model ? `Custom: ${profile.model}` : "Custom model…"}</option></select></label>}
+    {editModel && <label>{models.length ? "Custom model ID" : "Model"}<input aria-label={models.length ? "Custom model ID" : "Model"} disabled={disabled} value={profile.model} placeholder={sourceId === "openrouter" ? "provider/model-id" : "Default or model ID"} onChange={event => onChange(withModel(runtime, profile, event.target.value))} /></label>}
     <label>Reasoning<select aria-label="Reasoning" disabled={disabled || !efforts.length} value={profile.effort} onChange={event => onChange({ ...profile, effort: event.target.value })}><option value="">{efforts.length ? "Default" : "Managed by agent / model"}</option>{efforts.map(effort => <option key={effort} value={effort}>{effort[0].toUpperCase() + effort.slice(1)}</option>)}</select></label>
     <label className="wb-native-enabled"><input type="checkbox" disabled={disabled || !supportsFast(runtime, profile)} checked={profile.fast && supportsFast(runtime, profile)} onChange={event => onChange({ ...profile, fast: event.target.checked })} />Fast mode</label>
     {sourceId !== "native" && <p>{source?.configured === false ? `Add a ${source?.label ?? sourceId} key in Settings → Providers.` : `Uses your ${source?.label ?? sourceId} API key and billing.`}</p>}

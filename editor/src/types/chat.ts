@@ -68,6 +68,7 @@ export interface ChatThread {
 }
 
 export interface RunEventPayload {
+  activity_id?: string;
   type: string;
   event_type: string;
   node_id?: string | null;

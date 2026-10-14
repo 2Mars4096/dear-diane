@@ -49,6 +49,17 @@ it('hides worker streaming fragments while keeping completed answers and errors'
   const base = { type: 'status_reported', summary: 'codex team member: running', source_event_type: 'native_worker.event' };
   expect(eventDisclosure({ ...base, payload: { raw: { type: 'item.agentMessage.delta', delta: 'fragment' } } }).hidden).toBe(true);
   expect(eventDisclosure({ ...base, payload: { raw: { type: 'mcpServer.startupStatus.updated' } } }).hidden).toBe(true);
-  expect(eventDisclosure({ ...base, payload: { raw: { type: 'item.completed', item: { type: 'agentMessage', text: 'Review complete' } } } })).toMatchObject({ label: 'Writing response', body: 'Review complete', hidden: false });
+  expect(eventDisclosure({ ...base, payload: { raw: { type: 'item.completed', item: { type: 'agentMessage', text: 'Review complete' } } } })).toMatchObject({ label: 'Worker message', body: 'Review complete', hidden: false });
   expect(eventDisclosure({ ...base, payload: { raw: { type: 'error', error: { message: 'Command failed' } } } })).toMatchObject({ body: 'Command failed', hidden: false });
+});
+
+it('does not evict readable activity when streaming fragments arrive', async () => {
+  const { appendActivityEvent } = await import('../eventPresentation');
+  const event = { type: 'status_reported', event_type: 'native_worker.event', summary: 'Codex worker: running', detail: { payload: { raw: { type: 'item.completed', item: { type: 'command_execution', command: 'npm test', aggregatedOutput: 'passed' } } } } };
+  const initial = appendActivityEvent([], event);
+  let current = initial;
+  for (let i = 0; i < 100; i++) current = appendActivityEvent(current, { ...event, detail: { payload: { raw: { type: 'item.agentMessage.delta', delta: 'token' } } } });
+  expect(current).toBe(initial);
+  expect(current[0].activity_id).toBeTruthy();
+  expect(appendActivityEvent(current, event)[0].activity_id).toBe(current[0].activity_id);
 });

@@ -10,7 +10,7 @@ export function currentActivity(events: RunEventPayload[], live = "") {
   if (/\b(apply_patch|editing|updating|writing file)\b/i.test(text)) return "Updating files";
   if (/\b(reading|inspecting|searching|rg |grep |sed |cat )/i.test(text)) return "Checking files";
   if (/\b(browser|playwright|screenshot)\b/i.test(text)) return "Checking the interface";
-  if (/\b(tool|command|\/bin\/|status_reported|accepted|queued|token|model\.)/i.test(text)) return "Working on your request";
+  if (/\b(team member|worker:|tool|command|\/bin\/|status_reported|accepted|queued|token|model\.)/i.test(text)) return "Working on your request";
   return text && text.length <= 100 && !/[\n{}]/.test(text) ? text.replace(/…$/, "") : "Working on your request";
 }
 export function elapsedLabel(start: number | undefined, end: number) {
@@ -32,7 +32,7 @@ export function ActivitySummary({ events, active, live, startedAt, endedAt, chil
   const activity = currentActivity(events, live);
   const progress = active && !/^(Thinking|Working on your request)[.…]*$/i.test(activity) ? activity : '';
   return <details className="wb-event wb-work-details" data-working={active || undefined}>
-    <summary><span className="wb-thinking-label">{active ? 'Thinking' : 'Work details'}{duration && <> <span className="wb-thinking-time">({duration})</span></>}</span>{progress && <span className="wb-thinking-progress" title={progress}>{progress}</span>}<small>Details</small></summary>
+    <summary><span className="wb-thinking-label">{active ? 'Thinking' : 'Work details'}{duration && <> <span className="wb-thinking-time">({duration})</span></>}</span><span className="wb-thinking-progress" title={progress}>{progress}</span><small>Details</small></summary>
     <div className="wb-work-history">{children}</div>
   </details>;
 }

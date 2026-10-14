@@ -1,3 +1,4 @@
+import type { RunEventPayload } from "../../types/chat";
 import type { ChatV2AgentRunEvent } from "../../lib/chatV2Api";
 
 function record(value: unknown): Record<string, unknown> {
@@ -30,13 +31,16 @@ export function eventDisclosure(event: ChatV2AgentRunEvent) {
   const delta = record(nativeEvent.delta);
   const command = text(item.command || record(item.input).command || payload.command);
   const changes = Array.isArray(item.changes) ? item.changes.map(change => text(record(change).path)).filter(Boolean) : [];
+  const message = record(nativeEvent.message);
   const body = blocks(item.text || item.thinking || item.summary || item.content)
     || text(item.aggregated_output || item.aggregatedOutput || item.output || nativeEvent.output || record(nativeEvent.error).message || text(nativeEvent.delta) || delta.thinking || delta.text || nativeEvent.text || payload.output || payload.text)
+    || blocks(message.content) || text(nativeEvent.result)
     || (changes.length ? changes.map(path => `• ${path}`).join("\n") : "");
   const telemetry = /token_usage|token_count|rate_limit|heartbeat|thread_status|account_updated/.test(normalized);
   const commandEvent = Boolean(command) || /command_execution|tool_use|tool_result/.test(normalized);
   const labels: Record<string, string> = {
-    agent_message: "Writing response", file_change: "Updating files", web_search: "Searching the web",
+    user: "Assignment", assistant: "Worker message", result: nativeEvent.is_error ? "Error" : "Result",
+    agent_message: "Worker message", file_change: "Updating files", web_search: "Searching the web",
     turn_started: "Started working", turn_completed: "Work finished", worker_finished: "Worker finished",
     worker_input_requested: "Needs your input", worker_input_answered: "Input received",
     thread_started: "Session opened", error: "Error", mcp_tool_call: "Using a connected tool",
@@ -70,4 +74,11 @@ export function completedMessageContent(previous: string, summary: string, final
   if (finalText) return finalText;
   if (previous && (!summary || previous.startsWith(summary))) return previous;
   return summary || previous || "Completed.";
+}
+
+
+/** Invisible stream bookkeeping must not evict the activity a person is reading. */
+export function appendActivityEvent(events: RunEventPayload[], event: RunEventPayload): RunEventPayload[] {
+  if (event.type === "model_text_delta" || eventDisclosure({ type: event.type, source_event_type: event.event_type, summary: event.summary, payload: (event.detail?.payload ?? event.detail ?? {}) as Record<string, unknown> }).hidden) return events;
+  return [...events, { ...event, activity_id: event.activity_id || crypto.randomUUID() }].slice(-100);
 }

@@ -7,7 +7,7 @@ export type TeamWorker = {
   profile_id?: string; worker_name?: string; parent_worker_id?: string;
   attempt?: number; task_contract?: { scope?: string; acceptance?: string[] };
   lead_review?: { attempt: number; decision: string; evidence?: string[] } | null;
-  baseline_tree?: string; integrated_tree?: string;
+  baseline_tree?: string; integrated_tree?: string; integrated_attempt?: number;
   created_at?: number; activity?: string; actions?: TeamAction[];
 };
 export type WorkerPhase = "attention" | "active" | "settled";
@@ -94,6 +94,7 @@ export function workerReview(worker: TeamWorker): string {
   return worker.status === "completed" ? "Awaiting lead review" : "Not reviewed";
 }
 export function workerIntegration(worker: TeamWorker): string {
+  if (worker.integrated_tree && worker.integrated_attempt === worker.attempt && worker.attempt !== undefined) return "Merged into parent workspace";
   if (worker.integrated_tree) return "Application recorded; may include an earlier attempt";
   return worker.baseline_tree ? "Not applied to project" : "No separate worktree integration recorded";
 }

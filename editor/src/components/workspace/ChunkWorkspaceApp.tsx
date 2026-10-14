@@ -22,7 +22,7 @@ import { SideTabs, readLastSideTab, rememberSideTab, type SideTab, type SideTabI
 import type { ReaderAsk } from "../reader/ReaderView";
 import { useDocumentTabs } from "../documents/useDocumentTabs";
 import { useProcesses } from "../workbench/processes";
-import { streamedMessageContent, completedMessageContent } from "../workbench/eventPresentation";
+import { appendActivityEvent, streamedMessageContent, completedMessageContent } from "../workbench/eventPresentation";
 import { WorkbenchNavigation } from "../workbench/WorkbenchNavigation";
 import { WorkbenchConversation, WorkbenchActivity } from "../workbench/WorkbenchConversation";
 import "../workbench/workbench.css";
@@ -9221,7 +9221,7 @@ async function loadSuperDanThreadHistory(threadId: string, title: string, thread
           workspaceRoot: textValue(item.task.metadata?.workspace_root),
           workspaceId: textValue(item.task.metadata?.workspace_id),
         },
-        runEvents: item.events.slice(-20).map(runEventPayloadFromAgentEvent),
+        runEvents: item.events.map(runEventPayloadFromAgentEvent).reduce(appendActivityEvent, [] as RunEventPayload[]),
       });
     }
   }
@@ -16173,11 +16173,11 @@ export default function ChunkWorkspaceApp() {
 
   const attachRunEventToAssistant = useCallback(
     (assistantId: string, event: RunEventPayload) => {
-      if (event.type === "model_text_delta") return;
+      if (appendActivityEvent([], event).length === 0) return;
       applyMessages((previous) =>
         previous.map((message) =>
           message.id === assistantId
-            ? { ...message, runEvents: [...(message.runEvents ?? []), event].slice(-20) }
+            ? { ...message, runEvents: appendActivityEvent(message.runEvents ?? [], event) }
             : message,
         ),
       );

@@ -54,7 +54,7 @@ it("selects OpenRouter for Codex without changing the harness and restores nativ
     change("Model source", "native");
     expect(saved.mock.lastCall![0]).toMatchObject({ provider: "native", model: "gpt-6-astra", effort: "medium", fast: true });
     change("Model", "__custom__");
-    expect(host.querySelector('input[aria-label="Model"]')).not.toBeNull();
+    expect(host.querySelector('input[aria-label="Custom model ID"]')).not.toBeNull();
   } finally { act(() => root.unmount()); host.remove(); }
 });
 

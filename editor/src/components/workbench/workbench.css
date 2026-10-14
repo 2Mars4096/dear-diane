@@ -539,7 +539,10 @@
 .wb-conversation-actions code { font-size:11px; overflow-wrap:anywhere; }
 .wb-conversation-actions { flex-wrap:wrap; }
 .wb-work-details { border-top:0; margin-top:12px; }
-.wb-work-details > summary { gap:8px; }
+.wb-work-details > summary { display:flex; align-items:center; gap:8px; min-height:20px; flex-wrap:nowrap; }
+.wb-work-details > summary::before { content:"▸"; flex-shrink:0; }
+.wb-work-details[open] > summary::before { content:"▾"; }
+.wb-work-details > summary::-webkit-details-marker { display:none; }
 .wb-work-details > summary > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .wb-work-details > summary small { margin-left:auto; font-size:10px; color:var(--wb-muted); }
 .wb-work-history { margin-top:8px; padding-left:12px; border-left:1px solid var(--wb-line); }
@@ -948,7 +951,7 @@
 
 .wb-work-details > summary .wb-thinking-label { flex-shrink:0; overflow:visible; }
 .wb-thinking-time { font-variant-numeric:tabular-nums; }
-.wb-thinking-progress { min-width:0; color:var(--wb-muted); }
+.wb-thinking-progress { flex:1; min-width:0; color:var(--wb-muted); }
 .wb-work-details[data-working] > summary::marker { color:var(--wb-accent); }
 
 /* Side tool controls stay above embedded PDF toolbars. */
@@ -982,7 +985,6 @@
 .wb-usage-spend p { display:flex; flex-wrap:wrap; justify-content:space-between; gap:4px 12px; margin:5px 0; font-size:11px; }
 
 /* Actual run/worker hierarchy; the transcript remains the lead conversation. */
-.wb-team-guide { margin:0 0 16px; color:var(--wb-muted); font-size:12px; line-height:1.6; }
 .wb-team-branch + .wb-team-branch { margin-top:24px; }
 .wb-team-lead { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; width:100%; padding:8px 0; text-align:left; color:var(--wb-ink); }
 .wb-team-lead span { margin-left:auto; color:var(--wb-muted); font-size:11px; }
@@ -1012,3 +1014,6 @@
 .wb-team-run-toggle strong { min-width:0; overflow-wrap:anywhere; line-height:1.5; }
 .wb-team-run-meta { display:flex; flex-wrap:wrap; gap:4px 12px; color:var(--wb-muted); font-size:11px; }
 .wb-team-run-toggle:focus-visible { outline:2px solid var(--wb-accent); outline-offset:3px; }
+
+.wb-work-details[data-working][open] > .wb-work-history { height:min(280px,35vh); overflow:auto; overscroll-behavior:contain; }
+.wb-work-details > summary small { flex-shrink:0; }
