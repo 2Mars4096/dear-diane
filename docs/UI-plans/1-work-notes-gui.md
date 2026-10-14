@@ -1,9 +1,20 @@
 # 1: Work and Notes GUI
 
+- [x] Decode raw native-lead events for readable Work details; separate technical payloads and hide empty bookkeeping.
+
+- [x] Match sidebar tool dropdown to Lead/Team mouse-hover behavior; preserve focus, touch, and keyboard controls.
+
+- [x] Place Team progress in the conversation header row, with shrinking progress and visible session/task controls.
+
+- [ ] Install prepared font/tab-reconnect update once Diane is idle; local installer preflight currently reports active or queued work.
+
 **Status:** in-progress
 **Goal:** Refine one calm workspace for Super DAN sessions, task state, artifacts, previews, and notes.
 
 ## Tasks
+- [x] Increase transcript/composer sizes to 16/15 px and repair returning to the same running chat after tab navigation; 18 focused tests and production build/budgets pass.
+- [ ] Verify installed tab-return behavior on a running conversation.
+- [x] Clarify unavailable Claude subscription usage and support its default credential-file fallback; preserve account isolation and pass 12 usage tests. Activation pending; default user's quota credential is absent.
 - [x] Recognize desktop folder links during native resolution and open them in the system file manager without creating a text-document tab; preserve normal file previews and remote-host isolation. Nine focused tests pass; installation pending.
 - [x] Delete rejected icon variants, retain v7 source/prompt, reinstall signed DAN with v7, and verify launch/backend health.
 - [x] Adopt user-selected ivory v7 for desktop packaging (PNG/ICNS/ICO) and browser favicon; retain existing local-updater icon preservation.
@@ -133,3 +144,13 @@
 ## October 14 — README editing
 - [x] Group task instructions, split reader controls and settings, and remove duplicated/internal commentary.
 - [x] Verify command blocks and retained inline code unchanged; preserve user-facing limitations.
+
+- [x] Add Allow child sessions with inheritance/capacity explanation; compact worker header with leading arrow, inline model and trailing Remove. Nest children beneath their worker.
+
+- [x] Replace repeated Lead headings with titled/timestamped run branches; pin current run and collapse chronological history. Six interaction tests verify ordering, disclosure, navigation and child trees.
+
+- [x] Replace fixed 780px Team strip basis with content-sized shrinking pill; clarify Lead and worker relationship without hiding an uncounted worker on narrow screens.
+
+- [x] Suppress repeated team-worker delta/status bookkeeping in details while preserving completed activity and errors.
+
+- [x] Explain Team changes apply with the next sent message; carry roster/capacity on main and sidecar steering submissions.

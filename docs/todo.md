@@ -1,5 +1,49 @@
 # Todo
 
+- [x] Add per-worker Allow child sessions, inherited configuration, shared capacity, scoped control, cleanup and nested Team display.
+- [x] Compact worker headers into one row with leading expand arrows.
+- [x] Install child-session/compact-header update after idle verification; signature/archive and both health endpoints pass.
+- [ ] Complete live provider child-delegation acceptance.
+
+- [x] Configure larger context for personal-terminal and app-account Codex launches; back up and validate both TOML files.
+- [ ] Verify this terminal conversation reports the larger context after restart/resume.
+
+- [x] Add independently configured named workers with + Add worker, stable persistence, explicit profile routing and one-task-per-worker admission.
+- [x] Update Claude picker and opus alias to Opus 5.5.
+- [x] Install worker-roster/Opus 5.5 follow-up; signature/archive equality and backend/proxy health verified after startup retry.
+
+- [x] Replace opaque native event details with readable activity, command output and file changes; hide empty bookkeeping and retain opt-in technical JSON. Installed October 14.
+
+- [x] Show lead/worker hierarchy, navigate back to lead replies, and distinguish runtime completion, current-attempt review and integration in the Team tree.
+
+- [x] Add hover opening to the sidebar Chat/tool dropdown; preserve keyboard and touch controls. Installed October 14.
+
+- [x] Increase supported native Codex/Claude context windows; live Astra telemetry confirms 828,400 usable tokens.
+- [x] Activate context changes through the installed app/backend restart.
+- [ ] Verify Claude live context and installed UI interaction acceptance.
+- [x] Clarify Team panel lead/worker hierarchy and separate runtime completion from lead-reviewed acceptance.
+
+- [x] Align Team progress with Session/Task detail in the header; include in the pending local UI update.
+
+- [x] Add shared Team worker capacity (default 2, range 1–4), persist UI preference, pass run policy, enforce concurrent admission and inform leads.
+- [x] Install Team capacity with font/tab-reconnect changes; installed signature/archive/health verified.
+
+- [x] Install font/tab-reconnect update after idle verification.
+
+- [x] Increase Work chat/input font sizes and repair same-session stream reattachment after switching tabs; 18 focused tests and production build pass.
+
+- [x] Fix long Codex thread resume exceeding the transport limit; verify original saved thread through production async transport without replaying user work.
+
+- [x] Repair existing Codex thread continuation after default-account home changes; recover/pin the original configured account and activate locally.
+
+- [x] Correct Claude default quota lookup for redirected HOME; preserve actual login and verify live quota.
+- [x] Add bounded redacted Codex disconnect diagnostics and verify two installed-backend fixed-reply runs; 47 focused tests pass.
+- [ ] Confirm the previously failing Codex conversation continues successfully; diagnostic runs did not replay its work.
+
+- [x] Clarify missing Claude subscription credentials in Usage and support the default credential-file fallback; 12 usage tests pass. Source-only; activation pending.
+
+- [x] Fix desktop Codex startup losing Node from PATH; verify initialization and 33 native/live transport tests — [native workers](UI-plans/2-native-agent-workers.md).
+
 - [x] Fix and locally install desktop folder links opening in the system file manager — [UI](UI-plans/1-work-notes-gui.md). Signature/archive/backend/proxy verified.
 
 - [x] Review cell-derived native management integration; fix built-in lead guidance exposure and document its optional, managed-Team-only scope — [review](UI-plans/2-1-native-session-management.md).
@@ -420,3 +464,19 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
 - [x] Paper search follow-up: verified and installed the pointer/keyboard selection fix; user confirmed working ([4-7](plans/4-7-paper-library.md)).
 
 - [x] Minimal model-selector update: Default label, Native/API grouping, direct provider choices, local Settings key entry, and capability-aware reasoning controls.
+
+- [x] Fix visible roster workers silently excluded by the old availability checkbox; settings affect new runs. Installed October 14.
+
+- [x] Fix Claude worker HOME inherited from Codex account wrapper; normal Claude auth status succeeds. Activated by October 14 reinstall/backend restart.
+
+- [x] Reorganize Team run history: current first, newest-first collapsed history, request titles, timestamps and worker counts.
+- [x] Install Team-history, compact progress pill and worker-activity fixes; idle/signature/archive/backend/proxy verified.
+
+- [x] Make Team header strip fit its contents with explicit Lead label, worker separators, truncation and existing two-worker/+N summary. Installed October 14.
+
+- [x] Hide repetitive worker streaming fragments in activity details; retain completed content, commands and errors. Installed October 14.
+
+- [x] Clean up approved obsolete Diane packages; 20 items removed, current app/latest rollback/build and release source records preserved.
+
+- [x] Apply Team changes on the next sent message: live steer updates active roster/capacity; queued messages save settings for their next run. Preserve existing workers.
+- [ ] Install message-applied Team settings and verify live provider acceptance after a safe restart.

@@ -1,6 +1,107 @@
 # Changelog
 
 ## 2026-10-14
+- [test] Pre-publication validation: 133 focused backend tests and 41 frontend tests pass; production build/bundle budgets and whitespace checks pass. Latest message-applied Team settings remain source-only pending a safe local reinstall.
+
+## 2026-10-14
+- [feat] Apply Team roster/capacity when sending an active-run steer; attach coordination context so the lead refreshes its team status. Existing workers retain saved settings, removed workers remain resumable, and lower capacity restricts new starts without stopping work.
+- [feat] Preserve queued-message Team snapshots through promotion/restart despite older execution overrides. Keep native lead bridges and built-in delegation tools available for initially empty teams. Include settings in main and sidecar steering paths.
+- [test] 79 backend checks pass, including new settings validation, empty-team updates, queued promotion, duplicate request handling, frozen worker configuration and reduced capacity.
+
+## 2026-10-14
+- [infra] Delete 20 user-approved obsolete local packages (5.20 GiB measured): five old app rollbacks, five stale update staging folders, eight 0.1.0 installer/blockmap files and two build snapshots. Preserve current installed app, latest rollback `384b1236-2d31-4e48-8734-e30f11c1fa60`, current build and published-0.1.1 source/release records. Historical installation receipts above/below refer to copies that may now be pruned.
+
+## 2026-10-14
+- [infra] Install and relaunch current Team-history/compact-pill/activity-details update after idle verification. Strict signature and exact ASAR match verified (`53e1499364159e813e02b85547da2a8526c90a7a2bd7b9c48160e4d6308478f3`); backend and desktop proxy health both 200. Rollback retained at `/Applications/.Diane-previous-384b1236-2d31-4e48-8734-e30f11c1fa60.app`.
+
+## 2026-10-14
+- [fix] Hide worker streaming fragments and generic team-member status bookkeeping from activity details; preserve completed messages, commands and errors.
+
+## 2026-10-14
+- [fix] Fit Team progress pill to its contents instead of reserving 780px; retain header alignment and truncation, label the lead, and separate workers with chevrons. Keep the two-worker/+N summary consistent on narrow screens.
+
+## 2026-10-14
+- [fix] Order Team runs with current first and history newest-first by run/worker creation time instead of opaque IDs. Collapse historical trees by default; use request titles, timestamps and worker counts, with a separate lead-conversation link. Selected-worker notifications reveal their run.
+
+## 2026-10-14
+- [infra] Reinstall current signed local build after idle verification, activating child-session controls, compact worker headers, automatic roster inclusion and Claude OS-home login resolution. Strict signature/archive equality verified (`e67cf2df9d78cfe238b43e0fe19280a851ec345e3de42d52715ce1fc5930fdbf`); backend/proxy health both 200 on first launch. Rollback retained at `/Applications/.Diane-previous-4c72f4ec-acf1-4e4c-8f2c-024ce7000b4c.app`. Live provider delegation remains separate from install checks.
+
+## 2026-10-14
+- [fix] Use OS-user HOME for Claude workers rather than inheriting Codex account redirection; preserve explicit Claude profiles. Actual default login succeeds under OS home, while the external review launch reported Not logged in. Activation awaits safe backend restart.
+
+## 2026-10-14
+- [fix] Diagnose missing Team launcher: run arun-2e3fe3ecc614 saved both visible roster profiles disabled. Remove redundant availability checkbox, migrate explicit roster entries to enabled in UI and lead admission, and explain frozen run settings/no external-controller substitution when no team is available. Existing active runs remain unchanged.
+
+## 2026-10-14
+- [feat] Add opt-in same-configuration worker child sessions with shared root capacity, direct-child control, parent ancestry and descendant cleanup. Managed Codex/Claude native spawning is disabled in favor of the scoped bridge.
+- [fix] Compact worker headers with leading expand arrows and nest child sessions in the Team tree. Exclude temporary bridge files from worktree copies/snapshots. Backend and UI regressions plus production build/budgets pass; live provider delegation acceptance remains pending.
+
+## 2026-10-14
+- [infra] Install local worker-roster/Opus 5.5 build; strict signature and ASAR equality verified (`14594e9db13779593402e0492b487d52d86ccf8e748c09e197b875ffc33f0e31`). Backend and desktop `/api/health` return 200 after startup retry. Rollback retained at `/Applications/.Diane-previous-14bf3e29-efa2-4711-a05d-fa929fc739d5.app`.
+- [fix] Record recurring first-launch timeout: idle failed-start app ignored quit/SIGTERM and required force-close; subsequent launch became healthy in nine seconds. Startup reliability remains unresolved.
+
+## 2026-10-14
+- [infra] Align personal-terminal and app-account Codex config with local Astra catalog maximum (872,000 context, 800,000 automatic compaction), preserving other settings and timestamped backups. Current conversation still reports 258,400 until a new process/resume; previous Diane diagnostic verified 828,400 usable tokens.
+
+## 2026-10-14
+- [test] Worker roster and model update pass 79 backend and nine frontend tests, including distinct same-provider model routing, busy-slot rejection, frozen resume configuration, legacy profile loading and adding/editing/removing independent entries. Production build/bundle budgets pass; local follow-up installation waits for active work to settle.
+
+## 2026-10-14
+- [feat] Replace single-provider Team setup with a + Add worker roster. Named workers independently configure runtime/account/model/reasoning and persist by stable profile ID. Leads select profiles through tool/bridge metadata; runtime enforces one active task per named profile plus the global concurrency cap, and resumes retain their original model.
+- [fix] Offer Opus 5.5 in the Claude picker and legacy opus alias migration; enable its supported fast-mode control and stop offering fast mode for Fable.
+
+## 2026-10-14
+- [infra] Install/relaunch the signed local update after idle verification: Team tree/capacity/header strip, readable native activity, hover sidebar selector, larger fonts, reconnect and model-context changes. Signature and exact ASAR equality verified (`c6771494b499d12bce36126cf4a29680ffd198785955b48cdc2f2a9c978f7be1`); backend 8000 and desktop proxy 45173 return 200. Rollback: `/Applications/.Diane-previous-3192aa7f-a7be-4602-b84c-eef2cca61551.app`.
+
+## 2026-10-14
+- [fix] Decode live native-lead raw event wrappers into readable thinking summaries, commands/output/exit codes and file changes. Hide empty telemetry and opaque fallback rows; keep raw JSON under Technical data. Nine presentation regressions pass.
+
+## 2026-10-14
+- [feat] Replace flat Team lanes with an actual parent-run tree. Lead rows return to the corresponding main-conversation response; workers expand their own session, assignment/criteria, result, current-attempt review evidence and recorded integration state. Native-owned Codex subagents remain explicitly identified without fabricated review state.
+
+## 2026-10-14
+- [fix] Open the side-panel tool switcher on mouse hover without stealing focus; retain click/touch and keyboard access, delayed leave dismissal, and first-click handling. Five interaction tests pass.
+
+## 2026-10-14
+- [feat] Maximize Diane-launched native Codex context using each selected model’s own account catalog maximum; unknown/missing metadata keeps CLI defaults. Astra diagnostic completed READY and reported 828,400 usable tokens (872,000 advertised maximum).
+- [feat] Request full native 1M Claude context for recognized Opus/Sonnet/Fable models using launch-local environment/settings, retaining automatic compaction and model identity. Leave older/unknown/gateway models unchanged; do not change global logins or settings. Activation waits for a safe backend restart.
+
+## 2026-10-14
+- [fix] Move Team progress into the conversation header beside Session and Task detail, outside the transcript. Allow the strip to shrink while keeping header actions visible; compact session IDs on narrow screens.
+
+## 2026-10-14
+- [test] Team capacity passes 54 native-worker/lead tests and the frontend preference test; production build and bundle budgets pass after lazy history extraction and shared Team-settings chunking. Installation remains pending while local work is active.
+
+## 2026-10-14
+- [feat] Add persistent Team-wide Max parallel workers (1–4, default 2) across composer/settings and execution payloads, including queued and sidecar runs. Runtime admission enforces the shared limit under its existing lock for starts and resumes.
+- [feat] Explain capacity in native-lead instructions and delegation-tool guidance/status: excludes the lead, permits multiple same-provider workers, is a ceiling rather than a target or spending budget.
+
+## 2026-10-14
+- [fix] Tie Work run attachment to socket lifecycle: closing a view clears its attachment and old callbacks; returning to the same running session reconnects, and closed sockets can retry. Regression covers same-session reopening and connection replacement.
+- [feat] Increase conversation body text from 15 to 16 px and composer text from 14 to 15 px. Eighteen focused tests and production build/bundle budgets pass.
+
+## 2026-10-14
+- [fix] Resume Codex threads with metadata-only responses (`excludeTurns`) so long histories do not overflow the 8 MiB transport limit. Preserve actual reader errors for pending RPCs. Eight transport tests pass; original saved thread resumes through production transport without sending a user turn.
+
+## 2026-10-14
+- [fix] Bind Codex lead continuation to its resolved account home, rather than the mutable `default` alias. Recover legacy default-account threads only from unique matching rollouts in configured Diane-owned stores; preserve explicit account choices and reject removed pinned accounts. Report the recovered account to the user without copying rollouts.
+- [test] Native-lead/home/live tests pass (23 before two additional passing account-isolation cases). Reproduced the reported thread under app-account storage while default resolved to personal. Activate with an idle restart; original user work was not replayed.
+
+## 2026-10-14
+- [fix] Target the OS user's existing default login Keychain for Claude quota when an agent-launched desktop inherits a redirected HOME. Live quota now succeeds; the user's Claude login was valid.
+- [fix] Include protocol stage, process exit and bounded credential-redacted stderr in Codex transport failures instead of discarding startup evidence.
+- [test] All 47 native-worker/Codex-live/usage tests pass. Two isolated fixed-reply requests through the installed backend completed in temporary and affected-project workspaces without replaying the original conversation. Activate source fixes with an idle app restart; recurrence in the original thread remains unverified.
+
+## 2026-10-14
+- [fix] Read Claude's default `.claude/.credentials.json` fallback when its macOS Keychain credential is unavailable; keep explicit profiles isolated. Replace vague login-read failure with actionable subscription-login guidance and tolerate malformed credential structure.
+- [test] All 12 usage tests pass. Local default Keychain lookup returned item-not-found and the actual user's fallback file is absent. No credentials were written, no login was changed, and source activation remains pending.
+
+## 2026-10-14
+- [fix] Include the backend Python installation directory as a fallback on native-worker PATH. This repairs npm Codex launchers failing to find Conda-installed Node after a normal desktop launch, without changing selected accounts or sessions.
+- [test] All 33 native-worker/live-Codex tests pass. Reproduced initialization exit 127 with desktop-style PATH and verified a successful initialize response after adding the fallback; no model turn or failed task replay was sent.
+- [infra] Activate through an idle app restart; app 85343 owns backend 85358, and backend/desktop health pass. Existing user messages were not replayed.
+
+## 2026-10-14
 - [infra] Install signed local 0.1.6 with folder-link handling and current source changes after idle/stopped checks. Installed/source ASAR SHA-256 matches; signature and backend/desktop-proxy health pass. App PID 82612 owns backend PID 82615. Rollback retained at `/Applications/.Diane-previous-28657d91-e377-4576-8724-4ad85822204c.app`.
 - [test] First launch timed out while Python initialization waited in directory enumeration; a subsequent launch became healthy. Preserve this as an unresolved startup issue rather than claiming repeatable launch reliability. No live agent acceptance run was performed.
 

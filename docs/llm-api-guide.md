@@ -261,3 +261,17 @@ Claude discovery includes existing Diane API-provider transcript stores for conf
 `PlanQuestion.selection_mode` accepts `single` (default) or `multiple`. The recommended string and up to five alternatives are selectable answers; both use square checkboxes; single permits one selected choice and multiple permits several. Keep alternatives exclusive for single and independently compatible for multiple. Questions and final plans appear directly in the assistant conversation.
 
 - Planning follow-up: show up to three MCQs together within the existing session question budget. Every question has Other with a custom answer and optional comments. Submit all answers together. Empty Plan mode adds no greeting to the transcript. `questions` is the batch field; legacy `question` remains readable.
+
+### Configured Team workers
+
+- `native_worker(action="status")` returns `configured_workers` with `profile_id`, `backend`, `name`, `model`, and `account`, plus the shared `max_parallel_workers` ceiling.
+- Start a configured worker with `native_worker(action="start", backend="codex", profile_id="<ID from status>", prompt="<bounded assignment>")`.
+- Use the selected ID when multiple workers share a backend; backend-only ambiguous starts are rejected. Each named profile takes one concurrent task, within the global cap.
+- Resume by `worker_id`; its saved configuration and task contract are retained. Worker summaries include `profile_id` and `worker_name` for attribution.
+
+### Worker child sessions
+Set `allow_children: true` on a worker profile (default false; Diane/Codex/Claude). Inside that worker, `native_worker` exposes only direct children and the `self` profile. Start with `profile_id="self"`; runtime/account/model/reasoning/provider/permissions inherit the saved parent profile. Other profile IDs/runtimes reject. All descendants count against root `team_max_parallel_workers`, including the requesting worker. If full, continue locally. Child records retain root `parent_run_id` plus immediate `parent_worker_id`. Review and apply isolated child edits before finishing; active children stop with their parent.
+
+
+### Updating Team settings with a message
+`append_followup` and `continue_after_current` command payloads may include `team_settings: {native_workers: {...}, team_max_parallel_workers: 1..4}`. Steers apply the validated roster/capacity to the active root team before the message is delivered; queued messages retain a snapshot for their next run. Existing workers/resumes keep saved profiles. Worker permissions inherit the lead policy. The lead should refresh native_worker/bridge status when it receives the update notice.

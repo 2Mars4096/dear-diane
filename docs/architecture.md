@@ -1,5 +1,25 @@
 # Architecture
 
+- `native_workers/children.py` provides WorkerScope over one root NativeTeam. Child admission shares the root lock/tasks/capacity and saved parent profile; `parent_worker_id` describes nesting while `parent_run_id` retains root API routing. Scoped bridges expose only direct children and cleanup stops descendants. Managed Codex/Claude native spawn tools are disabled. This is application orchestration, not OS isolation against arbitrary shell subprocesses.
+
+- `native_workers` profile maps accept stable IDs with explicit backend/name alongside legacy backend keys. Named-profile starts use profile_id; ambiguous backend-only starts reject, and each named profile has one concurrent task. Saved worker records preserve profile_id/name and frozen model config for resume. CLI bridge and native_worker tool expose the roster. Lead selection keeps its separate backend-keyed profile storage.
+
+- Team presentation groups workers by durable `parent_run_id`; lead navigation targets that run’s message. Review labels require matching attempt IDs; Codex-observed children have no inferred review. Integrated-tree presence is described as recorded application, not proof the current attempt was applied. Team presentation emits as its own frontend chunk.
+
+- Sidebar switcher is emitted as the `side-tools` frontend chunk, keeping menu interaction code outside the main workspace chunk.
+
+- `native_workers/context_window.py` resolves native Codex maxima from the selected account’s model cache and specifies launch-local 1M Claude settings for known supported IDs. Unknown models and gateway routes keep existing limits; no global configuration or credentials are rewritten.
+
+- Native saved-message restoration loads `workbench/restoreNativeMessages.ts` on demand to keep the main workspace chunk within its budget.
+
+- Team capacity is a persistent renderer preference (`teamCapacity.ts`) captured as `profile_policy.team_max_parallel_workers` for each run. NativeTeam validates 1–4 (default 2) and enforces admission across providers under its lock; lead does not occupy a slot. Native instructions and tool status explain the ceiling.
+
+- Work uses `workbench/runStreamConnection.ts` to keep an event socket and its run identity together. Closing navigation clears attachment and stale callbacks; only connecting/open sockets suppress reconnecting.
+
+- Codex live resume uses `excludeTurns: true`: Codex retains server-side context while Diane avoids hydrating saved history it does not consume. Transport reader exceptions propagate to pending RPCs instead of becoming generic disconnects.
+
+- Codex lead state pins `codex_account_home` to a configured source-account home. Legacy `default` aliases may recover a unique thread rollout from configured Diane-owned private stores; named account choices remain explicit. A missing pinned account errors rather than switching credentials. Rollouts are never copied across accounts.
+
 - Desktop local-link resolution preserves directory identity through `shell:fileLink`. `resolveFileRequest` opens directories via the system file manager and returns null; both document consumers skip tab registration. Regular files retain internal previews. Remote-marked pages bypass local shell resolution.
 
 ## Session Plan mode
@@ -475,3 +495,6 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - `WorkbenchNavigation` accepts a history-controls slot beside its sidebar toggle; the workspace owns navigation state/callbacks. No separate history bar remains. Settings navigation subscribes to the existing desktop update store for its About & updates attention dot.
 
 - macOS title-bar alignment: preload observes rendered caption geometry and sends its CSS center through the existing main-frame-only IPC. Main converts it using renderer zoom, validates bounds and moves native traffic lights only when needed.
+
+
+- `native_workers/settings.py` validates message-scoped Team updates. The command route serializes live roster/capacity replacement with worker admission, persists restart policy, and attaches coordination text while preserving display_text. Queued messages defer changes to promotion; their explicit team_settings takes precedence over old execution overrides. Native team bridges are available from run start even with no enabled workers.

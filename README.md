@@ -265,3 +265,16 @@ npm run build:verify
 Live-provider and real-browser evaluations are opt-in. Flutter 3.41 or newer is needed only to build the optional phone client. Planned phone personal-agent features are not yet available.
 
 The Python package is `dear-diane`, with imports under `diane`. Use `dear-diane --help` for commands; existing `dan` aliases and `DAN_*` configuration names remain supported.
+
+Team settings let you include worker providers and set **Max parallel workers** (1–4, default 2). This shared limit excludes the lead; the lead can use fewer workers and can assign multiple workers to one provider. Settings apply to the next run.
+
+Diane requests the selected native Codex model’s catalog context maximum and full 1M context for supported Claude models. Automatic compaction stays enabled; actual usable limits depend on the model and account.
+
+The Team panel groups worker sessions beneath their lead run. Select a lead to return to its conversation, or expand a worker to inspect its assignment, result, lead review and recorded integration. Completion alone does not imply acceptance.
+
+Use **Team → + Add worker** to configure each worker independently, including multiple workers using the same CLI with different models. Expand a worker to change its name, account, model or reasoning. The lead selects a configured worker, and each worker takes one task at a time within the Team-wide parallel limit.
+
+Workers can optionally create child sessions using their own agent, account, model and reasoning settings. Enable **Allow child sessions** for a Diane, Codex or Claude Code worker. Children share the team’s parallel limit, appear beneath their parent, and stop when that parent finishes.
+
+
+Team changes apply with your next message: steering updates the active lead’s available workers and capacity; queued messages use their saved Team settings when they start. Existing worker sessions keep their configuration.

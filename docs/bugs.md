@@ -1,5 +1,34 @@
 # Known Issues & Failed Approaches
 
+- **Worker roster validation 2026-10-14:** first edit placed an optional profile_id before required action in the tool signature; corrected by appending it, preserving positional callers. Cancellation regression then caught a profile-loop variable overwriting the lead session lock key; renamed the loop variable and retained the cleanup test.
+
+- **Local install launcher 2026-10-14:** first installer spawn used absent `/opt/homebrew/bin/node` after a clean shutdown. No replacement occurred in that attempt. Retried via the available `node` executable; installation and relaunch passed signature/archive/health checks.
+
+- **Raw Work details 2026-10-14:** eventPresentation understood legacy codex_event/claude_event but not live lead payload.raw, so the UI fell back to native_lead.event and JSON. Decode the wrapper and summary arrays, preserve command output as preformatted text, and suppress empty telemetry.
+
+- **Team clarity 2026-10-14:** flat lanes and “done” obscured lead ownership and implied acceptance. Added actual parent-run grouping and separate review/integration fields. Earlier-attempt reviews are not shown as current; Codex native children cannot imply Diane review.
+
+- **Sidebar hover build 2026-10-14:** interaction tests passed, but adding hover handling pushed the main workspace chunk 0.2 kB over budget. Split the sidebar switcher into its own `side-tools` chunk; retain the budget.
+
+- **Context limits 2026-10-14:** Astra’s observed 258,400 was 95% of its 272,000 default, not a Diane transport constraint. Its catalog maximum is 872,000; isolated production transport probe with that setting reported 828,400 and completed. A 1M local override must not be presented as a verified 1M service limit. Claude full-context configuration has unit coverage and current official documentation, but no live context probe yet.
+
+- **Capacity UI bundle check 2026-10-14:** initial build exceeded workspace chunk budget by 0.2 kB. Extracted unchanged native-message history restoration into a lazy module rather than increasing the budget.
+
+- **Team capacity 2026-10-14:** replaced the fixed four-worker admission ceiling with validated per-run capacity, default two. Concurrent admissions share the existing lock; completed workers free slots. This caps managed Team concurrency, not total spend or independently launched external agents.
+
+- **Tab-return empty response 2026-10-14:** openSession closed the event socket but retained the attached run key when the thread ID stayed the same (for example returning from a document). The attach effect skipped reconnecting and left an empty saved response; refresh discarded the stale key. RunStreamConnection now owns socket plus identity, clears both on close, detaches obsolete callbacks and only recognizes connecting/open sockets. Unit lifecycle regression passes; installed tab-switch acceptance still pending.
+
+- **Codex resume disconnect root cause 2026-10-14:** actual async transport reproduced `Separator is not found, and chunk exceed the limit` on the affected saved thread. Full-history resume exceeded the 8 MiB reader limit; pending RPCs masked the reader exception as connection closed, and cleanup produced exit 0. Prior synchronous resume probes used unlimited readline and missed this. Use supported `excludeTurns: true` to resume server-side context without retransmitting history; preserve reader exceptions. Production run_live probe now resumes the same thread with a 7,511-byte reply, stopping before turn/start.
+
+- **Codex no rollout 2026-10-14:** durable lead state stored account alias `default` plus thread ID, but default changed from the agent/app home to the real personal home across launches. The reported rollout still exists under the app-account private store. New state pins the resolved configured home; legacy default continuation finds a unique matching owned rollout and retains that binding. Generic new-thread smoke tests did not catch this existing-thread/account mismatch; regression now exercises it.
+
+- **Claude login diagnosis corrected 2026-10-14:** the account was signed in. The inherited agent HOME redirected default `security` lookup; explicitly selecting the OS user's existing `Library/Keychains/login.keychain-db` found the credential and returned live quota (5h 4%, week 8%). Prior item-not-found observations below applied to the wrong search path, not absence of the user's login. No credentials were copied or changed.
+- **Codex recurring disconnect 2026-10-14:** earlier minimal-PATH reproduction did not establish the cause of every installed failure. Exact-account initialize/resume succeeded, and after diagnostic restart two separate installed-backend fixed-reply runs returned READY (temporary and affected project workspaces). Original failed conversation was not replayed; its next continuation still requires confirmation. Preserve bounded, redacted stderr and failure stage to diagnose any recurrence.
+
+- **Claude Usage 2026-10-14:** default Keychain entry `Claude Code-credentials` is absent (read returned 44), and `/Users/lizhi/.claude/.credentials.json` is absent. Saved account metadata alone does not supply a quota credential. Added default file fallback and actionable message; no successful live Claude quota read established. The agent shell has a redirected HOME, so its CLI `auth status` is not evidence of the actual desktop user's login. Explicit-config profile Keychain discovery remains separate follow-up work.
+
+- **Codex live startup 2026-10-14:** installed-app turns failed before initialization with generic `Codex live connection closed`. Reproduced app-server exit 127: `env: node: No such file or directory`. Node is installed alongside backend Python in `/opt/anaconda3/bin`, absent from LaunchServices PATH. Append the resolved Python executable directory as a native-worker PATH fallback, preserving existing precedence. Initialization-only probe then received its response and exited cleanly; no user task was replayed. Transport still discards general stderr; richer redacted error diagnostics remain a follow-up.
+
 - **Local reinstall startup 2026-10-14:** initial backend PID 82030 exceeded the 30-second health deadline; a short native stack sample showed Python site/import initialization in `os_listdir → __opendir2 → __open_nocancel`. This does not identify the directory or establish a permissions cause. A subsequent desktop launch (82612) started owned backend 82615 and both health endpoints passed. Startup reliability remains open.
 
 - **Folder-link build blocker resolved 2026-10-14:** complete the alternate-window mock with `getZoomFactor`; renderer and Electron compilation now pass, as do all 16 focused tests. Prior failure below retained for context.
@@ -2393,3 +2422,20 @@ When renaming workflows or moving error data between environments:
 - Isolated Claude API runs must clear inherited `CLAUDE_CODE_EFFORT_LEVEL` and `ANTHROPIC_SMALL_FAST_MODEL`; otherwise native environment settings can override the selected API model/options. Covered by launch regression tests.
 
 - 2026-10-13: Inline planning initially used `Array.findLast`, unavailable under the editor TypeScript library target. Replaced with reverse/find; typecheck and production build pass.
+
+### October 14 — worker-roster install startup retry
+- First launch timed out before backend health; normal quit returned user-cancelled and SIGTERM left the app running. After idle verification, stopped the backend and force-closed the stalled app. Reopening after process exit became healthy in nine seconds. Immediate open raced process exit with LaunchServices -600; subsequent open succeeded. Root cause remains unresolved.
+
+### October 14 — child-session integration checks
+- Initial wrapper assumed a CLI-specific prompt position, breaking fake-process tests. Replace the known objective argument and supply live Codex its expanded record prompt, restoring the saved assignment afterward. Transport regressions pass.
+- Temporary bridge files could be copied into child worktrees and integrated as source. Exclude reserved bridge directories from snapshots/copies; regression verifies normal edits still apply.
+
+- October 14: active run arun-2e3fe3ecc614 received every worker disabled, so it had no team bridge and fell back to an external controller. Explicit roster entries now imply inclusion; untouched disabled legacy backend placeholders remain off. Active-run settings are snapshots.
+
+- October 14: external team-leader Claude reviews failed Not logged in under Codex-redirected HOME. Read-only auth status reports false under the redirected directory and true under OS home. Diane launch now sets Claude HOME to OS user home, preserving explicit CLAUDE_CONFIG_DIR. External controller retries were not replayed.
+
+- October 14: Team groups previously inherited lexicographically sorted run IDs from polling, making history appear arbitrary. Presentation now sorts by known run creation time (earliest worker time fallback), pins current run and collapses history.
+
+- October 14: generic team-member running summaries made each native streaming fragment a separate activity row. Ignore generic summaries and hide streaming fragments; retain completed messages and errors. Live inspected run showed actual lead/Claude progress and a completed Codex worker.
+
+- October 14: active follow-ups previously carried text only, so Team edits were ignored until a fresh run; initially empty native teams also had no launcher. Message-scoped Team updates now refresh admission and always-present delegation; queued settings override stale continuation configuration.

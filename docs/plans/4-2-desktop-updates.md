@@ -5,6 +5,8 @@
 **Goal:** Install prepared local builds and receive configured published desktop releases from DAN settings without requiring a second agent application.
 
 ## Tasks
+- [x] Install October 14 Team tree/capacity/context/activity/font/reconnection update; idle preflight, signature, exact archive equality and both health endpoints pass.
+- [x] October 14: install folder-link/current-source build under explicit user authorization; verify idle state, signature, installed/source archive equality and healthy owned backend/proxy. Initial launch stalled during Python directory enumeration; subsequent launch healthy, cause unresolved.
 - [x] Add Settings update status, local build selection, release checks/downloads, and explicit install/restart.
 - [x] Validate and stage local macOS bundles; use a detached installer that waits for app/backend exit, preserves user data, and rolls back replacement failures.
 - [x] Refuse installation during active runs/queued work or while using an externally owned backend.
@@ -159,3 +161,12 @@ Release scope remains the desktop shell for existing configured Python-backend i
 - [x] Install updated frontend; signed bundle/archive equality and backend/proxy health pass.
 
 - October 14 local installation: current 0.1.6 bundle installed and launched after idle checks; signature/archive equality and backend/proxy health verified. Visual installed acceptance remains separate.
+
+- [x] October 14: install worker roster and Opus 5.5 follow-up; signature/archive verified and both health endpoints pass after startup retry. Preserve rollback and keep startup reliability investigation open.
+
+- [x] Build and sign child-session/compact-header follow-up; production budgets pass.
+- [x] Install when idle: October 14 follow-up includes child controls, roster inclusion and Claude HOME fix; signature/archive/backend/proxy verified.
+
+- [x] October 14: install Team chronological/collapsed history, content-width status pill and worker streaming-detail cleanup. Idle checks, signature, archive equality and both health endpoints pass.
+
+- [x] October 14: user-approved cleanup removed five superseded rollbacks, five stale staged releases and old 0.1.0 packages/build snapshots (5.20 GiB measured). Keep latest rollback `384b1236-2d31-4e48-8734-e30f11c1fa60` and published-0.1.1 source patch/records. Older backup paths in historical receipts are no longer retained.
