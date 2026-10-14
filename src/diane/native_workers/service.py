@@ -255,6 +255,9 @@ class NativeTeam:
             self.event(record, {"type": "worker.finished", "status": record["status"], "text": record["response"], "error": record["error"]})
 
     async def run(self, record: dict, command: list[str], env: dict):
+        if record["backend"] == "claude" and record["profile"].get("_live_steering"):
+            from .claude_live import run_live
+            return await run_live(self, record, command, env)
         if record["backend"] == "codex" and record["profile"].get("_live_steering"):
             from .codex_live import run_live
             return await run_live(self, record, command, env)

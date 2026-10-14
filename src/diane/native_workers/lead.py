@@ -31,7 +31,7 @@ class NativeLeadAdapter:
         workspace = str(Path(request.workspace_root or Path.cwd()).expanduser().resolve())
         permission = str(request.profile_policy.get("permission_mode") or "auto")
         profile = {**(request.profile_policy.get("lead_profile") or {}), "enabled": True, "permission": permission}
-        profile["_live_steering"] = backend == "codex" and hasattr(runtime, "admit_checkpoint")
+        profile["_live_steering"] = backend in {"codex", "claude"} and hasattr(runtime, "admit_checkpoint")
         # Continuations can only come from our durable state, never caller-supplied IDs.
         profile.pop("source_session", None)
         profile.pop("resume_session", None)
