@@ -7912,3 +7912,22 @@ def test_main_live_website_build_repairs_failed_validation_once(
 def test_main_live_rejects_plan_only() -> None:
     with pytest.raises(SystemExit):
         main(["please build our product website", "--live", "--plan-only"])
+
+
+@pytest.mark.parametrize('wrapper', ['{}', '```json\n{}\n```', 'Validation result:\n{}'])
+@pytest.mark.parametrize('passed', [True, False])
+def test_validation_payload_accepts_json_wrappers_without_changing_verdict(wrapper, passed):
+    payload = {'passed': passed, 'overall_score': 1.0 if passed else 0.0,
+               'missing_requirements': [] if passed else ['Required output missing'],
+               'repair_brief': '' if passed else 'Create the required output'}
+    text = wrapper.format(json.dumps(payload))
+    normalized = super_cli._normalize_validation_payload(
+        super_cli._extract_validation_payload({'result': text, 'text': text}))
+    assert normalized['passed'] is passed
+    assert normalized['missing_requirements'] == payload['missing_requirements']
+
+
+def test_validation_payload_malformed_text_does_not_pass():
+    normalized = super_cli._normalize_validation_payload(
+        super_cli._extract_validation_payload({'result': '```json\n{"passed": true,\n```'}))
+    assert normalized['passed'] is False

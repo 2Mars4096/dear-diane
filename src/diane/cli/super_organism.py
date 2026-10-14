@@ -7602,10 +7602,9 @@ def _extract_validation_payload(outputs: Any) -> Any:
         text = raw.strip()
         if not text:
             continue
-        try:
-            decoded = json.loads(text)
-        except Exception:
-            continue
+        # Match worker-core parsing: valid model JSON may be fenced or
+        # introduced by prose. Preserve the actual verdict and repair evidence.
+        decoded = parse_jsonish_payload(text)
         if isinstance(decoded, dict):
             return decoded
     return outputs
