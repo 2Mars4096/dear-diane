@@ -103,3 +103,36 @@ async def test_parent_completion_cleans_child_and_scope_cannot_access_sibling(mo
     assert team.tasks[spawned[0]].done()
     assert team.records[spawned[0]]['status'] == 'stopped'
     assert not list(tmp_path.glob('.diane-children-*'))
+
+
+@pytest.mark.asyncio
+async def test_builtin_shared_inspector_inherits_read_only_policy(monkeypatch, tmp_path):
+    from diane.server.chat_v2_backend import AgentBackendRunResult
+    async def run(self, request, emit, runtime=None):
+        assert request.profile_policy['permission_mode'] == 'plan'
+        assert request.mutation_policy['permission'] == 'forbidden'
+        return AgentBackendRunResult(status='completed', backend='super_dan', summary='inspected')
+    monkeypatch.setattr('diane.server.chat_v2_backend.SuperDanBackendAdapter._run', run)
+    team = NativeTeam('root', str(tmp_path), {'dan': {'enabled': True, 'model': 'test'}}, tmp_path / 'workers')
+    row = await team.start('dan', 'Inspect', read_only=True)
+    await team.tasks[row['worker_id']]
+    assert team.records[row['worker_id']]['response'] == 'inspected'
+
+
+@pytest.mark.asyncio
+async def test_builtin_read_only_dispatcher_blocks_writes_and_shell(tmp_path):
+    from diane.native_workers.service import worker_read_only
+    from diane.worker.organisms.local_runtime import LocalOrganismToolRuntime
+    token = worker_read_only.set(True)
+    try:
+        runtime = LocalOrganismToolRuntime(workspace_root=tmp_path, tool_ids=['file_read', 'file_write', 'shell_command'])
+        assert 'file_read' in runtime.tool_ids
+        assert 'file_write' not in runtime.tool_ids
+        assert 'shell_command' not in runtime.tool_ids
+        with pytest.raises(KeyError, match='not enabled'):
+            await runtime.call('file_write', {'path': str(tmp_path / 'forbidden.txt'), 'content': 'bad'})
+        with pytest.raises(KeyError, match='not enabled'):
+            await runtime.call('shell_command', {'command': 'touch forbidden.txt'})
+        assert not (tmp_path / 'forbidden.txt').exists()
+    finally:
+        worker_read_only.reset(token)

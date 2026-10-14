@@ -106,3 +106,95 @@ def test_child_bridges_are_not_copied_or_integrated(repo, tmp_path):
     (workspace / 'a.txt').write_text('child edit')
     assert apply(row)['files'] == ['a.txt']
     assert not (repo / nested.name).exists()
+
+
+@pytest.mark.asyncio
+async def test_git_shared_editing_rejected_but_shared_inspection_is_read_only(repo, tmp_path, monkeypatch):
+    import asyncio, sys
+    from diane.native_workers.service import NativeTeam
+    seen = []
+    def launch(backend, profile, *args):
+        seen.append(profile)
+        return [sys.executable, '-c', 'print(\'{"type":"result","result":"inspected"}\')'], {}
+    monkeypatch.setattr('diane.native_workers.service.launch', launch)
+    team = NativeTeam('parent', str(repo), {'claude': {'enabled': True, 'permission': 'full'}}, tmp_path / 'state/workers')
+    with pytest.raises(ValueError, match='isolated Git worktree'):
+        await team.start('claude', 'Edit shared source', isolate=False)
+    row = await team.start('claude', 'Inspect source', isolate=False, read_only=True)
+    await team.tasks[row['worker_id']]
+    assert seen[0]['permission'] == 'plan'
+    assert row['workspace_root'] == str(repo)
+    assert row['profile']['permission'] == 'plan'
+    assert team.profiles['claude']['permission'] == 'full'
+
+
+@pytest.mark.asyncio
+async def test_agent_merge_requires_review_and_rejects_post_review_changes(repo, tmp_path, monkeypatch):
+    import sys
+    from pathlib import Path
+    from diane.native_workers.service import NativeTeam, current_team
+    from diane.tools.native_worker import native_worker
+    monkeypatch.setattr('diane.native_workers.service.launch', lambda *a: ([sys.executable, '-c', 'print(\'{"type":"result","result":"done"}\')'], {}))
+    team = NativeTeam('parent', str(repo), {'claude': {'enabled': True}}, tmp_path / 'state/workers')
+    token = current_team.set(team)
+    try:
+        worker = await native_worker('start', backend='claude', prompt='Edit a')
+        wid = worker['worker_id']
+        await team.tasks[wid]
+        copy = Path(worker['workspace_root'])
+        (copy / 'a.txt').write_text('reviewed\n')
+        assert (repo / 'a.txt').read_text() == 'base\n'
+        with pytest.raises(ValueError, match='accepted review'):
+            await native_worker('apply', worker_id=wid)
+        changes = await native_worker('changes', worker_id=wid)
+        assert 'reviewed' in changes['diff']
+        await native_worker('review', worker_id=wid, attempt=1, decision='accepted', evidence=['Inspected a.txt diff and checks'])
+        (copy / 'a.txt').write_text('changed after review\n')
+        with pytest.raises(ValueError, match='working copy changed'):
+            await native_worker('apply', worker_id=wid)
+        assert (repo / 'a.txt').read_text() == 'base\n'
+        with pytest.raises(ValueError, match='Inspect changes'):
+            await native_worker('review', worker_id=wid, attempt=1, decision='accepted', evidence=['Stale inspection'])
+        await native_worker('changes', worker_id=wid)
+        await native_worker('review', worker_id=wid, attempt=1, decision='accepted', evidence=['Inspected latest diff and checks'])
+        result = await native_worker('apply', worker_id=wid)
+        assert result['files'] == ['a.txt']
+        assert (repo / 'a.txt').read_text() == 'changed after review\n'
+        assert team.records[wid]['integrated_attempt'] == 1
+    finally:
+        current_team.reset(token)
+        await team.close()
+
+
+@pytest.mark.asyncio
+async def test_cli_bridge_worktree_review_merge_round_trip(repo, tmp_path, monkeypatch):
+    import asyncio, json, sys
+    from diane.native_workers import bridge
+    from diane.native_workers.service import NativeTeam
+    def launch(*args):
+        code = 'from pathlib import Path; import json; Path("a.txt").write_text("isolated edit\\n"); print(json.dumps({"type":"result","result":"edited"}))'
+        return [sys.executable, '-c', code], {}
+    monkeypatch.setattr('diane.native_workers.service.launch', launch)
+    team = NativeTeam('parent', str(repo), {'claude': {'enabled': True}}, tmp_path / 'state/workers')
+    directory = tmp_path / 'bridge'; directory.mkdir()
+    server = asyncio.create_task(bridge.serve(directory, team))
+    async def call(*args):
+        p = await asyncio.create_subprocess_exec(sys.executable, bridge.__file__, '--queue', str(directory), *args, stdout=asyncio.subprocess.PIPE)
+        out, _ = await asyncio.wait_for(p.communicate(), 10)
+        return json.loads(out)
+    try:
+        started = await call('start', '--backend', 'claude', '--prompt', 'Edit a', '--scope', 'a.txt only', '--acceptance', 'a.txt contains isolated edit')
+        assert started['ok']
+        wid = started['result']['worker_id']
+        await team.tasks[wid]
+        assert (repo / 'a.txt').read_text() == 'base\n'
+        assert not (await call('apply', '--worker-id', wid))['ok']
+        diff = await call('changes', '--worker-id', wid)
+        assert diff['ok'] and 'isolated edit' in diff['result']['diff']
+        accepted = await call('review', '--worker-id', wid, '--attempt', '1', '--decision', 'accepted', '--evidence', 'Inspected diff and test result')
+        assert accepted['ok']
+        assert (await call('apply', '--worker-id', wid))['ok']
+        assert (repo / 'a.txt').read_text() == 'isolated edit\n'
+    finally:
+        server.cancel(); await asyncio.gather(server, return_exceptions=True)
+        await team.close()

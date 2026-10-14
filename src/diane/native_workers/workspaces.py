@@ -112,5 +112,6 @@ def apply(record: dict, expected_tree: str = '') -> dict:
             git(root, 'apply', '--check', '--binary', '-', data=patch)
             git(root, 'apply', '--binary', '-', data=patch)
         record['integrated_tree'] = current
+        record['integrated_attempt'] = record.get('attempt')
         for name in changed: record['source_files'][name] = fingerprint(Path(root) / name)
         return {'files': changed, 'workspace_root': workspace}

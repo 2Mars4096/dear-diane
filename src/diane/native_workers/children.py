@@ -17,7 +17,7 @@ class WorkerScope:
     def tasks(self):
         return {key: task for key, task in self.team.tasks.items() if key in self.records}
 
-    async def start(self, backend, prompt, worker_id="", isolate=False, contract=None, profile_id=""):
+    async def start(self, backend, prompt, worker_id="", isolate=False, contract=None, profile_id="", read_only=False):
         async with self.admission_lock:
             if not self.parent["profile"].get("allow_children"):
                 raise ValueError("Child sessions are disabled for this worker")
@@ -28,7 +28,7 @@ class WorkerScope:
             if worker_id and worker_id not in self.records:
                 raise ValueError("Unknown child worker")
             return await self.team._start(self.parent["backend"], prompt, worker_id, isolate, contract,
-                                          self.parent["profile_id"], parent=self.parent)
+                                          self.parent["profile_id"], parent=self.parent, read_only=read_only)
 
     async def stop(self, worker_id):
         if worker_id not in self.records:
@@ -43,12 +43,16 @@ class WorkerScope:
 
 
 def worker_instructions(record, capacity):
+    workspace_note = ("Work only inside your assigned working directory: " + record["workspace_root"]
+                      + ". Use paths relative to it; do not edit the source checkout named in older context. "
+                      "Keep scratch files inside this directory, use simple commands with literal paths, and inspect denial reasons before retrying.\n")
     if not record["profile"].get("allow_children"):
-        return "Child sessions are disabled for this worker. Complete your assignment yourself; do not launch agents through tools, CLI commands or scripts."
-    return ("You may delegate subtasks only through Diane's child-session tool/bridge. "
+        return workspace_note + "Child sessions are disabled for this worker. Complete your assignment yourself; do not launch agents through tools, CLI commands or scripts."
+    return workspace_note + ("You may delegate subtasks only through Diane's child-session tool/bridge. "
             "Children inherit your agent, account, provider, model, reasoning, fast mode, permissions and child-session setting. "
             "Do not choose another agent or override configuration, and do not launch agents directly through CLI commands or native delegation tools. "
             f"All workers and descendants share {capacity} simultaneous slots, including you but excluding the main lead. "
             "If capacity is full, continue locally instead of waiting indefinitely for a child slot. "
             "Use native_worker start with profile_id='self' and your task; status shows only your direct children. "
+            "Editing children must use isolated worktrees. Shared inspection is read-only. Use changes to inspect the diff, record an accepted review with evidence, then apply. Start fresh when scope changes. "
             "Review results and apply isolated child changes to your workspace before finishing. Your active children stop when you finish.")

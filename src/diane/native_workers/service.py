@@ -14,6 +14,7 @@ from .catalog import launch
 
 current_team: ContextVar["NativeTeam | None"] = ContextVar("native_team", default=None)
 active_teams: dict[str, "NativeTeam"] = {}
+worker_read_only: ContextVar[bool] = ContextVar("worker_read_only", default=False)
 
 
 class NativeTeam:
@@ -52,11 +53,11 @@ class NativeTeam:
         if self.emit:
             self.emit(record, row)
 
-    async def start(self, backend: str, prompt: str, worker_id: str = "", isolate: bool = False, contract: dict | None = None, profile_id: str = "") -> dict:
+    async def start(self, backend: str, prompt: str, worker_id: str = "", isolate: bool = False, contract: dict | None = None, profile_id: str = "", read_only: bool = False) -> dict:
         async with self.admission_lock:
-            return await self._start(backend, prompt, worker_id, isolate, contract, profile_id)
+            return await self._start(backend, prompt, worker_id, isolate, contract, profile_id, read_only=read_only)
 
-    async def _start(self, backend: str, prompt: str, worker_id: str = "", isolate: bool = False, contract: dict | None = None, profile_id: str = "", parent: dict | None = None) -> dict:
+    async def _start(self, backend: str, prompt: str, worker_id: str = "", isolate: bool = False, contract: dict | None = None, profile_id: str = "", parent: dict | None = None, read_only: bool = False) -> dict:
         previous = self.records.get(worker_id) if worker_id else None
         profile_id = previous.get("profile_id", backend) if previous else profile_id
         if not profile_id:
@@ -88,6 +89,8 @@ class NativeTeam:
             raise ValueError("Worker is still running; stop it before sending a follow-up")
         if previous and previous["backend"] != backend:
             raise ValueError("Cannot change a worker's runtime")
+        if not previous and read_only:
+            profile = {**profile, "permission": "plan"}
         selected_profile = previous["profile"] if previous else profile
         if type(selected_profile.get("allow_children", False)) is not bool:
             raise ValueError("Allow child sessions must be a boolean")
@@ -113,6 +116,17 @@ class NativeTeam:
         identity = previous["worker_id"] if previous else uuid4().hex
         isolation = {}
         source_workspace = parent["workspace_root"] if parent else self.workspace
+        if not self.is_lead and not previous and not isolate and selected_profile.get("permission") != "plan":
+            from .workspaces import git
+            try:
+                git(source_workspace, 'rev-parse', '--show-toplevel')
+            except ValueError as exc:
+                source_path = Path(source_workspace).resolve()
+                if any((folder / '.git').exists() for folder in (source_path, *source_path.parents)):
+                    raise ValueError("Cannot verify Git workspace isolation; use an isolated worker or read-only inspection") from exc
+                # Non-Git callers retain their existing behavior.
+            else:
+                raise ValueError("Editing workers require an isolated Git worktree. Use isolate=true, or read_only=true for shared inspection.")
         if isolate and not previous:
             from .workspaces import create
             isolation = await asyncio.to_thread(create, self.base, identity, source_workspace)
@@ -216,12 +230,15 @@ class NativeTeam:
         from diane.server.chat_v2_backend import AgentBackendRunRequest, SuperDanBackendAdapter
         profile = record["profile"]
         from .models import dan_model_policy
-        policy = {**dan_model_policy(profile), "native_workers": {}}
-        inherited = record.get("inherited_policy", {})
+        policy = {**dan_model_policy(profile), "native_workers": {}, "permission_mode": profile.get("permission", "auto")}
+        inherited = dict(record.get("inherited_policy", {}))
+        if profile.get("permission") == "plan":
+            inherited["mutation_policy"] = {**inherited.get("mutation_policy", {}), "mode": "read_only", "permission": "forbidden", "external_side_effects": "deny"}
         request = AgentBackendRunRequest(**inherited, task_id=record["worker_id"], run_id=record["worker_id"],
             objective=record["prompt"], workspace_root=record["workspace_root"], history=history, profile_policy=policy)
         # run_scoped supplies only this worker's same-configuration child scope.
         token = current_team.set(current_team.get())
+        read_token = worker_read_only.set(profile.get("permission") == "plan")
         try:
             from diane.tools._browser_session import browser_scope
             async with browser_scope(record["workspace_root"], request.run_id):
@@ -233,6 +250,7 @@ class NativeTeam:
             record.update(status="failed", error=str(exc))
         finally:
             current_team.reset(token)
+            worker_read_only.reset(read_token)
             self.save(record)
             self.event(record, {"type": "worker.finished", "status": record["status"], "text": record["response"], "error": record["error"]})
 

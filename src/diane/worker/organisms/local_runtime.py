@@ -5258,7 +5258,10 @@ class LocalOrganismToolRuntime:
             tool_ids or DEFAULT_LIVE_ORGANISM_TOOL_IDS,
             workspace_root=self._workspace_root,
         )
-        from diane.native_workers.service import current_team
+        from diane.native_workers.service import current_team, worker_read_only
+        if worker_read_only.get():
+            read_tools = {"list_directory", "file_read", "workspace_check", "web_search", "current_datetime", "git_status", "git_diff", "git_log"}
+            selected = [tool_id for tool_id in selected if tool_id in read_tools]
         team = current_team.get()
         if team and "shell_command" in selected:
             selected = list(dict.fromkeys([*selected, "native_worker"]))

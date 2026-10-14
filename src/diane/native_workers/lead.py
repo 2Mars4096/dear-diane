@@ -120,7 +120,7 @@ class NativeLeadAdapter:
                 if home:
                     children = CodexChildren(team, private_home(home))
             prompt = _objective_with_surface_context(request)
-            prompt += "\nTeam editing tasks use isolated Git worktrees by default. For shared read-only tasks or non-Git folders pass --shared-workspace. Inspect results, then use the team bridge apply action to integrate completed edits. Do not discard worker worktrees automatically. Install needed dependencies inside the owned worktree; ignored files and secrets are not copied."
+            prompt += "\nTeam editing tasks use isolated Git worktrees by default. For read-only inspection pass --shared-workspace; this forces read-only permissions. Never use shared mode for edits. Inspect each worker diff using changes, record an accepted review for its current attempt with evidence, then apply to merge into your workspace. Changes after review or overlapping source edits reject integration. Run integration checks after applying. Do not discard worker worktrees automatically. Install needed dependencies inside the owned worktree; ignored files and secrets are not copied."
             prompt += "\n\nYou are working in Dear Diane, a workspace for research, code, and ideas. Diane is the assistant name; retain your actual native runtime identity when reporting execution details."
             if request.thread_id:
                 prompt += (
@@ -182,14 +182,21 @@ class NativeLeadAdapter:
                     + command + " status [--worker-id ID]\n"
                     + command + " resume --worker-id ID --prompt 'follow-up'\n"
                     + command + " stop --worker-id ID\n"
+                    + command + " changes --worker-id ID\n"
+                    + command + " apply --worker-id ID\n"
                     + command + " review --worker-id ID --attempt N --decision accepted|revise|blocked --evidence 'check or artifact inspected'\n"
                     + "Repeat --acceptance or --evidence for multiple entries. Team-wide status gives compact previews; "
                     + "fetch status --worker-id ID for the complete result and current attempt before reviewing. "
                     + "Completion means the runtime finished, not that the task passed acceptance. Record your review against actual evidence; "
                     + "a lead review is not independent verification. Resume only the worker needing repair, preserving successful siblings. "
-                    + "Resume retains the task contract and clears the current review. Do not retry indefinitely. "
+                    + "Resume retains the task contract and clears the current review. If scope or owned files change, start a fresh worker with a new contract instead of reusing an unrelated session. Assign disjoint file ownership, including tests and shared integration files; reserve integration for yourself. Do not retry indefinitely. "
                     + "Start returns immediately; independent tasks can run in parallel. Inspect team results before finishing. "
                     + "The team is scoped to this run and stops when you finish. Workers may create same-configuration child sessions only when their allow_children setting is enabled. All descendants share the team capacity.")
+            prompt += ("\nKeep scratch scripts, briefs and logs inside your working directory (for example output/team/). "
+                       "Use simple commands with literal paths; split compound commands when permission checks reject them. "
+                       "After a denial, inspect its reason instead of retrying the same command. Preserve permission boundaries. "
+                       "Run focused tests while iterating; rerun broad suites only after integration or when changed evidence warrants it. "
+                       "Report every delegated result as accepted, revise or blocked before final delivery; completion alone is not approval.")
             # Long-lived processes must be started by Diane, or they die with this run.
             proc_client = Path(temporary.name) / "proc.py"
             proc_client.write_text(Path(proc_bridge.__file__).read_text())

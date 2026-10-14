@@ -36,6 +36,8 @@ def begin_attempt(record: dict, contract: dict) -> None:
     record["task_contract"] = deepcopy(contract)
     record["attempt"] = int(record.get("attempt", 0)) + 1
     record["lead_review"] = None
+    record.pop("inspected_tree", None)
+    record.pop("inspected_attempt", None)
 
 
 def record_review(record: dict, attempt: int, decision: str, evidence: list[str] | None) -> dict:
