@@ -36,6 +36,9 @@ export function SideTabs({ tabs, active, onSelect, onClose, reading = false }: {
   tabs: SideTabItem[]; active: SideTab; onSelect: (tab: SideTab) => void; onClose: () => void; reading?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const hoverOpened = useRef(false);
+  const closeTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(closeTimer.current), []);
   const header = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -46,8 +49,8 @@ export function SideTabs({ tabs, active, onSelect, onClose, reading = false }: {
   const running = shown.find((tab) => tab.live && tab.id !== active);
 
   useEffect(() => {
-    if (!open) return;
-    menu.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus();
+    if (!open) { hoverOpened.current = false; window.clearTimeout(closeTimer.current); return; }
+    if (!hoverOpened.current) menu.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus();
     const dismiss = (event: PointerEvent) => {
       if (!header.current?.contains(event.target as Node)) setOpen(false);
     };
@@ -56,15 +59,26 @@ export function SideTabs({ tabs, active, onSelect, onClose, reading = false }: {
   }, [open, active]);
 
   const closeMenu = () => { setOpen(false); trigger.current?.focus(); };
-  return <div className="wb-side-tabs" ref={header} onBlur={(event) => {
+  return <div className="wb-side-tabs" ref={header} onPointerEnter={() => window.clearTimeout(closeTimer.current)} onPointerLeave={event => {
+    if (event.pointerType !== "mouse") return;
+    closeTimer.current = window.setTimeout(() => {
+      if (menu.current?.contains(document.activeElement)) return;
+      hoverOpened.current = false; setOpen(false);
+    }, 180);
+  }} onBlur={(event) => {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
   }} onKeyDown={(event) => {
     if (open && event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeMenu(); }
   }}>
     <button ref={trigger} type="button" className="wb-side-switcher" aria-haspopup="menu" aria-expanded={open}
       aria-controls={open ? menuId : undefined} aria-label={`${selected.label}, switch side panel tool`}
-      title="Switch side panel tool" onClick={() => setOpen(!open)} onKeyDown={(event) => {
-        if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpen(true); }
+      title="Switch side panel tool" onPointerEnter={event => {
+        if (event.pointerType === "mouse" && !open) { hoverOpened.current = true; setOpen(true); }
+      }} onClick={() => {
+        if (hoverOpened.current) { hoverOpened.current = false; menu.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus(); }
+        else setOpen(!open);
+      }} onKeyDown={(event) => {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); hoverOpened.current = false; setOpen(true); menu.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus(); }
       }}>
       <Icon size={15} aria-hidden="true" />
       <span className="wb-side-current">{selected.label}</span>

@@ -64,3 +64,26 @@ it("retains contextual tools, background activity and the close action", () => {
   expect(onSelect).toHaveBeenCalledWith("activity");
   act(() => host.querySelector<HTMLButtonElement>(".wb-side-close")!.click()); expect(onClose).toHaveBeenCalledOnce();
 });
+it('opens on mouse hover without stealing focus and keeps the first click open', () => {
+  const { trigger } = setup();
+  const outside = document.createElement('input'); document.body.append(outside); outside.focus();
+  act(() => trigger.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' })));
+  expect(trigger.getAttribute('aria-expanded')).toBe('true');
+  expect(document.activeElement).toBe(outside);
+  act(() => trigger.click());
+  expect(trigger.getAttribute('aria-expanded')).toBe('true');
+  expect(document.activeElement).toBe(host.querySelector('[aria-checked="true"]'));
+  outside.remove();
+});
+it('does not open from touch hover and dismisses mouse hover after leaving', () => {
+  vi.useFakeTimers();
+  try {
+    const { trigger } = setup();
+    act(() => trigger.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'touch' })));
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    act(() => trigger.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' })));
+    act(() => host.querySelector('.wb-side-tabs')!.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse', relatedTarget: document.body })));
+    act(() => vi.advanceTimersByTime(200));
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+  } finally { vi.useRealTimers(); }
+});
