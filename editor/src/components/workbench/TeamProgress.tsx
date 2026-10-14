@@ -91,6 +91,16 @@ function TeamRunBranch({ title, startedAt, current, count, selected, onOpenLead,
   </section>;
 }
 
+function WorkerElapsed({ since, attempt }: { since: number; attempt: boolean }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [since]);
+  return <span className="wb-lane-time" title={attempt ? "Elapsed time for this attempt" : "Elapsed since this session started"}>{elapsed(now / 1000 - since)}</span>;
+}
+
 function TeamLane({ worker, onStop, onChange, selected }: { selected?: boolean; onChange?: (worker: TeamWorker) => void; worker: TeamWorker; onStop: (worker: TeamWorker) => void }) {
   const [open, setOpen] = useState(false);
   useEffect(() => { if (selected) setOpen(true); }, [selected]);
@@ -108,7 +118,7 @@ function TeamLane({ worker, onStop, onChange, selected }: { selected?: boolean; 
     </button>
     <div className="wb-lane-meta">
       <span>{worker.origin === "codex_subagent" ? "Codex subagent" : worker.worker_name || "Worker"} · {agent} · {running ? <span key={worker.activity} className="wb-team-now">{workerState(worker)}</span> : workerState(worker)}</span>
-      {running && since > 0 && <span className="wb-lane-time">{elapsed(Date.now() / 1000 - since)}</span>}
+      {running && since > 0 && <WorkerElapsed since={since} attempt={worker.attempt_started_at !== undefined} />}
       {running && worker.can_stop !== false && <button type="button" onClick={() => onStop(worker)} aria-label={`Stop ${agent}: ${taskTitle(worker.prompt)}`}><Square size={9} />Stop</button>}
     </div>
     {worker.status === "completed" && <p className="wb-lane-review">{workerReview(worker)}</p>}

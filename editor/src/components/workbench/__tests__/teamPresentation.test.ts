@@ -29,3 +29,12 @@ describe("team progress presentation", () => {
     expect(resultLine(worker("a", "failed", { response: "partial", error: "Login required" }))).toBe("Login required");
   });
 });
+
+
+it('uses stable attempt/session timestamps instead of the rolling action history', async () => {
+  const { startedAt } = await import('../teamPresentation');
+  const worker = { worker_id: 'w', parent_run_id: 'p', backend: 'claude', status: 'running', prompt: '', response: '', error: '', native_session_id: '', created_at: 100, actions: [{ text: 'Reading', at: 500 }] };
+  expect(startedAt(worker)).toBe(100);
+  expect(startedAt({ ...worker, actions: [{ text: 'Writing', at: 900 }] })).toBe(100);
+  expect(startedAt({ ...worker, attempt_started_at: 700 })).toBe(700);
+});

@@ -8,7 +8,7 @@ export type TeamWorker = {
   attempt?: number; task_contract?: { scope?: string; acceptance?: string[] };
   lead_review?: { attempt: number; decision: string; evidence?: string[] } | null;
   baseline_tree?: string; integrated_tree?: string; integrated_attempt?: number;
-  created_at?: number; activity?: string; actions?: TeamAction[];
+  created_at?: number; attempt_started_at?: number; activity?: string; actions?: TeamAction[];
 };
 export type WorkerPhase = "attention" | "active" | "settled";
 
@@ -76,7 +76,7 @@ export function leadActivity(workers: TeamWorker[], leadRunning: boolean): strin
 }
 
 export function startedAt(worker: TeamWorker): number {
-  return worker.actions?.[0]?.at ?? worker.created_at ?? 0;
+  return worker.attempt_started_at ?? worker.created_at ?? worker.actions?.[0]?.at ?? 0;
 }
 export function elapsed(seconds: number): string {
   if (seconds < 60) return "<1m";
