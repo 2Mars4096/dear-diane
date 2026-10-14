@@ -27,7 +27,7 @@ it("restores each source's model and reasoning and removes incompatible model op
 it("loads old gateway selections without changing native Claude aliases or exposing secrets", () => {
   localStorage.setItem("profiles", JSON.stringify({ claude: { model: "opus" }, dan: { model: "deepseek/deepseek-v4.1-flash", base_url: "https://openrouter.ai/api/v1" } }));
   const profiles = loadWorkerProfiles("profiles");
-  expect(profiles.claude.model).toBe("claude-opus-5");
+  expect(profiles.claude.model).toBe("claude-opus-5-5");
   expect(leadExecutionProfile("native", profiles)).toEqual(profiles.dan);
   expect(switchModelSource(profiles.dan, "native").selections?.openrouter?.model).toBe("deepseek/deepseek-v4.1-flash");
 });

@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { Check, ChevronDown, CircleAlert, Square, X } from "lucide-react";
-import { agentLabel, elapsed, leadActivity, resultLine, startedAt, stripWorkers, taskTitle, workerPhase, workerState, type TeamWorker } from "./teamPresentation";
+import { agentLabel, elapsed, leadActivity, resultLine, startedAt, stripWorkers, taskTitle, workerPhase, workerState, workerReview, workerIntegration, orderedTeamRuns, type TeamRunDetail, type TeamWorker } from "./teamPresentation";
 
 const WorkerConversation = lazy(() => import("./WorkerConversation"));
 
@@ -49,9 +49,9 @@ export function TeamStrip({ workers, lead, leadRunning, open, onToggle }: { work
   return <button type="button" className="wb-team-strip" aria-expanded={open} aria-label="Team progress" onClick={onToggle} data-idle={idle || undefined}>
     {idle ? <span className="wb-team-item"><Check size={12} />{settled} {settled === 1 ? "task" : "tasks"} done</span> : <>
       <span className="wb-live-dot" aria-hidden="true" />
-      {leadNow && <span className="wb-team-item"><b>{lead}</b><span key={leadNow} className="wb-team-now">{leadNow}</span></span>}
+      {leadNow && <span className="wb-team-item"><b>Lead: {lead}</b><span key={leadNow} className="wb-team-now">{leadNow}</span></span>}
       {shown.map((worker) => <span key={worker.worker_id} className="wb-team-item" data-phase={workerPhase(worker)}>
-        <b>{agentLabel(worker.backend)}</b><span key={workerState(worker)} className="wb-team-now">{workerState(worker)}</span>
+        <span className="wb-team-separator" aria-hidden="true">›</span><b>{agentLabel(worker.backend)}</b><span key={workerState(worker)} className="wb-team-now">{workerState(worker)}</span>
       </span>)}
       {more > 0 && <span className="wb-team-more">+{more}</span>}
     </>}
@@ -59,17 +59,37 @@ export function TeamStrip({ workers, lead, leadRunning, open, onToggle }: { work
 }
 
 /** Side panel: one lane per task, live work first, finished work settled below. */
-export function TeamPanel({ workers, error, onStop, onClose, header, onChange, selectedWorker }: { selectedWorker?: string; onChange?: (worker: TeamWorker) => void; workers: TeamWorker[]; error: string; onStop: (worker: TeamWorker) => void; onClose: () => void; header?: ReactNode }) {
-  const live = workers.filter((worker) => workerPhase(worker) !== "settled");
-  const settled = workers.filter((worker) => workerPhase(worker) === "settled");
+export function TeamPanel({ workers, error, onStop, onClose, header, onChange, selectedWorker, activeRunId, onOpenLead, runDetails = {} }: { runDetails?: Record<string, TeamRunDetail>; activeRunId?: string; onOpenLead?: (runId: string) => void; selectedWorker?: string; onChange?: (worker: TeamWorker) => void; workers: TeamWorker[]; error: string; onStop: (worker: TeamWorker) => void; onClose: () => void; header?: ReactNode }) {
+  const branches = (rows: TeamWorker[], parent = "", seen = new Set<string>()): ReactNode => rows.filter(worker => (worker.parent_worker_id || "") === parent && !seen.has(worker.worker_id)).map(worker => {
+    const visited = new Set(seen).add(worker.worker_id);
+    return <li key={worker.worker_id}><TeamLane worker={worker} onStop={onStop} onChange={onChange} selected={selectedWorker === worker.worker_id} />{rows.some(child => child.parent_worker_id === worker.worker_id) && <ul className="wb-team-children" aria-label="Child sessions">{branches(rows, worker.worker_id, visited)}</ul>}</li>;
+  });
+  const runs = orderedTeamRuns(workers, activeRunId, runDetails);
   return <aside className="wb-activity-panel wb-team-panel" aria-label="Team">
     {header ?? <div className="wb-panel-heading"><span>Team</span><button onClick={onClose} aria-label="Close team"><X size={17} /></button></div>}
     {error && <p className="wb-team-error" role="alert">{error}</p>}
     <div className="wb-team-lanes">
-      {[...live, ...settled].map((worker) => <TeamLane key={worker.worker_id} worker={worker} onStop={onStop} onChange={onChange} selected={selectedWorker === worker.worker_id} />)}
-      {!workers.length && <p className="wb-activity-empty">No team tasks in this conversation.</p>}
+      <p className="wb-team-guide">The lead assigns work and reviews results. Open a worker to inspect its own session.</p>
+      {runs.map(run => <TeamRunBranch key={run.id} title={run.title} startedAt={run.startedAt} current={run.id === activeRunId} count={run.workers.length} selected={run.workers.some(worker => worker.worker_id === selectedWorker)} onOpenLead={onOpenLead ? () => onOpenLead(run.id) : undefined}>
+        <ul className="wb-team-children" aria-label="Workers">{branches(run.workers)}</ul>
+        {!run.workers.length && <p className="wb-activity-empty">No delegated workers in this run.</p>}
+      </TeamRunBranch>)}
+      {!runs.length && <p className="wb-activity-empty">No team tasks in this conversation.</p>}
     </div>
   </aside>;
+}
+
+function TeamRunBranch({ title, startedAt, current, count, selected, onOpenLead, children }: { title: string; startedAt: number; current: boolean; count: number; selected: boolean; onOpenLead?: () => void; children: ReactNode }) {
+  const [expanded, setExpanded] = useState<boolean | null>(null);
+  const open = selected || (expanded ?? current);
+  const date = startedAt ? new Date(startedAt) : null;
+  return <section className="wb-team-branch" aria-label={title}>
+    <button className="wb-team-run-toggle" aria-expanded={open} onClick={() => setExpanded(!open)}>
+      <ChevronDown size={14} /><strong>{title}</strong>
+    </button>
+    <div className="wb-team-run-meta"><span>{current ? "Current run" : "Previous run"} · {count} {count === 1 ? "worker" : "workers"}</span>{date && <time dateTime={date.toISOString()}>{date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time>}</div>
+    {open && <><button className="wb-team-lead" disabled={!onOpenLead} onClick={onOpenLead}>Open lead conversation</button>{children}</>}
+  </section>;
 }
 
 function TeamLane({ worker, onStop, onChange, selected }: { selected?: boolean; onChange?: (worker: TeamWorker) => void; worker: TeamWorker; onStop: (worker: TeamWorker) => void }) {
@@ -88,15 +108,23 @@ function TeamLane({ worker, onStop, onChange, selected }: { selected?: boolean; 
       <ChevronDown size={12} />
     </button>
     <div className="wb-lane-meta">
-      <span>{agent} · {running ? <span key={worker.activity} className="wb-team-now">{workerState(worker)}</span> : workerState(worker)}</span>
+      <span>{worker.origin === "codex_subagent" ? "Codex subagent" : worker.worker_name || "Worker"} · {agent} · {running ? <span key={worker.activity} className="wb-team-now">{workerState(worker)}</span> : workerState(worker)}</span>
       {running && since > 0 && <span className="wb-lane-time">{elapsed(Date.now() / 1000 - since)}</span>}
       {running && worker.can_stop !== false && <button type="button" onClick={() => onStop(worker)} aria-label={`Stop ${agent}: ${taskTitle(worker.prompt)}`}><Square size={9} />Stop</button>}
     </div>
+    {worker.status === "completed" && <p className="wb-lane-review">{workerReview(worker)}</p>}
     {outcome && <p className="wb-lane-result">{outcome}</p>}
     {open && <div className="wb-lane-details">
+      <dl className="wb-worker-handoff">
+        <dt>{worker.parent_worker_id ? "Assignment from parent worker" : "Assignment from lead"}</dt><dd>{worker.task_contract?.scope || worker.prompt}</dd>
+        {!!worker.task_contract?.acceptance?.length && <><dt>Acceptance criteria</dt><dd><ul>{worker.task_contract.acceptance.map((criterion, index) => <li key={index}>{criterion}</li>)}</ul></dd></>}
+        <dt>Lead review</dt><dd>{workerReview(worker)}{worker.lead_review?.attempt === worker.attempt && worker.lead_review?.evidence?.map((evidence, index) => <p key={index}>{evidence}</p>)}</dd>
+        <dt>Integration</dt><dd>{workerIntegration(worker)}</dd>
+        <dt>Result</dt><dd>{worker.response || worker.error || (running ? "Work in progress" : "No result recorded")}</dd>
+      </dl>
+      <p className="wb-eyebrow">Worker session</p>
       <Suspense fallback={<p>Loading conversation…</p>}><WorkerConversation worker={worker} onChange={onChange} /></Suspense>
       {actions.length > 0 && <ol>{actions.map((action, index) => <li key={`${action.at}-${index}`}>{action.text}</li>)}</ol>}
-      {(worker.response || worker.error) && <pre>{worker.response || worker.error}</pre>}
     </div>}
   </article>;
 }

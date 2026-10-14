@@ -12,10 +12,12 @@ const ActivitySummary = lazy(() => import("./ActivitySummary").then(module => ({
 
 function EventDetail({ event }: { event: ChatV2AgentRunEvent }) {
   const display = eventDisclosure(event);
+  if (display.hidden) return null;
   return <details className="wb-event"><summary><span className="wb-agent-name">{eventAgentName(event)}</span><span>{display.label}</span></summary>
     {display.command && <pre>{display.command}</pre>}
-    {display.body && <div className="wb-event-body"><MarkdownRenderer content={display.body} /></div>}
-    <details className="wb-raw-event"><summary>Event data</summary><div className="wb-event-meta">{event.type}{event.run_id && ` · ${event.run_id}`}</div>{event.payload && <pre>{JSON.stringify(event.payload, null, 2)}</pre>}</details>
+    {display.exitCode !== undefined && <p className="wb-event-meta">Exit code: {display.exitCode}</p>}
+    {display.body && (display.output ? <pre>{display.body}</pre> : <div className="wb-event-body"><MarkdownRenderer content={display.body} /></div>)}
+    <details className="wb-raw-event"><summary>Technical data</summary><div className="wb-event-meta">{event.type}{event.run_id && ` · ${event.run_id}`}</div>{event.payload && <pre>{JSON.stringify(event.payload, null, 2)}</pre>}</details>
   </details>;
 }
 

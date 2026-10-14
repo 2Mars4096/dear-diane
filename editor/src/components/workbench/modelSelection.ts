@@ -1,6 +1,6 @@
 export type ModelSourceId = "native" | "openrouter" | "openai" | "deepseek" | "moonshot";
 export type ModelChoice = { model: string; effort: string; fast: boolean };
-export type WorkerProfile = ModelChoice & { enabled: boolean; account: string; provider?: ModelSourceId; base_url?: string; last_api_provider?: ModelSourceId; selections?: Partial<Record<ModelSourceId, ModelChoice>> };
+export type WorkerProfile = ModelChoice & { enabled: boolean; allow_children?: boolean; account: string; backend?: string; name?: string; provider?: ModelSourceId; base_url?: string; last_api_provider?: ModelSourceId; selections?: Partial<Record<ModelSourceId, ModelChoice>> };
 export type WorkerProfiles = Record<string, WorkerProfile>;
 export type ModelSource = { id: ModelSourceId; label: string; supported: boolean; configured?: boolean; models?: string[]; model_labels?: Record<string, string>; efforts?: string[]; fast?: boolean; model_efforts?: Record<string, string[]>; key_env?: string; reason?: string };
 export type Runtime = { id: string; label: string; available: boolean; accounts: { id: string; label: string }[]; models: string[]; model_efforts?: Record<string, string[]>; model_labels?: Record<string, string>; efforts: string[]; fast: boolean; setup: string; version: string; sources?: ModelSource[] };
@@ -30,7 +30,7 @@ export function reasoningOptions(runtime: Runtime, profile: WorkerProfile): stri
 }
 
 export function supportsFast(runtime: Runtime, profile: WorkerProfile): boolean {
-  return modelSource(profile) === "native" && runtime.fast && (runtime.id !== "claude" || ["opus", "claude-opus-5", "claude-opus-4-8", "claude-fable-5-1"].includes(profile.model));
+  return modelSource(profile) === "native" && runtime.fast && (runtime.id !== "claude" || ["opus", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"].includes(profile.model));
 }
 
 export function withModel(runtime: Runtime, profile: WorkerProfile, model: string): WorkerProfile {

@@ -74,7 +74,7 @@
 .wb-empty > p:last-child { font-size:15px; line-height:1.8; color:var(--wb-muted); }
 .wb-message { margin:0 0 36px; animation:wb-arrive 180ms ease-out; }
 .wb-message-author { display:flex; align-items:center; gap:9px; font-size:12px; font-weight:600; margin-bottom:10px; color:var(--wb-muted); }
-.wb-message-body { font-size:15px; line-height:1.85; overflow-wrap:anywhere; }
+.wb-message-body { font-size:16px; line-height:1.85; overflow-wrap:anywhere; }
 .wb-message-user { margin-left:12%; margin-bottom:22px; border-radius:12px; background:var(--wb-soft); padding:5px 12px; }
 .wb-message-user .wb-message-body { line-height:1.5; }
 .wb-message-user .wb-message-body p { margin:0; }
@@ -92,7 +92,7 @@
 .wb-status { box-sizing:border-box; width:100%; max-width:816px; margin:0 auto; color:var(--wb-muted); font-size:11px; padding:4px 42px; min-height:24px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .wb-shell .wb-composer { background:var(--wb-paper); border-top:0; box-shadow:none; padding:12px 28px 22px; }
 .wb-shell .wb-composer > div { max-width:760px; margin:auto; background:var(--wb-soft); border:1px solid var(--wb-line); border-radius:12px; padding:6px; gap:4px; }
-.wb-shell .wb-composer textarea { background:transparent; border:0; box-shadow:none; resize:none; font-size:14px; padding:6px 8px; min-height:36px; }
+.wb-shell .wb-composer textarea { background:transparent; border:0; box-shadow:none; resize:none; font-size:15px; padding:6px 8px; min-height:36px; }
 .wb-shell .wb-composer textarea:focus { outline:none; }
 .wb-shell .wb-composer:focus-within > div { border-color:var(--wb-muted); }
 .wb-quote-action, .wb-jump { position:absolute; bottom:32px; background:var(--wb-ink); color:var(--wb-paper); border-radius:22px; box-shadow:0 4px 20px #0002; font-size:12px; display:flex; align-items:center; }
@@ -400,17 +400,20 @@
 .wb-queue-message > p { margin:6px 0 0; font-size:11px; line-height:1.5; }
 /* Team progress: one stable strip above the transcript, lanes in the side panel. */
 @keyframes wb-settle { from { opacity:.3; } to { opacity:1; } }
-.wb-team-strip { display:flex; align-items:center; gap:18px; width:min(100% - 32px,780px); min-height:32px; margin:0 auto 4px; padding:6px 12px; border:1px solid var(--wb-line); border-radius:8px; background:var(--wb-paper); font-size:12px; color:var(--wb-muted); text-align:left; overflow:hidden; animation:wb-arrive 180ms ease-out; }
+.wb-team-strip { display:flex; align-items:center; gap:8px; width:max-content; max-width:100%; min-width:0; min-height:28px; margin:0; padding:6px 12px; border:1px solid var(--wb-line); border-radius:8px; background:var(--wb-paper); font-size:12px; color:var(--wb-muted); text-align:left; overflow:hidden; animation:wb-arrive 180ms ease-out; }
 .wb-team-strip:hover, .wb-team-strip[aria-expanded=true] { background:var(--wb-soft); }
-.wb-team-strip .wb-live-dot { flex-shrink:0; margin-right:-8px; }
-.wb-team-strip[data-idle] { width:auto; margin-left:max(16px,calc((100% - 780px) / 2)); border-color:transparent; }
+.wb-team-strip .wb-live-dot { flex-shrink:0; }
+.wb-conversation-heading .wb-team-strip { flex:0 1 auto; margin-right:auto; }
+.wb-conversation-heading .wb-team-strip[data-idle] { flex:0 1 auto; border-color:transparent; }
+@media (max-width:640px) { .wb-conversation-heading { gap:8px; padding:8px 12px; } .wb-conversation-heading:has(.wb-team-strip) .wb-conversation-actions code { display:none; } }
 .wb-team-item { display:flex; align-items:center; gap:6px; min-width:0; white-space:nowrap; }
-.wb-team-item b { font-weight:600; color:var(--wb-ink); }
+.wb-team-separator { flex-shrink:0; color:var(--wb-muted); }
+.wb-team-item b { flex-shrink:0; font-weight:600; color:var(--wb-ink); }
 .wb-team-item b::after { content:"·"; margin-left:6px; font-weight:400; color:var(--wb-muted); }
 .wb-team-item:last-of-type { overflow:hidden; }
 .wb-team-now { overflow:hidden; text-overflow:ellipsis; animation:wb-settle 320ms ease-out; }
 .wb-team-item[data-phase=attention] .wb-team-now { color:var(--wb-accent); font-weight:500; }
-.wb-team-more { flex-shrink:0; margin-left:auto; font-size:11px; }
+.wb-team-more { flex-shrink:0; margin-left:0; font-size:11px; }
 .wb-team-error { margin:12px 18px 0; font-size:11px; color:var(--wb-muted); }
 .wb-team-lanes { padding:10px 12px 24px; }
 .wb-team-divider { padding:18px 8px 6px; font-size:10px; color:var(--wb-muted); }
@@ -437,7 +440,7 @@
 .wb-lane-details ol { list-style:none; margin:0 0 8px; padding:0; color:var(--wb-muted); font-size:11px; line-height:1.8; }
 .wb-lane-details ol li:last-child { color:var(--wb-ink); }
 .wb-lane-details pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:260px; overflow:auto; background:var(--wb-soft); border-radius:6px; padding:10px; font-size:11px; }
-@media (max-width:640px) { .wb-team-strip { gap:12px; } .wb-team-item + .wb-team-item + .wb-team-item { display:none; } }
+@media (max-width:640px) { .wb-team-strip { gap:6px; padding:5px 8px; } }
 /* Unified side panel: every right-side tool shares one frame, width, and tab bar. */
 .wb-shell { --wb-side-width:min(380px,45vw); }
 .wb-side-tabs { position:relative; display:flex; align-items:center; gap:8px; height:48px; flex-shrink:0; padding:0 10px 0 12px; border-bottom:1px solid var(--wb-line); background:var(--wb-paper); z-index:2; }
@@ -977,3 +980,35 @@
 .wb-shell :is(q,blockquote), .wb-reader-notes q, .wb-epub q { font-family:var(--dan-font-highlight,inherit); }
 
 .wb-usage-spend p { display:flex; flex-wrap:wrap; justify-content:space-between; gap:4px 12px; margin:5px 0; font-size:11px; }
+
+/* Actual run/worker hierarchy; the transcript remains the lead conversation. */
+.wb-team-guide { margin:0 0 16px; color:var(--wb-muted); font-size:12px; line-height:1.6; }
+.wb-team-branch + .wb-team-branch { margin-top:24px; }
+.wb-team-lead { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; width:100%; padding:8px 0; text-align:left; color:var(--wb-ink); }
+.wb-team-lead span { margin-left:auto; color:var(--wb-muted); font-size:11px; }
+.wb-team-lead small { flex-basis:100%; color:var(--wb-muted); line-height:1.6; }
+.wb-team-lead:focus-visible { outline:2px solid var(--wb-accent); outline-offset:3px; }
+.wb-team-children { list-style:none; margin:0 0 0 8px; padding:0 0 0 18px; border-left:1px solid var(--wb-line); }
+.wb-team-children > li { position:relative; }
+.wb-team-children > li::before { content:""; position:absolute; left:-18px; top:22px; width:14px; border-top:1px solid var(--wb-line); }
+.wb-lane-review { margin:5px 0; font-size:12px; color:var(--wb-muted); }
+.wb-worker-handoff { font-size:12px; line-height:1.65; overflow-wrap:anywhere; }
+.wb-worker-handoff dt { margin-top:12px; font-weight:600; color:var(--wb-ink); }
+.wb-worker-handoff dd { margin:4px 0 0; white-space:pre-wrap; color:var(--wb-muted); }
+
+.wb-worker-config { border-top:1px solid var(--wb-line); padding:8px 0; }
+.wb-worker-config-heading { display:flex; align-items:center; gap:6px; }
+.wb-worker-config-heading > button:first-child { flex:1; min-width:0; display:flex; align-items:center; gap:6px; text-align:left; padding:5px 0; }
+.wb-worker-config-heading span { min-width:0; color:var(--wb-muted); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.wb-worker-config-heading strong { flex-shrink:0; max-width:45%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.wb-worker-config-heading button[aria-expanded="false"] > svg { transform:rotate(-90deg); }
+.wb-worker-config-heading svg { flex-shrink:0; }
+.wb-add-worker { display:flex; align-items:center; gap:6px; margin-top:10px; padding:7px 10px; border:1px solid var(--wb-line); border-radius:6px; }
+.wb-worker-config fieldset { min-width:0; }
+
+.wb-team-run-toggle { display:flex; align-items:flex-start; gap:7px; width:100%; text-align:left; padding:6px 0; }
+.wb-team-run-toggle svg { flex-shrink:0; margin-top:3px; }
+.wb-team-run-toggle[aria-expanded="false"] svg { transform:rotate(-90deg); }
+.wb-team-run-toggle strong { min-width:0; overflow-wrap:anywhere; line-height:1.5; }
+.wb-team-run-meta { display:flex; flex-wrap:wrap; gap:4px 12px; color:var(--wb-muted); font-size:11px; }
+.wb-team-run-toggle:focus-visible { outline:2px solid var(--wb-accent); outline-offset:3px; }

@@ -9,6 +9,9 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          if (id.endsWith("/components/workbench/TeamProgress.tsx") || id.endsWith("/components/workbench/teamPresentation.ts")) return "team-progress";
+          if (id.endsWith("/components/workbench/SideTabs.tsx")) return "side-tools";
+          if (id.endsWith("/components/workbench/teamCapacity.ts")) return "team-settings";
           if (id.endsWith("/components/workbench/sessionPlan.ts")) return "plan-session";
           if (id.endsWith("/components/documents/useDocumentTabs.ts") || id.endsWith("/components/documents/documentSession.ts")) return "document-session";
           if (id.endsWith("/components/shared/MarkdownRenderer.tsx")) return "content";

@@ -4,6 +4,10 @@ export type TeamWorker = {
   worker_id: string; parent_run_id: string; backend: string; status: string;
   prompt: string; response: string; error: string; native_session_id: string;
   can_stop?: boolean; can_reply?: boolean; can_apply?: boolean; source_workspace?: string; workspace_root?: string; requests?: WorkerRequest[]; origin?: string;
+  profile_id?: string; worker_name?: string; parent_worker_id?: string;
+  attempt?: number; task_contract?: { scope?: string; acceptance?: string[] };
+  lead_review?: { attempt: number; decision: string; evidence?: string[] } | null;
+  baseline_tree?: string; integrated_tree?: string;
   created_at?: number; activity?: string; actions?: TeamAction[];
 };
 export type WorkerPhase = "attention" | "active" | "settled";
@@ -78,4 +82,42 @@ export function elapsed(seconds: number): string {
   if (seconds < 60) return "<1m";
   const minutes = Math.floor(seconds / 60);
   return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+/** Only a review of this exact attempt is current. Native-owned workers have no Diane review contract. */
+export function workerReview(worker: TeamWorker): string {
+  const review = worker.lead_review;
+  if (review && review.attempt === worker.attempt) {
+    return ({ accepted: "Accepted by lead", revise: "Changes requested", blocked: "Review blocked" } as Record<string, string>)[review.decision] || "Review not recorded";
+  }
+  if (worker.origin === "codex_subagent") return "Review not reported";
+  return worker.status === "completed" ? "Awaiting lead review" : "Not reviewed";
+}
+export function workerIntegration(worker: TeamWorker): string {
+  if (worker.integrated_tree) return "Application recorded; may include an earlier attempt";
+  return worker.baseline_tree ? "Not applied to project" : "No separate worktree integration recorded";
+}
+
+
+export type TeamRunDetail = { title?: string; startedAt?: number };
+export function teamRunTitles(messages: { role: string; content: string; taskRunRef?: { runId?: string | null } | null }[]): Record<string, TeamRunDetail> {
+  let request = "";
+  const runs: Record<string, TeamRunDetail> = {};
+  for (const message of messages) {
+    if (message.role === "user") request = message.content;
+    const id = message.taskRunRef?.runId;
+    if (id && !runs[id]) runs[id] = { title: taskTitle(request) };
+  }
+  return runs;
+}
+
+export function orderedTeamRuns(workers: TeamWorker[], activeRunId = "", details: Record<string, TeamRunDetail> = {}) {
+  const ids = [...new Set(workers.map(worker => worker.parent_run_id))];
+  if (activeRunId && !ids.includes(activeRunId)) ids.push(activeRunId);
+  return ids.map(id => {
+    const rows = workers.filter(worker => worker.parent_run_id === id);
+    const times = rows.map(worker => worker.created_at || startedAt(worker)).filter(time => time > 0);
+    const time = details[id]?.startedAt || (times.length ? Math.min(...times) * 1000 : 0);
+    return { id, workers: rows, startedAt: time, title: details[id]?.title || (rows.length ? rows.map(worker => taskTitle(worker.prompt)).slice(0, 2).join(" · ") : "Current task") };
+  }).sort((a, b) => Number(b.id === activeRunId) - Number(a.id === activeRunId) || b.startedAt - a.startedAt);
 }

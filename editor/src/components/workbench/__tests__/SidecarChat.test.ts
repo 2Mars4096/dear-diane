@@ -23,7 +23,7 @@ it("creates a linked side chat and saves the response only to that thread", asyn
     await act(async()=>[...host.querySelectorAll("button")].find(b=>b.textContent==="Send")!.click());
     expect(api.createChatV2Thread).toHaveBeenCalledWith("project",expect.objectContaining({parent_thread_id:"parent"}));
     expect(api.createChatV2AgentRun).toHaveBeenCalledWith(expect.objectContaining({thread_id:"side",surface:"chat:side",surface_type:"chat",surface_id:"side",message:expect.stringContaining("Quoted passage")}));
-    expect(api.executeChatV2AgentRun).toHaveBeenCalledWith("run",{backend:"claude"});
+    expect(api.executeChatV2AgentRun).toHaveBeenCalledWith("run",{backend:"claude",profile_policy:{team_max_parallel_workers:2}});
     const calls=vi.mocked(api.saveChatV2Thread).mock.calls;
     expect(calls.every(call=>call[1]==="side")).toBe(true);
     expect(calls.at(-1)![2].messages!.at(-1)!.content).toBe("Side answer");

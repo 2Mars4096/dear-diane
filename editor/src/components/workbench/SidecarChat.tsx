@@ -34,6 +34,7 @@ export function SidecarChat({ parentId, workflowId, workspaceRoot, workspaceId, 
   const key = `dan.sidecar.v1:${workflowId}:${parentId}`;
   const [pending] = useState(() => { try { return JSON.parse(localStorage.getItem(`${key}:next`) || "null") as { draft: string; quote: string; quoteContext: string; files: ComposerAttachmentDraft[]; attachment?: ComposerAttachmentDraft; execution?: Execution } | null; } catch { return null; } });
   const controls = useSidecarControls(pending?.execution || execution);
+  const queuedExecution = useRef<Execution | undefined>(pending?.execution);
   const [canSteer, setCanSteer] = useState(false);
   const [files, setFiles] = useState<ComposerAttachmentDraft[]>(pending?.files || []);
   const [attaching, setAttaching] = useState(false);
@@ -93,7 +94,7 @@ export function SidecarChat({ parentId, workflowId, workspaceRoot, workspaceId, 
     void poll();
     return () => { disposed = true; clearTimeout(timer); };
   }, [link?.runId, link?.assistantId, link?.threadId, loading, workflowId]);
-  useEffect(() => { if (!queued) localStorage.removeItem(`${key}:next`); }, [queued, key]);
+  useEffect(() => { if (!queued) { localStorage.removeItem(`${key}:next`); queuedExecution.current = undefined; } }, [queued, key]);
   useEffect(() => { if (queued && !link?.runId && !sending && !loading) { setQueued(false); void send(); } }, [queued, link?.runId, sending, loading]);
   async function addFiles(incoming: File[]) {
     if (attaching) return;
@@ -101,16 +102,17 @@ export function SidecarChat({ parentId, workflowId, workspaceRoot, workspaceId, 
     try { const result = await prepareAttachments(incoming.slice(0, MAX_ATTACHMENTS - files.length - (attachment ? 1 : 0)), "sidecar"); setFiles(previous => [...previous, ...result.attachments]); setError(result.errors.join("\n")); } finally { setAttaching(false); }
   }
   async function send() {
+    const executionSnapshot = queuedExecution.current || controls.execution;
     if ((!draft.trim() && !files.length && !attachment) || sending || loading || attaching || (link && loadedThread.current !== link.threadId)) return;
     if (link?.runId) {
       if (placement === "queue" || !canSteer) {
-        try { localStorage.setItem(`${key}:next`, JSON.stringify({ draft, quote, quoteContext, files, attachment, execution: controls.execution })); setQueued(true); } catch { setError("Could not save the next message. Keep it as a draft and try again."); }
+        try { localStorage.setItem(`${key}:next`, JSON.stringify({ draft, quote, quoteContext, files, attachment, execution: controls.execution })); queuedExecution.current = controls.execution; setQueued(true); } catch { setError("Could not save the next message. Keep it as a draft and try again."); }
         return;
       }
       setSending(true);
       try {
         const followup = { ...message("user", `${quote ? `Selected passage:\n${quote}\n\n` : ""}${draft}`), attachments: [...files, ...(attachment ? [attachment] : [])].map(composerDraftToChatAttachment) };
-        await postChatV2AgentRunCommand(link.runId, { command: "append_followup", idempotency_key: crypto.randomUUID(), payload: { text: `${quote ? `Selected passage:\n${quote}\n\n` : ""}${draft}`, attachments: [...files, ...(attachment ? [attachment] : [])].map(composerDraftToChatAttachment) } });
+        await postChatV2AgentRunCommand(link.runId, { command: "append_followup", idempotency_key: crypto.randomUUID(), payload: { team_settings: { native_workers: controls.execution.profile_policy?.native_workers || {}, team_max_parallel_workers: controls.execution.profile_policy?.team_max_parallel_workers || 2 }, text: `${quote ? `Selected passage:\n${quote}\n\n` : ""}${draft}`, attachments: [...files, ...(attachment ? [attachment] : [])].map(composerDraftToChatAttachment) } });
         const next = [...currentMessages.current.filter(item => item.id !== link.assistantId), followup, ...currentMessages.current.filter(item => item.id === link.assistantId)];
         update(next);
         await saveChatV2Thread(workflowId, link.threadId, { messages: next });
@@ -148,7 +150,8 @@ export function SidecarChat({ parentId, workflowId, workspaceRoot, workspaceId, 
       if (!runId) throw new Error("No sidecar run was created");
       admitted = true;
       await remember({ ...current, runId, assistantId: assistant.id });
-      await executeChatV2AgentRun(runId, controls.execution);
+      await executeChatV2AgentRun(runId, executionSnapshot);
+      queuedExecution.current = undefined;
       setDraft(""); setQuote(""); setQuoteContext(""); setAttachment(undefined); setFiles([]);
     } catch (error) {
       if (rollback && !admitted) {

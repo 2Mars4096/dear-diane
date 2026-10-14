@@ -1,3 +1,6 @@
+import { teamRunTitles } from "../workbench/teamPresentation";
+import { useTeamCapacity } from "../workbench/teamCapacity";
+import { RunStreamConnection } from '../workbench/runStreamConnection';
 import { composerEnterPlacement } from "../../lib/composerShortcuts";
 import { useSessionPlan, getSessionPlan, saveSessionPlan, type PlanReview } from "../workbench/sessionPlan";
 import { reconcileRunState } from '../workbench/reconcileRunState';
@@ -9477,18 +9480,9 @@ function noteStatusText(note: WorkspaceNote | null) {
   return "Saved";
 }
 
-async function restoreFullNativeMessages(sourceMessages: ChatMessage[]): Promise<ChatMessage[]> {
-  return Promise.all(sourceMessages.map(async (message) => {
-          if (message.role !== "assistant" || !message.taskRunRef?.runId) return message;
-          try {
-            const run = await getChatV2AgentRun(message.taskRunRef.runId);
-            const result = run.metadata?.backend_result as { backend?: string; summary?: string } | undefined;
-            if (run.status === "completed" && ["codex", "claude", "antigravity", "cursor"].includes(result?.backend || "") && result?.summary && result.summary.startsWith(message.content) && result.summary.length > message.content.length) {
-              return { ...message, content: result.summary };
-            }
-          } catch { /* Keep saved text when run history is unavailable. */ }
-          return message;
-        }));
+async function restoreFullNativeMessages(messages: ChatMessage[]): Promise<ChatMessage[]> {
+  const history = await import('../workbench/restoreNativeMessages');
+  return history.restoreFullNativeMessages(messages);
 }
 
 function WorkspaceComposerSuggestionPopup({
@@ -13296,7 +13290,6 @@ export default function ChunkWorkspaceApp() {
   const [loadingThreadId, setLoadingThreadId] = useState<string | null>(null);
   const [pendingAssistantIds, setPendingAssistantIds] = useState<Record<string, boolean>>({});
   const [liveActions, setLiveActions] = useState<Record<string, string>>({});
-  const attachedRunKeyRef = useRef("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [tasks, setTasks] = useState<ChatV2TaskSnapshot[]>([]);
   const [backgroundTasksReady, setBackgroundTasksReady] = useState(false);
@@ -13398,7 +13391,7 @@ export default function ChunkWorkspaceApp() {
   const messagesRef = useRef<ChatMessage[]>([]);
   const activeThreadRef = useRef<typeof activeThread>(activeThread);
   const streamRef = useRef<WebSocket | null>(null);
-  const agentStreamRef = useRef<WebSocket | null>(null);
+  const agentStreamRef = useRef(new RunStreamConnection());
   const sessionSelectionSeqRef = useRef(0);
   const creatingSessionRef = useRef(false);
   const autoRestoringThreadIdRef = useRef<string | null>(null);
@@ -14078,8 +14071,7 @@ export default function ChunkWorkspaceApp() {
   const clearActiveSessionView = useCallback((statusText?: string) => {
     streamRef.current?.close();
     streamRef.current = null;
-    agentStreamRef.current?.close();
-    agentStreamRef.current = null;
+    agentStreamRef.current.close();
     setActiveThread(null);
     setLoadingThreadId(null);
     setMessages([]);
@@ -14626,9 +14618,10 @@ export default function ChunkWorkspaceApp() {
   const teamParentIds = useMemo(() => [...new Set(tasks.map(taskRunId).filter(Boolean))], [tasks]);
   const [notificationWorker, setNotificationWorker] = useState("");
   const team = useTeamWorkers(teamParentIds, Boolean(activeRunningTask));
+  const teamTitles = useMemo(() => teamRunTitles(messages), [messages]);
   const sidecarExecution = () => {
     const payload = withLeadSelection(buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode), selectedAgentId, leadProfiles);
-    return { ...payload, profile_policy: { ...payload.profile_policy, native_workers: nativeWorkerProfiles } };
+    return { ...payload, profile_policy: { ...payload.profile_policy, native_workers: nativeWorkerProfiles, team_max_parallel_workers: teamCapacity } };
   };
   const [fileRequest] = useState<FileOpenRequest | null>(null);
   const [fileOpenError, setFileOpenError] = useState<{ request: FileOpenRequest; message: string } | null>(null);
@@ -14899,6 +14892,7 @@ export default function ChunkWorkspaceApp() {
   const rootBrowsePath = normalizeRootPath(rootInput || developmentRoot || devRoot);
   const rootParentPath = parentRootPath(rootBrowsePath);
   const hasActiveRun = Boolean(activeRunId && activeRunningTask);
+  const [teamCapacity] = useTeamCapacity();
   const [nativeWorkerProfiles, setNativeWorkerProfiles] = useState<WorkerProfiles>(loadWorkerProfiles);
   useEffect(() => { localStorage.setItem("dan.nativeWorkerProfiles.v1", JSON.stringify(nativeWorkerProfiles)); }, [nativeWorkerProfiles]);
   const [leadProfiles, setLeadProfiles] = useState<WorkerProfiles>(() => {
@@ -15692,8 +15686,7 @@ export default function ChunkWorkspaceApp() {
     const selectionSeq = ++sessionSelectionSeqRef.current;
     streamRef.current?.close();
     streamRef.current = null;
-    agentStreamRef.current?.close();
-    agentStreamRef.current = null;
+    agentStreamRef.current.close();
     setStatus("Creating session");
     setActiveThread(null);
     setLoadingThreadId(null);
@@ -15786,8 +15779,7 @@ export default function ChunkWorkspaceApp() {
       const selectionSeq = ++sessionSelectionSeqRef.current;
       streamRef.current?.close();
       streamRef.current = null;
-      agentStreamRef.current?.close();
-      agentStreamRef.current = null;
+      agentStreamRef.current.close();
       const optimisticThread = {
         id: summary.id,
         workflowId: summary.workflow_id,
@@ -16201,10 +16193,8 @@ export default function ChunkWorkspaceApp() {
       runWorkspaceRoot = developmentRoot,
       runWorkspaceId = workspace?.id ?? activeWorkspaceId ?? "",
     ) => {
-      agentStreamRef.current?.close();
-      attachedRunKeyRef.current = `${thread.id}:${runId}`;
       let lastTaskRefresh = 0;
-      agentStreamRef.current = connectChatV2AgentRunEvents(
+      agentStreamRef.current.connect(`${thread.id}:${runId}`, () => connectChatV2AgentRunEvents(
         runId,
         (event) => {
           const refreshThreadTasks = (delay = 0) => {
@@ -16277,7 +16267,7 @@ export default function ChunkWorkspaceApp() {
             setStatus("Diane event stream interrupted");
           }
         },
-      );
+      ));
     },
     [
       applyMessages,
@@ -16379,6 +16369,7 @@ export default function ChunkWorkspaceApp() {
           task_id: activeRunningTask.task_id,
           idempotency_key: nowId(queueCommand),
           payload: {
+            team_settings: { native_workers: nativeWorkerProfiles, team_max_parallel_workers: teamCapacity },
             text: prompt,
             display_text: displayText,
             client_message_id: user.id,
@@ -16543,6 +16534,7 @@ export default function ChunkWorkspaceApp() {
         (() => {
           const payload = withLeadSelection(buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode), selectedAgentId, leadProfiles);
           payload.profile_policy.native_workers = nativeWorkerProfiles;
+          payload.profile_policy.team_max_parallel_workers = teamCapacity;
           // Plan is temporary read-only work; do not alter the user's execution preference.
           if (planReview?.action === "refine") {
             payload.profile_policy.permission_mode = "plan";
@@ -16581,11 +16573,11 @@ export default function ChunkWorkspaceApp() {
       persistMessages,
       selectedChunk,
       nativeWorkerProfiles,
+      teamCapacity,
       selectedAgentOption,
       selectedModelOption,
       selectedAgentId,
       leadProfiles,
-      nativeWorkerProfiles,
       autonomyMode,
       selectedBlueprintNode,
       taskWorkspaceByThreadId,
@@ -16605,6 +16597,7 @@ export default function ChunkWorkspaceApp() {
       if (!document.hasFocus()) return;
       const payload = withLeadSelection(buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode), selectedAgentId, leadProfiles);
       payload.profile_policy.native_workers = nativeWorkerProfiles;
+          payload.profile_policy.team_max_parallel_workers = teamCapacity;
       void fetch('/api/sticky-todo/defaults', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
         projects: workspaces.filter(item => !item.removedFromDan).map(item => ({ id: item.id, name: item.name, root: item.pinnedPaths[0] || '' })),
         active_project_id: activeWorkspaceId, execute: payload,
@@ -16614,7 +16607,7 @@ export default function ChunkWorkspaceApp() {
     const timer = window.setInterval(publish, 15000);
     window.addEventListener("focus", publish);
     return () => { window.clearInterval(timer); window.removeEventListener("focus", publish); };
-  }, [workspaces, activeWorkspaceId, selectedAgentOption, selectedModelOption, autonomyMode, selectedAgentId, leadProfiles, nativeWorkerProfiles]);
+  }, [workspaces, activeWorkspaceId, selectedAgentOption, selectedModelOption, autonomyMode, selectedAgentId, leadProfiles, nativeWorkerProfiles, teamCapacity]);
 
   const handleComposerInputChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
     setComposerInputValue(event.target.value);
@@ -16680,11 +16673,10 @@ export default function ChunkWorkspaceApp() {
     if (settled.pending !== pendingAssistantIds) setPendingAssistantIds(settled.pending);
   }, [messages, pendingAssistantIds, workPanelTasks, applyMessages]);
 
-  useEffect(() => { attachedRunKeyRef.current = ""; }, [activeThread?.id]);
   useEffect(() => {
     if (!activeThread || loadingThreadId !== null || !activeRunId) return;
     const key = `${activeThread.id}:${activeRunId}`;
-    if (attachedRunKeyRef.current === key) return;
+    if (agentStreamRef.current.matches(key)) return;
     const current = messagesRef.current;
     const linked = current.find((message) => message.role === "assistant" && message.taskRunRef?.runId === activeRunId);
     const visible = visibleQueuedTranscript(current, workPanelTasks, pendingAssistantIds);
@@ -17306,7 +17298,7 @@ export default function ChunkWorkspaceApp() {
   useEffect(() => {
     return () => {
       streamRef.current?.close();
-      agentStreamRef.current?.close();
+      agentStreamRef.current.close();
     };
   }, []);
 
@@ -18502,11 +18494,12 @@ export default function ChunkWorkspaceApp() {
               {mainTabs.some(tab => tab.id === "papers") && <div className="papers-tab" hidden={activeMainTab !== "papers"}><Suspense fallback={null}><PaperLibrary onOpen={openLibraryReading} onReference={papers => void referencePapers(papers)} /></Suspense></div>}
               {libraryReading && <Suspense fallback={null}><ReadingSessionBar id={libraryReading.session.id} onBrowse={openPaperLibrary} /></Suspense>}
               {!documentsRestored && (activeMainTab.startsWith("pdf:") || /\.epub$/i.test(mainTabs.find(tab => tab.id === activeMainTab)?.label || "")) ? <p className="dan-document-message">Restoring reading session…</p> : activeMainTab === "papers" || activeMainTab === "file-error" || (activeMainTab.startsWith("file:") && !readerFile) ? null : activeMainTab === "settings" ? <Suspense fallback={null}><DianeSettings page onPapers={openPaperLibrary} onClose={() => closeTab("settings")} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} /></Suspense> : readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView key={readerFile.path} file={readerFile} onAsk={askFromReader} onNotes={() => openSideTab("notes")} /></Suspense> : <>
-              <div className="wb-conversation-heading"><div className="wb-conversation-actions">
+              <div className="wb-conversation-heading">
+              <TeamStrip workers={team.workers} lead={selectedAgentOption.shortLabel} leadRunning={Boolean(activeRunningTask)} open={teamPanel} onToggle={() => { setTeamPanel(!teamPanel); setWorkbenchActivity(false); setSidecarChat(false); setShowSidecarPreview(false); }} />
+                <div className="wb-conversation-actions">
                 {activeThread && <button title={`Copy session ID: ${activeThread.id}`} onClick={() => { void navigator.clipboard.writeText(activeThread.id).then(() => setStatus("Session ID copied"), () => setStatus(`Session ID: ${activeThread.id}`)); }}>Session <code>{activeThread.id}</code></button>}
                 <button aria-pressed={workbenchOutline} onClick={() => setWorkbenchOutline(!workbenchOutline)}>{workbenchOutline ? "Conversation" : "Task detail"}</button></div></div>
 
-              <TeamStrip workers={team.workers} lead={selectedAgentOption.shortLabel} leadRunning={Boolean(activeRunningTask)} open={teamPanel} onToggle={() => { setTeamPanel(!teamPanel); setWorkbenchActivity(false); setSidecarChat(false); setShowSidecarPreview(false); }} />
               {workbenchOutline ? (              <div className="wb-outline min-h-0 flex-1 overflow-auto p-4">
                 {isPhoneViewport || showConversationChunks ? (
                   <BlueprintView
@@ -18854,7 +18847,12 @@ export default function ChunkWorkspaceApp() {
           </PersistentPanel>
           <PersistentPanel active={visibleSideTab === "activity"} name="Activity"> <aside className="wb-activity-panel"><WorkbenchActivity events={agentEvents} /></aside></PersistentPanel>
           <PersistentPanel active={visibleSideTab === "changes"} name="Changes" key={`changes:${developmentRoot}:${activeThread?.id}`}><Suspense fallback={null}><ChangesPanel active={visibleSideTab === "changes"} root={developmentRoot} thread={activeThread?.id || ""} onComment={text => { setComposerInputValue(input ? `${input}\n\n${text}` : text); setActiveMainTab(mainTabs.find(tab => tab.session?.id === activeThread?.id && tab.session?.workflowId === activeThread?.workflowId)?.id || "chat"); setPhonePage("chat"); if (isPhoneViewport) openSideTab(null); requestAnimationFrame(() => composerRef.current?.focus()); }} /></Suspense></PersistentPanel>
-          <PersistentPanel active={visibleSideTab === "team"} name="Team"> <TeamPanel header={false} workers={team.workers} selectedWorker={notificationWorker} error={team.error} onChange={team.update} onStop={(worker) => void team.stop(worker)} onClose={() => setTeamPanel(false)} /></PersistentPanel>
+          <PersistentPanel active={visibleSideTab === "team"} name="Team"> <TeamPanel runDetails={Object.fromEntries(workPanelTasks.map(task => [taskRunId(task), { ...teamTitles[taskRunId(task)], startedAt: timestampValue(task.metadata?.run_created_at || task.metadata?._run_created_at, 0) }]))} header={false} activeRunId={activeRunId} onOpenLead={runId => {
+            setWorkbenchOutline(false); setTeamPanel(false); setPhonePage("chat");
+            setActiveMainTab(mainTabs.find(tab => tab.session?.id === activeThread?.id && tab.session?.workflowId === activeThread?.workflowId)?.id || "chat");
+            const message = messagesRef.current.find(item => item.taskRunRef?.runId === runId);
+            if (message) requestAnimationFrame(() => document.querySelector(`[data-message-id="${CSS.escape(message.id)}"]`)?.scrollIntoView({ block: "center" }));
+          }} workers={team.workers} selectedWorker={notificationWorker} error={team.error} onChange={team.update} onStop={(worker) => void team.stop(worker)} onClose={() => setTeamPanel(false)} /></PersistentPanel>
           </aside>
 
         </section>
