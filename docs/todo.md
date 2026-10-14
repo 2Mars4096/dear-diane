@@ -1,5 +1,10 @@
 # Todo
 
+- [x] Fix validator JSON-wrapper parsing found by the built-in pilot; 176 tests and a post-fix live note run pass.
+- [ ] Proposed: repeat small-task comparisons against the fixed runtime and add a planner-activating case before changing built-in routing — [study](live-test-plans/1-super-diane-capability.md).
+
+- [x] Run built-in agent direct/current/selective comparison using the existing evaluation framework — [pilot](live-test-plans/1-super-diane-capability.md).
+
 - [x] Add per-worker Allow child sessions, inherited configuration, shared capacity, scoped control, cleanup and nested Team display.
 - [x] Compact worker headers into one row with leading expand arrows.
 - [x] Install child-session/compact-header update after idle verification; signature/archive and both health endpoints pass.
@@ -479,4 +484,21 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
 - [x] Clean up approved obsolete Diane packages; 20 items removed, current app/latest rollback/build and release source records preserved.
 
 - [x] Apply Team changes on the next sent message: live steer updates active roster/capacity; queued messages save settings for their next run. Preserve existing workers.
-- [ ] Install message-applied Team settings and verify live provider acceptance after a safe restart.
+- [x] Install message-applied Team settings, readable activity, caption removal and model dropdown fix; signature/archive/health verified.
+- [ ] Verify live provider acceptance of message-applied Team settings.
+
+- [x] Remove the introductory Team sidebar caption.
+
+- [x] Replace raw worker-session events with readable messages/activity; remove technical JSON from main conversation event details.
+
+- [x] Keep model presets selectable alongside custom/older saved model IDs.
+
+- [x] Enforce worktree separation for Git editing workers, shared read-only inspection, reviewed automated integration and current-attempt merge receipts.
+- [x] Improve team guidance for file ownership, scope changes, permission failures and focused tests.
+- [ ] Install worktree/review policy update when idle; verify one live isolated edit → review → apply cycle.
+
+- [x] Review and harden worktree/read-only/review/merge paths; 93 targeted tests pass. Installed live-provider acceptance remains pending.
+
+- [x] Stabilize streaming conversation layout: retain meaningful activity with stable IDs, bound live detail height and pause auto-follow while inspecting details.
+
+- [ ] Publish v0.1.7 with Team/worktree, session reliability and UI improvements; verify release assets and update manifest.

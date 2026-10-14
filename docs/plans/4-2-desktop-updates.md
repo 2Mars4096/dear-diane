@@ -170,3 +170,9 @@ Release scope remains the desktop shell for existing configured Python-backend i
 - [x] October 14: install Team chronological/collapsed history, content-width status pill and worker streaming-detail cleanup. Idle checks, signature, archive equality and both health endpoints pass.
 
 - [x] October 14: user-approved cleanup removed five superseded rollbacks, five stale staged releases and old 0.1.0 packages/build snapshots (5.20 GiB measured). Keep latest rollback `384b1236-2d31-4e48-8734-e30f11c1fa60` and published-0.1.1 source patch/records. Older backup paths in historical receipts are no longer retained.
+
+- [x] October 14: install latest model-picker/readable-activity/caption/message-Team update; idle, signature, archive and both health checks pass. Rollback c709cc62-d35a-4cfa-ac91-e90e4d6b4bf6 retained.
+
+## 0.1.7 release
+- [x] Prepare release notes and desktop version metadata.
+- [ ] Publish tag v0.1.7 and verify non-draft release, five Mac assets and public update manifest.

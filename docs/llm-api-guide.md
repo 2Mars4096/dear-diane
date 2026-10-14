@@ -275,3 +275,9 @@ Set `allow_children: true` on a worker profile (default false; Diane/Codex/Claud
 
 ### Updating Team settings with a message
 `append_followup` and `continue_after_current` command payloads may include `team_settings: {native_workers: {...}, team_max_parallel_workers: 1..4}`. Steers apply the validated roster/capacity to the active root team before the message is delivered; queued messages retain a snapshot for their next run. Existing workers/resumes keep saved profiles. Worker permissions inherit the lead policy. The lead should refresh native_worker/bridge status when it receives the update notice.
+
+
+### Worktree delegation and integration
+Git edits must use the default isolated worker worktree. Shared inspection uses `isolate=false, read_only=true` or bridge `--shared-workspace`, which narrows worker permissions. Use `native_worker(action="changes", worker_id=...)` to inspect the patch, run relevant checks, record `review` with current attempt/accepted/evidence, then `apply`. Automated apply rejects missing/stale reviews, post-review worker edits and conflicting source edits. Apply merges the diff without committing or overwriting source conflicts. Start a new task/contract when scope changes; resume is for repairing the same assignment. Existing sessions are not moved or rewritten.
+
+- For managed worktree acceptance, call changes on the current attempt before review. If the working tree changes, inspect again; acceptance rejects missing/stale inspection receipts. Resume invalidates both acceptance and inspection. Built-in shared read-only workers have no write, shell or delegation tools.

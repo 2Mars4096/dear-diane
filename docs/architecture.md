@@ -498,3 +498,10 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 
 
 - `native_workers/settings.py` validates message-scoped Team updates. The command route serializes live roster/capacity replacement with worker admission, persists restart policy, and attaches coordination text while preserving display_text. Queued messages defer changes to promotion; their explicit team_settings takes precedence over old execution overrides. Native team bridges are available from run start even with no enabled workers.
+
+- `tests/eval/run_builtin_comparison.py` compares a plain tool loop, current built-in pipeline and evaluation-only selective stage policy. Reuses capability scoring and local tools; disposable workspaces, per-call usage receipts and independent acceptance remain separate from runtime self-reports. No production routing change.
+
+
+- Managed Git editing workers cannot opt into shared writable checkout execution. The CLI bridge maps --shared-workspace to read_only; native and built-in worker policies narrow accordingly. Agent integration uses changes → current-attempt accepted review → apply with a pinned worker tree; source fingerprint conflicts still reject. Human diff-preview/apply remains an explicit separate path. Integrated attempt provenance is recorded for UI reporting.
+
+- Built-in worker read_only uses a scoped ContextVar to constrain LocalOrganismToolRuntime to read-only tools. Managed changes stores inspected_tree/inspected_attempt; acceptance checks both against current state, and resume invalidates inspection receipts.

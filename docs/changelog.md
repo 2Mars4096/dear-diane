@@ -1,6 +1,45 @@
 # Changelog
 
 ## 2026-10-14
+- [test] v0.1.7 release candidate passes 531 frontend tests, 272 backend tests, ten publisher tests and production build/bundle budgets. Shutdown regression requires process-inspection permission; scroll regression now tests a synchronously rendered disclosure rather than depending on lazy-module scheduling.
+- [infra] Prepare v0.1.7 notes and desktop version metadata. Publication and public asset verification pending.
+
+## 2026-10-14
+- [fix] Stabilize live conversation activity: filter hidden events before retention, give meaningful events stable IDs, constrain live history height and keep the status header on one line. Remove status-triggered autoscrolling; inspecting details pauses follow until Latest. Fifteen focused checks and production build/budgets pass; installed visual acceptance remains pending.
+
+## 2026-10-14
+- [fix] Review hardening: built-in read-only workers now receive an enforced read-only tool allowlist, not only request policy. Accepted worktree reviews require a changes inspection of the same attempt/tree; resuming clears inspection receipts. Git detection failures inside known repositories fail closed.
+- [test] 93 targeted tests pass, including real Git worktree + CLI bridge edit/inspect/review/apply round-trip, source preservation, stale inspection/post-review rejection, frozen resumes and read-only write/shell denial. Provider launches in the round-trip use deterministic test processes; installed live-model acceptance remains pending.
+
+## 2026-10-14
+- [feat] Require Git editing workers to use owned worktrees; shared bridge launches explicitly use read-only permissions. Existing worker sessions retain their original configuration.
+- [feat] Add managed changes inspection and require an accepted current-attempt review before automated integration. Bind acceptance to the worker tree, reject post-review edits/source conflicts, and record the integrated attempt. Explicit user diff-review/apply remains available.
+- [fix] Guide leads toward disjoint file ownership, fresh workers for changed scope, workspace-local scratch files, simple permission-checkable commands and focused validation before integration. Preserve active worktrees for inspection.
+
+## 2026-10-14
+- [infra] Reinstall current local build after idle verification, activating message-applied Team settings, caption removal, readable worker/main activity and persistent model dropdown. Strict signature/archive equality verified (`dd51ff66b050d3a45ec6203e9a0988d84cdf7b14f035f24b77fe378408b023e3`); backend/proxy both 200. Rollback retained at `/Applications/.Diane-previous-c709cc62-d35a-4cfa-ac91-e90e4d6b4bf6.app`. Live provider acceptance remains separate.
+
+## 2026-10-14
+- [fix] Keep the model dropdown available when a saved/custom model is outside the preset list; show custom ID input alongside it without silently changing the selected model. Applies to main chat, sidecar and worker settings.
+
+## 2026-10-14
+- [test] Complete 12 same-model built-in-agent baseline trials plus one post-fix live check. Direct: 4/4 artifacts and completions; pre-fix current: 3/4 artifacts, 0/4 completions within pilot limits; selective: 4/4 artifacts, 2/4 completions. Retain raw receipts, fixtures and source snapshots locally; record small-sample, capped-run and inactive-planner limits.
+- [test] Fixed-parser current note completes and passes external acceptance (57.02s, 130,493 tokens); no artifact-repair stage. The direct note used 27,444 tokens. Keep broader routing changes as hypotheses, not conclusions from one trial.
+
+## 2026-10-14
+- [fix] Preserve built-in validator verdicts and repair evidence when JSON is fenced or introduced by prose. Live pilot exposed false validation failures and unnecessary repairs; shared parsing fixes four saved-response reproductions.
+- [test] 176 runtime/evaluation tests pass, three optional tests skip. Seven new parser cases preserve true/false verdicts and reject malformed output. Pre-fix baseline source retained separately; installed app not restarted.
+
+## 2026-10-14
+- [test] Add a bounded same-model built-in-agent pilot to the existing eval framework, with four frozen fixtures, independent artifact checks, provider metering and selective-stage comparison. Four harness regressions pass; live results pending.
+
+## 2026-10-14
+- [fix] Present worker-session history using shared readable event labels and Markdown instead of internal event IDs/JSON. Hide streaming fragments and bookkeeping; remove Technical data disclosures from main chat events. Durable diagnostic logs remain available on disk.
+
+## 2026-10-14
+- [fix] Remove the introductory caption from the Team sidebar and its unused style.
+
+## 2026-10-14
 - [test] Pre-publication validation: 133 focused backend tests and 41 frontend tests pass; production build/bundle budgets and whitespace checks pass. Latest message-applied Team settings remain source-only pending a safe local reinstall.
 
 ## 2026-10-14

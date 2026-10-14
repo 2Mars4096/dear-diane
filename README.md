@@ -278,3 +278,6 @@ Workers can optionally create child sessions using their own agent, account, mod
 
 
 Team changes apply with your next message: steering updates the active lead’s available workers and capacity; queued messages use their saved Team settings when they start. Existing worker sessions keep their configuration.
+
+
+Editing workers in Git projects use separate worktrees. The lead inspects their changes and records a review before merging them back; conflicting project changes are preserved. Shared-workspace workers are for read-only inspection.

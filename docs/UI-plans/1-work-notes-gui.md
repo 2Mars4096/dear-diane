@@ -154,3 +154,11 @@
 - [x] Suppress repeated team-worker delta/status bookkeeping in details while preserving completed activity and errors.
 
 - [x] Explain Team changes apply with the next sent message; carry roster/capacity on main and sidecar steering submissions.
+
+- [x] Remove the introductory Team sidebar caption.
+
+- [x] Use shared event presentation in worker sessions, hide token fragments/bookkeeping, render Markdown content and remove raw JSON from normal main/sidebar event details.
+
+- [x] Keep model presets selectable alongside custom/older saved model IDs.
+
+- [x] Fix live vertical jitter: invisible raw events no longer evict meaningful history; expanded live details use a bounded viewport and single-line status. Status-only updates do not force scrolling, and inspecting details pauses follow until Latest.
