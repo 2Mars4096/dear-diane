@@ -4,6 +4,37 @@ import sys
 
 import pytest
 
+
+@pytest.mark.asyncio
+async def test_codex_default_continuation_recovers_and_pins_original_account(monkeypatch, tmp_path):
+    import hashlib
+    from diane.native_workers.codex_home import SCOPE, private_home
+    monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path / "graphs"))
+    session = "01a130eb-2c29-7bd3-891d-914f938dfef2"
+    original, personal = tmp_path / "app-account", tmp_path / "personal"
+    profiles = {"default": {"env": {"CODEX_HOME": str(personal)}}, "app": {"env": {"CODEX_HOME": str(original)}}}
+    monkeypatch.setattr("diane.native_workers.catalog.accounts", lambda: {"codex": profiles})
+    rollout = private_home(original) / "sessions" / f"rollout-test-{session}.jsonl"
+    rollout.parent.mkdir(parents=True)
+    rollout.write_text("preserved history")
+    state = tmp_path / "graphs/native_lead_sessions" / (hashlib.sha256(json.dumps(["chat", str(tmp_path), "codex", "default"]).encode()).hexdigest() + ".json")
+    state.parent.mkdir(parents=True)
+    state.write_text(json.dumps({"native_session_id": session, "session_scope": SCOPE}))
+    calls = []
+    def launch(runtime, profile, prompt, workspace, native_session=""):
+        calls.append((profile["account"], native_session))
+        row = {"type": "result", "session_id": session, "result": "Answer"}
+        return [sys.executable, "-c", f"print({json.dumps(row)!r})"], {}
+    monkeypatch.setattr("diane.native_workers.service.launch", launch)
+    adapter = NativeLeadAdapter("codex")
+    assert (await adapter.run(request(tmp_path), lambda e: None)).status == "completed"
+    assert calls[-1] == ("app", session)
+    assert json.loads(state.read_text())["codex_account_home"] == str(original)
+    # Future continuation uses the recorded account even without a rollout scan.
+    rollout.unlink()
+    assert (await adapter.run(request(tmp_path, run_id="next"), lambda e: None)).status == "completed"
+    assert calls[-1] == ("app", session)
+
 from diane.native_workers.lead import NativeLeadAdapter, _active_sessions
 from diane.native_workers.service import NativeTeam, active_teams
 from diane.server.chat_v2_backend import AgentBackendRunRequest, AgentBackendRunResult, AgentBackendStopped, select_agent_backend_adapter
@@ -29,6 +60,7 @@ async def test_lead_streams_and_resumes_same_account_only(monkeypatch, tmp_path,
     result = await adapter.run(req, events.append)
     assert result.status == "completed" and result.summary == "Answer"
     assert "Session ID: chat" in calls[0][2]
+    assert "team.py --queue" in calls[0][2]  # Empty teams can be updated by the next message.
     assert "GET /api/chats?q=" in calls[0][2]
     assert str(tmp_path / "graphs" / "chats") in calls[0][2]
     assert "Prior context" in calls[0][2]

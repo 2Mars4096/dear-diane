@@ -5260,7 +5260,7 @@ class LocalOrganismToolRuntime:
         )
         from diane.native_workers.service import current_team
         team = current_team.get()
-        if team and "shell_command" in selected and any(profile.get("enabled") for profile in team.profiles.values()):
+        if team and "shell_command" in selected:
             selected = list(dict.fromkeys([*selected, "native_worker"]))
         missing = [tool_id for tool_id in selected if tool_id not in available]
         if missing:

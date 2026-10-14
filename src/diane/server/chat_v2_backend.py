@@ -813,7 +813,7 @@ class SuperDanBackendAdapter:
                 payload={"backend": record["backend"], "worker_id": record["worker_id"],
                          "parent_run_id": request.run_id, "native_session_id": record["native_session_id"], "raw": row},
             ))
-        profiles = {name: {**settings, "permission": request.profile_policy.get("permission_mode", "auto")} for name, settings in (request.profile_policy.get("native_workers") or {}).items()}
+        profiles = {name: {**settings, "enabled": bool(settings.get("backend") or settings.get("enabled")), "permission": request.profile_policy.get("permission_mode", "auto")} for name, settings in (request.profile_policy.get("native_workers") or {}).items()}
         import_path = Path(resolve_graphs_dir()) / "native_imports" / f"{request.thread_id}.json"
         if request.thread_id and Path(request.thread_id).name == request.thread_id and import_path.is_file():
             source = json.loads(import_path.read_text())
@@ -824,8 +824,9 @@ class SuperDanBackendAdapter:
 
         team = NativeTeam(request.run_id, request.workspace_root or str(Path.cwd()), profiles,
                           Path(resolve_graphs_dir()) / "native_workers", emit_child, parent_request=request)
-        if profiles.get("codex", {}).get("enabled"):
-            profiles["codex"].update(_live_steering=True, _interactive=True)
+        for configured_id, settings in profiles.items():
+            if settings.get("backend", configured_id) == "codex" and settings.get("enabled"):
+                settings.update(_live_steering=True, _interactive=True)
         active_teams[request.run_id] = team
         token = current_team.set(team)
         try:
@@ -1451,6 +1452,10 @@ def build_agent_backend_request(
         overrides.get("profile_policy"),
         overrides.get("profile"),
     )
+    team_settings = run.metadata.get("team_settings") or payload.get("team_settings")
+    if isinstance(team_settings, dict):
+        from diane.native_workers.settings import normalized_settings
+        profile_policy.update(normalized_settings(team_settings, profile_policy.get("permission_mode", "auto")))
     mutation_policy = _merged_dict(
         {"mode": "workspace_mutation", "external_side_effects": "deny"},
         payload.get("mutation_policy"),
@@ -3730,7 +3735,13 @@ def _request_with_admitted_operator_messages(
         for item in items
     )
     metadata["admitted_operator_messages"] = existing[-50:]
-    return request.model_copy(update={"metadata": metadata})
+    policy = dict(request.profile_policy)
+    for item in items:
+        settings = (item.metadata.get("command_payload") or {}).get("team_settings")
+        if isinstance(settings, dict):
+            from diane.native_workers.settings import normalized_settings
+            policy.update(normalized_settings(settings, policy.get("permission_mode", "auto")))
+    return request.model_copy(update={"metadata": metadata, "profile_policy": policy})
 
 
 def _operator_message_from_queue_item(

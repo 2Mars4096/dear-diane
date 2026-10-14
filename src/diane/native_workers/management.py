@@ -60,7 +60,7 @@ def record_review(record: dict, attempt: int, decision: str, evidence: list[str]
 
 def worker_summary(record: dict) -> dict:
     """Bound polling context; callers fetch one worker for the complete saved output."""
-    keys = ("worker_id", "parent_run_id", "backend", "status", "workspace_root",
+    keys = ("worker_id", "profile_id", "worker_name", "parent_worker_id", "parent_run_id", "backend", "status", "workspace_root",
             "native_session_id", "attempt", "can_stop", "can_reply", "can_apply")
     result = {key: record[key] for key in keys if key in record}
     # Criteria/review evidence are fetched with the full result, not repeated each poll.

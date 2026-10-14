@@ -3062,6 +3062,9 @@ def _start_payload_from_queue_item(
         "queue_item_id": item.id,
         "operator_context": dict(metadata.get("operator_context") or {}),
     }
+    team_settings = (metadata.get("command_payload") or {}).get("team_settings")
+    if isinstance(team_settings, dict):
+        payload["team_settings"] = dict(team_settings)
     if previous_result:
         payload["previous_backend_result"] = previous_result
     for key in (

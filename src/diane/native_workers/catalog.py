@@ -7,8 +7,10 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tomllib
 
+from .context_window import codex_context_limit, claude_context_env
 from .models import API_PROVIDERS, provider_key, openrouter_key, source_catalog, validate_model_source
 
 RUNTIMES = {"codex": "Codex", "claude": "Claude Code", "antigravity": "Antigravity", "cursor": "Cursor"}
@@ -135,8 +137,8 @@ def catalog() -> dict:
                     pass
         elif runtime == "claude":
             # Full IDs only: older CLIs lack a `fable` alias, and one entry per model keeps the menu unified.
-            models = ["claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
-            model_labels = {"claude-fable-5-1": "Fable 5.1", "claude-opus-5": "Opus 5", "claude-sonnet-5": "Sonnet 5", "claude-haiku-4-5-20251001": "Haiku 4.5"}
+            models = ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+            model_labels = {"claude-fable-5-1": "Fable 5.1", "claude-opus-5-5": "Opus 5.5", "claude-sonnet-5": "Sonnet 5", "claude-haiku-4-5-20251001": "Haiku 4.5"}
             model_efforts = {model: ["low", "medium", "high", "max"] for model in models}
         version = ""
         if executable:
@@ -182,8 +184,16 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
         raise ValueError("Selected account is no longer configured")
     env = dict(os.environ)
     env.update(account["env"])
+    if runtime == "claude":
+        # A Codex account wrapper may redirect HOME; Claude must find the OS
+        # login Keychain/config. Explicit CLAUDE_CONFIG_DIR profiles still win.
+        env["HOME"] = str(user_home())
     env.pop("CLAUDECODE", None)
-    env["PATH"] = os.pathsep.join([str(user_home() / ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin", env.get("PATH", "/usr/bin:/bin")])
+    # LaunchServices omits shell/Conda PATH setup. npm CLI launchers use
+    # /usr/bin/env node; the backend's Python installation may also supply Node.
+    # Keep configured PATH precedence and append this only as a fallback.
+    env["PATH"] = os.pathsep.join([str(user_home() / ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin",
+                                 env.get("PATH", "/usr/bin:/bin"), str(Path(sys.executable).resolve().parent)])
     model, effort = str(profile.get("model") or ""), str(profile.get("effort") or "")
     fast = bool(profile.get("fast"))
     permission = str(profile.get("permission") or "auto")
@@ -207,11 +217,15 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
         return cmd + [objective], env
     if runtime == "codex":
         from .codex_home import prepare_home
-        home = prepare_home(env.get("CODEX_HOME", str(user_home() / ".codex")))
+        source_home = env.get("CODEX_HOME", str(user_home() / ".codex"))
+        context_limit = codex_context_limit(source_home, model) if source == "native" else None
+        home = prepare_home(source_home)
         env["CODEX_HOME"] = str(home)
         env["CODEX_SQLITE_HOME"] = str(home)
         cmd = [executable, "exec"] + (["resume", session] if session else [])
         cmd += ["--json", "--skip-git-repo-check"]
+        if profile.get("_managed_worker"):
+            cmd += ["-c", "features.multi_agent=false"]
         # Explicit overrides also defeat a source config pointing to desktop state.
         cmd += ["-c", f"sqlite_home={json.dumps(str(home))}", "-c", f"log_dir={json.dumps(str(home / 'log'))}", "-c", 'cli_auth_credentials_store="file"']
         if not session:
@@ -226,6 +240,8 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
         cmd += ["-c", 'service_tier="fast"' if fast else 'service_tier="default"']
         if fast:
             cmd += ["-c", "features.fast_mode=true"]
+        if context_limit:
+            cmd += ["-c", f"model_context_window={context_limit}"]
         if source != "native":
             spec = API_PROVIDERS[source]
             key_env = f"DAN_CODEX_{source.upper()}_KEY"
@@ -255,12 +271,18 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
                     env[f"ANTHROPIC_DEFAULT_{role}_MODEL"] = model
                 env["CLAUDE_CODE_SUBAGENT_MODEL"] = model
             cmd += ["--verbose", "--include-partial-messages"]
+            if profile.get("_managed_worker"):
+                cmd += ["--disallowedTools", "Agent", "Task", "TeamCreate"]
             cmd += ["--dangerously-skip-permissions"] if permission == "full" else ["--permission-mode", "plan" if permission == "plan" else "acceptEdits"]
             if fast and not any(row["fast"] for row in catalog()["runtimes"] if row["id"] == runtime):
                 raise ValueError("Update Claude Code to use fast mode in headless workers")
-            if fast and model not in {"opus", "claude-opus-5", "claude-opus-4-8", "claude-fable-5-1"}:
+            if fast and model not in {"opus", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"}:
                 raise ValueError("Claude fast mode requires a supported Opus model")
+            context_env = claude_context_env(model) if source == "native" else {}
+            env.update(context_env)
             settings: dict = {"fastMode": fast}
+            if context_env:
+                settings["env"] = context_env
             if permission == "auto":
                 # Headless runs cannot prompt; let Bash run inside Claude's workspace sandbox instead.
                 settings["sandbox"] = {"enabled": True, "autoAllowBashIfSandboxed": True}

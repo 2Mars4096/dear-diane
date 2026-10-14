@@ -433,7 +433,11 @@ async def append_agent_run_command(
             "task_id": command.task_id or run.task_id,
         }
     )
-    event = store.record_agent_command(normalized)
+    from diane.native_workers.settings import record_with_team_settings
+    try:
+        event = await record_with_team_settings(store, run, normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     snapshot = store.get_task_snapshot(run.task_id)
     response = {
         "command": normalized.model_dump(mode="json"),

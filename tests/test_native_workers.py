@@ -36,6 +36,22 @@ def test_missing_runtime_never_falls_back(monkeypatch):
         runtime_catalog.launch("antigravity", {}, "hello", "/tmp")
 
 
+def test_native_cli_path_includes_backend_runtime_as_fallback(monkeypatch, tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    node = runtime / "node"
+    node.write_text("#!/bin/sh\nexit 0\n")
+    node.chmod(0o755)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(runtime_catalog.sys, "executable", str(runtime / "python"))
+    monkeypatch.setattr(runtime_catalog, "binary", lambda _: "/bin/claude")
+    monkeypatch.setattr(runtime_catalog, "accounts", lambda: {"claude": {"default": {"env": {}}}})
+    _, env = runtime_catalog.launch("claude", {}, "test", str(tmp_path))
+    assert env["PATH"].endswith(str(runtime))
+    result = __import__('subprocess').run(["/usr/bin/env", "node"], env=env, capture_output=True)
+    assert result.returncode == 0
+
+
 @pytest.mark.asyncio
 async def test_parallel_workers_are_scoped_and_capture_sessions(monkeypatch, tmp_path):
     # Compress the former worker lifetime limit while preserving test deadlines.
@@ -398,3 +414,125 @@ def test_claude_provider_histories_are_discovered_without_changing_accounts(monk
     assert sessions.discover(str(tmp_path / "other")) == []
     assert profiles == {"default": {"env": {"CLAUDE_CONFIG_DIR": str(tmp_path / "native")}}}
     assert path.read_bytes() == original
+
+@pytest.mark.asyncio
+async def test_team_capacity_shared_atomic_and_released(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr('diane.native_workers.service.launch', lambda *args: (['fake'], {}))
+    release = asyncio.Event()
+    async def wait(*args):
+        await release.wait()
+    monkeypatch.setattr(NativeTeam, 'run', wait)
+    team = NativeTeam('capacity', str(tmp_path), {'codex': {'enabled': True}, 'claude': {'enabled': True}}, tmp_path / 'workers', parent_request=SimpleNamespace(profile_policy={'team_max_parallel_workers': 2}))
+    try:
+        results = await asyncio.gather(team.start('codex', 'one'), team.start('claude', 'two'), team.start('codex', 'three'), return_exceptions=True)
+        assert sum(isinstance(result, dict) for result in results) == 2
+        assert 'capacity (2)' in str(results[2])
+        release.set()
+        await asyncio.gather(*team.tasks.values())
+        await team.start('codex', 'slot freed')
+    finally:
+        await team.close()
+
+@pytest.mark.parametrize('capacity', [0, 5, -1, True, 2.5, '2', None])
+def test_team_capacity_rejects_invalid_policy(tmp_path, capacity):
+    from types import SimpleNamespace
+    with pytest.raises(ValueError, match='integer from 1 to 4'):
+        NativeTeam('invalid', str(tmp_path), {}, tmp_path / 'workers', parent_request=SimpleNamespace(profile_policy={'team_max_parallel_workers': capacity}))
+
+@pytest.mark.parametrize('capacity', [1, 2, 3, 4])
+def test_team_capacity_accepts_supported_policy(tmp_path, capacity):
+    from types import SimpleNamespace
+    team = NativeTeam('valid', str(tmp_path), {}, tmp_path / 'workers', parent_request=SimpleNamespace(profile_policy={'team_max_parallel_workers': capacity}))
+    assert team.max_parallel_workers == capacity
+    assert NativeTeam('default', str(tmp_path), {}, tmp_path / 'default').max_parallel_workers == 2
+
+
+def test_astra_native_context_uses_codex_ceiling(monkeypatch, tmp_path):
+    home = tmp_path / 'account'
+    home.mkdir(exist_ok=True)
+    (home / 'models_cache.json').write_text(json.dumps({'models': [{'slug': 'gpt-6-astra', 'max_context_window': 872000}]}))
+    monkeypatch.setattr(runtime_catalog, 'binary', lambda _: '/bin/codex')
+    command, _ = runtime_catalog.launch('codex', {'model': 'gpt-6-astra'}, 'test', str(tmp_path))
+    assert 'model_context_window=872000' in command
+    command, _ = runtime_catalog.launch('codex', {'model': 'gpt-6-sol'}, 'test', str(tmp_path))
+    assert not any('model_context_window=' in part for part in command)
+
+
+def test_claude_launch_requests_supported_full_context(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime_catalog, 'binary', lambda _: '/bin/claude')
+    monkeypatch.setenv('CLAUDE_CODE_DISABLE_1M_CONTEXT', '1')
+    monkeypatch.setenv('CLAUDE_CODE_AUTO_COMPACT_WINDOW', '200000')
+    command, env = runtime_catalog.launch('claude', {'model': 'claude-opus-5'}, 'test', str(tmp_path))
+    assert env['CLAUDE_CODE_DISABLE_1M_CONTEXT'] == '0'
+    assert env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'] == '1000000'
+    settings = json.loads(command[command.index('--settings') + 1])
+    assert settings['env']['CLAUDE_CODE_AUTO_COMPACT_WINDOW'] == '1000000'
+    assert command[command.index('--model') + 1] == 'claude-opus-5'
+
+@pytest.mark.asyncio
+async def test_named_roster_routes_models_and_limits_each_slot(tmp_path, monkeypatch):
+    from diane.tools.native_worker import native_worker
+    from diane.native_workers.service import current_team
+    seen = []
+    def launch(backend, profile, *args):
+        seen.append((backend, profile['model']))
+        return ['fake'], {}
+    monkeypatch.setattr('diane.native_workers.service.launch', launch)
+    release = asyncio.Event()
+    async def wait(*args):
+        await release.wait()
+    monkeypatch.setattr(NativeTeam, 'run', wait)
+    team = NativeTeam('roster', str(tmp_path), {
+        'builder': {'enabled': True, 'backend': 'codex', 'name': 'Builder', 'model': 'model-a'},
+        'reviewer': {'enabled': True, 'backend': 'codex', 'name': 'Reviewer', 'model': 'model-b'},
+    }, tmp_path / 'workers')
+    token = current_team.set(team)
+    try:
+        roster = await native_worker('status')
+        assert [row['profile_id'] for row in roster['configured_workers']] == ['builder', 'reviewer']
+        with pytest.raises(ValueError, match='Multiple configured'):
+            await team.start('codex', 'ambiguous')
+        with pytest.raises(ValueError, match='does not match'):
+            await team.start('claude', 'wrong backend', profile_id='builder')
+        a = await native_worker('start', backend='codex', profile_id='builder', prompt='build', isolate=False)
+        with pytest.raises(ValueError, match='busy'):
+            await team.start('codex', 'duplicate', profile_id='builder')
+        b = await team.start('codex', 'review', profile_id='reviewer')
+        assert a['worker_name'] == 'Builder' and b['worker_name'] == 'Reviewer'
+        assert seen == [('codex', 'model-a'), ('codex', 'model-b')]
+        release.set()
+        await asyncio.gather(*team.tasks.values())
+        team.profiles['builder']['model'] = 'new-model'
+        await native_worker('resume', worker_id=a['worker_id'], prompt='continue')
+        assert seen[-1] == ('codex', 'model-a')
+    finally:
+        current_team.reset(token)
+        await team.close()
+
+
+@pytest.mark.parametrize('runtime', ['codex', 'claude'])
+def test_managed_workers_disable_native_delegation(monkeypatch, tmp_path, runtime):
+    monkeypatch.setattr(runtime_catalog, 'binary', lambda _: '/bin/' + runtime)
+    command, _ = runtime_catalog.launch(runtime, {'_managed_worker': True, 'allow_children': True}, 'task', str(tmp_path))
+    if runtime == 'codex':
+        assert 'features.multi_agent=false' in command
+    else:
+        offset = command.index('--disallowedTools')
+        assert command[offset + 1:offset + 4] == ['Agent', 'Task', 'TeamCreate']
+    lead, _ = runtime_catalog.launch(runtime, {}, 'task', str(tmp_path))
+    assert 'features.multi_agent=false' not in lead
+    assert '--disallowedTools' not in lead
+
+
+@pytest.mark.parametrize('named', [False, True])
+def test_claude_uses_os_home_without_losing_explicit_profile(monkeypatch, tmp_path, named):
+    monkeypatch.setenv('HOME', str(tmp_path / 'codex-account'))
+    monkeypatch.delenv('CLAUDE_CONFIG_DIR', raising=False)
+    monkeypatch.setattr(runtime_catalog, 'user_home', lambda: tmp_path / 'os-home')
+    monkeypatch.setattr(runtime_catalog, 'binary', lambda _: '/bin/claude')
+    profile_env = {'CLAUDE_CONFIG_DIR': str(tmp_path / 'selected-claude')} if named else {}
+    monkeypatch.setattr(runtime_catalog, 'accounts', lambda: {'claude': {'default': {'env': profile_env}}})
+    _, env = runtime_catalog.launch('claude', {}, 'test', str(tmp_path))
+    assert env['HOME'] == str(tmp_path / 'os-home')
+    assert env.get('CLAUDE_CONFIG_DIR') == profile_env.get('CLAUDE_CONFIG_DIR')

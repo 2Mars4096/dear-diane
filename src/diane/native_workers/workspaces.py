@@ -10,6 +10,14 @@ import threading
 
 _locks: dict[str, threading.Lock] = {}
 
+# Run-scoped RPC files must never become worker source or integration changes.
+_SOURCE_PATHS = ('.', ':(exclude,glob)**/.diane-children-*/**', ':(exclude,glob)**/.dan-team-*/**')
+
+
+def _is_bridge_file(name: str) -> bool:
+    return any(part.startswith(('.diane-children-', '.dan-team-')) for part in Path(name).parts)
+
+
 
 def git(root: str, *args: str, data: bytes | None = None, env=None) -> bytes:
     result = subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', '-C', root, *args], input=data,
@@ -33,7 +41,7 @@ def fingerprint(path: Path) -> str:
 
 
 def names(root: str) -> list[str]:
-    return sorted(set(git(root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard').decode().split('\0')) - {''})
+    return sorted(name for name in set(git(root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard').decode().split('\0')) if name and not _is_bridge_file(name))
 
 
 def tree(root: str) -> str:
@@ -41,7 +49,7 @@ def tree(root: str) -> str:
     with tempfile.TemporaryDirectory(prefix='diane-index-') as temporary:
         env = {**os.environ, 'GIT_INDEX_FILE': str(Path(temporary) / 'index')}
         git(root, 'read-tree', 'HEAD', env=env)
-        git(root, 'add', '-A', '--', '.', env=env)
+        git(root, 'add', '-A', '--', *_SOURCE_PATHS, env=env)
         return git(root, 'write-tree', env=env).decode().strip()
 
 
@@ -55,10 +63,10 @@ def create(base: Path, worker_id: str, source: str) -> dict:
     target.parent.mkdir(parents=True, exist_ok=True)
     git(root, 'worktree', 'add', '--detach', str(target), head)
     try:
-        patch = git(root, 'diff', '--binary', head, '--', '.')
+        patch = git(root, 'diff', '--binary', head, '--', *_SOURCE_PATHS)
         if patch: git(str(target), 'apply', '--binary', '-', data=patch)
         for name in git(root, 'ls-files', '-z', '--others', '--exclude-standard').decode().split('\0'):
-            if not name: continue
+            if not name or _is_bridge_file(name): continue
             original, copy = Path(root) / name, target / name
             if not original.resolve().is_relative_to(Path(root)) or original.is_symlink():
                 raise ValueError(f'Cannot copy external or symbolic untracked file: {name}')

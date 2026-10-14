@@ -90,3 +90,19 @@ async def test_failed_launch_admission_removes_only_its_new_worktree(repo, tmp_p
     assert not team.records
     assert git(repo, 'worktree', 'list', '--porcelain').count(b'worktree ') == 1
     assert (repo / 'a.txt').read_text() == 'user work\n'
+
+
+def test_child_bridges_are_not_copied_or_integrated(repo, tmp_path):
+    from pathlib import Path
+    bridge = repo / '.diane-children-parent'
+    bridge.mkdir()
+    (bridge / 'team.py').write_text('private bridge')
+    row = create(tmp_path / 'state/workers', 'child', str(repo))
+    workspace = Path(row['workspace_root'])
+    assert not (workspace / bridge.name).exists()
+    nested = workspace / '.diane-children-child'
+    nested.mkdir()
+    (nested / 'request.response').write_text('runtime data')
+    (workspace / 'a.txt').write_text('child edit')
+    assert apply(row)['files'] == ['a.txt']
+    assert not (repo / nested.name).exists()
