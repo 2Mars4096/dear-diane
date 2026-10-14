@@ -1,24 +1,35 @@
 """Control a native child of the current Diane manager."""
 from diane.native_workers.service import current_team, public_worker
+from diane.native_workers.management import record_review, worker_summary
 
 TOOL_METADATA = {
     "tool_id": "native_worker", "category": "agent",
-    "description": "Delegate an independent task to an enabled Diane, Codex, Claude Code, or Antigravity worker. Start returns immediately; start multiple workers to run in parallel. Poll status to read results. Use resume for a follow-up to a settled worker. Start isolates Git edits by default; set isolate=false for shared read-only work or non-Git folders. Review the owned worktree, then apply to integrate without overwriting changed source files. Inspect all results before ending the manager run; running children stop when the manager exits.",
+    "description": "Delegate an independent task to an enabled Diane, Codex, Claude Code, Cursor, or Antigravity worker. Start returns immediately; start multiple workers to run in parallel. Optionally supply task scope and acceptance criteria in contract. Team-wide status returns compact previews; fetch status with worker_id for full output and current attempt before reviewing. Runtime completion is not acceptance: record review with the current attempt, a decision and inspected evidence. This records the lead's judgment, not independent verification. Use resume for a follow-up only to the settled worker needing repair; it retains the task contract and clears the current review. Start isolates Git edits by default; set isolate=false for shared read-only work or non-Git folders. Review the owned worktree, then apply to integrate without overwriting changed source files. Inspect all results before ending the manager run; running children stop when the manager exits.",
     "parameters": {"type": "object", "properties": {
-        "action": {"type": "string", "enum": ["start", "status", "stop", "resume", "apply"]},
+        "action": {"type": "string", "enum": ["start", "status", "stop", "resume", "apply", "review"]},
         "backend": {"type": "string", "enum": ["dan", "codex", "claude", "antigravity", "cursor"]},
         "isolate": {"type": "boolean", "default": True, "description": "Use an owned Git worktree for parallel edits. Set false for shared read-only work or non-Git folders."},
+        "contract": {"type": "object", "additionalProperties": False, "properties": {
+            "scope": {"type": "string", "maxLength": 4000},
+            "acceptance": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 2000}}},
+            "description": "Optional start-only task scope and acceptance criteria; preserved on resume. Does not grant permissions."},
+        "attempt": {"type": "integer", "description": "For review: current attempt from status; rejects stale reviews."},
+        "decision": {"type": "string", "enum": ["accepted", "revise", "blocked"]},
+        "evidence": {"type": "array", "items": {"type": "string"}, "description": "For review: checks, artifact references and unresolved criteria actually inspected by the lead."},
         "prompt": {"type": "string"}, "worker_id": {"type": "string"}}, "required": ["action"]},
     "examples": [{"input": {"action": "start", "backend": "codex", "prompt": "Review the test coverage"}, "output": {"status": "running"}}],
-    "returns": {"type": "object", "description": "Worker identity, native session, status and output, or a list of workers."},
+    "returns": {"type": "object", "description": "Team status gives compact previews with truncation flags. Status with worker_id returns full output/contract/attempt. Completion is not acceptance: inspect full results, then record review with the current attempt and evidence. Resume only the worker needing repair; review resets on resume."},
 }
 
-async def native_worker(action: str, backend: str = "", prompt: str = "", worker_id: str = "", isolate: bool = True) -> dict:
+async def native_worker(action: str, backend: str = "", prompt: str = "", worker_id: str = "", isolate: bool = True,
+                        contract: dict | None = None, attempt: int = -1, decision: str = "", evidence: list[str] | None = None) -> dict:
     team = current_team.get()
     if team is None:
         raise ValueError("Native workers require a workbench manager run")
+    if contract is not None and action != "start":
+        raise ValueError("Task contracts are supplied only when starting a worker")
     if action == "start":
-        return public_worker(await team.start(backend, prompt, isolate=isolate))
+        return public_worker(await team.start(backend, prompt, isolate=isolate, contract=contract))
     if action == "resume":
         previous = team.records.get(worker_id)
         if not previous:
@@ -36,6 +47,18 @@ async def native_worker(action: str, backend: str = "", prompt: str = "", worker
             return result
     if action == "stop":
         return public_worker(await team.stop(worker_id))
+    if action == "review":
+        async with team.admission_lock:
+            row = team.records.get(worker_id)
+            if not row:
+                raise ValueError("Unknown child worker")
+            task = team.tasks.get(worker_id)
+            if task and not task.done():
+                raise ValueError("Wait for this worker to settle before reviewing")
+            review = record_review(row, attempt, decision, evidence)
+            team.save(row)
+            team.event(row, {"type": "worker.reviewed", "review": review})
+            return public_worker(row)
     if action == "status":
         import asyncio
         pending = [task for key, task in team.tasks.items() if not task.done() and (not worker_id or key == worker_id)]
@@ -45,5 +68,7 @@ async def native_worker(action: str, backend: str = "", prompt: str = "", worker
             if worker_id not in team.records:
                 raise ValueError("Unknown child worker")
             return public_worker(team.records[worker_id])
-        return {"workers": [public_worker(row) for row in team.records.values()], "enabled_backends": [key for key, profile in team.profiles.items() if profile.get("enabled")]}
+        return {"workers": [worker_summary(public_worker(row)) for row in team.records.values()],
+                "detail_hint": "Use status with worker_id for full output, task contract and lead review. Completion is not acceptance; inspect evidence before recording review. Resume only the worker needing revision.",
+                "enabled_backends": [key for key, profile in team.profiles.items() if profile.get("enabled")]}
     raise ValueError("Unknown worker action")

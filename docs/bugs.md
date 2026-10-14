@@ -1,5 +1,9 @@
 # Known Issues & Failed Approaches
 
+- **Native management guidance 2026-10-14:** the built-in runtime exports tool description/parameters but omits metadata `returns`. Review/handoff guidance initially placed only in `returns` reached native bridge leads but not built-in leads before a status call. Moved guidance into the actual tool description; do not rely on return metadata for agent instructions.
+
+- **Cell experiment review 2026-10-14:** the archived hyperstructure trial reports ~6x direct-baseline tokens, output-limit repairs, an initially ambiguous hidden oracle and broad executor replay. Do not treat its quality-passing artifacts as proof of reliable/efficient orchestration. Preserve explicit criteria, compact handoffs, separate runtime/acceptance state and worker-specific repair; see [review/archive](UI-plans/2-1-native-session-management.md). Historical trials were not rerun.
+
 - **October 14 title-bar alignment (source fixed):** native traffic lights used fixed window coordinates while header controls scale with renderer zoom. Preload now reports the header control center; validated main-frame IPC converts CSS pixels to window points. Native checks pass at 90%, 100%, 125%; installation deferred by user. Initial isolated fixture incorrectly required Electron’s package path (CLI export) instead of the built-in `electron`; corrected import passes.
 - **October 14 commit verification:** an initial test invocation named nonexistent `tests/test_native_usage.py` and collected nothing; corrected to existing token/native-worker tests and `tests/test_usage.py`.
 

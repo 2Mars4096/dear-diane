@@ -107,6 +107,8 @@ Attachments can be added with the paperclip, drag-and-drop, or clipboard file it
 
 Lead runs the main conversation. Team selects agents it can delegate to. Both use the same model controls.
 
+The lead can give a team member a bounded scope and acceptance criteria, inspect its result, and record an evidence-based review. Runtime completion and the lead's acceptance are separate; a follow-up keeps the task criteria and requires a fresh review.
+
 Choose a native account or an API provider for each supported agent. API providers include OpenAI, DeepSeek, Moonshot / Kimi, and OpenRouter. Each provider remembers its model and reasoning choice. Unsupported controls remain disabled.
 
 | Agent | Model sources |

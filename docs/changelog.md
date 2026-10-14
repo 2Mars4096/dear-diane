@@ -1,6 +1,14 @@
 # Changelog
 
 ## 2026-10-14
+- [fix] Integration review found that the built-in lead omits tool return metadata. Put compact-handoff and attempt-specific review instructions in the native-worker tool description it actually receives; clarify optional managed-Team scope and the distinction between lead assessment and independent verification.
+
+## 2026-10-14
+- [feat] Apply simplified-cell experiment lessons to native session management: optional persistent scope/acceptance contracts, bounded Team polling with full per-worker retrieval, and evidence-bearing lead reviews tied to a settled attempt. Resume preserves criteria and clears the current review; native runtimes and permissions remain unchanged.
+- [infra] Archive the simplified-cell worktree, including ignored/uncommitted files and complete branch history; verify 557 files/symlinks and the Git bundle, remove its worktree registration, and retain its branch. Three registered worktrees remain. Record detailed findings and local recovery in `docs/UI-plans/2-1-native-session-management.md`.
+- [test] All 63 focused management/native-worker/native-lead/Codex-live/worktree tests pass, including standalone bridge contract/review round trips and stale-review rejection. Source changes await safe backend restart and actual delegated-session acceptance; running sessions were not restarted.
+
+## 2026-10-14
 - [docs] Restructure README around setup, agent work, reading and settings. Merge repeated descriptions, relocate misplaced appearance/planning notes and remove internal schema commentary. Preserve commands, configuration examples, shortcuts and practical limitations; prose-only verification passes.
 
 ## 2026-10-14

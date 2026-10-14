@@ -163,10 +163,16 @@ class NativeLeadAdapter:
                 command = f"{shlex.quote(sys.executable)} {shlex.quote(str(client))} --queue {shlex.quote(str(directory))}"
                 prompt += ("\n\nYou are the lead agent. Enabled team members: " + ", ".join(enabled)
                     + ". Delegate useful independent tasks with your shell tool using:\n"
-                    + command + " start --backend NAME --prompt 'task'\n"
+                    + command + " start --backend NAME --prompt 'task' [--scope 'bounded scope'] [--acceptance 'checkable outcome']\n"
                     + command + " status [--worker-id ID]\n"
                     + command + " resume --worker-id ID --prompt 'follow-up'\n"
                     + command + " stop --worker-id ID\n"
+                    + command + " review --worker-id ID --attempt N --decision accepted|revise|blocked --evidence 'check or artifact inspected'\n"
+                    + "Repeat --acceptance or --evidence for multiple entries. Team-wide status gives compact previews; "
+                    + "fetch status --worker-id ID for the complete result and current attempt before reviewing. "
+                    + "Completion means the runtime finished, not that the task passed acceptance. Record your review against actual evidence; "
+                    + "a lead review is not independent verification. Resume only the worker needing repair, preserving successful siblings. "
+                    + "Resume retains the task contract and clears the current review. Do not retry indefinitely. "
                     + "Start returns immediately; independent tasks can run in parallel. Inspect team results before finishing. "
                     + "The team is scoped to this run and stops when you finish. Team members cannot recursively delegate.")
             # Long-lived processes must be started by Diane, or they die with this run.

@@ -186,7 +186,11 @@ Read-only discovery: `GET /api/native-workers/catalog`, `GET /api/native-session
 - Agent-run execute backends: `native_codex`, `claude`, `antigravity`, `cursor`; `super_dan` remains the DAN lead. Existing `codex` backend is retained for compatibility; use `native_codex` for the new source-aware Codex adapter.
 - `profile_policy.lead_profile`: account, provider, model, effort, fast; also accepted for `super_dan`. Continuation IDs are server-owned and scoped to thread/folder/runtime/account/source.
 - `profile_policy.native_workers`: enabled profiles keyed by `dan`, `codex`, `claude`, `antigravity`, `cursor`; DAN profiles optionally set `base_url` for legacy callers.
-- `native_worker` accepts start/status/stop/resume/apply. Native leads receive an equivalent run-scoped shell bridge. Team members cannot recursively delegate.
+- `native_worker` accepts start/status/stop/resume/apply/review. Native leads receive an equivalent run-scoped shell bridge. Team members cannot recursively delegate.
+- `start` optionally accepts `contract={"scope":"Parser only", "acceptance":["Malformed input is rejected"]}`. These are task instructions, not additional permissions. The contract persists on resume; a new scope requires a new worker.
+- Team-wide `status` returns bounded previews and explicit truncation flags. Fetch `status(worker_id=...)` for the full result, contract and current `attempt`; do not accept work based solely on a truncated preview.
+- Record an assessment using `review(worker_id=..., attempt=N, decision="accepted"|"revise"|"blocked", evidence=["test outcome or inspected artifact reference"])`. Reviews require a settled managed worker and current attempt; only completed attempts can be accepted. Evidence records the lead's assessment, not independent verification. Resume only the worker needing correction; it increments the attempt and clears its current review while preserving prior reviews in events. Review does not automatically retry or apply edits.
+- CLI equivalents: `start --scope 'Parser only' --acceptance 'Malformed input is rejected'` (alongside backend/prompt); `review --worker-id ID --attempt N --decision accepted --evidence 'tests/parser.py passed'`. Repeat `--acceptance`/`--evidence` for multiple entries. Existing required queue/client arguments still apply.
 
 ### Independent model sources
 

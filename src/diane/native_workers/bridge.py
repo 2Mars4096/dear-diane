@@ -1,7 +1,7 @@
 """Run-scoped file RPC so CLI leads can use Diane's enabled team via shell tools.
 
 The client is standalone stdlib Python: no installed Diane package is required in
-an agent's shell. The server executes only the four fixed worker actions.
+an agent's shell. The server executes only the fixed worker actions.
 """
 from __future__ import annotations
 
@@ -48,18 +48,27 @@ async def serve(directory: Path, team):
 def main():
     parser = argparse.ArgumentParser(description="Control the enabled team for this Dear Diane lead run")
     parser.add_argument("--queue", required=True)
-    parser.add_argument("action", choices=["start", "status", "stop", "resume", "apply"])
+    parser.add_argument("action", choices=["start", "status", "stop", "resume", "apply", "review"])
     parser.add_argument("--shared-workspace", action="store_true")
     parser.add_argument("--backend", default="")
     parser.add_argument("--prompt", default="")
     parser.add_argument("--worker-id", default="")
+    parser.add_argument("--scope", default="")
+    parser.add_argument("--acceptance", action="append", default=[], help="Repeat for each acceptance criterion")
+    parser.add_argument("--attempt", type=int, default=-1)
+    parser.add_argument("--decision", choices=["accepted", "revise", "blocked"], default="")
+    parser.add_argument("--evidence", action="append", default=[], help="Repeat for each inspected check or artifact")
     args = parser.parse_args()
     directory = Path(args.queue)
     if not directory.is_dir():
         parser.error("This lead run has ended; its team bridge is closed")
     request = directory / f"{uuid4().hex}.request"
     temporary = request.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"action": args.action, "backend": args.backend, "prompt": args.prompt, "worker_id": args.worker_id, "isolate": not args.shared_workspace}))
+    payload = {"action": args.action, "backend": args.backend, "prompt": args.prompt, "worker_id": args.worker_id,
+               "isolate": not args.shared_workspace, "attempt": args.attempt, "decision": args.decision, "evidence": args.evidence}
+    if args.scope or args.acceptance:
+        payload["contract"] = {"scope": args.scope, "acceptance": args.acceptance}
+    temporary.write_text(json.dumps(payload))
     temporary.replace(request)
     response = request.with_suffix(".response")
     deadline = time.monotonic() + 120

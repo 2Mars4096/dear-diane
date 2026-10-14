@@ -95,15 +95,26 @@ async def test_bridge_can_delegate_to_dan_and_reject_disabled_workers(monkeypatc
         out, _ = await asyncio.wait_for(process.communicate(), 5)
         return json.loads(out)
     try:
-        result = await call("start", "--backend", "dan", "--prompt", "review", "--shared-workspace")
+        result = await call("start", "--backend", "dan", "--prompt", "review", "--shared-workspace",
+                            "--scope", "Inspect parser", "--acceptance", "Explain malformed input behavior")
         assert result["ok"] and "profile" not in result["result"]
         worker = result["result"]["worker_id"]
         status = await call("status", "--worker-id", worker)
         assert status["result"]["response"] == "Reviewed"
         assert seen[0].profile_policy["model"] == "test"
+        assert "Explain malformed input behavior" in seen[0].objective
+        summary = (await call("status"))["result"]["workers"][0]
+        assert summary["review_decision"] == "unreviewed"
+        reviewed = await call("review", "--worker-id", worker, "--attempt", "1", "--decision", "accepted",
+                              "--evidence", "Inspected parser result")
+        assert reviewed["result"]["lead_review"]["decision"] == "accepted"
+        assert not (await call("review", "--worker-id", worker, "--attempt", "0", "--decision", "accepted",
+                              "--evidence", "Stale review"))["ok"]
         assert not (await call("start", "--backend", "claude", "--prompt", "review"))["ok"]
         assert (await call("resume", "--worker-id", worker, "--prompt", "follow-up"))["ok"]
-        await call("status", "--worker-id", worker)
+        resumed = (await call("status", "--worker-id", worker))["result"]
+        assert resumed["attempt"] == 2 and resumed["lead_review"] is None
+        assert resumed["task_contract"]["scope"] == "Inspect parser"
         assert seen[-1].history[1]["content"] == "Reviewed"
     finally:
         server.cancel(); await asyncio.gather(server, return_exceptions=True); await team.close()

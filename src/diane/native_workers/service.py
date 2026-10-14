@@ -47,11 +47,11 @@ class NativeTeam:
         if self.emit:
             self.emit(record, row)
 
-    async def start(self, backend: str, prompt: str, worker_id: str = "", isolate: bool = False) -> dict:
+    async def start(self, backend: str, prompt: str, worker_id: str = "", isolate: bool = False, contract: dict | None = None) -> dict:
         async with self.admission_lock:
-            return await self._start(backend, prompt, worker_id, isolate)
+            return await self._start(backend, prompt, worker_id, isolate, contract)
 
-    async def _start(self, backend: str, prompt: str, worker_id: str = "", isolate: bool = False) -> dict:
+    async def _start(self, backend: str, prompt: str, worker_id: str = "", isolate: bool = False, contract: dict | None = None) -> dict:
         profile = self.profiles.get(backend, {})
         if not profile.get("enabled"):
             raise ValueError("Enable this worker in the workbench first")
@@ -69,6 +69,10 @@ class NativeTeam:
         selected_profile = previous["profile"] if previous else profile
         if previous and previous.get("can_stop") is False:
             raise ValueError("This subagent is controlled by its lead")
+        from .management import normalize_contract, task_prompt, begin_attempt
+        if previous and contract is not None:
+            raise ValueError("A resumed worker retains its task contract; start a new worker for a new scope")
+        task_contract = normalize_contract(previous.get("task_contract") if previous else contract)
         session = previous.get("native_session_id", "") if previous else str(profile.get("resume_session") or "")
         from .codex_home import SCOPE
         if backend == "codex" and previous and previous.get("session_scope") != SCOPE:
@@ -78,6 +82,7 @@ class NativeTeam:
                       "do not repeat external side effects without checking their outcome.\n\n"
                       + previous["prompt"] + "\n\nLast saved output:\n" + previous.get("response", "")
                       + "\n\nUser instruction:\n" + prompt)
+        prompt = task_prompt(prompt, task_contract)
         identity = previous["worker_id"] if previous else uuid4().hex
         isolation = {}
         if isolate and not previous:
@@ -93,6 +98,7 @@ class NativeTeam:
                                       "profile": dict(profile), "workspace_root": workspace, "created_at": time.time(), "native_session_id": ""}
                 history = (record.get("history", []) + [{"role": "user", "content": record["prompt"]}, {"role": "assistant", "content": record["response"]}] if previous else [])
                 record["history"] = history
+                begin_attempt(record, task_contract)
                 record.update(status="running", prompt=prompt, response="", error="", activity="Starting", actions=[{"text": "Starting", "at": time.time()}])
                 self.records[record["worker_id"]] = record
                 record["inherited_policy"] = {key: getattr(self.parent_request, key, {}) for key in ("mutation_policy", "approval_policy", "tool_policy")} if self.parent_request else record.get("inherited_policy", {})
@@ -117,6 +123,7 @@ class NativeTeam:
                 record["native_session_id"] = session
             elif session:
                 record["native_session_id"] = session
+            begin_attempt(record, task_contract)
             record.update(status="running", prompt=prompt, response="", error="", activity="Starting", actions=[{"text": "Starting", "at": time.time()}])
             self.records[record["worker_id"]] = record
             self.save(record)

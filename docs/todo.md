@@ -1,5 +1,10 @@
 # Todo
 
+- [x] Review cell-derived native management integration; fix built-in lead guidance exposure and document its optional, managed-Team-only scope — [review](UI-plans/2-1-native-session-management.md).
+
+- [x] Archive/prune the simplified-cell worktree and apply its task-contract, compact-handoff and attempt-specific review lessons to native session management — [review](UI-plans/2-1-native-session-management.md).
+- [ ] Activate native session management changes on the next safe backend restart and verify one live delegation/review/follow-up — [acceptance](UI-plans/2-1-native-session-management.md).
+
 - [x] Humanize and structure README; remove repeated descriptions and internal implementation commentary — [UI documentation](UI-plans/1-work-notes-gui.md).
 
 - [x] Align macOS traffic lights with the header across zoom levels; verify native geometry at 90%, 100% and 125%.
