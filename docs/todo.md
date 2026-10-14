@@ -501,4 +501,6 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
 
 - [x] Stabilize streaming conversation layout: retain meaningful activity with stable IDs, bound live detail height and pause auto-follow while inspecting details.
 
-- [ ] Publish v0.1.7 with Team/worktree, session reliability and UI improvements; verify release assets and update manifest.
+- [x] Publish v0.1.7 (`ffbe972a`); workflow 38555602711 succeeds, five public assets and 0.1.7 update manifest verified.
+
+- [x] Fix worker elapsed timer decreasing when rolling action entries expire; durable attempt clock and independent ticking. Post-v0.1.7 follow-up, not yet installed.

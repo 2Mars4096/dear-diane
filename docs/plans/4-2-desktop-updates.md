@@ -175,4 +175,4 @@ Release scope remains the desktop shell for existing configured Python-backend i
 
 ## 0.1.7 release
 - [x] Prepare release notes and desktop version metadata.
-- [ ] Publish tag v0.1.7 and verify non-draft release, five Mac assets and public update manifest.
+- [x] Publish tag v0.1.7 (`ffbe972a`); workflow 38555602711 succeeds. Non-draft stable release has five nonempty assets; anonymous latest-mac.yml reports 0.1.7.

@@ -162,3 +162,5 @@
 - [x] Keep model presets selectable alongside custom/older saved model IDs.
 
 - [x] Fix live vertical jitter: invisible raw events no longer evict meaningful history; expanded live details use a bounded viewport and single-line status. Status-only updates do not force scrolling, and inspecting details pauses follow until Latest.
+
+- [x] Fix worker elapsed timer decreasing when rolling action entries expire; durable attempt clock and independent ticking. Post-v0.1.7 follow-up, not yet installed.

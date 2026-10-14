@@ -1,6 +1,13 @@
 # Changelog
 
 ## 2026-10-14
+- [infra] Publish v0.1.7 from ffbe972a; Actions 38555602711 build/publish succeed. Verify public stable release with DMG/ZIP, both blockmaps and downloadable version 0.1.7 update manifest. Timer follow-up is subsequent source work and is not included in the immutable v0.1.7 tag.
+- [test] Worker timer follow-up passes 12 frontend and 28 backend checks plus production build/budgets.
+
+## 2026-10-14
+- [fix] Post-v0.1.7 follow-up: worker elapsed time uses a durable attempt start (session creation fallback), not the oldest rolling activity. Tick independently of network polling; legitimate resumes begin a new attempt clock.
+
+## 2026-10-14
 - [test] v0.1.7 release candidate passes 531 frontend tests, 272 backend tests, ten publisher tests and production build/bundle budgets. Shutdown regression requires process-inspection permission; scroll regression now tests a synchronously rendered disclosure rather than depending on lazy-module scheduling.
 - [infra] Prepare v0.1.7 notes and desktop version metadata. Publication and public asset verification pending.
 
