@@ -9,6 +9,41 @@ import tempfile
 SCOPE = "diane-v1"
 
 
+def continuation_account(requested: str, saved_home: str, session: str, profiles: dict) -> tuple[str, str]:
+    """Pin a durable thread to its configured account, including legacy default aliases."""
+    homes = {name: str(Path(p.get("env", {}).get("CODEX_HOME", "")).expanduser().resolve())
+             for name, p in profiles.items() if p.get("env", {}).get("CODEX_HOME")}
+    selected = homes.get(requested, "")
+    if saved_home:
+        target = str(Path(saved_home).expanduser().resolve())
+        matches = [name for name, home in homes.items() if home == target]
+        if not matches:
+            raise ValueError("The original Codex account for this conversation is no longer configured")
+        return (requested if requested in matches else matches[0]), target
+    if session and requested == "default":
+        # Older state stored only the alias. Recover solely from configured,
+        # Diane-owned account homes; never copy rollouts between accounts.
+        from uuid import UUID
+        try:
+            UUID(session)
+        except ValueError:
+            return requested, selected
+        found = set()
+        for home in set(homes.values()):
+            private = private_home(home)
+            if any(any((private / folder).glob(f"**/*-{session}.jsonl"))
+                   for folder in ("sessions", "archived_sessions")):
+                found.add(home)
+        if selected in found:
+            return requested, selected
+        if len(found) > 1:
+            raise ValueError("This Codex thread exists in multiple accounts; select its original account")
+        if found:
+            target = found.pop()
+            return next(name for name, home in homes.items() if home == target), target
+    return requested, selected
+
+
 def private_home(source: str | Path) -> Path:
     from diane.server.paths import resolve_graphs_dir
     identity = hashlib.sha256(str(Path(source).expanduser().resolve()).encode()).hexdigest()[:24]

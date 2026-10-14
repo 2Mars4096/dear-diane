@@ -4,6 +4,25 @@ from pathlib import Path
 from diane.native_workers.codex_home import prepare_home, private_home
 
 
+def test_continuation_never_falls_back_from_removed_pinned_account(tmp_path):
+    import pytest
+    from diane.native_workers.codex_home import continuation_account
+    profiles = {"default": {"env": {"CODEX_HOME": str(tmp_path / "personal")}}}
+    with pytest.raises(ValueError, match="original Codex account"):
+        continuation_account("default", str(tmp_path / "removed"), "session", profiles)
+
+
+def test_legacy_named_account_does_not_search_other_accounts(monkeypatch, tmp_path):
+    from diane.native_workers.codex_home import continuation_account
+    monkeypatch.setenv("DAN_GRAPHS_DIR", str(tmp_path / "graphs"))
+    session = "01a130eb-2c29-7bd3-891d-914f938dfef2"
+    homes = {name: {"env": {"CODEX_HOME": str(tmp_path / name)}} for name in ("personal", "app")}
+    rollout = private_home(tmp_path / "app") / "sessions" / f"rollout-test-{session}.jsonl"
+    rollout.parent.mkdir(parents=True)
+    rollout.touch()
+    assert continuation_account("personal", "", session, homes) == ("personal", str(tmp_path / "personal"))
+
+
 def test_private_storage_copies_only_inputs_and_keeps_local_refresh(monkeypatch, tmp_path):
     monkeypatch.setenv('DAN_GRAPHS_DIR', str(tmp_path / 'graphs'))
     source = tmp_path / 'desktop'; source.mkdir()

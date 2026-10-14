@@ -13,6 +13,20 @@ from diane.server.chat_request import ChatMessageRequest
 from diane.server.chat_v2_store import ChatV2Store
 
 
+@pytest.mark.asyncio
+async def test_startup_disconnect_reports_stage_and_redacts_stderr(tmp_path, monkeypatch):
+    script = tmp_path / "failed-codex"
+    script.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('startup failed private-test-secret Bearer bearer-test-secret')\nsys.exit(2)\n")
+    script.chmod(0o700)
+    monkeypatch.setattr("diane.native_workers.service.launch", lambda *args: ([str(script)], {"API_KEY": "private-test-secret"}))
+    team = NativeTeam("run", str(tmp_path), {"codex": {"enabled": True, "_live_steering": True}}, tmp_path / "records")
+    worker = await team.start("codex", "unused")
+    await team.tasks[worker["worker_id"]]
+    error = team.records[worker["worker_id"]]["error"]
+    assert "initialize" in error and "process exit 2" in error and "startup failed" in error
+    assert "private-test-secret" not in error and "bearer-test-secret" not in error
+
+
 @pytest.fixture
 def app_server(tmp_path, monkeypatch):
     script = tmp_path / "codex-fixture"
@@ -163,3 +177,36 @@ async def test_rejected_steer_does_not_close_active_turn_and_stop_cleans_transpo
         await team.close()
     assert team.records[row["worker_id"]]["status"]=="stopped"
     assert not team.steering and not team.processes
+
+@pytest.mark.asyncio
+async def test_resume_omits_history_without_changing_thread(tmp_path, app_server):
+    team = NativeTeam('resume', str(tmp_path), {'codex': {'enabled': True, '_live_steering': True, 'resume_session': 'saved-thread'}}, tmp_path / 'records')
+    row = await team.start('codex', 'Continue')
+    try:
+        async with asyncio.timeout(5):
+            while not team.steering:
+                await asyncio.sleep(.01)
+            await team.steering[row['worker_id']].steer([SimpleNamespace(id='q', text='Finish', metadata={})])
+            await team.tasks[row['worker_id']]
+        calls = [json.loads(line) for line in app_server.read_text().splitlines()]
+        resume = next(call['params'] for call in calls if call.get('method') == 'thread/resume')
+        assert resume['threadId'] == 'saved-thread'
+        assert resume['excludeTurns'] is True
+        assert not any(call.get('method') == 'thread/start' for call in calls)
+        assert team.records[row['worker_id']]['status'] == 'completed'
+    finally:
+        await team.close()
+
+
+@pytest.mark.asyncio
+async def test_reader_preserves_frame_error_for_pending_request():
+    from diane.native_workers.codex_live import CodexLive
+    stream = asyncio.StreamReader(limit=32)
+    stream.feed_data(b'x' * 64 + b'\n')
+    client = CodexLive(SimpleNamespace(stdout=stream), lambda *args: None)
+    pending = asyncio.get_running_loop().create_future()
+    client.pending[1] = pending
+    await client.read()
+    with pytest.raises(ValueError, match='limit'):
+        await pending
+    assert isinstance(client.finished.exception(), ValueError)

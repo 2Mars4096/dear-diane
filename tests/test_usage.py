@@ -1,4 +1,46 @@
 import json
+
+
+def test_claude_default_file_fallback_and_profile_isolation(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from diane.native_workers import usage
+    monkeypatch.setattr(usage, "user_home", lambda: tmp_path)
+    monkeypatch.setattr(usage.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="", returncode=44))
+    home = tmp_path / ".claude"
+    home.mkdir()
+    (home / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"accessToken": "test-token"}}))
+    assert usage._claude_token({}) == "test-token"
+    assert usage._claude_token({"CLAUDE_CONFIG_DIR": str(tmp_path / "other")}) == ""
+    (home / ".credentials.json").write_text("[]")
+    assert usage._claude_token({}) == ""
+
+
+def test_claude_prefers_default_keychain_and_gives_actionable_missing_login(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from diane.native_workers import usage
+    monkeypatch.setattr(usage, "user_home", lambda: tmp_path)
+    monkeypatch.setattr(usage.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=json.dumps({"claudeAiOauth": {"accessToken": "keychain-token"}})))
+    assert usage._claude_token({}) == "keychain-token"
+    monkeypatch.setattr(usage, "_claude_token", lambda env: "")
+    result = usage.claude_usage("default", {})
+    assert result["windows"] == []
+    assert "Sign in to Claude Code" in result["error"]
+
+
+def test_claude_default_uses_real_user_keychain_with_redirected_home(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from diane.native_workers import usage
+    keychain = tmp_path / "Library/Keychains/login.keychain-db"
+    keychain.parent.mkdir(parents=True)
+    keychain.touch()
+    monkeypatch.setattr(usage, "user_home", lambda: tmp_path)
+    calls = []
+    def read(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(stdout=json.dumps({"claudeAiOauth": {"accessToken": "test-token"}}))
+    monkeypatch.setattr(usage.subprocess, "run", read)
+    assert usage._claude_token({}) == "test-token"
+    assert calls[0][-1] == str(keychain)
 from pathlib import Path
 
 from diane.native_workers import usage

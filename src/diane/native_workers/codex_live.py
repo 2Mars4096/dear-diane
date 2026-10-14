@@ -4,7 +4,18 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import signal
+
+
+def _safe_stderr(raw: bytes, env: dict) -> str:
+    text = raw.decode(errors="replace")
+    for key, value in env.items():
+        if value and len(value) >= 8 and re.search(r"token|secret|password|key|credential", key, re.I):
+            text = text.replace(value, "[redacted]")
+    text = re.sub(r"(?i)(bearer\s+)[^\s\"']+", r"\1[redacted]", text)
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]+", "[redacted]", text)
+    return text.strip()[-2000:]
 
 
 class CodexLive:
@@ -34,6 +45,7 @@ class CodexLive:
             self.pending.pop(key, None)
 
     async def read(self):
+        error = ConnectionError("Codex live connection closed")
         try:
             async for line in self.process.stdout:
                 row = json.loads(line)
@@ -63,10 +75,10 @@ class CodexLive:
                     self.finished.set_result(params["turn"])
                     self.turn_id = ""
         except Exception as exc:
+            error = exc
             if not self.finished.done():
                 self.finished.set_exception(exc)
         finally:
-            error = ConnectionError("Codex live connection closed")
             for future in self.pending.values():
                 if not future.done():
                     future.set_exception(error)
@@ -104,6 +116,9 @@ class CodexLive:
 
 async def run_live(team, record, command, env):
     process = reader = errors = None
+    stderr_tail = bytearray()
+    phase = "launch"
+    transport_failed = False
     worker_id = record["worker_id"]
     profile = record["profile"]
     texts = {}
@@ -137,13 +152,15 @@ async def run_live(team, record, command, env):
             stderr=asyncio.subprocess.PIPE, start_new_session=True, limit=8 * 1024 * 1024)
         team.processes[worker_id] = process
         async def drain():
-            while await process.stderr.read(8192):
-                pass
+            while chunk := await process.stderr.read(8192):
+                stderr_tail.extend(chunk)
+                del stderr_tail[:-16000]
         errors = asyncio.create_task(drain())
         client = CodexLive(process, notify, profile.get("_interactive", False))
         if profile.get("_interactive"):
             team.steering[worker_id] = client
         reader = asyncio.create_task(client.read())
+        phase = "initialize"
         await client.request("initialize", {"clientInfo": {"name": "dan", "version": "0.2.0"}, "capabilities": {"experimentalApi": True}})
         await client.send({"method": "initialized", "params": {}})
         permission = profile.get("permission", "auto")
@@ -158,18 +175,23 @@ async def run_live(team, record, command, env):
         session = record.get("native_session_id") or profile.get("resume_session", "")
         if session:
             params["threadId"] = session
-        result = await client.request("thread/resume" if session else "thread/start", params)
+            # Resume server-side history without retransmitting every saved turn.
+            params["excludeTurns"] = True
+        phase = "thread/resume" if session else "thread/start"
+        result = await client.request(phase, params)
         client.thread_id = result["thread"]["id"]
         record["native_session_id"] = client.thread_id
         team.save(record)
         start = {"threadId": client.thread_id, "input": [{"type":"text", "text":record["prompt"]}]}
         if profile.get("effort"):
             start["effort"] = profile["effort"]
-        result = await client.request("turn/start", start)
+        phase = "turn/start"
+        result = await client.request(phase, start)
         if not client.finished.done():
             client.turn_id = result["turn"]["id"]
             team.steering[worker_id] = client
         # A turn can keep working until completion or explicit cancellation.
+        phase = "running turn"
         terminal = await asyncio.shield(client.finished)
         record["status"] = {"completed":"completed", "interrupted":"stopped"}.get(terminal["status"], "failed")
         record["error"] = str((terminal.get("error") or {}).get("message", ""))
@@ -177,6 +199,7 @@ async def run_live(team, record, command, env):
         record["status"] = "stopped"
     except Exception as exc:
         record.update(status="failed", error=str(exc))
+        transport_failed = isinstance(exc, (ConnectionError, BrokenPipeError, asyncio.TimeoutError))
     finally:
         team.steering.pop(worker_id, None)
         if process and process.returncode is None:
@@ -187,6 +210,15 @@ async def run_live(team, record, command, env):
                 if process.returncode is None:
                     os.killpg(process.pid, signal.SIGKILL)
                     await process.wait()
+        if errors:
+            try:
+                await asyncio.wait_for(asyncio.shield(errors), 1)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+        if transport_failed:
+            detail = _safe_stderr(bytes(stderr_tail), env)
+            code = process.returncode if process else None
+            record["error"] += f" during {phase} (process exit {code})" + (f": {detail}" if detail else "")
         for task in (reader, errors):
             if task:
                 task.cancel()

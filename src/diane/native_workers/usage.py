@@ -123,18 +123,29 @@ def codex_usage(home: Path) -> dict:
 
 def _claude_token(env: dict) -> str:
     config_dir = env.get("CLAUDE_CONFIG_DIR")
-    if config_dir:
+    def from_file(directory: Path) -> str:
         try:
-            data = json.loads((Path(config_dir) / ".credentials.json").read_text())
+            data = json.loads((directory / ".credentials.json").read_text())
             return str(data.get("claudeAiOauth", {}).get("accessToken") or "")
-        except (OSError, ValueError):
+        except (OSError, ValueError, AttributeError):
             return ""
+    if config_dir:
+        return from_file(Path(config_dir).expanduser())
     try:
-        raw = subprocess.run(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+        # An agent-launched desktop can inherit a redirected HOME. The default
+        # profile belongs to the OS user; do not search that agent's Keychain.
+        keychain = user_home() / "Library/Keychains/login.keychain-db"
+        command = ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"]
+        if keychain.is_file():
+            command.append(str(keychain))
+        raw = subprocess.run(command,
                              capture_output=True, text=True, timeout=5).stdout.strip()
-        return str(json.loads(raw).get("claudeAiOauth", {}).get("accessToken") or "")
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        return ""
+        token = str(json.loads(raw).get("claudeAiOauth", {}).get("accessToken") or "")
+        if token:
+            return token
+    except (OSError, ValueError, AttributeError, subprocess.TimeoutExpired):
+        pass
+    return from_file(user_home() / ".claude")
 
 
 def _pretty_bucket(key: str) -> str:
@@ -144,7 +155,7 @@ def _pretty_bucket(key: str) -> str:
 def claude_usage(account: str, env: dict) -> dict:
     token = _claude_token(env)
     if not token:
-        return {"windows": [], "error": "Could not read Claude Code login"}
+        return {"windows": [], "error": "No readable Claude Code subscription login. Sign in to Claude Code or select a signed-in profile."}
     cache_key = hashlib.sha256(token.encode()).hexdigest()
     cached = _claude_cache.get(cache_key)
     if cached and time.time() - cached[0] < CLAUDE_CACHE_SECONDS:
