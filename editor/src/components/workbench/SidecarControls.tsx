@@ -1,5 +1,5 @@
 import { useTeamCapacity } from "./teamCapacity";
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronDown, WandSparkles } from 'lucide-react';
 import { LeadAgentMenu, type LeadAgentId } from './LeadAgentMenu';
 import { NativeWorkerSettings, loadWorkerProfiles, type WorkerProfiles } from './NativeWorkers';
@@ -16,6 +16,7 @@ export function useSidecarControls(initial: Execution = {}) {
   const [mode, setMode] = useState(String(initial.profile_policy?.permission_mode || 'auto'));
   const [profiles, setProfiles] = useState<WorkerProfiles>(() => ({ ...loadWorkerProfiles('dan.leadProfiles.v1'), ...(initial.profile_policy?.lead_profile ? { [agent === 'native' ? 'dan' : agent]: initial.profile_policy.lead_profile as WorkerProfile } : {}) }));
   const [team, setTeam] = useState<WorkerProfiles>(() => initial.profile_policy?.native_workers as WorkerProfiles || loadWorkerProfiles());
+  useEffect(() => { if (agent !== "claude" && ["default", "acceptEdits"].includes(mode)) { setMode("auto"); setChanged(true); } }, [agent, mode]);
   const autonomy = mode === 'plan' ? 'review' : 'auto';
   const profilePolicy = { ...base.profile_policy };
   if (base.backend !== backends[agent]) {
@@ -31,7 +32,7 @@ export function useSidecarControls(initial: Execution = {}) {
   const liveExecution: Execution = { ...execution, profile_policy: { ...execution.profile_policy, team_max_parallel_workers: capacity } };
   return { execution: liveExecution, label: agent === 'native' ? 'Diane' : agent === 'codex' ? 'Codex' : agent === 'claude' ? 'Claude' : agent,
     render: (disabled: boolean) => <>
-      <label className="wb-sidecar-mode"><WandSparkles size={12}/><select aria-label="Execution permissions" disabled={disabled} value={mode} onChange={event => { setMode(event.target.value); setChanged(true); }}><option value="plan">Read only</option><option value="auto">Auto</option><option value="full">Full access</option></select><ChevronDown size={12}/></label>
+      <label className="wb-sidecar-mode"><WandSparkles size={12}/><select aria-label="Execution permissions" disabled={disabled} value={mode} onChange={event => { setMode(event.target.value); setChanged(true); }}><option value="plan">{agent === "claude" ? "Plan" : "Read only"}</option>{agent === "claude" && <><option value="default">Manual</option><option value="acceptEdits">Accept edits</option></>}<option value="auto">Auto</option><option value="full">{agent === "claude" ? "Bypass permissions" : "Full access"}</option></select><ChevronDown size={12}/></label>
       <LeadAgentMenu selected={agent} onChange={value => { setAgent(value); setChanged(true); }} disabled={disabled} profiles={profiles} onProfilesChange={value => { setProfiles(value); setChanged(true); }}/>
       <NativeWorkerSettings profiles={team} onChange={value => { setTeam(value); setChanged(true); }}/>
     </> };

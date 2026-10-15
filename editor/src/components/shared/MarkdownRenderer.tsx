@@ -1,6 +1,6 @@
 import { openFile } from '../../lib/openFile';
 import { currentFileHost } from "../../lib/fileTargets";
-import { useMemo, useState, type MouseEvent } from "react";
+import { memo, useMemo, useState, type MouseEvent } from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import { Marked, Renderer } from "marked";
@@ -443,7 +443,7 @@ export function renderMarkdownToHtml(
   return sanitizeHtml(html);
 }
 
-export default function MarkdownRenderer({
+function MarkdownRenderer({
   content,
   className = "",
   autoHighlightCode = true,
@@ -494,3 +494,5 @@ export default function MarkdownRenderer({
     {fileError && <div role="alert" className="dan-file-link-error my-2 text-sm text-red-700 dark:text-red-300">{fileError} <button type="button" onClick={() => setFileError("")}>Dismiss</button></div>}
   </>;
 }
+
+export default memo(MarkdownRenderer);

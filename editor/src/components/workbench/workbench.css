@@ -1017,3 +1017,58 @@
 
 .wb-work-details[data-working][open] > .wb-work-history { height:min(280px,35vh); overflow:auto; overscroll-behavior:contain; }
 .wb-work-details > summary small { flex-shrink:0; }
+
+.wb-team-slots { list-style:none; padding:0; margin:10px 0; }
+.wb-team-slot { padding:10px 0; border-bottom:1px solid var(--wb-line); }
+.wb-team-slot-heading { display:flex; align-items:center; gap:8px; font-size:12px; }
+.wb-team-slot-heading strong { min-width:0; overflow-wrap:anywhere; }
+.wb-team-slot-heading > span { margin-left:auto; color:var(--wb-muted); font-size:11px; }
+.wb-team-past-tasks { margin-top:6px; font-size:11px; color:var(--wb-muted); }
+.wb-team-lead-identity { margin:6px 0; font-weight:600; }
+
+.wb-native-approval { padding:14px; margin:8px 12px; border:1px solid var(--wb-line); border-radius:6px; max-height:45vh; overflow:auto; font-size:12px; }
+.wb-native-approval pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:180px; overflow:auto; }
+.wb-native-approval dd { margin:0; }
+.wb-native-approval button { margin:8px 8px 0 0; border:1px solid var(--wb-line); padding:5px 10px; border-radius:4px; }
+.wb-question-composer { flex-shrink:0; margin:8px 12px 0; padding:12px; background:var(--wb-paper); max-height:45vh; overflow:auto; }
+.wb-question-field { border:0; margin:10px 0 0; padding:0; min-width:0; }
+.wb-question-field legend { display:block; width:100%; white-space:normal; overflow-wrap:anywhere; line-height:1.6; padding:0; margin-bottom:8px; }
+.wb-question-choices { display:flex; flex-direction:column; gap:6px; margin-bottom:10px; }
+.wb-question-choices .wb-question-choice { display:flex; align-items:flex-start; justify-content:flex-start; gap:8px; padding:8px; border:1px solid var(--wb-line); border-radius:5px; cursor:pointer; }
+.wb-question-choice input { flex:0 0 auto; margin-top:3px; }
+.wb-question-choice span { min-width:0; }
+.wb-question-choice small { display:block; color:var(--wb-muted); line-height:1.5; margin-top:3px; }
+.wb-question-field textarea { display:block; box-sizing:border-box; width:100%; min-height:78px; resize:vertical; padding:10px; border:1px solid var(--wb-line); border-radius:6px; background:var(--wb-soft); color:var(--wb-ink); font:inherit; font-size:15px; line-height:1.5; }
+.wb-question-field textarea:focus { outline:1px solid var(--wb-accent); }
+.wb-question-actions { display:flex; justify-content:flex-end; gap:8px; }
+
+.wb-worker-task-summary { margin:7px 0 4px; padding-left:18px; color:var(--wb-muted); font-size:12px; line-height:1.6; }
+.wb-worker-task-summary li + li { margin-top:3px; }
+.wb-worker-task-summary li { overflow-wrap:anywhere; }
+
+/* Worker identity and goal lead; disclose live activity on one compact row. */
+.wb-team-worker-tasks { list-style:none; margin:5px 0 0; padding:0; }
+.wb-team-slot { padding:14px 0; }
+.wb-worker-task-summary { color:var(--wb-ink); }
+.wb-lane-compact { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 10px; padding:2px 0; animation:none; }
+.wb-lane-compact > .wb-lane-title { grid-column:1; gap:6px; color:var(--wb-muted); }
+.wb-lane-compact > .wb-lane-title strong { flex:0 1 auto; font-size:11px; font-weight:400; }
+.wb-lane-compact > .wb-lane-title > svg { opacity:1; order:-1; }
+.wb-lane-compact > .wb-lane-title .wb-lane-mark { display:none; }
+.wb-lane-compact > .wb-lane-meta { grid-column:2; margin:0; font-size:11px; }
+.wb-lane-compact > .wb-lane-details, .wb-lane-compact > .wb-lane-result, .wb-lane-compact > .wb-lane-review { grid-column:1 / -1; margin-left:0; }
+.wb-worker-current-action { white-space:pre-wrap; overflow-wrap:anywhere; color:var(--wb-muted); font-size:11px; }
+
+.wb-inline-team { margin-top:12px; }
+.wb-inline-team-toggle { display:flex; align-items:center; gap:7px; padding:5px 0; color:var(--wb-muted); font-size:12px; }
+.wb-inline-team-toggle strong { color:var(--wb-ink); font-weight:600; }
+.wb-inline-team-toggle > span { font-size:11px; margin-left:7px; }
+.wb-inline-team-toggle[aria-expanded=true] > svg { transform:rotate(90deg); }
+.wb-inline-team > .wb-team-slots { margin:4px 0 0 20px; }
+.wb-inline-team .wb-team-slot { padding:10px 0; }
+.wb-inline-team .wb-team-slot-heading button { text-align:left; }
+.wb-inline-team .wb-team-slot-heading button:hover { text-decoration:underline; }
+.wb-inline-team .wb-worker-task-summary { list-style:disc; }
+
+.wb-load-earlier { display:block; margin:8px auto 24px; padding:7px 12px; border:1px solid var(--wb-line); border-radius:6px; color:var(--wb-muted); font-size:12px; }
+.wb-load-earlier:hover { background:var(--wb-soft); color:var(--wb-ink); }

@@ -35,3 +35,21 @@ it('allows retry after network closure and detaches an old session on replacemen
   second.readyState = 2;
   expect(connection.matches('b:run')).toBe(false);
 });
+
+it('coalesces frame updates, flushes before completion and discards them on navigation', () => {
+  let callback: FrameRequestCallback | undefined;
+  vi.stubGlobal('requestAnimationFrame', vi.fn((cb: FrameRequestCallback) => { callback = cb; return 1; }));
+  vi.stubGlobal('cancelAnimationFrame', vi.fn());
+  try {
+    const connection = new RunStreamConnection();
+    const first = vi.fn(); const latest = vi.fn();
+    connection.schedule(first); connection.schedule(latest);
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+    callback!(0);
+    expect(first).not.toHaveBeenCalled(); expect(latest).toHaveBeenCalledOnce();
+    connection.schedule(first); connection.flush();
+    expect(first).toHaveBeenCalledOnce();
+    connection.schedule(latest); connection.close(); callback!(0);
+    expect(latest).toHaveBeenCalledOnce();
+  } finally { vi.unstubAllGlobals(); }
+});

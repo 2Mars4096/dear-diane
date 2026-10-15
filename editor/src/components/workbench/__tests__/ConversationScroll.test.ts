@@ -29,3 +29,19 @@ it('ignores status-only updates and pauses auto-follow while reading details', a
     expect(host.querySelector('.wb-jump')?.textContent).toContain('Latest');
   } finally { act(() => root.unmount()); }
 });
+
+it('initially renders recent messages and reveals older history without deleting it', async () => {
+ const host=document.createElement('div'),root=createRoot(host);
+ const messages: ChatMessage[]=Array.from({length:95},(_,i)=>({id:`m${i}`,role:'user',content:`Message ${i}`,timestamp:i}));
+ try {
+  await act(async()=>root.render(h(WorkbenchConversation,{messages,pending:{},loading:false,status:'',onQuote:vi.fn()})));
+  expect(host.querySelectorAll('[data-message-id]')).toHaveLength(40);
+  expect(host.querySelector('[data-message-id="m0"]')).toBeNull();
+  act(()=>host.querySelector<HTMLButtonElement>('.wb-load-earlier')!.click());
+  expect(host.querySelectorAll('[data-message-id]')).toHaveLength(80);
+  act(()=>host.querySelector<HTMLButtonElement>('.wb-load-earlier')!.click());
+  expect(host.querySelectorAll('[data-message-id]')).toHaveLength(95);
+  expect(host.querySelector('.wb-load-earlier')).toBeNull();
+  expect(messages).toHaveLength(95);
+ } finally {act(()=>root.unmount());}
+});

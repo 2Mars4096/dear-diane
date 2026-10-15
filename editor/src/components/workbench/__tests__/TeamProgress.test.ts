@@ -2,7 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
-import { TeamPanel } from "../TeamProgress";
+import { TeamPanel, TeamStrip } from "../TeamProgress";
 import type { TeamWorker } from "../teamPresentation";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -104,4 +104,64 @@ it('pins the current run and sorts collapsed history by time rather than IDs', a
     expect(branches[1].querySelector('.wb-lane')).toBeNull();
     expect(branches[1].querySelector('time')?.getAttribute('dateTime')).toBe('1970-01-01T00:00:30.000Z');
   } finally { act(() => root.unmount()); }
+});
+
+
+it('keeps historical failures out of the current run progress strip', () => {
+  const host = document.createElement('div'), root = createRoot(host);
+  const old: TeamWorker = { worker_id: 'old', parent_run_id: 'past', backend: 'codex', status: 'failed', prompt: '', response: '', error: 'At capacity', native_session_id: '', created_at: 1 };
+  try {
+    act(() => root.render(createElement(TeamStrip, { workers: [old, { ...old, worker_id: 'new', parent_run_id: 'current', backend: 'claude', status: 'running', activity: 'Reading files', created_at: 2 }], activeRunId: 'current', lead: 'Claude', leadRunning: true, open: false, onToggle: vi.fn() })));
+    expect(host.textContent).toContain('reading files');
+    expect(host.textContent).not.toContain('failed');
+    expect(host.textContent).not.toContain('Codex');
+    act(() => root.render(createElement(TeamStrip, { workers: [old], activeRunId: 'empty-current', lead: 'Claude', leadRunning: true, open: false, onToggle: vi.fn() })));
+    expect(host.querySelector('.wb-team-strip')).toBeNull();
+  } finally { act(() => root.unmount()); }
+});
+
+it('shows every configured slot, including idle workers, above their assigned tasks', async () => {
+  const host = document.createElement('div'), root = createRoot(host);
+  const worker: TeamWorker = { worker_id: 'w2', profile_id: 'two', parent_run_id: 'run', backend: 'claude', status: 'running', prompt: 'TASK (read-only review; cannot write files): full technical instructions', task_contract: { scope: 'Visual review' }, response: '', error: '', native_session_id: '', created_at: 1 };
+  try {
+    await act(async () => root.render(createElement(TeamPanel, { workers: [worker], rosters: { run: [{ profile_id: 'one', name: 'Worker 1', backend: 'claude' }, { profile_id: 'two', name: 'Visual reviewer', backend: 'claude' }, { profile_id: 'three', name: 'Worker 3', backend: 'codex' }] }, activeRunId: 'run', lead: 'Claude', error: '', onStop: vi.fn(), onClose: vi.fn() })));
+    const slots = host.querySelectorAll('.wb-team-slot');
+    expect(slots).toHaveLength(3);
+    expect(slots[0].textContent).toContain('Worker 1');
+    expect(slots[0].textContent).toContain('Idle');
+    expect(slots[1].textContent).toContain('Visual reviewer');
+    expect(slots[1].textContent).toContain('Visual review');
+    expect(host.textContent).toContain('1 working · 2 idle');
+    expect(host.textContent).toContain('Lead · Claude');
+  } finally { act(() => root.unmount()); }
+});
+
+
+it('shows the latest finished task and result while previous assignments remain collapsed', async () => {
+  const host = document.createElement('div'), root = createRoot(host);
+  const worker: TeamWorker = { worker_id: 'old', profile_id: 'one', parent_run_id: 'run', backend: 'claude', status: 'completed', prompt: 'Older task', response: 'Old result', error: '', native_session_id: '', created_at: 1 };
+  try {
+    await act(async () => root.render(createElement(TeamPanel, { workers: [worker, { ...worker, worker_id: 'latest', created_at: 2, task_contract: { scope: 'Vehicle pathfinding' }, response: 'Fixed detours through clear gaps.' }], rosters: { run: [{ profile_id: 'one', name: 'Worker 1', backend: 'claude' }] }, activeRunId: 'run', error: '', onStop: vi.fn(), onClose: vi.fn() })));
+    const summary = host.querySelector('.wb-worker-task-summary')!;
+    expect(summary.textContent).toContain('Finished: Vehicle pathfinding');
+    expect(summary.textContent).toContain('Fixed detours through clear gaps');
+    expect(summary.textContent).not.toContain('Older task');
+    expect(host.querySelector<HTMLDetailsElement>('.wb-team-past-tasks')!.open).toBe(false);
+  } finally { act(() => root.unmount()); }
+});
+
+it('keeps compact activity readable and exposes raw activity on expansion', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ entries: [], before: null }))));
+  const host = document.createElement('div'), root = createRoot(host);
+  const worker: TeamWorker = { worker_id: 'w', profile_id: 'p', worker_name: 'Worker 1', parent_run_id: 'r', backend: 'claude', status: 'running', prompt: 'TASK: SOUND EFFECTS', response: '', error: '', native_session_id: 's', activity: 'Running perl tests/test_audio.gd', can_stop: true };
+  try {
+    await act(async () => root.render(createElement(TeamPanel, { workers: [worker], error: '', onStop: vi.fn(), onClose: vi.fn(), activeRunId: 'r', rosters: { r: [{ profile_id: 'p', name: 'Worker 1', backend: 'claude' }] } })));
+    expect(host.textContent).toContain('Sound effects');
+    expect(host.querySelector('.wb-lane-title')?.textContent).toBe('running checks');
+    expect(host.textContent).not.toContain('Running perl');
+    await act(async () => host.querySelector<HTMLButtonElement>('.wb-lane-title')!.click());
+    expect(host.textContent).toContain('Running perl tests/test_audio.gd');
+    expect(host.textContent).toContain('Worker session');
+    expect(host.querySelector('button[aria-label^="Stop"]')).not.toBeNull();
+  } finally { act(() => root.unmount()); vi.unstubAllGlobals(); }
 });

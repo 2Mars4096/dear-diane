@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { leadActivity, resultLine, stripWorkers, taskTitle, workerState, type TeamWorker } from "../teamPresentation";
+import { leadActivity, resultLine, stripWorkers, taskTitle, workerTaskSummary, workerState, type TeamWorker } from "../teamPresentation";
 
 const worker = (id: string, status: string, extra: Partial<TeamWorker> = {}): TeamWorker => ({ worker_id: id, parent_run_id: "run", backend: "codex", status, prompt: "Check dates", response: "", error: "", native_session_id: "", ...extra });
 
@@ -9,7 +9,7 @@ describe("team progress presentation", () => {
     expect(taskTitle("## Review findings\nwith details")).toBe("Review findings");
   });
   it("shows the live action for running work and a plain state otherwise", () => {
-    expect(workerState(worker("a", "running", { activity: "Running npm test" }))).toBe("running npm test");
+    expect(workerState(worker("a", "running", { activity: "Running npm test" }))).toBe("running checks");
     expect(workerState(worker("a", "needs_input"))).toBe("needs your input");
     expect(workerState(worker("a", "completed"))).toBe("done");
   });
@@ -37,4 +37,13 @@ it('uses stable attempt/session timestamps instead of the rolling action history
   expect(startedAt(worker)).toBe(100);
   expect(startedAt({ ...worker, actions: [{ text: 'Writing', at: 900 }] })).toBe(100);
   expect(startedAt({ ...worker, attempt_started_at: 700 })).toBe(700);
+});
+
+it('uses the task goal instead of technical ownership and hides shell activity', () => {
+  const task = worker('a', 'running', { prompt: 'TASK: EXPLOSION VISUAL EFFECTS. User: "More effects"\nOWNERSHIP: effects.gd', task_contract: { scope: 'effects.gd + tests/test_effects.gd' }, activity: 'Running mkdir -p "$TMPDIR/base" && git archive HEAD' });
+  expect(workerTaskSummary(task)).toEqual(['Working on: Explosion visual effects']);
+  expect(workerState(task)).toBe('working');
+});
+it('keeps a human scope for legacy tasks without labelled headings', () => {
+  expect(workerTaskSummary(worker('a', 'completed', { prompt: 'Please implement the request', task_contract: { scope: 'Vehicle pathfinding' } }))).toEqual(['Finished: Vehicle pathfinding']);
 });

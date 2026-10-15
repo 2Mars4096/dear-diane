@@ -15,3 +15,17 @@ it('ticks from the recorded start, reports observed activity, and freezes at rec
  const render=(active:boolean,end?:number)=>act(()=>root.render(createElement(ActivitySummary,{events:[],active,startedAt:1000,endedAt:end,live:'Running pytest checks',children:null})));
  try{render(true);expect(host.textContent).toContain('Thinking (2m08s)');expect(host.textContent).toContain('Running checks');act(()=>vi.advanceTimersByTime(2000));expect(host.textContent).toContain('(2m10s)');render(false,130000);expect(host.textContent).toContain('Work details (2m09s)');act(()=>vi.advanceTimersByTime(10000));expect(host.textContent).toContain('(2m09s)');expect(host.textContent).not.toContain('Running checks');}finally{act(()=>root.unmount());vi.useRealTimers();}
 });
+
+it('does not construct history until opened, and releases it when closed', () => {
+ const host=document.createElement('div'),root=createRoot(host);
+ const history=vi.fn(()=>createElement('p',null,'Detailed history'));
+ try {
+  act(()=>root.render(createElement(ActivitySummary,{events:[],active:false,children:history})));
+  expect(history).not.toHaveBeenCalled();
+  const details=host.querySelector('details')!;
+  act(()=>{details.open=true;details.dispatchEvent(new Event('toggle'));});
+  expect(host.textContent).toContain('Detailed history');
+  act(()=>{details.open=false;details.dispatchEvent(new Event('toggle'));});
+  expect(host.textContent).not.toContain('Detailed history');
+ } finally {act(()=>root.unmount());}
+});

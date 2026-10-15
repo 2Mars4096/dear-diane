@@ -1,4 +1,4 @@
-export type WorkerRequest = { id: string | number; method: string; params: { questions?: { id: string; question: string; options?: { label: string; description?: string }[] }[]; [key: string]: unknown } };
+export type WorkerRequest = { id: string | number; method: string; params: { questions?: { id: string; question: string; multiSelect?: boolean; options?: { label: string; description?: string }[] }[]; [key: string]: unknown } };
 export type TeamAction = { text: string; at: number };
 export type TeamWorker = {
   worker_id: string; parent_run_id: string; backend: string; status: string;
@@ -30,6 +30,7 @@ export function taskTitle(prompt: string): string {
 }
 
 export function workerPhase(worker: TeamWorker): WorkerPhase {
+  if (worker.requests?.length) return "attention";
   if (worker.status === "running") return "active";
   if (worker.status === "needs_input" || worker.status === "failed" || worker.status === "interrupted") return "attention";
   return "settled";
@@ -37,8 +38,14 @@ export function workerPhase(worker: TeamWorker): WorkerPhase {
 
 /** Present tense for running work; a plain state otherwise. */
 export function workerState(worker: TeamWorker): string {
+  if (worker.requests?.length) return "needs approval";
   switch (worker.status) {
-    case "running": return lowerFirst(worker.activity || "Starting");
+    case "running": {
+      const activity = worker.activity || "Starting";
+      if (/^running\b/i.test(activity)) return /\b(test[\w-]*|probe_[\w-]+|pytest|vitest|checks?)\b/i.test(activity) ? "running checks" : "working";
+      if (/^(editing|writing|reading|searching)\b/i.test(activity)) return `${activity.split(/\s/)[0].toLowerCase()} ${/^searching/i.test(activity) ? "project" : "files"}`;
+      return lowerFirst(activity);
+    }
     case "needs_input": return "needs your input";
     case "failed": return "failed";
     case "interrupted": return "interrupted";
@@ -121,4 +128,30 @@ export function orderedTeamRuns(workers: TeamWorker[], activeRunId = "", details
     const time = details[id]?.startedAt || (times.length ? Math.min(...times) * 1000 : 0);
     return { id, workers: rows, startedAt: time, title: details[id]?.title || (rows.length ? rows.map(worker => taskTitle(worker.prompt)).slice(0, 2).join(" · ") : "Current task") };
   }).sort((a, b) => Number(b.id === activeRunId) - Number(a.id === activeRunId) || b.startedAt - a.startedAt);
+}
+
+
+/** Prefer the stated goal; scope often contains only file ownership. */
+export function workerTaskTitle(worker: TeamWorker): string {
+  const clean = (text: string) => text.replace(/\*\*|__|`/g, "").trim();
+  const prompt = clean(worker.prompt);
+  const heading = prompt.match(/(?:^|\n)\s*(?:#{1,6}\s*)?(?:TASK|GOAL|OBJECTIVE)\s*(?:\([^)]*\))?\s*[:–-]\s*([^\n]+)/i)?.[1];
+  const scope = clean(worker.task_contract?.scope || "");
+  const fileScope = /\b[\w-]+\.(?:gd|py|tsx?|jsx?|json|md|css|html|rs|go|cpp|h)\b|[/\\]/i.test(scope);
+  let title = taskTitle(heading || (!fileScope && scope) || prompt);
+  title = title.replace(/^([A-Z][A-Z +/,-]+)(?=\s*\(|$)/, text => text[0] + text.slice(1).toLowerCase());
+  return title;
+}
+
+/** Short, evidence-based overview that remains visible when task details are closed. */
+export function workerTaskSummary(worker: TeamWorker): string[] {
+  const plain = (value: string) => value.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/\*\*|__|`/g, '').replace(/\s+/g, ' ').trim();
+  const assignment = workerTaskTitle(worker);
+  const state = worker.status === 'completed' ? 'Finished' : worker.status === 'failed' ? 'Failed' : worker.status === 'stopped' || worker.status === 'interrupted' ? 'Stopped' : worker.status === 'needs_input' ? 'Waiting for input' : 'Working on';
+  const summary = [`${state}: ${assignment}`];
+  if (!['running', 'needs_input'].includes(worker.status)) {
+    const result = clip((worker.status === "failed" ? worker.error : worker.response || worker.error).split("\n").map(line => plain(line.replace(/^[#>*\-\s]+/, ""))).find(Boolean) || "", 160);
+    if (result && result !== assignment) summary.push(`${worker.status === 'failed' ? 'Error' : worker.status === 'completed' ? 'Result' : 'Last update'}: ${result}`);
+  }
+  return summary;
 }

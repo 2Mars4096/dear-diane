@@ -19,7 +19,8 @@ export function elapsedLabel(start: number | undefined, end: number) {
   if (seconds < 60) return `${seconds}s`;
   return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`;
 }
-export function ActivitySummary({ events, active, live, startedAt, endedAt, children }: { events: RunEventPayload[]; active: boolean; live?: string; startedAt?: number; endedAt?: number; children: ReactNode }) {
+export function ActivitySummary({ events, active, live, startedAt, endedAt, children }: { events: RunEventPayload[]; active: boolean; live?: string; startedAt?: number; endedAt?: number; children: ReactNode | (() => ReactNode) }) {
+  const [open, setOpen] = useState(false);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     if (!active) return;
@@ -31,8 +32,8 @@ export function ActivitySummary({ events, active, live, startedAt, endedAt, chil
   const duration = elapsedLabel(startedAt, active ? now : endedAt || Number.NaN);
   const activity = currentActivity(events, live);
   const progress = active && !/^(Thinking|Working on your request)[.…]*$/i.test(activity) ? activity : '';
-  return <details className="wb-event wb-work-details" data-working={active || undefined}>
+  return <details onToggle={event => { if (event.target === event.currentTarget) setOpen(event.currentTarget.open); }} className="wb-event wb-work-details" data-working={active || undefined}>
     <summary><span className="wb-thinking-label">{active ? 'Thinking' : 'Work details'}{duration && <> <span className="wb-thinking-time">({duration})</span></>}</span><span className="wb-thinking-progress" title={progress}>{progress}</span><small>Details</small></summary>
-    <div className="wb-work-history">{children}</div>
+    {open && <div className="wb-work-history">{typeof children === "function" ? children() : children}</div>}
   </details>;
 }

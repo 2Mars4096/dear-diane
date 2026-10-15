@@ -1,3 +1,5 @@
+import { NativeApproval } from "./NativeApproval";
+import { useTeamWorkers } from "./TeamProgress";
 import { composerDraftToChatAttachment, type ComposerAttachmentDraft } from "../../lib/composerAttachments";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Clock3, Send, Square, WandSparkles, X } from "lucide-react";
@@ -41,6 +43,7 @@ export function SidecarChat({ parentId, workflowId, workspaceRoot, workspaceId, 
   const [placement, setPlacement] = useState("steer");
   const [queued, setQueued] = useState(Boolean(pending));
   const [link, setLink] = useState<Link | null>(() => { if (initialLink) return initialLink; try { return JSON.parse(localStorage.getItem(key) || "null"); } catch { return null; } });
+  const approvals = useTeamWorkers(link?.runId ? [link.runId] : [], Boolean(link?.runId), link?.runId, true);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState(pending?.draft || "");
   const [attachment, setAttachment] = useState(pending?.attachment || selection.attachment);
@@ -169,6 +172,7 @@ export function SidecarChat({ parentId, workflowId, workspaceRoot, workspaceId, 
       {!loading && !messages.length && <p className="wb-muted">{purpose?.empty ?? "A separate conversation about this session. Replies stay here."}</p>}
       {messages.map((item) => <article key={item.id} className={`wb-message wb-message-${item.role}`}><div className="wb-message-author">{item.role === "user" ? "You" : controls.label}</div><MarkdownRenderer content={item.content || "Working…"} workspaceRoot={workspaceRoot} /></article>)}
     </div>
+    {link?.runId && (approvals.leadRequests[link.runId] || []).map(request => <NativeApproval key={String(request.id)} request={request} endpoint={`/api/native-lead/${encodeURIComponent(link.runId!)}/answer`} />)}
     <div className="wb-composer wb-sidecar-composer" data-composer-drop="" onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.stopPropagation(); } }} onDrop={event => { event.preventDefault(); event.stopPropagation(); if (!queued) void addFiles(Array.from(event.dataTransfer.files)); }}><div className="flex flex-col gap-2">
       {quote && <div className="wb-sidecar-quote"><span>{quote}</span><button aria-label="Remove sidecar quote" disabled={queued} onClick={() => { setQuote(""); setQuoteContext(""); setAttachment(undefined); }}><X size={14} /></button></div>}
       {attachment?.dataUrl && <img src={attachment.dataUrl} alt="Selected PDF area" style={{ maxWidth: "100%", maxHeight: 180, objectFit: "contain" }} />}

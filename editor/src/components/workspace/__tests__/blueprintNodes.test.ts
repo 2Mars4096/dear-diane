@@ -5962,3 +5962,12 @@ it('honors an explicit project move while retaining old task evidence', () => {
   const groups=buildSessionGroupsForTest({threads:[summary],workspaces:[{id:'old',name:'Old',pinnedPaths:['/old'],activeThreadId:null,openThreadIds:[]},{id:'new',name:'New',pinnedPaths:['/new'],activeThreadId:null,openThreadIds:[]}],threadQuery:'',threadWorkspaces:{'old:moved':'old'},explicitWorkspaces:{'old:moved':'new'},taskWorkspaceByThreadId:new Map([['moved','old']]),taskWorkspaceRootByThreadId:new Map([['moved','/old']])});
   expect(groups.find(group=>group.workspaceId==='new')?.threads.map(thread=>thread.id)).toEqual(['moved']);
 });
+
+
+it('does not attach stale selected-task state to a new empty session', () => {
+  const old = task({ task_id: 'old-task', thread_id: 'old-thread', status: 'running', metadata: { active_run_id: 'old-run' } });
+  const visible = workPanelTasksForTest([old], [old], 'new-empty-thread');
+  expect(visible).toEqual([]);
+  expect(selectActiveRunningTaskForTest(visible)).toBeNull();
+  expect(workPanelTasksForTest([old], [old], '')).toEqual([]);
+});

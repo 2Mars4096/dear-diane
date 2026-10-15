@@ -1,3 +1,4 @@
+import { namedWorkers, nextWorkerName } from "./workerNames";
 import { useTeamCapacity } from "./teamCapacity";
 import { useEffect, useState } from "react";
 import { useDismissDetails } from "./useDismissDetails";
@@ -12,17 +13,19 @@ export function loadWorkerProfiles(key = "dan.nativeWorkerProfiles.v1"): WorkerP
   try {
     const stored = JSON.parse(localStorage.getItem(key) || "{}");
     if (!stored || typeof stored !== "object" || Array.isArray(stored)) return {};
-    return Object.fromEntries(Object.keys(stored).filter(id => stored[id] && typeof stored[id] === "object" && ["dan", "codex", "claude", "antigravity", "cursor"].includes(stored[id].backend || id)).map((id) => [id, { ...empty, ...stored[id], enabled: !!(stored[id].backend || stored[id].enabled), model: (stored[id].backend || id) === "claude" && modelSource(stored[id]) === "native" ? CLAUDE_ALIASES[stored[id].model] ?? stored[id].model : stored[id].model }]));
+    const profiles = Object.fromEntries(Object.keys(stored).filter(id => stored[id] && typeof stored[id] === "object" && ["dan", "codex", "claude", "antigravity", "cursor"].includes(stored[id].backend || id)).map((id) => [id, { ...empty, ...stored[id], enabled: !!(stored[id].backend || stored[id].enabled), model: (stored[id].backend || id) === "claude" && modelSource(stored[id]) === "native" ? CLAUDE_ALIASES[stored[id].model] ?? stored[id].model : stored[id].model }]));
+    return key === "dan.leadProfiles.v1" ? profiles : namedWorkers(profiles);
   } catch { return {}; }
 }
 export function NativeWorkerSettings({ profiles, onChange, lead, inline = false, catalog, disabled = false }: { profiles: WorkerProfiles; onChange: (profiles: WorkerProfiles) => void; lead?: string; inline?: boolean; catalog?: Runtime[]; disabled?: boolean }) {
+  const displayProfiles = lead ? profiles : namedWorkers(profiles);
   const [capacity, setCapacity] = useTeamCapacity();
   const details = useDismissDetails();
   const [selectedWorker, setSelectedWorker] = useState("");
   const roster = Object.entries(profiles).filter(([, profile]) => profile.enabled || profile.backend);
   const addWorker = () => {
     const id = `worker-${crypto.randomUUID()}`;
-    onChange({ ...profiles, [id]: { ...empty, enabled: true, backend: "codex", name: `Worker ${roster.length + 1}` } });
+    onChange({ ...displayProfiles, [id]: { ...empty, enabled: true, backend: "codex", name: nextWorkerName(displayProfiles) } });
     setSelectedWorker(id);
   };
   const [runtimes, setRuntimes] = useState<Runtime[]>([]);
@@ -44,12 +47,13 @@ export function NativeWorkerSettings({ profiles, onChange, lead, inline = false,
         <p>{roster.length} configured · up to {capacity} working at once</p>
         {roster.map(([id, profile]) => {
           const runtimeId = profile.backend || id;
+          const workerName = profile.name?.trim() || displayProfiles[id].name || runtimeId;
           const runtime = (catalog ?? runtimes).find(item => item.id === runtimeId);
           const update = (patch: Partial<WorkerProfile>) => onChange({ ...profiles, [id]: { ...profile, backend: runtimeId, ...patch, enabled: true } });
           return <div className="wb-worker-config" key={id}>
-            <div className="wb-worker-config-heading"><button type="button" aria-expanded={selectedWorker === id} onClick={() => setSelectedWorker(selectedWorker === id ? "" : id)}><ChevronDown size={13} /><strong>{profile.name || runtime?.label || runtimeId}</strong><span>{runtime?.label || runtimeId} · {runtime?.model_labels?.[profile.model] || profile.model || "Default model"}</span></button><button type="button" aria-label={`Remove ${profile.name || runtimeId}`} disabled={disabled} onClick={() => { const next = { ...profiles }; delete next[id]; onChange(next); }}><X size={14} /></button></div>
+            <div className="wb-worker-config-heading"><button type="button" aria-expanded={selectedWorker === id} onClick={() => setSelectedWorker(selectedWorker === id ? "" : id)}><ChevronDown size={13} /><strong>{workerName}</strong><span>{runtime?.label || runtimeId} · {runtime?.model_labels?.[profile.model] || profile.model || "Default model"}</span></button><button type="button" aria-label={`Remove ${workerName}`} disabled={disabled} onClick={() => { const next = { ...profiles }; delete next[id]; onChange(next); }}><X size={14} /></button></div>
             {selectedWorker === id && <fieldset disabled={disabled}>
-              <label>Name<input value={profile.name || ""} placeholder="Worker name" onChange={event => update({ name: event.target.value })} /></label>
+              <label>Name<input value={profile.name || ""} placeholder={displayProfiles[id].name || "Worker name"} onChange={event => update({ name: event.target.value })} onBlur={() => { if (!profile.name?.trim()) update({ name: displayProfiles[id].name }); }} /></label>
               <label>Agent<select value={runtimeId} onChange={event => onChange({ ...profiles, [id]: { ...empty, enabled: true, name: profile.name, backend: event.target.value } })}>{(catalog ?? runtimes).map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
               <label><input type="checkbox" checked={!!profile.allow_children} disabled={disabled || !["dan", "codex", "claude"].includes(runtimeId)} onChange={event => update({ allow_children: event.target.checked })} /> Allow child sessions</label>
               <p>{["dan", "codex", "claude"].includes(runtimeId) ? "Children use this worker’s settings and share the team’s parallel limit." : "Child sessions are supported for Diane, Codex and Claude Code."}</p>

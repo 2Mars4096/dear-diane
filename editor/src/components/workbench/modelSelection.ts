@@ -1,6 +1,6 @@
 export type ModelSourceId = "native" | "openrouter" | "openai" | "deepseek" | "moonshot";
 export type ModelChoice = { model: string; effort: string; fast: boolean };
-export type WorkerProfile = ModelChoice & { enabled: boolean; allow_children?: boolean; account: string; backend?: string; name?: string; provider?: ModelSourceId; base_url?: string; last_api_provider?: ModelSourceId; selections?: Partial<Record<ModelSourceId, ModelChoice>> };
+export type WorkerProfile = ModelChoice & { enabled: boolean; allow_children?: boolean; claude_sandbox?: "default" | "enabled" | "disabled"; account: string; backend?: string; name?: string; provider?: ModelSourceId; base_url?: string; last_api_provider?: ModelSourceId; selections?: Partial<Record<ModelSourceId, ModelChoice>> };
 export type WorkerProfiles = Record<string, WorkerProfile>;
 export type ModelSource = { id: ModelSourceId; label: string; supported: boolean; configured?: boolean; models?: string[]; model_labels?: Record<string, string>; efforts?: string[]; fast?: boolean; model_efforts?: Record<string, string[]>; key_env?: string; reason?: string };
 export type Runtime = { id: string; label: string; available: boolean; accounts: { id: string; label: string }[]; models: string[]; model_efforts?: Record<string, string[]>; model_labels?: Record<string, string>; efforts: string[]; fast: boolean; setup: string; version: string; sources?: ModelSource[] };

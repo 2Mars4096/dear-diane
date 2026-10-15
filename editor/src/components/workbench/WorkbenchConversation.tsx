@@ -1,4 +1,4 @@
-import { type ReactNode, Fragment, lazy, Suspense, useEffect, useRef, useState } from "react";
+import { type ReactNode, Fragment, lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowDown, CornerDownRight, Sparkles, MessageSquareText } from "lucide-react";
 import MarkdownRenderer from "../shared/MarkdownRenderer";
 import type { ChatMessage } from "../../types/chat";
@@ -11,12 +11,13 @@ const MessageAttachment = lazy(() => import("./MessageAttachment").then(module =
 const ActivitySummary = lazy(() => import("./ActivitySummary").then(module => ({ default: module.ActivitySummary })));
 
 function EventDetail({ event }: { event: ChatV2AgentRunEvent }) {
+  const [open, setOpen] = useState(false);
   const display = eventDisclosure(event);
   if (display.hidden) return null;
-  return <details className="wb-event"><summary><span className="wb-agent-name">{eventAgentName(event)}</span><span>{display.label}</span></summary>
-    {display.command && <pre>{display.command}</pre>}
-    {display.exitCode !== undefined && <p className="wb-event-meta">Exit code: {display.exitCode}</p>}
-    {display.body && (display.output ? <pre>{display.body}</pre> : <div className="wb-event-body"><MarkdownRenderer content={display.body} /></div>)}
+  return <details onToggle={event => { if (event.target === event.currentTarget) setOpen(event.currentTarget.open); }} className="wb-event"><summary><span className="wb-agent-name">{eventAgentName(event)}</span><span>{display.label}</span></summary>
+    {open && display.command && <pre>{display.command}</pre>}
+    {open && display.exitCode !== undefined && <p className="wb-event-meta">Exit code: {display.exitCode}</p>}
+    {open && display.body && (display.output ? <pre>{display.body}</pre> : <div className="wb-event-body"><MarkdownRenderer content={display.body} /></div>)}
   </details>;
 }
 
@@ -27,7 +28,9 @@ export function WorkbenchActivity({ events }: { events: ChatV2AgentRunEvent[] })
   </div>;
 }
 
-export function WorkbenchConversation({ messages, pending, loading, status, onQuote, onSidecar, onRegenerate, onFork, onEdit, actionsDisabled, liveActions = {}, timings = {}, planReview }: {
+export function WorkbenchConversation({ messages, pending, loading, status, onQuote, onSidecar, onRegenerate, onFork, onEdit, actionsDisabled, liveActions = {}, timings = {}, planReview, renderTeam, onRevealEarlier }: {
+  onRevealEarlier?: (messages: ChatMessage[]) => void;
+  renderTeam?: (runId: string, lead: string) => ReactNode;
   planReview?: { runId?: string; content: ReactNode; version: number };
   timings?: Record<string, { start?: number; end?: number }>;
   messages: ChatMessage[];
@@ -48,7 +51,22 @@ export function WorkbenchConversation({ messages, pending, loading, status, onQu
   const [showLatest, setShowLatest] = useState(false);
   const [quote, setQuote] = useState("");
   const [quoteMessageIds, setQuoteMessageIds] = useState<string[]>([]);
+  const [visibleCount, setVisibleCount] = useState(40);
+  const prependAnchor = useRef<{ height: number; top: number } | null>(null);
+  const visibleMessages = messages.filter(message => message.role !== "system").slice(-visibleCount);
+  const hiddenCount = Math.max(0, messages.filter(message => message.role !== "system").length - visibleCount);
+  useLayoutEffect(() => {
+    const anchor = prependAnchor.current;
+    if (anchor && scroller.current) {
+      scroller.current.scrollTop = anchor.top + scroller.current.scrollHeight - anchor.height;
+      prependAnchor.current = null;
+    }
+  }, [visibleCount]);
   const lastMessage = messages.at(-1);
+  const teamMessageIds = new Map<string, string>();
+  if (renderTeam) for (const message of messages) {
+    if (message.role === "assistant" && message.taskRunRef?.runId) teamMessageIds.set(message.taskRunRef.runId, message.id);
+  }
   const planMessageId = planReview?.runId ? [...messages].reverse().find(message => message.role === "assistant" && message.taskRunRef?.runId === planReview.runId)?.id : undefined;
   let lastRequestIndex = messages.length - 1;
   while (lastRequestIndex >= 0 && messages[lastRequestIndex].role !== "user") lastRequestIndex -= 1;
@@ -79,15 +97,23 @@ export function WorkbenchConversation({ messages, pending, loading, status, onQu
       setShowLatest(!following.current);
     }}>
       <div className="wb-transcript" aria-busy={loading}>
-        {loading ? <div className="wb-empty"><p>Opening session…</p></div> : !messages.length && !planReview ? <div className="wb-empty"><div className="wb-mark"><Sparkles size={26} strokeWidth={1.3} /></div><p className="wb-eyebrow">ROOM TO THINK. TOOLS TO BUILD.</p><h1>What are we working on?</h1><p>Start with a question, a task, or an unfinished idea.<br />Your work stays together in this project.</p></div> : messages.filter((message) => message.role !== "system").map((message) => <Fragment key={message.id}><article className={`wb-message wb-message-${message.role}`} data-message-id={message.id}>
+        {!loading && hiddenCount > 0 && <button type="button" className="wb-load-earlier" onClick={() => {
+          if (scroller.current) prependAnchor.current = { height: scroller.current.scrollHeight, top: scroller.current.scrollTop };
+          following.current = false;
+          const all = messages.filter(message => message.role !== "system");
+          onRevealEarlier?.(all.slice(Math.max(0, all.length - visibleCount - 40), all.length - visibleCount));
+          setVisibleCount(count => count + 40);
+        }}>Load earlier messages ({hiddenCount})</button>}
+        {loading ? <div className="wb-empty"><p>Opening session…</p></div> : !messages.length && !planReview ? <div className="wb-empty"><div className="wb-mark"><Sparkles size={26} strokeWidth={1.3} /></div><p className="wb-eyebrow">ROOM TO THINK. TOOLS TO BUILD.</p><h1>What are we working on?</h1><p>Start with a question, a task, or an unfinished idea.<br />Your work stays together in this project.</p></div> : visibleMessages.map((message) => <Fragment key={message.id}><article className={`wb-message wb-message-${message.role}`} data-message-id={message.id}>
           <div className="wb-message-author">{message.role === "user" ? "You" : message.runEvents?.length ? eventAgentName({ type: "message", payload: (message.runEvents.find((event) => event.detail?.payload || event.detail?.backend)?.detail?.payload ?? message.runEvents.find((event) => event.detail?.backend)?.detail ?? {}) as Record<string, unknown> }) : "Diane"}{pending[message.id] && <span className="wb-live-dot" aria-label="Working" />}</div>
           {message.role === "assistant" && ["failed", "blocked", "stopped"].includes(message.taskRunRef?.status || "") && <p className="wb-muted" role="status">Request {message.taskRunRef!.status}</p>}
           <div className="wb-message-body">{message.content ? <MarkdownRenderer content={message.content} /> : pending[message.id] ? null : <p className="wb-muted">No response content recorded.</p>}</div>
           {message.attachments?.map((attachment, index) => <Suspense key={`${attachment.filename}-${index}`} fallback={<div className="wb-attachment">{attachment.filename}</div>}><MessageAttachment attachment={attachment} /></Suspense>)}
           {message.toolCalls?.map((tool) => <details className="wb-event" key={tool.id}><summary><span>{tool.status === "running" ? "◌" : tool.status === "error" ? "!" : "✓"}</span><span>{tool.toolName}</span><span className="wb-muted">{tool.status}</span></summary><pre>{tool.argsPreview}{tool.outputPreview && `\n\n${tool.outputPreview}`}</pre></details>)}
-          {(Boolean(message.runEvents?.length) || pending[message.id]) && <Suspense fallback={null}><ActivitySummary events={message.runEvents ?? []} active={Boolean(pending[message.id])} startedAt={timings[message.taskRunRef?.taskId || ""]?.start || message.timestamp} endedAt={timings[message.taskRunRef?.taskId || ""]?.end} live={liveActions[message.id]}>{(message.runEvents ?? []).filter(event => event.type !== "model_text_delta").map((event, index) => <EventDetail key={event.activity_id ?? `${event.event_type}:${event.summary}:${index}`} event={{ type: event.type, source_event_type: event.event_type, summary: event.summary, payload: (event.detail?.payload ?? event.detail ?? {}) as Record<string, unknown> }} />)}</ActivitySummary></Suspense>}
+          {(Boolean(message.runEvents?.length) || pending[message.id]) && <Suspense fallback={null}><ActivitySummary events={message.runEvents ?? []} active={Boolean(pending[message.id])} startedAt={timings[message.taskRunRef?.taskId || ""]?.start || message.timestamp} endedAt={timings[message.taskRunRef?.taskId || ""]?.end} live={liveActions[message.id]}>{() => (message.runEvents ?? []).filter(event => event.type !== "model_text_delta").map((event, index) => <EventDetail key={event.activity_id ?? `${event.event_type}:${event.summary}:${index}`} event={{ type: event.type, source_event_type: event.event_type, summary: event.summary, payload: (event.detail?.payload ?? event.detail ?? {}) as Record<string, unknown> }} />)}</ActivitySummary></Suspense>}
           {message.taskRunRef && ["failed", "blocked", "stopped", "needs_input"].includes(message.taskRunRef.status) && <div className="wb-message-state">{{failed:"Could not finish", blocked:"Needs your attention", stopped:"Stopped", needs_input:"Needs your input"}[message.taskRunRef.status]}</div>}
           {message.id === planMessageId && planReview?.content}
+          {message.taskRunRef?.runId && teamMessageIds.get(message.taskRunRef.runId) === message.id && renderTeam?.(message.taskRunRef.runId, message.runEvents?.length ? eventAgentName({ type: "message", payload: (message.runEvents.find(event => event.detail?.payload || event.detail?.backend)?.detail?.payload ?? message.runEvents.find(event => event.detail?.backend)?.detail ?? {}) as Record<string, unknown> }).replace("Claude Code", "Claude") : "Diane")}
         </article>
         {message.id === lastRequestId && (onEdit || onRegenerate || onFork) && <Suspense fallback={null}><RequestActions key={message.id} text={message.content} disabled={actionsDisabled} onEdit={onEdit ? (text) => onEdit(message.id, text) : undefined} onRegenerate={onRegenerate} onFork={onFork} /></Suspense>}
         {message.id === lastResponseId && lastRequestId && !pending[message.id] && (onEdit || onRegenerate || onFork) && <Suspense fallback={null}><RequestActions response text={messages[lastRequestIndex].content} disabled={actionsDisabled} onEdit={onEdit ? text => onEdit(lastRequestId, text) : undefined} onRegenerate={onRegenerate} onFork={onFork} /></Suspense>}</Fragment>)}

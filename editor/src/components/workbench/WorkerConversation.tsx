@@ -1,3 +1,4 @@
+import { NativeApproval } from "./NativeApproval";
 import { eventDisclosure } from "./eventPresentation";
 import MarkdownRenderer from "../shared/MarkdownRenderer";
 import { useEffect, useRef, useState } from "react";
@@ -8,10 +9,12 @@ type Entry = { cursor: number; event: Record<string, unknown> };
 export function workerUrl(worker: TeamWorker) {
   return `/api/native-workers/${encodeURIComponent(worker.parent_run_id)}/${encodeURIComponent(worker.worker_id)}`;
 }
-export default function WorkerConversation({ worker, onChange }: { worker: TeamWorker; onChange?: (worker: TeamWorker) => void }) {
+export default function WorkerConversation({ worker, onChange, active = true }: { active?: boolean; worker: TeamWorker; onChange?: (worker: TeamWorker) => void }) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const cursor = useRef<number | null>(null);
   const disposed = useRef(false);
+  const generation = useRef(0);
+  const requestController = useRef<AbortController | null>(null);
   const [before, setBefore] = useState<number | null>(null);
   const [worktree, setWorktree] = useState<{ tree: string; diff: string; truncated: boolean } | null>(null);
   const [applied, setApplied] = useState(false);
@@ -19,23 +22,33 @@ export default function WorkerConversation({ worker, onChange }: { worker: TeamW
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const url = workerUrl(worker);
-  async function load(older = false) {
-    const page = await requestJson<{ entries: Entry[]; before: number | null; has_more?: boolean }>(`${url}/events${older && before !== null ? `?before=${before}` : cursor.current !== null ? `?after=${cursor.current}` : ""}`);
-    if (disposed.current) return;
+  async function load(older = false, epoch = generation.current, signal = requestController.current?.signal) {
+    const page = await requestJson<{ entries: Entry[]; before: number | null; has_more?: boolean }>(`${url}/events${older && before !== null ? `?before=${before}` : cursor.current !== null ? `?after=${cursor.current}` : ""}`, { signal });
+    if (disposed.current || epoch !== generation.current || signal?.aborted) return;
     const initial = cursor.current === null;
     if (page.entries.length) cursor.current = Math.max(cursor.current ?? -1, page.entries[page.entries.length - 1].cursor);
-    setEntries(current => [...new Map([...current, ...page.entries].map(row => [row.cursor, row])).values()].sort((a, b) => a.cursor - b.cursor));
+    // Advance the cursor over bookkeeping, but do not retain token-level events that are never shown.
+    const visible = page.entries.filter(({ event }) => !eventDisclosure({ type: "status_reported", payload: { raw: event } }).hidden);
+    if (visible.length) setEntries(current => [...new Map([...current, ...visible].map(row => [row.cursor, row])).values()].sort((a, b) => a.cursor - b.cursor));
     if (older || initial) setBefore(page.before);
-    if (!older && page.has_more && page.entries.length && !disposed.current) await load();
+    if (!older && page.has_more && page.entries.length && !disposed.current) await load(false, epoch, signal);
   }
   useEffect(() => {
     disposed.current = false;
+    generation.current += 1;
+    const controller = new AbortController();
+    requestController.current = controller;
     // The component is keyed by worker ID. Poll only this expanded conversation.
-    const refresh = async () => { if (!disposed.current) await load().catch(e => !disposed.current && setError(String(e.message))); };
-    void refresh();
-    const timer = ["running", "needs_input"].includes(worker.status) ? window.setInterval(() => void refresh(), 2000) : undefined;
-    return () => { disposed.current = true; window.clearInterval(timer); };
-  }, [url, worker.status]); // eslint-disable-line react-hooks/exhaustive-deps
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      if (cancelled) return;
+      if (!document.hidden && active) await load().catch(e => !cancelled && setError(String(e.message)));
+      if (!cancelled && active && ["running", "needs_input"].includes(worker.status)) timer = setTimeout(() => void refresh(), 2000);
+    };
+    if (active) void refresh();
+    return () => { cancelled = true; disposed.current = true; generation.current += 1; controller.abort(); clearTimeout(timer); };
+  }, [url, worker.status, active]); // eslint-disable-line react-hooks/exhaustive-deps
   async function send(action: string, body: unknown) {
     setBusy(true); setError("");
     try {
@@ -55,7 +68,6 @@ export default function WorkerConversation({ worker, onChange }: { worker: TeamW
     finally { setBusy(false); }
   }
   return <section className="wb-worker-conversation" aria-label="Worker conversation">
-    {worker.requests?.map(request => <WorkerQuestion key={String(request.id)} request={request} busy={busy} onAnswer={body => void send("answer", body)} />)}
     {before !== null && <button disabled={busy} onClick={() => void load(true).catch(e => setError(e.message))}>Load earlier</button>}
     {entries.map(({ cursor, event }) => {
       const display = eventDisclosure({ type: "status_reported", payload: { raw: event } });
@@ -73,6 +85,7 @@ export default function WorkerConversation({ worker, onChange }: { worker: TeamW
       {worker.can_apply && worktree.diff && <button disabled={busy} onClick={() => void send("apply", { tree: worktree.tree })}>Apply changes to project</button>}</>}
     {applied && <p role="status">Changes applied to project.</p>}
     {worker.can_reply && !worker.native_session_id && worker.backend !== "dan" && <p>No native session was saved. Retry will use the saved task and output.</p>}
+    {worker.requests?.map(request => request.method === "claude/canUseTool" ? <NativeApproval key={String(request.id)} request={request} endpoint={`${url}/answer`} /> : <WorkerQuestion key={String(request.id)} request={request} busy={busy} onAnswer={body => void send("answer", body)} />)}
     {worker.can_reply && !worker.requests?.length && <form onSubmit={event => { event.preventDefault(); if (draft.trim() && !busy) void send("reply", { prompt: draft }); }}>
       <label>Reply to worker<textarea value={draft} onChange={event => setDraft(event.target.value)} rows={3} /></label>
       <button disabled={busy || !draft.trim()} type="submit">{worker.status === "running" ? "Send" : "Continue"}</button>

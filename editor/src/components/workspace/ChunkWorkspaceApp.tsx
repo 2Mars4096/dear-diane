@@ -1,3 +1,5 @@
+import { InlineTeamSummary } from "../workbench/InlineTeamSummary";
+import { DraftPersistence } from "../workbench/draftPersistence";
 import { teamRunTitles } from "../workbench/teamPresentation";
 import { useTeamCapacity } from "../workbench/teamCapacity";
 import { RunStreamConnection } from '../workbench/runStreamConnection';
@@ -28,6 +30,7 @@ import { WorkbenchConversation, WorkbenchActivity } from "../workbench/Workbench
 import "../workbench/workbench.css";
 import {
   Suspense,
+  startTransition,
   lazy,
   useCallback,
   useDeferredValue,
@@ -228,7 +231,7 @@ const NOTES_WORKSPACE_WRITE_POLICY =
   "Use the notes workspace as context by default; create or edit notes only when the operator asks for notes, memory, documentation, or a saved artifact.";
 type WorkspaceAgentSelectionId = "native" | "codex" | "claude" | "antigravity" | "cursor";
 type WorkspaceCodexReasoningEffort = "low" | "medium" | "high" | "xhigh";
-type WorkspaceAutonomyMode = "plan" | "auto" | "full";
+type WorkspaceAutonomyMode = "plan" | "auto" | "full" | "default" | "acceptEdits";
 type WorkspaceAgentOption = {
   id: WorkspaceAgentSelectionId;
   label: string;
@@ -256,13 +259,23 @@ type StoredWorkspaceSelection = {
   modelId: string;
   modelSelectionsByAgent: WorkspaceModelSelectionByAgent;
 };
+const NativeApproval = lazy(() => import("../workbench/NativeApproval").then(module => ({ default: module.NativeApproval })));
 const DEFAULT_AGENT_SELECTION_ID: WorkspaceAgentSelectionId = "native";
 const DEFAULT_AUTONOMY_MODE: WorkspaceAutonomyMode = "auto";
 // One Diane mode per intent; each maps to the closest Codex sandbox / Claude permission mode.
 const WORKSPACE_AUTONOMY_OPTIONS: WorkspaceAutonomyOption[] = [
+  { id: "default", label: "Ask before actions", shortLabel: "Ask", description: "Ask before file edits and commands that need approval." },
+  { id: "acceptEdits", label: "Accept edits", shortLabel: "Edit", description: "Accept file edits; ask before other actions when required." },
   { id: "plan", label: "Read only", shortLabel: "Read only", description: "Inspect without changing project files. Use /plan to shape the work." },
   { id: "auto", label: "Auto", shortLabel: "Auto", description: "Edit files and run commands inside this project." },
   { id: "full", label: "Full access", shortLabel: "Full", description: "No sandbox or approvals. Use only in trusted projects." },
+];
+const CLAUDE_AUTONOMY_OPTIONS: WorkspaceAutonomyOption[] = [
+  { id: "auto", label: "Auto", shortLabel: "Auto", description: "Claude reviews permission decisions. Requires a supported account and model." },
+  { id: "default", label: "Manual", shortLabel: "Manual", description: "Ask before edits and commands that require permission." },
+  { id: "acceptEdits", label: "Accept edits", shortLabel: "Accept edits", description: "Automatically accept file edits; ask before other actions when required." },
+  { id: "plan", label: "Plan", shortLabel: "Plan", description: "Explore and plan without changing project source files." },
+  { id: "full", label: "Bypass permissions", shortLabel: "Bypass", description: "Skip routine approvals when permitted by Claude settings. Sandbox is separate." },
 ];
 /** Diane's own runtime only distinguishes pausing for decisions from acting on its own. */
 function danAutonomyMode(mode: WorkspaceAutonomyMode): "auto" | "review" {
@@ -335,7 +348,7 @@ function workspaceAgentOptionForId(id: string | null | undefined): WorkspaceAgen
 }
 
 function isWorkspaceAutonomyMode(value: string | null | undefined): value is WorkspaceAutonomyMode {
-  return value === "plan" || value === "auto" || value === "full";
+  return value === "plan" || value === "auto" || value === "full" || value === "default" || value === "acceptEdits";
 }
 
 function workspaceAutonomyOptionForId(id: string | null | undefined): WorkspaceAutonomyOption {
@@ -459,7 +472,7 @@ function buildWorkspaceAgentExecutePayload(
   modelOption: WorkspaceModelOption,
   autonomyMode: WorkspaceAutonomyMode = DEFAULT_AUTONOMY_MODE,
 ) {
-  const autonomyOption = workspaceAutonomyOptionForId(autonomyMode);
+  const autonomyOption = workspaceAutonomyOptionForId(agentOption.id !== "claude" && ["default", "acceptEdits"].includes(autonomyMode) ? "auto" : autonomyMode);
   const danMode = danAutonomyMode(autonomyOption.id);
   const profilePolicy: Record<string, unknown> = {
     backend: agentOption.backend,
@@ -8514,7 +8527,7 @@ export function workPanelTasksForTest(
   activeThreadId: string,
   events: ChatV2AgentRunEvent[] = [],
 ) {
-  const settled = settleTaskSnapshotsFromEvents(selectedTasks, events);
+  const settled = settleTaskSnapshotsFromEvents(selectedTasks.filter(task => task.thread_id === activeThreadId), events);
   const selectedThreadBackgroundTasks = activeThreadId
     ? backgroundTasks.filter((task) => task.thread_id === activeThreadId)
     : [];
@@ -12565,7 +12578,6 @@ function BlueprintView({
   activeNodeId,
   selectedNodeId,
   selectedChunkId,
-  elapsedCounter,
   loading,
   onSelect,
   onSelectConversationChunk,
@@ -12578,11 +12590,18 @@ function BlueprintView({
   activeNodeId: string | null;
   selectedNodeId: string | null;
   selectedChunkId: string | null;
-  elapsedCounter: WorkElapsedCounter | null;
   loading: boolean;
   onSelect: (node: BlueprintNode) => void;
   onSelectConversationChunk: (chunk: WorkspaceChunk) => void;
 }) {
+  const [elapsedNow, setElapsedNow] = useState(Date.now);
+  const active = Boolean(activeTask);
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setInterval(() => setElapsedNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  const elapsedCounter = taskGroupElapsedCounter(tasks, elapsedNow);
   const activeRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -13399,9 +13418,16 @@ export default function ChunkWorkspaceApp() {
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const composerDraftsRef = useRef<Record<string, string>>(initialComposerDrafts);
   const noteEditorRef = useRef<HTMLTextAreaElement | null>(null);
-  const noteContentCacheRef = useRef<Record<string, NoteCacheEntry>>(
-    readStoredNoteContentCache(),
-  );
+  const initialNoteContentCache = useMemo(readStoredNoteContentCache, []);
+  const noteContentCacheRef = useRef<Record<string, NoteCacheEntry>>(initialNoteContentCache);
+  const [draftPersistence] = useState(() => new DraftPersistence(readStoredComposerDrafts, persistComposerDrafts));
+  useEffect(() => {
+    const flush = () => draftPersistence.flush();
+    const hidden = () => { if (document.hidden) flush(); };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", hidden);
+    return () => { flush(); window.removeEventListener("pagehide", flush); document.removeEventListener("visibilitychange", hidden); };
+  }, [draftPersistence]);
   const selfWriteAtRef = useRef<Record<string, number>>({});
   const serverNotesLoadedRef = useRef(false);
 
@@ -13437,12 +13463,12 @@ export default function ChunkWorkspaceApp() {
 
   const commitComposerDraft = useCallback(
     (thread: ThreadIdentity | null | undefined, value: string) => {
-      const next = composerDraftsWithValue(readStoredComposerDrafts(), thread, value);
+      const next = composerDraftsWithValue(composerDraftsRef.current, thread, value);
       if (next === composerDraftsRef.current) return;
       composerDraftsRef.current = next;
-      persistComposerDrafts(next);
+      draftPersistence.set(composerDraftKey(thread), value);
     },
-    [],
+    [draftPersistence],
   );
 
   const setComposerInputValue = useCallback(
@@ -13450,6 +13476,7 @@ export default function ChunkWorkspaceApp() {
       value: string,
       options: { persist?: boolean; thread?: ThreadIdentity | null } = {},
     ) => {
+      if (composerRef.current) composerRef.current.value = value;
       setInput(value);
       if (options.persist === false) return;
       commitComposerDraft(options.thread ?? activeThreadRef.current, value);
@@ -13459,14 +13486,16 @@ export default function ChunkWorkspaceApp() {
 
   const loadComposerDraftForThread = useCallback(
     (thread: ThreadIdentity | null | undefined) => {
+      draftPersistence.flush();
       composerDraftsRef.current = readStoredComposerDrafts();
       const draft = composerDraftForThread(composerDraftsRef.current, thread);
+      if (composerRef.current) composerRef.current.value = draft;
       setInput(draft);
       setComposerCaret(draft.length);
       setComposerSuggestionIndex(0);
       setComposerSuggestionSuppressedFor(null);
     },
-    [],
+    [draftPersistence],
   );
 
   const activeNote = notes.find((note) => note.id === activeNoteId) ?? notes[0] ?? null;
@@ -13948,7 +13977,7 @@ export default function ChunkWorkspaceApp() {
   }, [activeMentionSuggestions.length, noteMentionIndex]);
 
   useEffect(() => {
-    persistLayout({
+    const save = () => persistLayout({
       showSessionRail,
       showFileExplorer,
       showConversationChunks,
@@ -13961,6 +13990,9 @@ export default function ChunkWorkspaceApp() {
       rootPickerWidth,
       rootPickerHeight,
     });
+    const timer = window.setTimeout(save, 180);
+    window.addEventListener("pagehide", save);
+    return () => { window.clearTimeout(timer); window.removeEventListener("pagehide", save); };
   }, [
     showSessionRail,
     showFileExplorer,
@@ -14072,6 +14104,7 @@ export default function ChunkWorkspaceApp() {
     streamRef.current?.close();
     streamRef.current = null;
     agentStreamRef.current.close();
+    activeThreadRef.current = null;
     setActiveThread(null);
     setLoadingThreadId(null);
     setMessages([]);
@@ -14156,7 +14189,10 @@ export default function ChunkWorkspaceApp() {
     autoRestoringThreadIdRef.current = match.id;
     void getChatV2Thread(match.workflow_id, match.id)
       .then(async (thread) => {
-        const history = await loadSuperDanThreadHistory(thread.id, thread.title, thread.updated_at).catch(() => ({
+        // Saved chats already contain their transcript: do not fetch every old run and event log to open them.
+        const history = await (thread.messages.length
+          ? listChatV2ThreadTasks(thread.id).then(tasks => ({ tasks, events: [] as ChatV2AgentRunEvent[], messages: [] as ChatMessage[] }))
+          : loadSuperDanThreadHistory(thread.id, thread.title, thread.updated_at)).catch(() => ({
           tasks: [] as ChatV2TaskSnapshot[],
           events: [] as ChatV2AgentRunEvent[],
           messages: [] as ChatMessage[],
@@ -14191,7 +14227,8 @@ export default function ChunkWorkspaceApp() {
           workflowId: thread.workflow_id,
           title: thread.title,
         };
-        setActiveThread(restoredThread);
+        activeThreadRef.current = restoredThread;
+      setActiveThread(restoredThread);
         updateSessionPreferences(threadWorkspaceKey(thread.workflow_id, thread.id), { unread: false });
         setMainTabs(tabs => tabs.map(tab => tab.id === 'chat' ? { ...tab, label: thread.title, session: { id: thread.id, workflowId: thread.workflow_id, workspaceId: restoredWorkspaceId } } : tab));
         if (new URLSearchParams(location.search).has('session')) historyReplaceSessionUrl();
@@ -14599,8 +14636,8 @@ export default function ChunkWorkspaceApp() {
   }, [chunks, selectedChunkId]);
 
   const settledTasks = useMemo(
-    () => settleTaskSnapshotsFromEvents(tasks, agentEvents),
-    [agentEvents, tasks],
+    () => settleTaskSnapshotsFromEvents(activeThread ? tasks.filter(task => task.thread_id === activeThread.id) : [], agentEvents),
+    [agentEvents, tasks, activeThread],
   );
   const selectedThreadBackgroundTasks = useMemo(
     () =>
@@ -14617,7 +14654,7 @@ export default function ChunkWorkspaceApp() {
   const activeRunId = activeRunningTask ? taskRunId(activeRunningTask) : "";
   const teamParentIds = useMemo(() => [...new Set(tasks.map(taskRunId).filter(Boolean))], [tasks]);
   const [notificationWorker, setNotificationWorker] = useState("");
-  const team = useTeamWorkers(teamParentIds, Boolean(activeRunningTask));
+  const team = useTeamWorkers(teamParentIds, Boolean(activeRunningTask), activeRunId, true);
   const teamTitles = useMemo(() => teamRunTitles(messages), [messages]);
   const sidecarExecution = () => {
     const payload = withLeadSelection(buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode), selectedAgentId, leadProfiles);
@@ -14937,8 +14974,8 @@ export default function ChunkWorkspaceApp() {
     [selectedAgentId, selectedModelId, leadProfiles],
   );
   const selectedAutonomyOption = useMemo(
-    () => workspaceAutonomyOptionForId(autonomyMode),
-    [autonomyMode],
+    () => selectedAgentId === "claude" ? CLAUDE_AUTONOMY_OPTIONS.find(option => option.id === autonomyMode) || CLAUDE_AUTONOMY_OPTIONS[0] : workspaceAutonomyOptionForId(autonomyMode),
+    [autonomyMode, selectedAgentId],
   );
   const persistedModelSelectionsByAgent = useMemo(() => {
     const next = defaultWorkspaceModelSelectionsByAgent();
@@ -14956,6 +14993,9 @@ export default function ChunkWorkspaceApp() {
   }, [selectedAgentId]);
 
   useEffect(() => {
+    if (selectedAgentId !== "claude" && ["default", "acceptEdits"].includes(autonomyMode)) setAutonomyMode("auto");
+  }, [selectedAgentId, autonomyMode]);
+  useEffect(() => {
     window.localStorage.setItem(AUTONOMY_MODE_STORAGE_KEY, autonomyMode);
   }, [autonomyMode]);
   useEffect(() => {
@@ -14965,24 +15005,12 @@ export default function ChunkWorkspaceApp() {
       JSON.stringify(persistedModelSelectionsByAgent),
     );
   }, [persistedModelSelectionsByAgent, selectedModelOption.id]);
-  const [elapsedCounterNow, setElapsedCounterNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!activeRunningTask) return undefined;
-    const tick = () => setElapsedCounterNow(Date.now());
-    tick();
-    const timer = window.setInterval(tick, 1000);
-    return () => window.clearInterval(timer);
-  }, [activeRunId, activeRunningTask?.task_id]);
   const composerText = input.trim();
   const composerHasPayload = Boolean(composerText || composerAttachments.length > 0);
   const composerActionIsStop = Boolean(activeThread && activeRunningTask && !composerHasPayload);
   const queueRows = useMemo(() => queueRowsFromTasks(workPanelTasks), [workPanelTasks]);
   const visibleQueueRows = useMemo(() => queueRowsFromTasks(workPanelTasks, true), [workPanelTasks]);
   const showAgentQueuePanel = visibleQueueRows.length > 0;
-  const elapsedCounter = useMemo(
-    () => taskGroupElapsedCounter(workPanelTasks, elapsedCounterNow),
-    [elapsedCounterNow, workPanelTasks],
-  );
   const blueprintNodes = useMemo(
     () =>
       buildBlueprintNodes({
@@ -15072,15 +15100,23 @@ export default function ChunkWorkspaceApp() {
       event.preventDefault();
       const startX = event.clientX;
       const startWidth = leftRailWidth;
+      let frame = 0;
+      let nextWidth = startWidth;
+      const commit = () => { frame = 0; setLeftRailWidth(nextWidth); };
       const handleMove = (moveEvent: globalThis.PointerEvent) => {
-        setLeftRailWidth(clampLeftRailWidth(startWidth + moveEvent.clientX - startX));
+        nextWidth = clampLeftRailWidth(startWidth + moveEvent.clientX - startX);
+        if (!frame) frame = requestAnimationFrame(commit);
       };
       const handleUp = () => {
+        cancelAnimationFrame(frame);
+        commit();
+        window.removeEventListener("pointercancel", handleUp);
         window.removeEventListener("pointermove", handleMove);
         window.removeEventListener("pointerup", handleUp);
       };
       window.addEventListener("pointermove", handleMove);
       window.addEventListener("pointerup", handleUp);
+      window.addEventListener("pointercancel", handleUp);
     },
     [leftRailWidth],
   );
@@ -15092,16 +15128,25 @@ export default function ChunkWorkspaceApp() {
       const startY = event.clientY;
       const startWidth = rootPickerWidth;
       const startHeight = rootPickerHeight;
+      let frame = 0;
+      let nextWidth = startWidth;
+      let nextHeight = startHeight;
+      const commit = () => { frame = 0; setRootPickerWidth(nextWidth); setRootPickerHeight(nextHeight); };
       const handleMove = (moveEvent: globalThis.PointerEvent) => {
-        setRootPickerWidth(clampRootPickerWidth(startWidth + moveEvent.clientX - startX));
-        setRootPickerHeight(clampRootPickerHeight(startHeight + moveEvent.clientY - startY));
+        nextWidth = clampRootPickerWidth(startWidth + moveEvent.clientX - startX);
+        nextHeight = clampRootPickerHeight(startHeight + moveEvent.clientY - startY);
+        if (!frame) frame = requestAnimationFrame(commit);
       };
       const handleUp = () => {
+        cancelAnimationFrame(frame);
+        commit();
+        window.removeEventListener("pointercancel", handleUp);
         window.removeEventListener("pointermove", handleMove);
         window.removeEventListener("pointerup", handleUp);
       };
       window.addEventListener("pointermove", handleMove);
       window.addEventListener("pointerup", handleUp);
+      window.addEventListener("pointercancel", handleUp);
     },
     [rootPickerHeight, rootPickerWidth],
   );
@@ -15688,6 +15733,7 @@ export default function ChunkWorkspaceApp() {
     streamRef.current = null;
     agentStreamRef.current.close();
     setStatus("Creating session");
+    activeThreadRef.current = null;
     setActiveThread(null);
     setLoadingThreadId(null);
     setMessages([]);
@@ -15712,6 +15758,7 @@ export default function ChunkWorkspaceApp() {
         title: created.title || "New Diane Session",
       };
       if (sessionSelectionSeqRef.current !== selectionSeq) return;
+      activeThreadRef.current = next;
       setActiveThread(next);
       setMainTabs(tabs => [...tabs.filter(tab => tab.id !== 'chat'), { id: 'chat', kind: 'chat', label: next.title, session: { id: next.id, workflowId: next.workflowId, workspaceId: targetWorkspaceId || undefined } }]);
       setActiveMainTab('chat');
@@ -15785,6 +15832,7 @@ export default function ChunkWorkspaceApp() {
         workflowId: summary.workflow_id,
         title: summary.title,
       };
+      activeThreadRef.current = optimisticThread;
       setActiveThread(optimisticThread);
       loadComposerDraftForThread(optimisticThread);
       setMessages([]);
@@ -15808,7 +15856,8 @@ export default function ChunkWorkspaceApp() {
         }));
         if (sessionSelectionSeqRef.current !== selectionSeq) return;
         const sourceMessages = thread.messages.length > 0 ? thread.messages : history.messages;
-        const loadedMessages = await restoreFullNativeMessages(sourceMessages);
+        const recentStart = Math.max(0, sourceMessages.length - 40);
+        const loadedMessages = [...sourceMessages.slice(0, recentStart), ...await restoreFullNativeMessages(sourceMessages.slice(recentStart))];
         if (sessionSelectionSeqRef.current !== selectionSeq) return;
         const resolvedWorkspaceRoot = workspaceRoot || workspaceRootForTasks(history.tasks);
         const resolvedWorkspaceId =
@@ -16132,7 +16181,8 @@ export default function ChunkWorkspaceApp() {
         title: created.title,
       };
       if (sessionSelectionSeqRef.current === selectionSeq) {
-        setActiveThread(next);
+        activeThreadRef.current = next;
+      setActiveThread(next);
         bindThreadToWorkspace(next.workflowId, next.id, targetWorkspaceId);
         rememberThreadSelection(
           LAST_THREAD_STORAGE_KEY,
@@ -16194,6 +16244,7 @@ export default function ChunkWorkspaceApp() {
       runWorkspaceId = workspace?.id ?? activeWorkspaceId ?? "",
     ) => {
       let lastTaskRefresh = 0;
+      let textEvents: Parameters<typeof streamedMessageContent>[1][] = [];
       agentStreamRef.current.connect(`${thread.id}:${runId}`, () => connectChatV2AgentRunEvents(
         runId,
         (event) => {
@@ -16216,13 +16267,20 @@ export default function ChunkWorkspaceApp() {
             }
           }
           if (activeThreadRef.current?.id !== thread.id) return;
+          if (event.type !== "model_text_delta") agentStreamRef.current.flush();
           if (event.type !== "model_text_delta") setAgentEvents((previous) => [...previous, event].slice(-80));
           attachRunEventToAssistant(assistantId, runEventPayloadFromAgentEvent(event));
           const action = !agentRunEventIsTerminal(event) ? liveActionText(event.summary) : "";
           if (action) setLiveActions((previous) => previous[assistantId] === action ? previous : { ...previous, [assistantId]: action });
           if (event.type === "model_text_delta") {
-            applyMessages((previous) => previous.map((message) => message.id === assistantId
-              ? { ...message, content: streamedMessageContent(message.content, event) } : message));
+            textEvents.push(event);
+            agentStreamRef.current.schedule(() => {
+              const pending = textEvents;
+              textEvents = [];
+              if (activeThreadRef.current?.id !== thread.id) return;
+              applyMessages(previous => previous.map(message => message.id === assistantId
+                ? { ...message, content: pending.reduce((content, item) => streamedMessageContent(content, item), message.content) } : message));
+            });
           }
 
           if (agentRunEventIsTerminal(event)) {
@@ -16610,14 +16668,20 @@ export default function ChunkWorkspaceApp() {
   }, [workspaces, activeWorkspaceId, selectedAgentOption, selectedModelOption, autonomyMode, selectedAgentId, leadProfiles, nativeWorkerProfiles, teamCapacity]);
 
   const handleComposerInputChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
-    setComposerInputValue(event.target.value);
-    setComposerCaret(event.target.selectionStart ?? event.target.value.length);
-    setComposerSuggestionSuppressedFor(null);
-  }, [setComposerInputValue]);
+    const value = event.currentTarget.value;
+    const caret = event.currentTarget.selectionStart ?? value.length;
+    commitComposerDraft(activeThreadRef.current, value);
+    startTransition(() => {
+      setInput(value);
+      setComposerCaret(caret);
+      setComposerSuggestionSuppressedFor(null);
+    });
+  }, [commitComposerDraft]);
 
   const handleComposerSelectionChange = useCallback((event: SyntheticEvent<HTMLTextAreaElement>) => {
     const target = event.currentTarget;
-    setComposerCaret(target.selectionStart ?? target.value.length);
+    const caret = target.selectionStart ?? target.value.length;
+    startTransition(() => setComposerCaret(caret));
   }, []);
 
   const addComposerFiles = useCallback((files: File[], source: string) => {
@@ -16649,10 +16713,11 @@ export default function ChunkWorkspaceApp() {
 
   const applyComposerSuggestion = useCallback(
     (suggestion: WorkspaceComposerSuggestion) => {
-      const token = workspaceComposerTokenAt(input, composerCaret);
+      const currentInput = composerRef.current?.value ?? input;
+      const token = workspaceComposerTokenAt(currentInput, composerRef.current?.selectionStart ?? composerCaret);
       if (!token) return;
       const replacement = `${suggestion.insertText} `;
-      const nextInput = `${input.slice(0, token.start)}${replacement}${input.slice(token.end)}`;
+      const nextInput = `${currentInput.slice(0, token.start)}${replacement}${currentInput.slice(token.end)}`;
       const nextCaret = token.start + replacement.length;
       setComposerInputValue(nextInput);
       setComposerCaret(nextCaret);
@@ -16811,8 +16876,8 @@ export default function ChunkWorkspaceApp() {
   };
 
   const submit = useCallback(async (modeOverride?: ComposerSubmitMode) => {
-    const draftBeforeSubmit = input;
-    let prompt = input.trim();
+    const draftBeforeSubmit = composerRef.current?.value ?? input;
+    let prompt = draftBeforeSubmit.trim();
     if (/^\/plan(?:\s|$)/i.test(prompt)) {
       prompt = prompt.replace(/^\/plan\s*/i, "");
       if (!await setPlanningMode(prompt ? true : sessionPlan.state.mode !== "plan")) return;
@@ -16894,7 +16959,7 @@ export default function ChunkWorkspaceApp() {
   const handleComposerKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
       if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
-      if (composerSuggestions.length > 0) {
+      if (composerSuggestions.length > 0 && event.currentTarget.value === input) {
         if (event.key === "ArrowDown" || event.key === "ArrowUp") {
           event.preventDefault();
           setComposerSuggestionIndex((current) => {
@@ -16920,6 +16985,7 @@ export default function ChunkWorkspaceApp() {
       void submit(placement);
     },
     [
+      input,
       activeComposerToken,
       applyComposerSuggestion,
       composerSuggestions.length,
@@ -16929,7 +16995,21 @@ export default function ChunkWorkspaceApp() {
     ],
   );
 
+  const revealEarlierMessages = useCallback((older: ChatMessage[]) => {
+    const selection = sessionSelectionSeqRef.current;
+    void restoreFullNativeMessages(older).then(restored => {
+      if (selection !== sessionSelectionSeqRef.current) return;
+      const originals = new Map(older.map(message => [message.id, message]));
+      const updates = new Map(restored.filter(message => message !== originals.get(message.id)).map(message => [message.id, message]));
+      if (!updates.size) return;
+      applyMessages(current => current.map(message => updates.has(message.id) && message.content === originals.get(message.id)?.content
+        ? { ...message, content: updates.get(message.id)!.content } : message));
+    });
+  }, [applyMessages]);
+
   const renderWorkspaceComposer = () => (
+    <>
+              {(team.leadRequests[activeRunId] || []).map(request => <Suspense key={String(request.id)} fallback={null}><NativeApproval request={request} endpoint={`/api/native-lead/${encodeURIComponent(activeRunId)}/answer`} /></Suspense>)}
     <div data-composer-drop="" onDragOver={event => { if (Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "copy"; } }} onDrop={event => {
       if (!Array.from(event.dataTransfer.types).includes("Files")) return;
       event.preventDefault(); event.stopPropagation();
@@ -16989,7 +17069,7 @@ export default function ChunkWorkspaceApp() {
         <textarea
           wrap="soft"
           ref={composerRef}
-          value={input}
+          defaultValue={input}
           onChange={handleComposerInputChange}
           onPaste={handleComposerPaste}
           onKeyDown={handleComposerKeyDown}
@@ -17082,7 +17162,7 @@ export default function ChunkWorkspaceApp() {
             </button>
             {autonomyMenuOpen && (
               <div className="absolute bottom-full right-0 z-50 pb-2"><div className="w-64 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
-                {WORKSPACE_AUTONOMY_OPTIONS.map((option) => {
+                {(selectedAgentId === "claude" ? CLAUDE_AUTONOMY_OPTIONS : WORKSPACE_AUTONOMY_OPTIONS.filter(option => !["default", "acceptEdits"].includes(option.id))).map((option) => {
                   const selected = option.id === selectedAutonomyOption.id;
                   return (
                     <button
@@ -17165,6 +17245,7 @@ export default function ChunkWorkspaceApp() {
         </div>
       </div>
     </div>
+    </>
   );
 
   const visiblePreviewFileEntry =
@@ -18495,7 +18576,7 @@ export default function ChunkWorkspaceApp() {
               {libraryReading && <Suspense fallback={null}><ReadingSessionBar id={libraryReading.session.id} onBrowse={openPaperLibrary} /></Suspense>}
               {!documentsRestored && (activeMainTab.startsWith("pdf:") || /\.epub$/i.test(mainTabs.find(tab => tab.id === activeMainTab)?.label || "")) ? <p className="dan-document-message">Restoring reading session…</p> : activeMainTab === "papers" || activeMainTab === "file-error" || (activeMainTab.startsWith("file:") && !readerFile) ? null : activeMainTab === "settings" ? <Suspense fallback={null}><DianeSettings page onPapers={openPaperLibrary} onClose={() => closeTab("settings")} profiles={nativeWorkerProfiles} onProfilesChange={setNativeWorkerProfiles} /></Suspense> : readerFile ? <Suspense fallback={<div className="wb-reader"><p className="wb-activity-empty wb-side-empty">Opening reader…</p></div>}><ReaderView key={readerFile.path} file={readerFile} onAsk={askFromReader} onNotes={() => openSideTab("notes")} /></Suspense> : <>
               <div className="wb-conversation-heading">
-              <TeamStrip workers={team.workers} lead={selectedAgentOption.shortLabel} leadRunning={Boolean(activeRunningTask)} open={teamPanel} onToggle={() => { setTeamPanel(!teamPanel); setWorkbenchActivity(false); setSidecarChat(false); setShowSidecarPreview(false); }} />
+              <TeamStrip activeRunId={activeRunId} workers={team.workers} lead={selectedAgentOption.shortLabel} leadRunning={Boolean(activeRunningTask)} open={teamPanel} onToggle={() => { setTeamPanel(!teamPanel); setWorkbenchActivity(false); setSidecarChat(false); setShowSidecarPreview(false); }} />
                 <div className="wb-conversation-actions">
                 {activeThread && <button title={`Copy session ID: ${activeThread.id}`} onClick={() => { void navigator.clipboard.writeText(activeThread.id).then(() => setStatus("Session ID copied"), () => setStatus(`Session ID: ${activeThread.id}`)); }}>Session <code>{activeThread.id}</code></button>}
                 <button aria-pressed={workbenchOutline} onClick={() => setWorkbenchOutline(!workbenchOutline)}>{workbenchOutline ? "Conversation" : "Task detail"}</button></div></div>
@@ -18511,7 +18592,6 @@ export default function ChunkWorkspaceApp() {
                     activeNodeId={activeBlueprintNode?.id ?? null}
                     selectedNodeId={selectedBlueprintNode?.id ?? null}
                     selectedChunkId={selectedChunk?.id ?? null}
-                    elapsedCounter={elapsedCounter}
                     loading={loadingThreadId === activeThread?.id}
                     onSelect={(node) => {
                       setSelectedBlueprintNodeId(node.id);
@@ -18537,9 +18617,9 @@ export default function ChunkWorkspaceApp() {
                 />
               </div>
 ) : (
-                <WorkbenchConversation planReview={sessionPlan.state.document || sessionPlan.state.question || sessionPlan.state.questions?.length ? { runId: sessionPlan.state.last_run_id, content: (<Suspense fallback={<p className="wb-side-empty">Opening plan…</p>}><PlanPanel key={referenceKey}
+                <WorkbenchConversation onRevealEarlier={revealEarlierMessages} renderTeam={(runId, lead) => <InlineTeamSummary key={runId} store={team.store} runId={runId} lead={lead} onOpenWorker={worker => { setNotificationWorker(worker.worker_id); openSideTab("team"); }} />} planReview={sessionPlan.state.document || sessionPlan.state.question || sessionPlan.state.questions?.length ? { runId: sessionPlan.state.last_run_id, content: (<Suspense fallback={<p className="wb-side-empty">Opening plan…</p>}><PlanPanel key={referenceKey}
                 state={sessionPlan.state} loaded={sessionPlan.loaded || !activeThread} saving={sessionPlan.saving} busy={hasActiveRun || sending}
-                error={sessionPlan.error} permission={selectedAutonomyOption.label}
+                error={sessionPlan.error} permission={autonomyMode === "plan" ? "Read only" : selectedAutonomyOption.label}
                 onReload={sessionPlan.reload} onProposal={accept => sessionPlan.update({ action: accept ? "accept_proposal" : "dismiss_proposal" })}
                 onAnswer={text => { void answerPlan(text); }} onStart={() => { void startPlan(); }}
               /></Suspense>), version: sessionPlan.state.version } : undefined} timings={Object.fromEntries(workPanelTasks.map(task => [task.task_id, { start:timestampValue(task.metadata?.run_created_at || task.metadata?._run_created_at, 0), end:isTaskRunning(task) ? undefined : timestampValue(taskRunUpdatedAt(task), 0) }]))} key={activeThread?.id ?? "new"} messages={visibleQueuedTranscript(messages, workPanelTasks, pendingAssistantIds)} pending={pendingAssistantIds} loading={loadingThreadId !== null} status={status} liveActions={liveActions} onEdit={activeThread ? editLastRequest : undefined} actionsDisabled={Boolean(activeRunningTask) || sending || Object.values(pendingAssistantIds).some(Boolean)} onRegenerate={activeThread && !activeRunningTask && !sending ? () => void regenerateLastRequest() : undefined} onFork={activeThread && !activeRunningTask && !sending ? () => void forkConversation() : undefined} onSidecar={activeThread ? (text) => { setSidecarSelection({text, token:Date.now()}); setSidecarChat(true); setWorkbenchActivity(false); setTeamPanel(false); setShowSidecarPreview(false); } : undefined} onQuote={(text, messageIds) => {
@@ -18828,7 +18908,7 @@ export default function ChunkWorkspaceApp() {
                 )}
               </aside>
             </PersistentPanel>
-          <PersistentPanel active={visibleSideTab === "document"} name="Document"><Suspense fallback={<p className="wb-side-empty">Opening file…</p>}><FileSidecar request={fileRequest} active={visibleSideTab === "document"} onAsk={(text, attachment) => { if (attachment) setComposerAttachments(previous => [...previous, attachment]); setComposerInputValue(input ? `${input}\n\n${text}` : text); setActiveMainTab(mainTabs.find(tab => tab.session?.id === activeThread?.id && tab.session?.workflowId === activeThread?.workflowId)?.id || "chat"); requestAnimationFrame(() => composerRef.current?.focus()); }} /></Suspense></PersistentPanel>
+          <PersistentPanel active={visibleSideTab === "document"} name="Document"><Suspense fallback={<p className="wb-side-empty">Opening file…</p>}><FileSidecar request={fileRequest} active={visibleSideTab === "document"} onAsk={(text, attachment) => { if (attachment) setComposerAttachments(previous => [...previous, attachment]); setComposerInputValue([composerRef.current?.value ?? input, text].filter(Boolean).join("\n\n")); setActiveMainTab(mainTabs.find(tab => tab.session?.id === activeThread?.id && tab.session?.workflowId === activeThread?.workflowId)?.id || "chat"); requestAnimationFrame(() => composerRef.current?.focus()); }} /></Suspense></PersistentPanel>
           <PersistentPanel active={visibleSideTab === "literature"} name="Literature"><Suspense fallback={<p className="wb-side-empty">Opening literature…</p>}><LiteraturePanel execution={sidecarExecution()} leadLabel={selectedAgentOption.shortLabel} onOpen={openLibraryReading} onDocument={openDocument} onBrowse={openPaperLibrary} /></Suspense></PersistentPanel>
           <PersistentPanel active={visibleSideTab === "processes"} name="Processes" key={`processes:${developmentRoot}`}><Suspense fallback={null}><ProcessesPanel cwd={developmentRoot} workspaceId={workspace?.id || ""} processes={processState.processes} error={processState.error} onChanged={() => void processState.refresh()} header={false} /></Suspense></PersistentPanel>
           <PersistentPanel active={visibleSideTab === "notes"} name="Notes" key={`notes:${readerFile?.path ?? ""}`} >{readerFile && <Suspense fallback={null}><ReaderNotes file={readerFile} header={false} /></Suspense>}</PersistentPanel>
@@ -18846,8 +18926,8 @@ export default function ChunkWorkspaceApp() {
           {!readerFile && !activeThread && <aside className="wb-activity-panel"><p className="wb-activity-empty wb-side-empty">Start a conversation to open a side chat about it.</p></aside>}
           </PersistentPanel>
           <PersistentPanel active={visibleSideTab === "activity"} name="Activity"> <aside className="wb-activity-panel"><WorkbenchActivity events={agentEvents} /></aside></PersistentPanel>
-          <PersistentPanel active={visibleSideTab === "changes"} name="Changes" key={`changes:${developmentRoot}:${activeThread?.id}`}><Suspense fallback={null}><ChangesPanel active={visibleSideTab === "changes"} root={developmentRoot} thread={activeThread?.id || ""} onComment={text => { setComposerInputValue(input ? `${input}\n\n${text}` : text); setActiveMainTab(mainTabs.find(tab => tab.session?.id === activeThread?.id && tab.session?.workflowId === activeThread?.workflowId)?.id || "chat"); setPhonePage("chat"); if (isPhoneViewport) openSideTab(null); requestAnimationFrame(() => composerRef.current?.focus()); }} /></Suspense></PersistentPanel>
-          <PersistentPanel active={visibleSideTab === "team"} name="Team"> <TeamPanel runDetails={Object.fromEntries(workPanelTasks.map(task => [taskRunId(task), { ...teamTitles[taskRunId(task)], startedAt: timestampValue(task.metadata?.run_created_at || task.metadata?._run_created_at, 0) }]))} header={false} activeRunId={activeRunId} onOpenLead={runId => {
+          <PersistentPanel active={visibleSideTab === "changes"} name="Changes" key={`changes:${developmentRoot}:${activeThread?.id}`}><Suspense fallback={null}><ChangesPanel active={visibleSideTab === "changes"} root={developmentRoot} thread={activeThread?.id || ""} onComment={text => { setComposerInputValue([composerRef.current?.value ?? input, text].filter(Boolean).join("\n\n")); setActiveMainTab(mainTabs.find(tab => tab.session?.id === activeThread?.id && tab.session?.workflowId === activeThread?.workflowId)?.id || "chat"); setPhonePage("chat"); if (isPhoneViewport) openSideTab(null); requestAnimationFrame(() => composerRef.current?.focus()); }} /></Suspense></PersistentPanel>
+          <PersistentPanel active={visibleSideTab === "team"} name="Team"> <TeamPanel store={team.store} active={visibleSideTab === "team"} configuredProfiles={nativeWorkerProfiles} rosters={team.rosters} lead={selectedAgentOption.shortLabel} runDetails={Object.fromEntries(workPanelTasks.map(task => [taskRunId(task), { ...teamTitles[taskRunId(task)], startedAt: timestampValue(task.metadata?.run_created_at || task.metadata?._run_created_at, 0) }]))} header={false} activeRunId={activeRunId} onOpenLead={runId => {
             setWorkbenchOutline(false); setTeamPanel(false); setPhonePage("chat");
             setActiveMainTab(mainTabs.find(tab => tab.session?.id === activeThread?.id && tab.session?.workflowId === activeThread?.workflowId)?.id || "chat");
             const message = messagesRef.current.find(item => item.taskRunRef?.runId === runId);
