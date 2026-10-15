@@ -110,7 +110,32 @@ def worker_attention():
 
 @router.get("/api/native-workers/{parent_id}")
 def list_workers(parent_id: str):
-    return {"workers": [public_worker(row) for row in read_workers(Path(resolve_graphs_dir()) / "native_workers", parent_id)]}
+    base = Path(resolve_graphs_dir())
+    team = active_teams.get(parent_id)
+    profiles = team.profiles if team else {}
+    if not team and Path(parent_id).name == parent_id:
+        try:
+            run = json.loads((base / "chat_v2" / "runs" / f"{parent_id}.json").read_text())
+            profiles = (run.get("metadata", {}).get("profile_policy") or {}).get("native_workers", {})
+        except (OSError, ValueError):
+            pass
+    roster = []
+    used = {str(profile.get("name") or "").strip() for profile in profiles.values()}
+    number = 1
+    for identity, profile in profiles.items():
+        if not (profile.get("enabled") or profile.get("backend")):
+            continue
+        name = str(profile.get("name") or "").strip()
+        if not name:
+            while f"Worker {number}" in used:
+                number += 1
+            name = f"Worker {number}"
+            used.add(name)
+            number += 1
+        roster.append({"profile_id": identity, "name": name, "backend": profile.get("backend", identity)})
+    lead = getattr(team, "lead_team", None)
+    lead_requests = [request for client in lead.steering.values() for request in client.requests.values()] if lead else []
+    return {"workers": [public_worker(row) for row in read_workers(base / "native_workers", parent_id)], "roster": roster, "lead_requests": lead_requests}
 
 @router.post("/api/native-workers/{parent_id}/{worker_id}/stop")
 async def stop_worker(parent_id: str, worker_id: str):
@@ -183,13 +208,26 @@ class WorkerAnswer(BaseModel):
     answers: dict[str, str] = Field(default_factory=dict)
 
 
+@router.post("/api/native-lead/{parent_id}/answer")
+async def answer_lead(parent_id: str, body: WorkerAnswer):
+    lead = getattr(active_teams.get(parent_id), "lead_team", None)
+    client = next((client for client in lead.steering.values() if body.request_id in client.requests), None) if lead else None
+    if not client:
+        raise HTTPException(409, "This permission request is no longer pending")
+    try:
+        await client.reply(body.request_id, body.decision, body.answers)
+        return {"accepted": True}
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @router.post("/api/native-workers/{parent_id}/{worker_id}/answer")
 async def answer_worker(parent_id: str, worker_id: str, body: WorkerAnswer):
     team = active_teams.get(parent_id)
     client = team.steering.get(worker_id) if team else None
     if not client:
         raise HTTPException(409, "Worker is no longer connected; resume it instead")
-    if body.decision == "accept" and team.records[worker_id].get("profile", {}).get("permission") == "plan":
+    if body.decision == "accept" and team.records[worker_id].get("profile", {}).get("permission") == "plan" and client.requests.get(body.request_id, {}).get("params", {}).get("tool_name") != "AskUserQuestion":
         raise HTTPException(409, "Plan mode cannot approve mutations")
     try:
         await client.reply(body.request_id, body.decision, body.answers)
@@ -201,27 +239,16 @@ async def answer_worker(parent_id: str, worker_id: str, body: WorkerAnswer):
 @router.get("/api/native-workers/{parent_id}/{worker_id}/events")
 def worker_events(parent_id: str, worker_id: str, before: int | None = None, limit: int = 100, after: int | None = None):
     base = Path(resolve_graphs_dir()) / "native_workers"
-    if not any(row["worker_id"] == worker_id for row in read_workers(base, parent_id)):
+    if Path(worker_id).name != worker_id or worker_id in {".", ".."}:
         raise HTTPException(404, "Unknown worker")
-    path = base / f"{worker_id}.jsonl"
-    from collections import deque
-    page = deque(maxlen=max(1, min(limit, 200)))
-    if path.exists():
-        with path.open() as stream:
-            for index, line in enumerate(stream):
-                if before is not None and index >= before:
-                    break
-                if after is not None and index <= after:
-                    continue
-                if after is not None and len(page) == page.maxlen:
-                    break
-                try:
-                    page.append({"cursor": index, "event": json.loads(line)})
-                except ValueError:
-                    continue  # tolerate a partially written last event
-    return {"events": [row["event"] for row in page], "entries": list(page),
-            "has_more": after is not None and len(page) == page.maxlen,
-            "before": page[0]["cursor"] if page and page[0]["cursor"] else None}
+    try:
+        record = json.loads((base / f"{worker_id}.json").read_text())
+    except (OSError, ValueError):
+        raise HTTPException(404, "Unknown worker")
+    if record.get("parent_run_id") != parent_id or record.get("worker_id") != worker_id:
+        raise HTTPException(404, "Unknown worker")
+    from diane.native_workers.event_pages import event_page
+    return event_page(base / f"{worker_id}.jsonl", before=before, after=after, limit=limit)
 
 
 @router.get("/api/usage")

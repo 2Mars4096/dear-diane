@@ -164,3 +164,20 @@ def test_one_broken_account_does_not_hide_other_accounts(monkeypatch, tmp_path):
     assert rows[0]["error"] == "Usage unavailable (ValueError)"
     assert rows[1]["windows"][0]["used_percent"] == 5
     assert "secret" not in json.dumps(rows)
+
+
+def test_codex_overlapping_reads_share_one_snapshot(monkeypatch, tmp_path):
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    from diane.native_workers import usage
+    usage._codex_cache.clear()
+    calls = []
+    async def snapshot(home):
+        calls.append(home)
+        await asyncio.sleep(.03)
+        return {'rateLimits': {}}
+    monkeypatch.setattr(usage, '_codex_snapshot', snapshot)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(usage.codex_usage, [tmp_path] * 3))
+    assert len(calls) == 1
+    assert results[0] == results[1] == results[2]

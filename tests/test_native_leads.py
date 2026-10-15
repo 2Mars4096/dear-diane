@@ -65,6 +65,7 @@ async def test_lead_streams_and_resumes_same_account_only(monkeypatch, tmp_path,
     assert str(tmp_path / "graphs" / "chats") in calls[0][2]
     assert "Prior context" in calls[0][2]
     assert calls[0][1]["fast"] is True
+    assert calls[0][1]["_managed_team"] is True
     assert any(event.type == "model_text_delta" and event.payload["accumulated"] == "Answer" for event in events)
     await adapter.run(req.model_copy(update={"run_id":"next"}), events.append)
     assert calls[-1][-1] == "fork-123"

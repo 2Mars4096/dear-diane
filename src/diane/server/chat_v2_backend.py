@@ -825,7 +825,7 @@ class SuperDanBackendAdapter:
         team = NativeTeam(request.run_id, request.workspace_root or str(Path.cwd()), profiles,
                           Path(resolve_graphs_dir()) / "native_workers", emit_child, parent_request=request)
         for configured_id, settings in profiles.items():
-            if settings.get("backend", configured_id) == "codex" and settings.get("enabled"):
+            if settings.get("backend", configured_id) in {"codex", "claude"} and settings.get("enabled"):
                 settings.update(_live_steering=True, _interactive=True)
         active_teams[request.run_id] = team
         token = current_team.set(team)

@@ -172,6 +172,12 @@ def catalog() -> dict:
 PERMISSIONS = {"plan", "auto", "full"}
 
 
+def native_cli_path(inherited: str = "") -> str:
+    """npm CLI launchers need Node even under a minimal LaunchServices PATH."""
+    return os.pathsep.join([str(user_home() / ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin",
+                           inherited or "/usr/bin:/bin", str(Path(sys.executable).resolve().parent)])
+
+
 def launch(runtime: str, profile: dict, objective: str, workspace: str, session: str = "") -> tuple[list[str], dict[str, str]]:
     if runtime not in RUNTIMES:
         raise ValueError("Unknown native runtime")
@@ -192,12 +198,11 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
     # LaunchServices omits shell/Conda PATH setup. npm CLI launchers use
     # /usr/bin/env node; the backend's Python installation may also supply Node.
     # Keep configured PATH precedence and append this only as a fallback.
-    env["PATH"] = os.pathsep.join([str(user_home() / ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin",
-                                 env.get("PATH", "/usr/bin:/bin"), str(Path(sys.executable).resolve().parent)])
+    env["PATH"] = native_cli_path(env.get("PATH", ""))
     model, effort = str(profile.get("model") or ""), str(profile.get("effort") or "")
     fast = bool(profile.get("fast"))
     permission = str(profile.get("permission") or "auto")
-    if permission not in PERMISSIONS:
+    if permission not in (PERMISSIONS | {"default", "acceptEdits"} if runtime == "claude" else PERMISSIONS):
         raise ValueError("Unsupported permission mode")
     allowed = {"low", "medium", "high"} | ({"minimal", "xhigh", "max", "ultra"} if runtime == "codex" else {"max"} if runtime == "claude" else set())
     if effort and effort not in allowed:
@@ -224,7 +229,7 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
         env["CODEX_SQLITE_HOME"] = str(home)
         cmd = [executable, "exec"] + (["resume", session] if session else [])
         cmd += ["--json", "--skip-git-repo-check"]
-        if profile.get("_managed_worker"):
+        if profile.get("_managed_worker") or profile.get("_managed_team"):
             cmd += ["-c", "features.multi_agent=false"]
         # Explicit overrides also defeat a source config pointing to desktop state.
         cmd += ["-c", f"sqlite_home={json.dumps(str(home))}", "-c", f"log_dir={json.dumps(str(home / 'log'))}", "-c", 'cli_auth_credentials_store="file"']
@@ -271,9 +276,9 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
                     env[f"ANTHROPIC_DEFAULT_{role}_MODEL"] = model
                 env["CLAUDE_CODE_SUBAGENT_MODEL"] = model
             cmd += ["--verbose", "--include-partial-messages"]
-            if profile.get("_managed_worker"):
+            if profile.get("_managed_worker") or profile.get("_managed_team"):
                 cmd += ["--disallowedTools", "Agent", "Task", "TeamCreate"]
-            cmd += ["--dangerously-skip-permissions"] if permission == "full" else ["--permission-mode", "plan" if permission == "plan" else "acceptEdits"]
+            cmd += ["--dangerously-skip-permissions"] if permission == "full" else ["--permission-mode", permission]
             if fast and not any(row["fast"] for row in catalog()["runtimes"] if row["id"] == runtime):
                 raise ValueError("Update Claude Code to use fast mode in headless workers")
             if fast and model not in {"opus", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"}:
@@ -283,9 +288,14 @@ def launch(runtime: str, profile: dict, objective: str, workspace: str, session:
             settings: dict = {"fastMode": fast}
             if context_env:
                 settings["env"] = context_env
-            if permission == "auto":
-                # Headless runs cannot prompt; let Bash run inside Claude's workspace sandbox instead.
-                settings["sandbox"] = {"enabled": True, "autoAllowBashIfSandboxed": True}
+            sandbox = profile.get("claude_sandbox", "default")
+            if sandbox not in {"default", "enabled", "disabled"}:
+                raise ValueError("Unsupported Claude command sandbox setting")
+            enabled = sandbox == "enabled" or (sandbox == "default" and permission != "full")
+            settings["sandbox"] = {"enabled": enabled}
+            if enabled:
+                settings["sandbox"].update(autoAllowBashIfSandboxed=permission not in {"plan", "default"},
+                                           allowUnsandboxedCommands=False, failIfUnavailable=True)
             cmd += ["--settings", json.dumps(settings)]
             # Skills installed for other CLIs, exposed through Diane's symlink pool (never ~/.claude or the project).
             try:

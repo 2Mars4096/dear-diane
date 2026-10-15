@@ -1,6 +1,8 @@
 """Worker-local delegation backed by the root team's admission and lifecycle."""
 from __future__ import annotations
 
+from .management import EXECUTION_GUIDANCE
+
 
 class WorkerScope:
     def __init__(self, team, parent):
@@ -45,7 +47,8 @@ class WorkerScope:
 def worker_instructions(record, capacity):
     workspace_note = ("Work only inside your assigned working directory: " + record["workspace_root"]
                       + ". Use paths relative to it; do not edit the source checkout named in older context. "
-                      "Keep scratch files inside this directory, use simple commands with literal paths, and inspect denial reasons before retrying.\n")
+                      "Preserve other workers’ changes.\n")
+    workspace_note += EXECUTION_GUIDANCE + "\n"
     if not record["profile"].get("allow_children"):
         return workspace_note + "Child sessions are disabled for this worker. Complete your assignment yourself; do not launch agents through tools, CLI commands or scripts."
     return workspace_note + ("You may delegate subtasks only through Diane's child-session tool/bridge. "

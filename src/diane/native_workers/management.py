@@ -8,6 +8,25 @@ import time
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
 
+EXECUTION_GUIDANCE = """Execution policy:
+- Scope: identify the requested outcome, owned files and acceptance checks. Read relevant instructions and code; reuse existing work. Make the smallest complete change; defer unrelated cleanup and extra features.
+- Setup: in a fresh worktree, verify dependencies, generated assets and test runners with one small smoke check before starting a batch.
+- Execute: use simple scoped commands and unique logs per worker/attempt/invocation. Keep scratch inside your workspace or a unique temporary directory. Observe output and the actual process exit code; a live process is not proof of progress.
+- Recover: on fatal setup/compile errors, stop the affected batch and only its owned processes. Fix the cause, then repeat the smoke check. Retry only after a relevant change or evidence of a transient failure. If the same blocker recurs after repair, report evidence and the missing prerequisite instead of looping. Respect denials; do not bypass permissions or kill by broad process name.
+- Wait: use task handles or bounded condition checks, not repeated fixed sleeps or rapid polling. While waiting, do independent in-scope work. Report blockers promptly; allow productive long-running work to finish.
+- Verify: test changed behavior first. Repeat passing checks only when affected by later changes or explicitly required. The lead owns integrated regressions; disclose deferred coverage and never weaken assertions to pass.
+- Finish: stop when the agreed outcome and checks are satisfied. Report changes, actual check results and remaining blockers concisely. Account for every owned background job before handoff; do not claim completion while required checks are pending."""
+
+LEAD_EXECUTION_GUIDANCE = (
+    "Delegation: use fewer workers when coordination costs exceed the benefit. Give each worker one bounded outcome, "
+    "disjoint file ownership, necessary context and checkable acceptance; reserve shared integration for yourself. "
+    "Do not repeat the same broad test suite across all workers. Review progress at milestones or on blockers, "
+    "not continuously. If progress stalls, inspect the latest output and repair the prerequisite before restarting work. "
+    "Preserve completed sibling work; review actual changes/results, integrate, then run the affected combined checks. "
+    "Classify each delegated result as accepted, revise or blocked before delivery."
+)
+
+
 class TaskContract(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

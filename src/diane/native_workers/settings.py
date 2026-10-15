@@ -20,9 +20,9 @@ def normalized_settings(value, permission):
             raise ValueError('Allow child sessions must be a boolean')
         if row.get('allow_children') and backend not in {'dan', 'codex', 'claude'}:
             raise ValueError('This agent does not support child sessions')
-        profile = {name: deepcopy(row[name]) for name in ('backend', 'name', 'model', 'account', 'effort', 'fast', 'provider', 'base_url', 'allow_children') if name in row}
+        profile = {name: deepcopy(row[name]) for name in ('backend', 'name', 'model', 'account', 'effort', 'fast', 'provider', 'base_url', 'allow_children', 'claude_sandbox') if name in row}
         profile.update(enabled=bool(row.get('backend') or row.get('enabled')), permission=permission)
-        if backend == 'codex':
+        if backend in {'codex', 'claude'}:
             profile.update(_live_steering=True, _interactive=True)
         profiles[key] = profile
     return {'native_workers': profiles, 'team_max_parallel_workers': capacity}

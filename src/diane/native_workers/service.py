@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import asyncio
 from contextvars import ContextVar
+from copy import deepcopy
+from collections import OrderedDict
+from threading import RLock
 import json
 import os
 from pathlib import Path
@@ -89,6 +92,8 @@ class NativeTeam:
             raise ValueError("Worker is still running; stop it before sending a follow-up")
         if previous and previous["backend"] != backend:
             raise ValueError("Cannot change a worker's runtime")
+        if not previous and backend != "claude" and profile.get("permission") in {"default", "acceptEdits"}:
+            profile = {**profile, "permission": "auto"}
         if not previous and read_only:
             profile = {**profile, "permission": "plan"}
         selected_profile = previous["profile"] if previous else profile
@@ -435,16 +440,33 @@ def describe(row: dict) -> str:
     return ""
 
 
+_worker_snapshots = OrderedDict()
+_worker_snapshots_lock = RLock()
+
+
+def _worker_file_snapshot(path: str, stamp: tuple) -> dict:
+    # Retain one version per path; bursts must not fill the cache with obsolete snapshots.
+    with _worker_snapshots_lock:
+        cached = _worker_snapshots.pop(path, None)
+        row = cached[1] if cached and cached[0] == stamp else json.loads(Path(path).read_text())
+        _worker_snapshots[path] = (stamp, row)
+        while len(_worker_snapshots) > 128:
+            _worker_snapshots.popitem(last=False)
+        return row
+
+
 def read_workers(base: Path, parent_id: str) -> list[dict]:
     records = []
     if not base.is_dir():
         return records
     for path in base.glob("*.json"):
         try:
-            row = json.loads(path.read_text())
+            stat = path.stat()
+            row = _worker_file_snapshot(str(path), (stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size))
         except (ValueError, OSError):
             continue
         if row.get("parent_run_id") == parent_id:
+            row = deepcopy(row)  # Cached snapshots must not be mutated by resume/review callers.
             if row["status"] in {"running", "needs_input"} and (parent_id not in active_teams or row["worker_id"] not in active_teams[parent_id].records):
                 row["status"] = "interrupted"
             records.append(row)

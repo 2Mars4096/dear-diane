@@ -12,6 +12,8 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import threading
+from collections import defaultdict
 from urllib.request import Request, urlopen
 
 from .catalog import accounts, user_home
@@ -34,13 +36,13 @@ def _window_label(minutes: int | None) -> str:
 async def _codex_snapshot(home: Path) -> dict:
     """Read this login's quota without opening a thread or starting a model turn."""
     import asyncio
-    from .catalog import binary
+    from .catalog import binary, native_cli_path
     executable = binary("codex")
     if not executable:
         raise FileNotFoundError("Codex CLI unavailable")
     process = await asyncio.create_subprocess_exec(
         executable, "app-server", "--listen", "stdio://",
-        cwd=str(home), env={**os.environ, "CODEX_HOME": str(home)},
+        cwd=str(home), env={**os.environ, "CODEX_HOME": str(home), "PATH": native_cli_path(os.environ.get("PATH", ""))},
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL, limit=2 * 1024 * 1024)
 
@@ -99,9 +101,16 @@ def _codex_windows(data: dict) -> dict:
 
 
 _codex_cache: dict[str, tuple[float, dict]] = {}
+_codex_locks = defaultdict(threading.Lock)
 
 
 def codex_usage(home: Path) -> dict:
+    home = home.expanduser().resolve()
+    with _codex_locks[str(home)]:
+        return _read_codex_usage(home)
+
+
+def _read_codex_usage(home: Path) -> dict:
     import asyncio
     home = home.expanduser().resolve()
     try:

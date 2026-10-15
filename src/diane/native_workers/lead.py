@@ -13,6 +13,7 @@ import time
 from . import bridge, proc_bridge, browser_bridge
 from .service import NativeTeam, active_teams, describe
 from .codex_home import SCOPE, private_home
+from .management import EXECUTION_GUIDANCE, LEAD_EXECUTION_GUIDANCE
 
 _active_sessions: set[str] = set()
 
@@ -32,6 +33,7 @@ class NativeLeadAdapter:
         permission = str(request.profile_policy.get("permission_mode") or "auto")
         profile = {**(request.profile_policy.get("lead_profile") or {}), "enabled": True, "permission": permission}
         profile["_live_steering"] = backend in {"codex", "claude"} and hasattr(runtime, "admit_checkpoint")
+        profile["_managed_team"] = True
         # Continuations can only come from our durable state, never caller-supplied IDs.
         profile.pop("source_session", None)
         profile.pop("resume_session", None)
@@ -109,7 +111,7 @@ class NativeLeadAdapter:
             profiles = {name: {**settings, "enabled": bool(settings.get("backend") or settings.get("enabled")), "permission": permission} for name, settings in (request.profile_policy.get("native_workers") or {}).items()}
             team = NativeTeam(request.run_id, workspace, profiles, base / "native_workers", on_child, parent_request=request)
             for configured_id, settings in profiles.items():
-                if settings.get("backend", configured_id) == "codex" and settings.get("enabled"):
+                if settings.get("backend", configured_id) in {"codex", "claude"} and settings.get("enabled"):
                     settings.update(_live_steering=True, _interactive=True)
             active_teams[request.run_id] = team
             if backend == "codex":
@@ -120,7 +122,7 @@ class NativeLeadAdapter:
                 if home:
                     children = CodexChildren(team, private_home(home))
             prompt = _objective_with_surface_context(request)
-            prompt += "\nTeam editing tasks use isolated Git worktrees by default. For read-only inspection pass --shared-workspace; this forces read-only permissions. Never use shared mode for edits. Inspect each worker diff using changes, record an accepted review for its current attempt with evidence, then apply to merge into your workspace. Changes after review or overlapping source edits reject integration. Run integration checks after applying. Do not discard worker worktrees automatically. Install needed dependencies inside the owned worktree; ignored files and secrets are not copied."
+            prompt += "\nDelegate only through Diane's team bridge below. Native Agent/Task/spawn tools and external team controllers are not the configured Team. Do not launch background agents directly; wait for and review managed worker results before finishing.\nTeam editing tasks use isolated Git worktrees by default. For read-only inspection pass --shared-workspace; this forces read-only permissions. Never use shared mode for edits. Inspect each worker diff using changes, record an accepted review for its current attempt with evidence, then apply to merge into your workspace. Changes after review or overlapping source edits reject integration. Run integration checks after applying. Do not discard worker worktrees automatically. Install needed dependencies inside the owned worktree; ignored files and secrets are not copied."
             prompt += "\n\nYou are working in Dear Diane, a workspace for research, code, and ideas. Diane is the assistant name; retain your actual native runtime identity when reporting execution details."
             if request.thread_id:
                 prompt += (
@@ -177,7 +179,7 @@ class NativeLeadAdapter:
                 server = asyncio.create_task(bridge.serve(directory, team))
                 command = f"{shlex.quote(sys.executable)} {shlex.quote(str(client))} --queue {shlex.quote(str(directory))}"
                 prompt += ("\n\nYou are the lead agent. Enabled team members: " + json.dumps([{ "profile_id": key, "backend": profiles[key].get("backend", key), "name": profiles[key].get("name", key), "model": profiles[key].get("model", ""), "allow_children": profiles[key].get("allow_children", False) } for key in enabled])
-                    + f". Team capacity: at most {team.max_parallel_workers} simultaneous workers across all enabled providers, excluding you. Use fewer when sufficient. Each configured profile takes one task at a time; multiple profiles may share a provider. Choose a profile_id from the current status roster, preserving its configured model/account. Team settings may update with a user message; refresh status then. This is not a spending limit. Wait for a slot when full. Delegate useful independent tasks with your shell tool using:\n"
+                    + f". Team capacity: at most {team.max_parallel_workers} simultaneous workers across all enabled providers, excluding you. Use fewer when sufficient. Each configured profile takes one task at a time; multiple profiles may share a provider. Choose a profile_id from the current status roster, preserving its configured model/account. Team settings may update with a user message; refresh status then. This is not a spending limit. When full, do independent lead work while waiting for a slot. Delegate useful independent tasks with your shell tool using:\n"
                     + command + " start --profile-id ID --backend NAME --prompt 'task' [--scope 'bounded scope'] [--acceptance 'checkable outcome']\n"
                     + command + " status [--worker-id ID]\n"
                     + command + " resume --worker-id ID --prompt 'follow-up'\n"
@@ -192,11 +194,7 @@ class NativeLeadAdapter:
                     + "Resume retains the task contract and clears the current review. If scope or owned files change, start a fresh worker with a new contract instead of reusing an unrelated session. Assign disjoint file ownership, including tests and shared integration files; reserve integration for yourself. Do not retry indefinitely. "
                     + "Start returns immediately; independent tasks can run in parallel. Inspect team results before finishing. "
                     + "The team is scoped to this run and stops when you finish. Workers may create same-configuration child sessions only when their allow_children setting is enabled. All descendants share the team capacity.")
-            prompt += ("\nKeep scratch scripts, briefs and logs inside your working directory (for example output/team/). "
-                       "Use simple commands with literal paths; split compound commands when permission checks reject them. "
-                       "After a denial, inspect its reason instead of retrying the same command. Preserve permission boundaries. "
-                       "Run focused tests while iterating; rerun broad suites only after integration or when changed evidence warrants it. "
-                       "Report every delegated result as accepted, revise or blocked before final delivery; completion alone is not approval.")
+            prompt += "\n" + EXECUTION_GUIDANCE + "\n" + LEAD_EXECUTION_GUIDANCE
             # Long-lived processes must be started by Diane, or they die with this run.
             proc_client = Path(temporary.name) / "proc.py"
             proc_client.write_text(Path(proc_bridge.__file__).read_text())
@@ -214,6 +212,7 @@ class NativeLeadAdapter:
                     + proc_command + " stop --id ID\n"
                     "Use this only for commands that must stay up; check logs to confirm startup. The user can see and stop these in Dear Diane's Processes tab.")
             lead = NativeTeam(request.run_id, workspace, {backend: profile}, base / "native_leads", on_lead, is_lead=True)
+            team.lead_team = lead
             record = await lead.start(backend, prompt)
             task = lead.tasks[record["worker_id"]]
             event("worker_started", f"Started {backend} lead", {"role": "lead"})

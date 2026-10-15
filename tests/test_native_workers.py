@@ -188,7 +188,7 @@ def test_dan_modes_map_to_native_permissions(monkeypatch):
     assert "--dangerously-bypass-approvals-and-sandbox" in command("codex", "full")
     assert "--permission-mode plan" in command("claude", "plan")
     auto = command("claude", "auto")
-    assert "--permission-mode acceptEdits" in auto and "autoAllowBashIfSandboxed" in auto
+    assert "--permission-mode auto" in auto and "autoAllowBashIfSandboxed" in auto
     assert "--dangerously-skip-permissions" in command("claude", "full")
 
 
@@ -536,3 +536,33 @@ def test_claude_uses_os_home_without_losing_explicit_profile(monkeypatch, tmp_pa
     _, env = runtime_catalog.launch('claude', {}, 'test', str(tmp_path))
     assert env['HOME'] == str(tmp_path / 'os-home')
     assert env.get('CLAUDE_CONFIG_DIR') == profile_env.get('CLAUDE_CONFIG_DIR')
+
+
+@pytest.mark.parametrize('runtime', ['codex', 'claude'])
+def test_managed_leads_cannot_bypass_configured_team(monkeypatch, tmp_path, runtime):
+    monkeypatch.setattr(runtime_catalog, 'binary', lambda _: '/bin/' + runtime)
+    command, _ = runtime_catalog.launch(runtime, {'_managed_team': True}, 'task', str(tmp_path))
+    if runtime == 'codex':
+        assert 'features.multi_agent=false' in command
+    else:
+        i = command.index('--disallowedTools')
+        assert command[i + 1:i + 4] == ['Agent', 'Task', 'TeamCreate']
+
+
+@pytest.mark.parametrize('mode, expected', [('plan', 'plan'), ('default', 'default'), ('acceptEdits', 'acceptEdits'), ('auto', 'auto'), ('full', None)])
+@pytest.mark.parametrize('sandbox', ['default', 'enabled', 'disabled'])
+def test_claude_native_permissions_and_sandbox_are_independent(monkeypatch, tmp_path, mode, expected, sandbox):
+    monkeypatch.setattr(runtime_catalog, 'binary', lambda _: '/bin/claude')
+    command, _ = runtime_catalog.launch('claude', {'permission': mode, 'claude_sandbox': sandbox}, 'task', str(tmp_path))
+    if expected:
+        assert command[command.index('--permission-mode') + 1] == expected
+        assert '--dangerously-skip-permissions' not in command
+    else:
+        assert '--dangerously-skip-permissions' in command
+    settings = json.loads(command[command.index('--settings') + 1])['sandbox']
+    enabled = sandbox == 'enabled' or (sandbox == 'default' and mode != 'full')
+    assert settings['enabled'] is enabled
+    if enabled:
+        assert settings['allowUnsandboxedCommands'] is False
+        assert settings['failIfUnavailable'] is True
+        assert settings['autoAllowBashIfSandboxed'] is (mode not in {'default', 'plan'})
