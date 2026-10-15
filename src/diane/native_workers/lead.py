@@ -14,6 +14,8 @@ from . import bridge, proc_bridge, browser_bridge
 from .service import NativeTeam, active_teams, describe
 from .codex_home import SCOPE, private_home
 from .management import EXECUTION_GUIDANCE, LEAD_EXECUTION_GUIDANCE
+from .completion import CompletionInbox
+from types import SimpleNamespace
 
 _active_sessions: set[str] = set()
 
@@ -218,7 +220,33 @@ class NativeLeadAdapter:
             event("worker_started", f"Started {backend} lead", {"role": "lead"})
             steering_ready = False
             steering_failed = False
-            while not task.done():
+            completions = CompletionInbox()
+            last_completion_notice = 0.0
+            while True:
+                if task.done():
+                    await task
+                    current = lead.records[record["worker_id"]]
+                    if current["status"] != "completed":
+                        break
+                    if runtime:
+                        runtime.raise_if_interrupted("native_lead.team_handoff")
+                    ready = completions.pending(team)
+                    if ready:
+                        record = await lead.start(backend, completions.message(ready), worker_id=record["worker_id"])
+                        task = lead.tasks[record["worker_id"]]
+                        completions.acknowledge(ready)
+                        steering_ready = False
+                        event("status_reported", "Reviewing worker results and remaining work", {"worker_ids": [row["worker_id"] for row in ready]})
+                        continue
+                    if not completions.has_active(team):
+                        break
+                    if steering_ready and runtime:
+                        runtime._store.update_run_metadata(request.run_id, {"live_steering": False})
+                        steering_ready = False
+                    # Keep the owning run and its children alive until a handoff arrives.
+                    await asyncio.sleep(.2)
+                    continue
+                operator_steered = False
                 if runtime:
                     runtime.raise_if_interrupted("native_lead.running")
                     client = lead.steering.get(record["worker_id"])
@@ -229,6 +257,7 @@ class NativeLeadAdapter:
                             steering_ready = True
                         items = runtime.admit_checkpoint("native_lead.steer", limit=16)
                         if items:
+                            operator_steered = True
                             try:
                                 result = await client.steer(items)
                                 runtime.acknowledge_operator_messages([item.id for item in items],
@@ -238,6 +267,21 @@ class NativeLeadAdapter:
                                 runtime._store.release_injected_run_items(request.run_id, reason="steer_not_accepted")
                                 runtime._store.update_run_metadata(request.run_id, {"live_steering": False})
                                 event("status_reported", "Steering was not accepted; message remains queued", {"error": str(exc)})
+                ready = completions.pending(team)
+                client = lead.steering.get(record["worker_id"])
+                if (ready and not operator_steered and not steering_failed and client and client.turn_id
+                        and not client.finished.done() and not getattr(client, "requests", {})
+                        and not getattr(client, "background_tasks", set())
+                        and lead.records[record["worker_id"]].get("activity") in {"Thinking", "Writing response"}
+                        and time.monotonic() - last_completion_notice >= 5):
+                    try:
+                        await client.steer([SimpleNamespace(text=completions.message(ready), metadata={})])
+                        completions.acknowledge(ready)
+                        last_completion_notice = time.monotonic()
+                        event("status_reported", "Worker results ready for lead review", {"worker_ids": [row["worker_id"] for row in ready]})
+                    except Exception as exc:
+                        steering_failed = True
+                        event("status_reported", "Worker notification could not be delivered", {"error": str(exc)})
                 if children and time.monotonic() >= next_child_poll:
                     children.poll(lead.records[record["worker_id"]].get("native_session_id", ""))
                     next_child_poll = time.monotonic() + 1
