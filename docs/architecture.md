@@ -507,3 +507,34 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - Built-in worker read_only uses a scoped ContextVar to constrain LocalOrganismToolRuntime to read-only tools. Managed changes stores inspected_tree/inspected_attempt; acceptance checks both against current state, and resume invalidates inspection receipts.
 
 - `native_workers/claude_live.py` owns stream-json input/output for steerable Claude leads. It exposes the existing steering contract, awaits interrupt control response and user-message replay, distinguishes intermediate interruption from final completion, and cleans up the process. Existing workers retain the one-shot transport unless explicitly marked live.
+
+- Team worker listing exposes a minimal name/backend/profile_id roster from the active team or saved run policy. The UI groups sessions by profile_id and renders idle slots; workerNames fills only missing display names and avoids duplicate defaults without renumbering custom names.
+
+- Native leads set _managed_team, disabling Codex multi_agent and Claude Agent/Task/TeamCreate tools so delegation uses Diane roster/capacity/worktree lifecycle. This controls supported native tools; arbitrary shell subprocesses remain subject to runtime permissions and lead instructions.
+
+
+- native_cli_path is shared by worker and quota subprocesses, including the backend runtime directory fallback for Node. Same-account quota refreshes serialize around the cache. Team polling fetches active runs frequently and history every minute; BlueprintView owns its elapsed clock instead of the workspace root.
+
+- ClaudeLive forwards can_use_tool control requests as pending permission records; explicit responses reuse stored input and never add persistent allow rules. Root teams expose lead requests via existing polling and /api/native-lead/{run}/answer; worker approvals retain their scoped endpoint. Claude worker launches now use live transport for approvals. Read-only rejects mutation callbacks while permitting answered AskUserQuestion prompts.
+
+- electron/webSocketProxy.ts owns upgraded client/backend sockets and the connecting request as a single lifecycle, forwards initial head bytes and closes both peers on error/end/close. main.ts also cleans up HTTP proxy streams when the browser disconnects.
+
+- RunStreamConnection owns pending text-render frames as well as its socket: flush before non-text events and cancel on session navigation. Workspace resize commits at most once per animation frame; layout storage waits 180 ms after changes.
+
+
+- `native_workers.management.EXECUTION_GUIDANCE` supplies common test preflight/retry/logging guidance to native leads and worker instructions. It does not intercept shell commands or automatically terminate test processes.
+
+- Main composer uses browser-owned textarea editing with React transitions for derived workspace state; explicit programmatic values keep clear/draft-load behavior. Submission reads DOM text. `workbench/draftPersistence.ts` merges only dirty draft keys after idle and flushes on navigation/lifecycle boundaries, keeping synchronous storage off keystrokes.
+
+- `workbench/teamWorkerStore.ts` owns full worker snapshots and a stable overview keyed by identity, run, status, human activity and clocks. Main workspace/sidecar use overview subscriptions; TeamPanel directly subscribes to full snapshots only while visible. Worker conversation polling schedules after completion and pauses when hidden; empty pages preserve event-list state.
+
+- `native_workers/event_pages.py` keeps append-aware byte-offset indexes (up to 32 logs, packed 64-bit offsets) for stable line-number pagination. Incomplete final lines wait for the next append; replacement/truncation resets the index. The events route validates one worker record and parent instead of scanning all workers.
+- Native worker metadata reads cache one version per path (up to 128 paths), keyed by inode/mtime/size, with independent copies for callers. Claude stream events retain append-only durability while full snapshots are limited to four per second; controls/terminal paths save immediately.
+- `electron/backendPython.ts` probes backend imports with a bounded timeout. Local development build metadata records its project interpreter; published metadata leaves it empty. Explicit DAN_PYTHON is validated without silently choosing another environment.
+- Collapsed Work details and nested event bodies mount on demand; unchanged Markdown content uses React memoization.
+
+- Shared EXECUTION_GUIDANCE covers the full worker lifecycle; LEAD_EXECUTION_GUIDANCE adds decomposition, ownership, progress review and integration without repeating the shared policy.
+
+- `workbench/InlineTeamSummary.tsx` subscribes to the existing TeamWorkerStore: overview while collapsed, full snapshots while expanded. WorkbenchConversation places one instance per run at its last assistant reply, using recorded lead identity; worker links reuse the Team sidebar selection.
+
+- WorkbenchConversation renders the last 40 nonsystem messages, revealing earlier groups on request with a scroll-height anchor. Open-session uses saved transcript plus task metadata instead of all run/event history; recent native response restoration is limited to 40 source messages, with older restoration on reveal. The full saved message payload still loads and remains in state, so persistence/fork context is not truncated; this is progressive rendering/hydration, not server-side transcript pagination.

@@ -182,3 +182,18 @@ Release scope remains the desktop shell for existing configured Python-backend i
 - [x] Prepare corrected source with Claude live steering and stable worker timers.
 - [x] Bind replacement authorization to previous exact source in release notes; test replacement rejection for wrong source.
 - [x] Replace v0.1.7 with ad502d24; Actions 38557381340 build/publish succeed. Verify five changed asset IDs, corrected source marker and changed public 0.1.7 manifest. Already-installed 0.1.7 clients may require manual reinstall.
+
+- [x] Install worker-first roster and delegation-routing follow-up; exact ASAR/signature checked and latest launch backend/proxy healthy after initial startup timeouts.
+
+- [x] October 15: install quota/PATH and polling/render performance fixes; signature/archive/health and installed Codex account quotas verified.
+
+- [x] October 15: install native Claude modes, sandbox selection and approvals; signature/archive equality verified and backend/proxy healthy after a startup retry.
+
+- [x] October 15: install composer-adjacent Claude question controls and native permission names; signature/archive verified and both health endpoints pass after a startup retry.
+
+- [x] October 15: install always-visible worker task/result bullets; signature/archive checks pass and backend/proxy healthy after restart retry.
+
+- [x] Harden production proxy against broken pipes/late upgrades; three lifecycle tests and Electron compilation pass.
+
+- [x] Prefer validated project Python in local development builds; bound import probes and preserve explicit interpreter selection. Published metadata omits local interpreter paths.
+- [x] Activate new default interpreter selection; October 15 normal installed launch used project .venv and both health endpoints passed.

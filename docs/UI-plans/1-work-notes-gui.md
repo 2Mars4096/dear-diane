@@ -164,3 +164,46 @@
 - [x] Fix live vertical jitter: invisible raw events no longer evict meaningful history; expanded live details use a bounded viewport and single-line status. Status-only updates do not force scrolling, and inspecting details pauses follow until Latest.
 
 - [x] Fix worker elapsed timer decreasing when rolling action entries expire; durable attempt clock and independent ticking. Post-v0.1.7 follow-up, not yet installed.
+
+- [x] Scope progress strip to current run; historical Codex capacity failures no longer masquerade as current workers.
+
+- [x] Default to worker-first Team view with visible idle slots, stable Worker N names, preserved custom names, task nesting and collapsed previous assignments. Use actual run roster, not unsent settings, for live sessions.
+
+- [x] Reduce root rerenders and repeated historical Team polls; hidden-window pause, no overlapping rounds and unchanged-result state preservation.
+
+- [x] Add Claude-specific permission choices and separate command sandbox selector; inline native approval requests in main, sidecar and worker views. Settings apply on the next run; live permission changes are not claimed.
+
+- [x] Replace top-of-chat question strip with a composer-adjacent reply panel; show single/multiple choices, free text and keyboard submission. Use native Claude permission names.
+
+- [x] Add always-visible current/latest task bullets to worker-first roster; preserve collapsed assignment details and distinguish failed/stopped work from completion.
+
+- [x] Guard new-session rendering and stream attachment against stale task state from the previous chat.
+
+- [x] Use task-purpose headings for Team summaries, hide raw commands in collapsed lanes and remove duplicated active titles.
+- [x] Batch streaming/resize updates per frame with terminal flush and navigation cancellation; debounce resize persistence.
+- [ ] Installed interaction profiling/acceptance once active work finishes.
+
+- [x] Rebuild corrupt small macOS icon representations and visually verify native extraction.
+- [x] Install repaired icon with pending app update after active work ends; October 15 signature/archive/icon and backend/proxy health verified.
+
+- [x] Flatten active worker rows and preserve activity/conversation disclosure; use scroll-craft hierarchy/restraint as inspiration for this existing product surface, without introducing scroll effects.
+- [ ] Installed visual acceptance of compact activity rows.
+
+- [x] Keep native textarea edits immediate, transition derived workspace input state, debounce draft persistence with lifecycle flush, and initialize note cache once.
+- [ ] Installed typing/IME/session-switch acceptance under a long conversation.
+
+- [x] Separate detailed worker snapshots from workspace overview subscription; full details stay in the Team pane.
+- [x] Pause hidden Team subscriptions/conversation polls/timers; serialize slow conversation requests and skip empty event updates.
+- [ ] Installed team-heavy typing/render timing acceptance.
+
+- [x] Review cancellation races, hidden-event retention, live draft appends and worker identity changes; add late-response/cursor regression.
+- [x] Broad frontend/backend review and production/Electron builds pass; shutdown fixture rerun with required process access.
+
+- [x] Lazy-mount collapsed work/event bodies and memoize unchanged Markdown.
+- [x] Browser-check revised production typing in a real long team conversation; 24 inputs at 14.7 ms p95, no long tasks in the short interval; diagnostic draft restored and no message sent.
+- [x] Inspect revised Team screenshot; goals, current activity, elapsed time and Stop remain visible.
+
+- [x] Add default-collapsed Lead heading beneath each run’s last assistant reply; show worker task/result bullets and open sidebar details on worker click. Reuse overview/full worker store subscriptions, no extra polls.
+
+- [x] Add 40-message progressive rendering with Load earlier, scroll anchoring and lazy native reply restoration. Keep full transcript state for saves/forks; skip historical event fan-out for saved chats.
+- [x] Install and verify latest inline Team/progressive history build.

@@ -2454,3 +2454,63 @@ When renaming workflows or moving error data between environments:
 - October 14: worker elapsed timer used actions[0] before created_at; pruning the rolling history advanced its start and reduced elapsed time. Use durable attempt_started_at, falling back to session creation, and tick independently of polling. Existing records without attempt timestamps show session age.
 
 - October 14: Claude leads used one-shot stdin=DEVNULL and never advertised live_steering, so Enter became queued continuation. Use persistent stream-json input and acknowledgment-based interruption/redirection. Fix cleanup race where the process exited between returncode inspection and killpg.
+
+- October 14: run arun-f88ec109b632 emitted success with origin.kind=task-notification, zero turns/API tokens and empty text before replaying the current input. ClaudeLive incorrectly treated it as terminal and killed the session. Exclude background results and require current input acknowledgment for success. Do not replay the original task automatically.
+
+- October 14: stripWorkers sorted historical failures ahead of active work because TeamStrip received all conversation runs. Confirmed two shown Codex failures belong to old runs arun-dfd4c9642f27/arun-93d25ede1d64, both server capacity. Filter by active run before ranking.
+
+- October 14: Claude lead arun-20dd83556b0d used native Agent four times with run_in_background=true instead of Diane bridge. No managed worker records existed; final telemetry reported spawned=4/completed=0. Disable native spawning for managed leads; do not assume those prior tasks completed or replay their edits without inspection.
+
+
+
+- October 15: quota subprocess inherited PATH=/usr/bin:/bin:/usr/sbin:/sbin; npm Codex launcher failed with env: node: No such file or directory, surfaced as ConnectionResetError. Quota checks now reuse native_cli_path.
+- October 15: Team polling refetched all historical runs every 1.5 s and could overlap slow rounds; workspace root clock rerendered the app every second for the Blueprint elapsed badge. Bound/cached polling and localize the clock. These are confirmed redundant paths, not a claim to explain every source of perceived lag.
+
+- October 15: Claude Auto previously meant acceptEdits, approval callbacks were not bridged, and Full access did not explicitly control inherited sandboxing. Native modes and independent claude_sandbox selection now match their labels; request/answer transport is tested against the CLI.
+
+- October 15: AskUserQuestion showed no choices and placed a textarea beside a long inline label, leaving the answer field effectively invisible and Send disabled. Render choices plus a separate full-width answer field above the composer; disabled Send now reflects visibly unanswered questions.
+
+- October 15: new session f9e8a0014921 was saved with zero messages while UI showed Thinking. workPanelTasks filtered background tasks but merged unfiltered selected task state; delayed callbacks could restore old tasks during selection changes. Filter both sources and invalidate active-thread refs synchronously.
+
+- October 15: Electron write EPIPE popup exposed missing error listeners on upgraded client/backend sockets. Proxy piped both directions with no lifecycle cleanup, allowing late writes after chat disconnect. Handle peer errors/close, late upgrades, handshake rejection and HTTP disconnects; do not swallow global uncaught exceptions.
+
+- October 15: run arun-3050eb3bce98 returned “Waiting on the regression run” with task bj14z8o4l still active; transport marked completion and closed Claude. Next run reported that background command stopped with the previous session. WebSocket session switches do not cancel backend tasks. Track owned background tasks and wait through their completion/result; do not revive unrelated old notifications.
+
+## 2026-10-15 — technical summaries and excess renderer updates
+- Worker ownership scopes were displayed as task summaries even when prompts had clear TASK headings. Prefer those headings and retain scope under Details.
+- Each pointer event rerendered the workspace and synchronously persisted layout; text fragments updated messages independently. Coalesce per frame and debounce layout writes. Automated checks pass; installed latency improvement is not yet measured.
+
+- **Review harness:** first screenshots lacked Material/monospace fonts and initial finders matched duplicate navigation labels/RawTooltip rather than IconButton. Loaded available review fonts and scoped finders; these were test-harness defects, not evidence of missing production glyphs.
+
+## 2026-10-15 — striped small app icon
+- Installed/source ICNS hashes matched, but native extraction showed a corrupt 32px image despite correct full-size PNG. Rebuilt all sizes with sips and native iconutil; extracted 32px image verified. Sandboxed iconutil creation rejected the valid iconset; unsandboxed native compilation succeeded. Local updater normally preserves installed icons, so pending repair explicitly replaces that staged icon before signing.
+
+## 2026-10-15 — live worker test/setup overhead (observed, not fixed)
+- Run `arun-4f442e29354c`: infantry worker `e6d998c2e5bf4fa99cffea7134e62258` had no checkout edits after >10 minutes of baseline testing. Godot logs repeatedly report missing `BattleTerrain`/dependent compilation errors; processes remain until the instructed 240-second timeout. Cold worktree/import setup is a likely cause, not yet verified by repair.
+- Shared `$TMPDIR/t.log`/`i.log` in lead assignments permits collisions across workers. Audio worker explicitly reported another process writing its log. A `sleep 100` wait was blocked; worker retried/stopped its test.
+- Vehicle worker reported 52/52 targeted checks then ran the requested broad regressions. Infantry and vehicle assignments overlap simulation functions and JSON files, increasing integration risk despite separate worktrees.
+- All observed workers launched Claude Opus with high effort and fast mode disabled. No matched direct-CLI timing comparison was performed.
+- Follow-up: unique per-worker logs, worktree preflight before regression batches, early fatal-error detection, targeted checks per worker plus one integrated regression pass. Do not remove isolation or weaken tests to shorten time.
+
+- Follow-up implemented in shared lead/worker instructions: prerequisites + smoke test, unique logs, actual exit status, stop setup-error batches, concrete-change retries and integrated regression ownership. Existing active workers are not re-prompted; instruction adherence still needs live validation.
+
+## 2026-10-15 — lag on every keystroke
+- Main composer synchronously read/parsed and serialized all saved drafts on every change. Root render also evaluated `readStoredNoteContentCache()` as a useRef argument every time, even though React ignored later values.
+- Memoize cache initialization, batch dirty draft persistence, let the native field paint without synchronous workspace state updates, and submit the current field value. Derived suggestions may briefly lag during heavy work; stale suggestions do not intercept Enter. Installed latency remains to be measured.
+
+- Startup follow-up: native sample of PID 22255 showed Python site initialization blocked in os_listdir/open before importing Diane, at 0% CPU. Two normal launches timed out. Launch-local DAN_PYTHON=.venv/bin/python started backend/proxy successfully in under a second. This workaround is not persistent; normal launcher Python selection needs follow-up.
+
+## 2026-10-15 — worker refresh fan-out
+- Full worker response/action changes from 1.5-second polls invalidated root workspace state. Introduced separate full-detail and overview subscriptions; root snapshot stays stable for detail-only changes.
+- Expanded conversations used overlapping 2-second intervals, rebuilt event arrays on empty responses, and continued after the persistent Team pane was hidden. Serialize polls, pause hidden pane polling/timers, and retain empty-page state.
+- Remaining observed source costs: worker events API scans JSONL from the start even with after cursors; NativeTeam event changes and transport loops can write durable snapshots repeatedly. Not changed in this renderer-focused patch.
+
+- Review follow-up: disposed boolean could reset on pane reopen while an old request remained pending. Abort requests plus generation guards now prevent stale cursor/state writes; regression covers hide/reopen/late response. Invisible bookkeeping entries no longer accumulate in displayed conversation state.
+
+## 2026-10-15 — remaining lag/startup review
+- Hidden work histories mounted event bodies/Markdown despite collapsed HTML details. Now mounted only on expansion, and unchanged Markdown skips rendering.
+- Read-only browser diagnostics reproduced a 30-second typing timeout on the installed build. Revised build completed a 24-character probe at 8.2 ms median / 14.7 ms p95 with no >50 ms tasks during the interval. Different sample lengths/live workload prevent a precise before/after ratio; sustained-load testing remains useful.
+- Anaconda startup stall mitigation is now implemented in source: local project interpreter preference and bounded import probes. This avoids the observed interpreter hang; it does not repair Anaconda's underlying filesystem/site initialization.
+- Full frontend shutdown fixture requires ps access; its sandbox EPERM is environmental and was independently verified with process access. Native event index regressions cover malformed/partial lines, append, truncation, replacement and parent ownership.
+
+- October 15 install follow-up: one normal launch failed all Python import probes, then a later normal launch succeeded with project .venv. Bounded probes improve recovery but transient interpreter startup remains possible; final installed build is healthy.

@@ -284,3 +284,16 @@ Editing workers in Git projects use separate worktrees. The lead inspects their 
 
 
 Codex and Claude Code leads support live steering from the composer. Claude steering interrupts the current generation and delivers the correction in the same native session; queued messages remain separate.
+
+
+The Team panel shows every configured worker, including idle slots. Workers get default names such as Worker 1 and Worker 2; rename them in Team settings. Assigned tasks and child sessions appear beneath their worker, with previous assignments collapsed.
+
+
+
+Claude Code offers Read only, Ask before actions, Accept edits, native Auto, and Full access. Configure **Command sandbox** separately in the agent settings. Permission requests appear inline with **Allow once** and **Deny**; native deny rules and managed policies still apply. Mode default enables the sandbox except in Full access. Changes apply to the next run.
+
+Local development desktop builds prefer the project’s `.venv` Python. Startup checks that the selected environment can import the backend; `DAN_PYTHON` explicitly selects another interpreter.
+
+In chat, expand the **Lead** heading to see worker task summaries and results. Select a worker to open its conversation in the Team sidebar.
+
+Long conversations show recent messages first. Use **Load earlier messages** above the transcript to reveal older history.

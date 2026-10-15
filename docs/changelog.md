@@ -1,5 +1,121 @@
 # Changelog
 
+## 2026-10-15
+- [feat] Open long saved chats with the latest 40 rendered messages and a Load earlier messages button (40 per click), preserving the scroll anchor and full saved transcript. Skip old run/event-log fan-out when saved messages exist; restore recent native replies first and older replies on reveal.
+- [infra] Install inline Team summaries plus progressive transcript rendering after idle checks. Signature/ASAR equality (`ec933eb41f2952f2528ad1087b90deb1ba4a6e1c73db5c132d8521d8992d542b`) and backend/proxy health pass. Earlier launch failed interpreter probes; subsequent normal launch succeeded. Rollback `.Diane-previous-36e23fe3-5686-4efd-887f-05537f88663a.app` retained.
+- [test] Full precommit frontend suite: 558 passed; subsequent paging/inline-summary tests: three passed. Production build and bundle budgets pass.
+
+## 2026-10-15
+- [feat] Show per-run worker summaries in the main conversation under a collapsible Lead heading. Default closed; expand for latest worker task/result bullets and click a worker to inspect its sidebar conversation. Attach once to the last assistant message for that run and use its recorded lead identity. Reuse the existing worker store without new polling.
+- [test] 11 inline-summary/Team tests and production build/budgets pass. Local installation pending.
+
+## 2026-10-15
+- [infra] Reinstalled reviewed performance, backend pagination/snapshot, startup selection and concise execution-policy changes after idle verification. Signature and ASAR equality pass (`7605673140002fb357f91d130ae8b00e6d5d01e70031bd3ebcb56dcb1cd54cae`); normal launch automatically selected project .venv and both backend/proxy became healthy without retry. Rollback retained at `/Applications/.Diane-previous-c989ba4d-be4f-4cfb-9ffc-1429c5b3bef7.app`.
+
+## 2026-10-15
+- [refactor] Replace test-only guidance and repeated lead notes with a concise shared execution policy: bounded scope, setup, observable execution, evidence-based recovery, productive waiting, proportional verification and honest handoff. Add lead-specific delegation/review guidance; preserve permissions, child controls and required coverage. These remain instructions, not automatic stall supervision.
+
+## 2026-10-15
+- [fix] Render work-history/event bodies only while expanded and memoize unchanged Markdown. Browser check of revised production build on the live team conversation: 24 inputs, 8.2 ms median / 14.7 ms p95 input-to-next-frame, no >50 ms tasks during the short interval. Installed baseline diagnostic timed out and recorded long tasks; this was not a controlled identical-duration benchmark. Diagnostic draft restored; no message sent.
+- [fix] Add append-aware worker-event byte indexing with partial-write/rotation/truncation handling and direct ownership validation. Cache one metadata snapshot per file version/path with bounded retained paths. Synthetic 50,000-event repeat poll median improved from 2.946 ms to 0.014 ms over 50 polls.
+- [fix] Bound Claude live text snapshot writes to four per second; retain all append-only events and immediate control/terminal snapshots. Burst regression verifies 100 deltas preserved and fewer than 20 snapshots.
+- [fix] Probe Python imports with a four-second timeout before server launch. Local build metadata prefers the project .venv; published builds omit machine-local paths and explicit DAN_PYTHON remains authoritative. Actual project interpreter probe passed in 75 ms.
+- [test] Full frontend run: 555 pass, one process-access fixture blocked under sandbox (previously verified with process access); new lazy-history and interpreter tests pass. 96 relevant backend tests plus four event-page/ownership/cache tests pass. Production build/budgets and Electron compile pass. Installation deferred for active work.
+
+## 2026-10-15
+- [fix] Review follow-up: abort worker conversation requests on hide/status changes and reject late pages by generation; skip retaining invisible token/bookkeeping events while preserving pagination cursors. Composer reference insertion reads current field text, and worker overview identity includes backend/name changes.
+- [test] Broad review: 552 frontend tests passed under sandbox; the remaining owned-process shutdown test passed with ps access. 129 backend tests passed. After follow-up changes, 165 relevant frontend tests plus an additional late-response/cursor regression pass; production build, bundle budgets and Electron compilation pass. Live latency profiling remains pending.
+
+## 2026-10-15
+- [fix] Isolate full worker snapshots in a subscribable Team store. Main workspace and sidecar subscribe to status/activity overviews, so response/action-only polling changes no longer invalidate the workspace snapshot. Visible Team pane retains complete live detail.
+- [fix] Pause hidden Team conversation polling and elapsed timers; serialize conversation refresh rounds and preserve event state on empty responses.
+- [test] 14 Team/polling tests verify detailed updates preserve overview identity, completion propagates, slow requests do not overlap and hidden panes pause.
+
+## 2026-10-15
+- [infra] Installed typing-path, compact Team and test-guidance changes after idle checks. Signature and ASAR equality verified (`0f3ee14ec06b8aac1e7d0ad83dc371f31c3786ec21e2d7f8ef084dd09a6aed37`). Backend/proxy healthy using launch-local DAN_PYTHON pointing to project .venv after Anaconda stalled twice during Python site initialization. System Python settings unchanged; normal future launch still selects Anaconda. Rollback `.Diane-previous-49ab12d3-389b-4aa8-92c1-d6756a909441.app`.
+
+## 2026-10-15
+- [fix] Remove synchronous draft-storage reads/writes and repeated note-cache parsing from main composer keystrokes. Browser-owned text paints immediately; workspace text/caret state updates in a React transition. Submission and suggestion insertion read current DOM text, while programmatic clear/session draft loading explicitly updates the field.
+- [fix] Merge changed drafts after 250 ms idle; flush on session load, page hide, visibility loss and unmount, preserving other windows’ untouched drafts.
+- [test] 153 focused draft/workspace tests pass. Installed renderer observed at ~1.5 GB RSS; end-to-end latency and memory causes beyond these hot paths remain unmeasured.
+
+## 2026-10-15
+- [fix] Share test-execution guidance across native leads and workers: preflight cold worktrees, unique per-invocation logs, visible fatal errors, real test exit codes, stop failed-setup batches, evidence-based retries, scoped process cleanup and focused worker checks before integrated regressions. This is agent guidance, not automatic command supervision; already-running sessions are unchanged.
+
+## 2026-10-15
+- [fix] Flatten active worker task rows: goal bullets followed by one expandable live-activity/timer/Stop row, without duplicate worker identity or Details tree branch. Retain nested child sessions, full prompt, current raw activity and worker conversation on expansion. Normalize uppercase task headings with parenthetical subtitles.
+- [test] 18 Team presentation/interaction tests and production build/budgets pass. Installed visual acceptance pending; active workers left untouched.
+
+## 2026-10-15
+- [infra] Reinstalled current 0.1.7 locally after idle verification, including task-summary, interaction, stream lifecycle and repaired small-icon fixes. Signature and source/installed ASAR + ICNS hashes match; backend and desktop proxy health pass on first launch. Rollback retained at `/Applications/.Diane-previous-8b85ee62-9932-45f3-9493-cd529f56d5f6.app`.
+
+## 2026-10-15
+- [fix] Rebuild macOS ICNS with native iconutil from verified PNG sizes. The old small representation decoded as colored stripes; the rebuilt 32px representation visually matches the radio. Staged local reinstall explicitly replaces the corrupt preserved icon.
+
+## 2026-10-15
+- [fix] Prefer labelled task goals over file-ownership scopes in Team bullets; collapse duplicate active task titles to Details and replace shell commands with readable activity categories. Full assignments/actions remain expandable.
+- [fix] Coalesce main-chat text deltas and workspace resize updates per animation frame; flush text before terminal events and discard pending frames on session changes. Debounce layout persistence during dragging.
+- [test] 171 focused presentation, stream-lifecycle and workspace tests pass; TypeScript check passes. Installed interaction timing remains unmeasured; activation waits for active/queued work to finish.
+
+## 2026-10-15
+- [fix] Keep Claude sessions alive when a success reply arrives while native background commands started by the current request remain active. Complete only after owned jobs settle and the resulting notification turn finishes; ignore unrelated old-session notifications.
+- [test] 22 transport/lead tests pass. Live isolated Claude diagnostic observed task_started, task_notification completed and a final response without prematurely closing the process.
+
+## 2026-10-15
+- [fix] Handle errors and closure on both sides of the desktop WebSocket proxy, including late upgrades and backend upgrade rejection. Forward both upgrade head buffers and stop writing after either peer closes; harden HTTP proxy disconnect handling too. This addresses an unhandled write EPIPE path without masking unrelated main-process exceptions.
+- [test] Three proxy lifecycle regressions pass; Electron compilation succeeds.
+
+## 2026-10-15
+- [fix] Scope both selected and background task snapshots to the active chat before attaching streams. Clear/update active-thread refs synchronously during create/switch so late prior-session callbacks cannot populate an empty new session with Thinking.
+
+## 2026-10-15
+- [infra] Install default worker-summary bullets after idle checks. Fifteen focused tests and production build pass; signature/source-installed ASAR equality verified (`cc3caf986d70905cddba1daaa66ef30e16b027f1933b14dd6b416660a8f51dd7`). Backend/proxy healthy after startup retry. Rollback `/Applications/.Diane-previous-5d532465-1342-4321-a1d1-b8340dcd248f.app` retained.
+
+## 2026-10-15
+- [feat] Show concise assignment/result bullets beneath each worker name by default. Active tasks take precedence; idle workers show their latest settled assignment with truthful completion/failure/stopped labels, while full history stays collapsed. Summaries use saved task/output text without extra model calls.
+
+## 2026-10-15
+- [infra] Install question composer/native-label UI after idle checks; 14 frontend and seven Claude tests plus build pass. Signature/archive match verified (`69f6abe5ce116c68daaefee8b54d13072d691b3c59fb2cea6e474f13cb804bee`); backend/proxy healthy after startup retry. Rollback `/Applications/.Diane-previous-e42c8a13-08c1-4fe8-997f-966679ae8bbe.app` retained. No pending question was answered automatically.
+
+## 2026-10-15
+- [fix] Move Claude questions/approvals immediately above the main composer; render actual choices and a distinct full-width answer field. Selecting a choice or typing enables Send answer; Enter submits and Shift+Enter preserves newlines. Worker questions sit near the worker reply input.
+- [fix] Use Claude-native Auto/Manual/Accept edits/Plan/Bypass permissions labels; preserve generic labels for other agents and read-only planning guards.
+
+## 2026-10-15
+- [infra] Install native Claude permission/approval controls after idle checks. 538 frontend tests, 96 backend checks and build/budgets pass; signature and exact ASAR match verified (`f2ff4616e4e271be7c73702573488034d988b90f134471dd8fa9ed9b039d6c46`). Backend/proxy healthy after startup retry; retain rollback `/Applications/.Diane-previous-71c51ad7-f6bc-4f51-82d5-d2b3259c9e21.app`.
+
+## 2026-10-15
+- [feat] Expose native Claude Read only/Ask before actions/Accept edits/Auto/Full access modes; Auto now maps to Claude auto rather than acceptEdits. Keep other runtimes on their supported modes.
+- [feat] Add independent Claude command-sandbox selection. Enabled sandbox fails closed if unavailable and disables unsandboxed retries; native deny rules and managed policy remain in force.
+- [feat] Route Claude tool permission requests through stream-json to Allow once/Deny controls in main chat, sidecar and worker sessions. Validate stored pending requests, preserve original tool inputs, cancel stale prompts and keep read-only mutation requests denied; support user questions separately.
+- [test] 96 backend checks pass. Real isolated Claude checks verify Allow once, Deny, and native auto startup; no project tasks were replayed and no persistent permission rules were added.
+
+## 2026-10-15
+- [infra] Install quota/performance update after idle verification. Strict signature and source/installed ASAR equality pass (`f04ba431cb7e213ec248addfc520f69ae0fc3053682e88cb300fedd4fb0c74bb`); backend/proxy healthy. Installed /api/usage returns quota windows without errors for both Codex accounts. Rollback retained at `/Applications/.Diane-previous-2735def0-375c-445b-a649-9bfda6155411.app`.
+
+## 2026-10-15
+- [fix] Reuse native CLI PATH setup for Codex quota checks; minimal LaunchServices PATH previously exited 127 because Node was missing. Live read-only checks now return quota for personal and app accounts. Serialize same-account quota reads to avoid duplicate subprocesses.
+- [perf] Poll current/running Team runs frequently and historical runs once a minute, cap concurrent requests, prevent overlapping refresh rounds, pause while hidden and avoid unchanged state updates. Move the once-per-second elapsed clock from the workspace root into BlueprintView.
+- [test] 63 backend and 12 frontend checks plus production build/budgets pass. Installed UI responsiveness still requires acceptance after safe activation.
+
+## 2026-10-14
+- [infra] Install worker-first Team roster, current-run-only strip and managed native-spawn restrictions. Signature/archive equality verified (`73c0d92159dae2ffebdd992c939426293a2919516cabc749364bdce497617764`); latest launch healthy on backend/proxy after earlier startup timeouts. Rollback: `/Applications/.Diane-previous-7ee95bc8-dbc0-4e72-8221-ebd01c608de4.app`.
+- [test] 68 backend tests and live Claude diagnostic confirm managed leads expose no Agent/Task/TeamCreate tools; 13 roster/UI tests and build pass.
+
+## 2026-10-14
+- [fix] Disable native delegation tools for Diane-managed Codex/Claude leads, routing workers through the configured Team bridge. Actual Claude run arun-20dd83556b0d launched four invisible native background agents and returned before any completed; require visible managed delegation and review before final delivery.
+
+## 2026-10-14
+- [feat] Default Team view to configured worker identities, including idle slots, with assignments nested beneath each worker and settled assignments collapsed. Use actual run rosters for active/historical runs, and the configured roster when idle. Assign stable missing Worker N names while preserving custom names and avoiding duplicate defaults.
+
+## 2026-10-14
+- [infra] Install local Claude resume/background-result fix; actual diagnostic verifies acknowledged steering and same-session resume. Installed/source ASAR match `0bfa16366b0b35ba23ddcfc7a2cf6586a6b28c2f82f2eaf6103fe3f0fb353b80`, strict signature and backend/proxy 200 verified. Rollback: `/Applications/.Diane-previous-435e8146-4ac6-47f5-a0d0-18c6b1cc0e90.app`.
+- [fix] Scope header Team progress to the active run (latest run when idle), keeping historical capacity failures in their history sections rather than presenting them as current failures.
+
+## 2026-10-14
+- [fix] Ignore Claude background task-notification results when deciding whether the current user request finished. Require matching input acknowledgment for successful completion; startup errors still terminate. This prevents resumed sessions from closing on an empty zero-turn background result.
+- [test] Nineteen Claude transport/native-lead checks pass, including background results before and after input replay.
+
 ## 2026-10-14
 - [infra] Replace published v0.1.7 at explicit user request with ad502d244115e5938073e3fd0c59454798619c7c. Actions 38557381340 succeeds; verify five fresh asset IDs, corrected source marker and changed downloadable update manifest. Includes Claude steering and stable worker timer; subsequent Up next caption removal is not in this tag.
 

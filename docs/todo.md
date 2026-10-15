@@ -1,5 +1,6 @@
 # Todo
 
+
 - [x] Fix validator JSON-wrapper parsing found by the built-in pilot; 176 tests and a post-fix live note run pass.
 - [ ] Proposed: repeat small-task comparisons against the fixed runtime and add a planner-activating case before changing built-in routing — [study](live-test-plans/1-super-diane-capability.md).
 
@@ -510,3 +511,63 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
 - [ ] Activate corrected Claude steering/timer locally when safe; existing one-shot runs cannot be converted in place.
 
 - [x] Remove expanded Up next timing caption; follow-up awaits next local build.
+
+- [x] Fix resumed Claude runs closing on background-task completion instead of the current request; 19 transport/lead tests pass.
+
+- [x] Scope progress strip to current run; historical Codex capacity failures no longer masquerade as current workers.
+
+- [x] Show worker-first Team roster including idle slots, stable default names and editable custom names; nest assignments and collapse completed work.
+
+- [x] Block native lead delegation bypass so configured Team workers remain visible and governed by capacity/worktree policy. Installed locally; backend/proxy health verified.
+
+- [x] Repair desktop Codex quota PATH and deduplicate concurrent same-account checks; both accounts verified live.
+- [x] Reduce repeated Team history polling and workspace-wide timer renders.
+- [x] Activate quota/performance fixes; installed backend returns both Codex quotas and app/proxy health passes.
+- [ ] Assess real-world responsiveness after the polling/render changes.
+
+- [x] Implement precise native Claude permission modes, independent sandbox setting and one-time approval UI; 96 backend checks and live allow/deny/auto diagnostics pass.
+- [x] Install native Claude permission controls; 538 frontend tests, 96 backend checks, build/signature/archive/health verified. Live allow/deny/native-auto diagnostics pass.
+
+- [x] Make Claude questions actionable with choices/free text above the composer; align native permission labels.
+
+- [x] Install Claude question reply-box and native permission label fixes; application healthy after restart.
+
+- [x] Show task-summary bullets beneath each worker by default, including current assignment or latest settled task/result without expanding history.
+
+- [x] Prevent new empty chats showing another session’s Thinking state by scoping task snapshots and synchronizing session refs.
+
+- [x] Fix uncaught desktop proxy broken-pipe path with coordinated socket lifecycle/error handling; pending safe installation.
+
+- [x] Prevent Claude waiting replies from terminating active native background commands; 22 tests and real background-command lifecycle check pass. Pending safe activation.
+
+- [x] Replace technical Team scope bullets with task goals; batch stream/drag updates and debounce layout saves.
+- [x] Activate interaction and task-summary fixes locally after idle verification.
+- [ ] Measure installed interaction responsiveness.
+
+- [x] Inspect current workers for avoidable latency; record baseline compile-error waits, shared log collisions and broad regression scope.
+- [x] Harden lead/worker test guidance for preflight, unique logs, fatal errors and repeated tests.
+- [ ] Activate and validate test-guidance adherence with a controlled comparison.
+- [x] Flatten Team activity rows while preserving worker conversation and raw activity disclosure.
+
+- [x] Remove per-keystroke storage and repeated cache parsing; defer workspace typing updates and read live text at submission.
+- [x] Install typing-path fix; signature/archive and backend/proxy health verified.
+- [ ] Measure installed typing responsiveness with a long active conversation.
+- [x] Add project-interpreter preference and bounded startup probes to avoid default Anaconda initialization stalls.
+- [x] Activate startup selection; normal installed launch selected project .venv and passed health checks.
+
+- [x] Isolate worker detail refreshes from workspace status; pause hidden Team polling/timers and avoid empty event-list updates.
+- [ ] Install and profile team-heavy interaction after refresh isolation.
+- [x] Index worker-event logs, cache unchanged metadata and bound Claude text snapshot writes; regression/benchmark checks pass.
+
+- [x] Review combined typing/Team changes; fix stale conversation responses and hidden-event retention; broad automated checks pass.
+
+- [x] Measure revised production typing in a real team conversation; short probe p95 14.7 ms with no long tasks.
+- [x] Install latest reviewed performance/backend/startup changes after idle verification.
+
+- [x] Consolidate concise worker execution and lead coordination guidance; preserve safety, acceptance and lifecycle requirements.
+
+- [x] Add collapsible per-run Lead/worker summaries in the main transcript with navigation to worker conversations.
+- [x] Activate inline Team summaries in the installed app.
+
+- [x] Render recent 40 messages first, reveal earlier pages on demand and avoid fetching every historical run before opening saved chats.
+- [x] Install inline summaries and progressive conversation rendering; signature/archive/health verified.
