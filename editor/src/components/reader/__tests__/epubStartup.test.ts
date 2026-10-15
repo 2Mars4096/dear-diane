@@ -10,7 +10,7 @@ vi.mock('epubjs', () => ({ default: () => ({
   loaded: { navigation: Promise.resolve({ toc: [{ href: 'chapter.xhtml', label: 'Chapter 1', subitems: [] }] }) },
   renderTo: () => ({
     on: (event: string, callback: (value: unknown) => void) => { mock.events[event] = callback; },
-    themes: { default() {}, fontSize() {}, register() {}, registerCss() {}, select() {} }, hooks: { content: { register() {} } },
+    themes: { default() {}, fontSize() {}, register() {}, registerCss() {}, select() {}, override() {} }, hooks: { content: { register() {} } },
     q: { enqueue: (fn: () => void) => Promise.resolve(fn()) }, display: async () => {}, resize: mock.resize, spread: mock.spread,
   }),
 }) }));

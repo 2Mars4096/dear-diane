@@ -1,7 +1,7 @@
 import { ReadingSettings } from "./ReadingSettings";
 import { loadReaderFont, readerFont, type ReaderFont } from "./lib/reader-fonts";
 import { ReaderContents } from "./ReaderMenus";
-import { applyEpubTypography, type EpubTypography } from "./lib/epub-typography";
+import { applyEpubTypography, setEpubLinkUnderlines, type EpubTypography } from "./lib/epub-typography";
 import { epubNavigationKey, epubWheelNavigation, prioritizeEpubInput } from './lib/epub-input';
 import { useEpubPagination } from './useEpubPagination';
 import { ReaderPageNavigation } from './ReaderPageNavigation';
@@ -280,7 +280,7 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
   }, [typography, textStyle, ready]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const r = renditionRef.current;
-    if (r && ready) { applyEpubTypography(r, typography, underlineLinks, textStyle); persist(); }
+    if (r && ready) { setEpubLinkUnderlines(r, underlineLinks); persist(); }
   }, [underlineLinks, ready]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (ready) persist(); }, [readingWidth, ready]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { const r = renditionRef.current; if (r && ready) { r.themes.fontSize(`${font}%`); r.spread(spread); persist(); } }, [font, spread, ready]);
