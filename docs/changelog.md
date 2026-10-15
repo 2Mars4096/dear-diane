@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-10-15
+- [infra] Published v0.1.8 from `9f1076bb98310ed48e2dfd1cde255ab13a93580f`; Actions `38748616304` build/publish succeeded. Public release is stable, has five expected assets and the exact source marker. Downloaded ZIP size 216,220,018 bytes and SHA-512 match latest-mac.yml. Release: https://github.com/2Mars4096/dear-diane/releases/tag/v0.1.8.
+
+## 2026-10-15
 - [feat] Adopt DIANE_* in README and environment templates, with canonical-to-legacy aliases at Python startup/after dotenv and desktop launch. Preserve existing DAN_* consumers; explicit DIANE_* values take precedence.
 - [infra] Prepare v0.1.8 for Apple Silicon desktop publication with composer sizing/typing fixes, worker-completion handoffs, progressive chat history and reviewed performance changes. Matching Python backend source is required; no backend binary is bundled.
 - [test] Release checks pass: 561 frontend tests, 32 focused backend tests, 12 publisher tests, production build/budgets and Electron compilation.

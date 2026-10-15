@@ -200,4 +200,4 @@ Release scope remains the desktop shell for existing configured Python-backend i
 
 ## v0.1.8 publication
 - [x] Prepare version, release notes and compatibility/validation checks.
-- [ ] Push immutable tag, complete Actions build/publish and verify public assets.
+- [x] Push immutable v0.1.8 tag, complete Actions 38748616304 and verify five public assets plus downloaded ZIP checksum.

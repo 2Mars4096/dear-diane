@@ -577,4 +577,4 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
 - [ ] Live-verify and activate completion hook/composer follow-up after current work finishes.
 
 - [x] Adopt canonical DIANE_* configuration examples with backwards-compatible environment aliases.
-- [ ] Publish and verify v0.1.8 release assets.
+- [x] Publish and verify v0.1.8 release assets; build/publish and downloaded ZIP checksum pass.
