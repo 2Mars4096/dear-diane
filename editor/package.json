@@ -1,7 +1,7 @@
 {
   "name": "dear-diane",
   "private": true,
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Dear Diane \u2014 A workspace for research, code, and ideas.",
   "author": "Dear Diane",
   "type": "module",

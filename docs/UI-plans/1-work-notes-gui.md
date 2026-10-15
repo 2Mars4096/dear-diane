@@ -207,3 +207,5 @@
 
 - [x] Add 40-message progressive rendering with Load earlier, scroll anchoring and lazy native reply restoration. Keep full transcript state for saves/forks; skip historical event fan-out for saved chats.
 - [x] Install and verify latest inline Team/progressive history build.
+
+- [x] Fix native-input autosizing, CSS cap/overflow mismatch and per-key root preview updates.

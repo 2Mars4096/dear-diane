@@ -538,3 +538,8 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - `workbench/InlineTeamSummary.tsx` subscribes to the existing TeamWorkerStore: overview while collapsed, full snapshots while expanded. WorkbenchConversation places one instance per run at its last assistant reply, using recorded lead identity; worker links reuse the Team sidebar selection.
 
 - WorkbenchConversation renders the last 40 nonsystem messages, revealing earlier groups on request with a scroll-height anchor. Open-session uses saved transcript plus task metadata instead of all run/event history; recent native response restoration is limited to 40 source messages, with older restoration on reveal. The full saved message payload still loads and remains in state, so persistence/fork context is not truncated; this is progressive rendering/hydration, not server-side transcript pagination.
+
+- `workbench/composerInput.ts` sizes the native editor from its CSS limit; input-driven animation-frame resizing is independent of the workspace’s 100 ms coalesced derived text/caret state.
+- `native_workers/completion.py` tracks once-per-attempt notices for managed top-level worker results. NativeLeadAdapter prioritizes user steering, delivers notices between observed tool actions, and resumes the native session after a terminal reply when handoffs remain. Review decisions suppress redundant notices; only existing requested scope may be reassigned. Failed/stopped leads do not auto-resume.
+
+- `diane.environment.apply_environment_aliases` maps canonical DIANE_* values to legacy DAN_* readers at import and after dotenv loading. Desktop `withDianeEnvironment` performs the same mapping before launch; canonical names win.

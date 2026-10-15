@@ -29,7 +29,7 @@ Create a `.env` file in the repository root. `.env.minimal` provides a short tem
 
 ```env
 OPENAI_API_KEY=...
-DAN_LLM_MODEL=gpt-5.4
+DIANE_LLM_MODEL=gpt-5.4
 ```
 
 Replace the example key and choose a model available to your account. These settings configure the built-in agent. Native agents can use their own authenticated accounts. Choose the agent and model in the Lead menu.
@@ -37,9 +37,9 @@ Replace the example key and choose a model available to your account. These sett
 To set workspace and data locations:
 
 ```env
-DAN_WORKSPACE_ROOT=/absolute/path/to/workspace
-DAN_GRAPHS_DIR=/absolute/path/to/durable-state
-DAN_NOTES_WORKSPACE_ROOT=/absolute/path/to/notes
+DIANE_WORKSPACE_ROOT=/absolute/path/to/workspace
+DIANE_GRAPHS_DIR=/absolute/path/to/durable-state
+DIANE_NOTES_WORKSPACE_ROOT=/absolute/path/to/notes
 ```
 
 Keep API keys and local configuration out of commits. You can also add API keys through Settings > Providers after opening the app.
@@ -186,7 +186,7 @@ Run `pip install -e '.[browser]'` in the backend environment. Diane can use inst
 
 In an Auto-mode project chat, describe the browser task, such as finding a paper's citation and saving `references.bib`. The browser runs on the backend machine in a fresh isolated session and closes when the run finishes. It does not use your existing Chrome profile. Plan mode allows observation and navigation. Login and CAPTCHA challenges may need your help.
 
-On hosts with a display, the browser opens visibly. Set `DAN_BROWSER_HEADLESS=0` or `1` to override that behavior.
+On hosts with a display, the browser opens visibly. Set `DIANE_BROWSER_HEADLESS=0` or `1` to override that behavior.
 
 ## Remote work
 
@@ -245,7 +245,7 @@ Diane checks at startup and every 15 minutes, catching up when the window regain
 
 Finish active work and queued messages first. If work starts during the download, Diane keeps the prepared update until you finish.
 
-Under Update options, use Install local update for a detected prepared build or choose a build manually; `DAN_LOCAL_UPDATE_PATH` can specify its location. The installer validates the bundle, keeps a rollback copy, and preserves chats and settings.
+Under Update options, use Install local update for a detected prepared build or choose a build manually; `DIANE_LOCAL_UPDATE_PATH` can specify its location. The installer validates the bundle, keeps a rollback copy, and preserves chats and settings.
 
 Desktop updates replace the app shell. Update Python and its dependencies separately.
 
@@ -264,7 +264,7 @@ npm run build:verify
 
 Live-provider and real-browser evaluations are opt-in. Flutter 3.41 or newer is needed only to build the optional phone client. Planned phone personal-agent features are not yet available.
 
-The Python package is `dear-diane`, with imports under `diane`. Use `dear-diane --help` for commands; existing `dan` aliases and `DAN_*` configuration names remain supported.
+The Python package is `dear-diane`, with imports under `diane`. Use `dear-diane --help` for commands; use `DIANE_*` configuration names. Existing `dan` aliases and legacy `DAN_*` variables remain supported; `DIANE_*` takes precedence when both are set.
 
 Team settings let you include worker providers and set **Max parallel workers** (1–4, default 2). This shared limit excludes the lead; the lead can use fewer workers and can assign multiple workers to one provider. Settings apply to the next run.
 
@@ -292,7 +292,7 @@ The Team panel shows every configured worker, including idle slots. Workers get 
 
 Claude Code offers Read only, Ask before actions, Accept edits, native Auto, and Full access. Configure **Command sandbox** separately in the agent settings. Permission requests appear inline with **Allow once** and **Deny**; native deny rules and managed policies still apply. Mode default enables the sandbox except in Full access. Changes apply to the next run.
 
-Local development desktop builds prefer the project’s `.venv` Python. Startup checks that the selected environment can import the backend; `DAN_PYTHON` explicitly selects another interpreter.
+Local development desktop builds prefer the project’s `.venv` Python. Startup checks that the selected environment can import the backend; `DIANE_PYTHON` explicitly selects another interpreter.
 
 In chat, expand the **Lead** heading to see worker task summaries and results. Select a worker to open its conversation in the Team sidebar.
 

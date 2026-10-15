@@ -197,3 +197,7 @@ Release scope remains the desktop shell for existing configured Python-backend i
 
 - [x] Prefer validated project Python in local development builds; bound import probes and preserve explicit interpreter selection. Published metadata omits local interpreter paths.
 - [x] Activate new default interpreter selection; October 15 normal installed launch used project .venv and both health endpoints passed.
+
+## v0.1.8 publication
+- [x] Prepare version, release notes and compatibility/validation checks.
+- [ ] Push immutable tag, complete Actions build/publish and verify public assets.

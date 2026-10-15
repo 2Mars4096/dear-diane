@@ -1,6 +1,16 @@
 # Changelog
 
 ## 2026-10-15
+- [feat] Adopt DIANE_* in README and environment templates, with canonical-to-legacy aliases at Python startup/after dotenv and desktop launch. Preserve existing DAN_* consumers; explicit DIANE_* values take precedence.
+- [infra] Prepare v0.1.8 for Apple Silicon desktop publication with composer sizing/typing fixes, worker-completion handoffs, progressive chat history and reviewed performance changes. Matching Python backend source is required; no backend binary is bundled.
+- [test] Release checks pass: 561 frontend tests, 32 focused backend tests, 12 publisher tests, production build/budgets and Electron compilation.
+
+## 2026-10-15
+- [fix] Resize the composer from native input events independently of deferred workspace state; respect CSS height/border limits and reset scroll when all lines fit. Coalesce typing/caret preview state for 100 ms, removing per-key workspace renders while preserving immediate native text, draft writes and live-value submission.
+- [feat] Add a native-lead completion inbox, once per managed top-level worker attempt. Notify steerable leads between tool actions without pending approvals/background jobs, prioritize user steers, and resume the same native lead session at a completed-turn boundary if worker results arrive. Keep owning runs alive while workers finish; preserve Stop/error termination and avoid inventing work beyond the user request.
+- [test] Composer/draft/workspace checks: 154 pass and production build/budgets pass. Completion/lead/Claude checks: 25 pass, including completion deduplication and same-session lead resumption after worker handoff. Live provider acceptance and local activation remain pending.
+
+## 2026-10-15
 - [feat] Open long saved chats with the latest 40 rendered messages and a Load earlier messages button (40 per click), preserving the scroll anchor and full saved transcript. Skip old run/event-log fan-out when saved messages exist; restore recent native replies first and older replies on reveal.
 - [infra] Install inline Team summaries plus progressive transcript rendering after idle checks. Signature/ASAR equality (`ec933eb41f2952f2528ad1087b90deb1ba4a6e1c73db5c132d8521d8992d542b`) and backend/proxy health pass. Earlier launch failed interpreter probes; subsequent normal launch succeeded. Rollback `.Diane-previous-36e23fe3-5686-4efd-887f-05537f88663a.app` retained.
 - [test] Full precommit frontend suite: 558 passed; subsequent paging/inline-summary tests: three passed. Production build and bundle budgets pass.

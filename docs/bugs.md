@@ -2514,3 +2514,7 @@ When renaming workflows or moving error data between environments:
 - Full frontend shutdown fixture requires ps access; its sandbox EPERM is environmental and was independently verified with process access. Native event index regressions cover malformed/partial lines, append, truncation, replacement and parent ownership.
 
 - October 15 install follow-up: one normal launch failed all Python import probes, then a later normal launch succeeded with project .venv. Bounded probes improve recovery but transient interpreter startup remains possible; final installed build is healthy.
+
+## 2026-10-15 — composer clipping and missing completion handoff
+- Native textarea updates preceded deferred input state, leaving its height stale. Computed six-line cap also exceeded CSS max-height while overflow remained hidden. Resize on native input, honor CSS bounds and coalesce root preview updates.
+- Native leads previously closed all workers immediately after their own terminal reply; worker completion only emitted UI events. Add attempt-deduplicated completion notices and keep the parent run alive until workers settle. Notify only between observed tool actions and without approvals/background tasks; never retry failed notification delivery in a loop. Provider-live acceptance pending.

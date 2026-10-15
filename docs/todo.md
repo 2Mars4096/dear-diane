@@ -571,3 +571,10 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
 
 - [x] Render recent 40 messages first, reveal earlier pages on demand and avoid fetching every historical run before opening saved chats.
 - [x] Install inline summaries and progressive conversation rendering; signature/archive/health verified.
+
+- [x] Fix multiline composer clipping and move resizing off the deferred root-render path; coalesce preview updates.
+- [x] Add once-per-attempt completion handoff for native leads and same-session continuation while workers finish.
+- [ ] Live-verify and activate completion hook/composer follow-up after current work finishes.
+
+- [x] Adopt canonical DIANE_* configuration examples with backwards-compatible environment aliases.
+- [ ] Publish and verify v0.1.8 release assets.
