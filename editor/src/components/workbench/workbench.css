@@ -1121,3 +1121,9 @@
  .wb-worker-task-summary { font-size:12px; }
  .wb-shell .wb-composer-toolbar > button, .wb-shell .wb-composer-toolbar .wb-native-settings > summary { min-height:32px; }
 }
+
+/* Documents use the existing sidebar navigator; retained tabs are quiet and flat. */
+.wb-main-tabs { align-items:stretch; gap:4px; height:36px; border-bottom:0; }
+.wb-main-tab { height:34px; border:0; border-bottom:2px solid transparent; border-radius:0; }
+.wb-main-tab[data-active] { background:transparent; border-color:var(--wb-accent); }
+.wb-main-tab-close { width:26px; height:26px; margin:3px; }

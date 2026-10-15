@@ -10,8 +10,8 @@ vi.mock('epubjs', () => ({ default: () => ({
   loaded: { navigation: Promise.resolve({ toc: [{ href: 'chapter.xhtml', label: 'Chapter 1', subitems: [] }] }) },
   renderTo: () => ({
     on: (event: string, callback: (value: unknown) => void) => { mock.events[event] = callback; },
-    themes: { default() {}, fontSize() {} }, hooks: { content: { register() {} } },
-    display: async () => {}, resize: mock.resize, spread: mock.spread,
+    themes: { default() {}, fontSize() {}, register() {}, registerCss() {}, select() {} }, hooks: { content: { register() {} } },
+    q: { enqueue: (fn: () => void) => Promise.resolve(fn()) }, display: async () => {}, resize: mock.resize, spread: mock.spread,
   }),
 }) }));
 vi.mock('../lib/epub', () => ({ EPUB_MAX_BYTES: 150000000, checkEpub: async () => {}, protectEpubDocument() {} }));
@@ -32,7 +32,7 @@ it('preserves the first page until relocation, before enabling controls and resi
     expect(host.textContent).toContain('Opening EPUB');
     await act(async () => mock.events.relocated({ start: { cfi: 'epubcfi(/6/2!/4/2)', href: 'chapter.xhtml', index: 0, displayed: { page: 2, total: 12 } }, atStart: false, atEnd: false }));
     await act(async () => observers.at(-1)!());
-    expect(mock.resize).toHaveBeenCalledWith(871.25, 824);
+    expect(mock.resize).toHaveBeenCalledWith(871.25, 824, 'epubcfi(/6/2!/4/2)');
     expect(host.textContent).not.toContain('Opening EPUB');
     expect(host.querySelector<HTMLInputElement>('[aria-label="Page number"]')?.value).toBe('2');
     expect(host.querySelector<HTMLInputElement>('[aria-label="Page number"]')?.max).toBe('12');

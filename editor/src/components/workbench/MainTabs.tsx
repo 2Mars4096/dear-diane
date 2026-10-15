@@ -5,7 +5,7 @@ import type { MainTab } from "./mainTabState";
 export { closeMainTab, type MainTab } from "./mainTabState";
 
 /** Tab bar for the main column: the conversation plus any open documents, all closable. */
-export function MainTabs({ tabs, active, onSelect, onClose, shortcuts = {} }: { shortcuts?: Record<string, number>; tabs: MainTab[]; active: string; onSelect: (id: string) => void; onClose: (id: string) => void }) {
+export function MainTabs({ tabs, active, onSelect, onClose, shortcuts = {}, navigationInSidebar = false }: { navigationInSidebar?: boolean; shortcuts?: Record<string, number>; tabs: MainTab[]; active: string; onSelect: (id: string) => void; onClose: (id: string) => void }) {
   const mac = /Mac|iPhone|iPad/.test(navigator.platform);
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
@@ -18,7 +18,7 @@ export function MainTabs({ tabs, active, onSelect, onClose, shortcuts = {} }: { 
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [active, mac, onClose, tabs.length]);
-  return <div className="wb-main-tabs" role="tablist" aria-label="Open tabs" onKeyDown={event => {
+  return <div className="wb-main-tabs" style={navigationInSidebar ? { display: "none" } : undefined} role="tablist" aria-label="Open tabs" onKeyDown={event => {
     if ((event.target as HTMLElement).getAttribute('role') !== 'tab' || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
     const index = tabs.findIndex(tab => tab.id === active);

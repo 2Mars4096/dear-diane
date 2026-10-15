@@ -1,3 +1,4 @@
+import { ReaderMenu } from "./ReaderMenus";
 import { pdfOutline, detectPdfChapters, type ReaderChapter } from "./lib/pdf-chapters";
 import { transcribeSelection } from "./lib/transcribe-selection";
 import { browserOcrIdentity, readBrowserOcr, saveBrowserOcr } from "./lib/ocr-cache";
@@ -327,8 +328,8 @@ function PdfReaderView({ file, onAsk, onNotes }: { file: ReaderFile; onAsk: (ask
           {ocr.status === "running" && <span title="Recognizing text on scanned pages"><ScanText size={12} />OCR {ocr.done}/{ocr.total}</span>}
           {ocr.status === "error" && <span data-error title={ocr.message}><ScanText size={12} />OCR failed</span>}
           <button type="button" onClick={onNotes}><MessageSquareQuote size={13} />Notes{comments.length ? ` ${comments.length}` : ""}</button>
-          <button type="button" onClick={() => void exportPdf()} disabled={!comments.length || exporting} title="Download a copy with notes as PDF highlights"><Download size={13} />{exporting ? "Exporting…" : "Export"}</button>
-          <a href={file.url} download={file.name}>Download</a>
+          <ReaderMenu label="More document actions" more><button type="button" onClick={() => void exportPdf()} disabled={!comments.length || exporting} title={!comments.length ? "Add a highlight or note before exporting an annotated copy" : "Download a copy with notes as PDF highlights"}><Download size={13} />{exporting ? "Exporting…" : "Export with notes"}</button>
+          <a href={file.url} download={file.name}>Download original</a></ReaderMenu>
         </>}
       />
     </div>

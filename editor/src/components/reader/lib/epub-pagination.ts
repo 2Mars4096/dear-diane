@@ -1,3 +1,4 @@
+import { applyEpubTypography, type EpubTypography, type ReaderTextStyle } from "./epub-typography";
 import { yieldEpubPagination } from './epub-input';
 import { Rendition } from 'epubjs';
 import type Book from 'epubjs/types/book';
@@ -6,7 +7,7 @@ import type Mapping from 'epubjs/types/mapping';
 import type Section from 'epubjs/types/section';
 
 export type EpubPage = { section: number; page: number; cfi: string };
-export type EpubPageSize = { width: number; height: number; font: number; spread: string };
+export type EpubPageSize = { width: number; height: number; font: number; spread: string; typography?: EpubTypography; text?: ReaderTextStyle };
 // EPUB.js exposes these on its default manager but omits them from Rendition's types.
 type MeasuredView = { section: Section; contents: Contents; width: () => number; expand: () => void };
 type MeasuringRendition = Rendition & { manager: {
@@ -27,6 +28,7 @@ export async function paginateEpub(book: Book, size: EpubPageSize, signal: Abort
   const pages: EpubPage[] = [];
   try {
     await rendition.attachTo(host);
+    applyEpubTypography(rendition, size.typography || 'original', false, size.text);
     rendition.themes.fontSize(`${size.font}%`);
     rendition.themes.default({ 'img,svg': { 'max-width': '100%' } });
     const sections: Section[] = []; book.spine.each((section: Section) => { if (section.linear) sections.push(section); });

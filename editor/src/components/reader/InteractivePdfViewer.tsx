@@ -1,3 +1,5 @@
+import { ReadingSettings } from "./ReadingSettings";
+import { ReaderContents } from "./ReaderMenus";
 import { extendOcrSelectionAcrossGap, ocrSelectionLines, refineOcrLines } from "./lib/ocr-selection-lines";
 import { selectionBounds } from "./lib/selection-image";
 import { pdfAssetBase } from "./lib/pdf-assets";
@@ -1334,17 +1336,17 @@ export function InteractivePdfViewer({
     <div className={styles.viewer} ref={rootRef}>
       <ReaderToolbar
         navigation={<ReaderPageNavigation page={pageNumber} total={pageCount} onGo={navigatePage} previous={() => navigatePage(pageNumber - 1)} next={() => navigatePage(pageNumber + 1)} canPrevious={canGoBack} canNext={canGoForward} />}
-        chapters={<select aria-label="Chapter" disabled={!chapters.length} value={[...chapters].reverse().find(item => item.page <= pageNumber)?.id || ''} title="PDF outline, or headings detected from available text and OCR" onChange={event => { const chapter = chapters.find(item => item.id === event.target.value); if (chapter) navigatePage(chapter.page); }}><option value="" disabled>{chaptersLoading ? 'Finding chapters…' : chapters.length ? 'Chapters' : 'No chapters found'}</option>{chapters.map(item => <option key={item.id} value={item.id}>{item.detected ? 'Detected · ' : ''}{'　'.repeat(item.depth)}{item.label} · p. {item.page}</option>)}</select>}
+        chapters={<ReaderContents items={chapters.map(item => ({ id: item.id, label: `${item.detected ? 'Detected · ' : ''}${'　'.repeat(item.depth)}${item.label} · p. ${item.page}` }))} value={[...chapters].reverse().find(item => item.page <= pageNumber)?.id || ''} placeholder={chaptersLoading ? 'Finding chapters…' : 'Contents'} onSelect={id => { const chapter = chapters.find(item => item.id === id); if (chapter) navigatePage(chapter.page); }} />}
         sizing={<>
           <button aria-label="Zoom out" disabled={zoom <= MIN_ZOOM} onClick={() => changeZoom(Math.max(MIN_ZOOM, Math.round((zoom - ZOOM_STEP) * 10) / 10))}>−</button>
-          <button aria-label="Fit page width" onClick={() => changeZoom(1)}>{zoom === 1 ? 'Fit' : `${Math.round(zoom * 100)}%`}</button>
+          <select aria-label="Zoom" title="100% fits the page width" value={zoom} onChange={event => changeZoom(Number(event.target.value))}>{[...new Set([MIN_ZOOM, 0.75, 1, 1.25, 1.5, 2, MAX_ZOOM, zoom])].filter(value => value >= MIN_ZOOM && value <= MAX_ZOOM).sort((a, b) => a - b).map(value => <option key={value} value={value}>{value === 1 ? 'Fit width' : `${Math.round(value * 100)}%`}</option>)}</select>
           <button aria-label="Zoom in" disabled={zoom >= MAX_ZOOM} onClick={() => changeZoom(Math.min(MAX_ZOOM, Math.round((zoom + ZOOM_STEP) * 10) / 10))}>+</button>
         </>}
-        layout={<select aria-label="Page layout" value={pageLayout} onChange={event => {
+        layout={<ReadingSettings layout={<select aria-label="Page layout" value={pageLayout} onChange={event => {
           const next = event.target.value === 'two' ? 'two' : 'single'; setPageLayout(next); setSelectionPrompt(null);
           try { localStorage.setItem('diane.reader.page-layout', next); } catch { /* Current visit only. */ }
           requestAnimationFrame(() => requestAnimationFrame(() => navigatePage(pageNumber)));
-        }}><option value="single">Single page</option><option value="two">Two pages</option></select>}
+        }}><option value="single">Single page</option><option value="two">Two pages</option></select>} onReset={() => { setPageLayout('single'); changeZoom(1); try { localStorage.setItem('diane.reader.page-layout', 'single'); } catch { /* Keep current view usable. */ } }} />}
         references={<button aria-expanded={referenceTrayOpen} aria-label={`References, ${referenceTags.length} saved`} aria-pressed={referenceTrayPinned} disabled={!referencesHydrated}
           onBlur={scheduleReferenceTrayClose} onClick={toggleReferenceTrayPin} onFocus={showReferenceTrayFromFocus} onMouseEnter={showReferenceTrayFromHover} onMouseLeave={scheduleReferenceTrayClose}>
           References{referenceTags.length ? ` ${referenceTags.length}` : ''}

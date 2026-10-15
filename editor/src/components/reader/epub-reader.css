@@ -39,3 +39,7 @@
 .wb-epub { position:relative; }
 .wb-epub-selection-overlay { position:absolute; bottom:10px; left:12px; right:12px; z-index:6; pointer-events:none; }
 .wb-epub-selection-overlay > * { pointer-events:auto; background:var(--wb-paper); border:1px solid var(--wb-line); border-radius:8px; box-shadow:0 8px 24px #0003; }
+
+.wb-epub-stage { width:calc(100% - 32px); max-width:820px; margin:0 auto; background:var(--wb-soft); }
+.wb-epub-stage[data-reading-width=wide] { max-width:1200px; }
+@media(max-width:600px) { .wb-epub-stage { width:100%; } }
