@@ -8,5 +8,5 @@ export async function selectBackendPython(candidates: string[], options: { cwd: 
   for (const executable of [...new Set(candidates.filter(Boolean))]) {
     try { await probe(executable); return executable; } catch { /* Try the next configured installation. */ }
   }
-  throw new Error('No working Diane Python environment was found. Set DAN_PYTHON to an interpreter with dear-diane installed.');
+  throw new Error('No working Diane Python environment was found. Set DIANE_PYTHON to an interpreter with dear-diane installed.');
 }

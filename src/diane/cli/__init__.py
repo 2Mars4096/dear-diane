@@ -40,6 +40,8 @@ def load_env() -> None:
             pass
     except ImportError:
         pass
+    from diane.environment import apply_environment_aliases
+    apply_environment_aliases()
 
 
 def resolve_config(

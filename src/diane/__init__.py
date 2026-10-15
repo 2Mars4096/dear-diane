@@ -5,6 +5,10 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
+from .environment import apply_environment_aliases
+
+apply_environment_aliases()
+
 __version__ = "0.2.0"
 
 _EXPORTS = {

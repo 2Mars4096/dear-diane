@@ -6,5 +6,5 @@ it('selects the first viable environment, skipping broken installations and dupl
   expect(probe.mock.calls.map(call => call[0])).toEqual(['broken', 'working']);
 });
 it('reports an unusable explicit interpreter without switching accounts/environments silently', async () => {
-  await expect(selectBackendPython(['explicit'], { cwd: '/', env: {} }, async () => { throw new Error('missing'); })).rejects.toThrow('DAN_PYTHON');
+  await expect(selectBackendPython(['explicit'], { cwd: '/', env: {} }, async () => { throw new Error('missing'); })).rejects.toThrow('DIANE_PYTHON');
 });

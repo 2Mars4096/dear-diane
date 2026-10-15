@@ -16,12 +16,14 @@ import {
   waitForBackendHealth,
   waitForBackendHealthOrRelease,
 } from "./backendHealth";
-import { buildBackendLaunchEnv } from "./backendLaunch";
+import { buildBackendLaunchEnv, withDianeEnvironment } from "./backendLaunch";
 import { stopBackendTree } from "./backendShutdown";
 import { registerFileLinks } from "./fileLinks";
 import { registerDesktopUpdates } from "./desktopUpdates";
 import { prepareWindowAppearance, WINDOW_BACKGROUND } from "./windowAppearance";
 import { registerWindowControls } from "./windowControls";
+
+Object.assign(process.env, withDianeEnvironment(process.env));
 
 // Keep the existing profile when the package/display name changes.
 app.setPath("userData", path.join(app.getPath("appData"), "dan"));

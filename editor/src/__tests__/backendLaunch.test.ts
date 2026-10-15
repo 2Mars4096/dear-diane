@@ -33,3 +33,8 @@ describe("backendLaunch", () => {
     expect(workspaceRoot).toBe("/Users/tester/Desktop/dan-workspace");
   });
 });
+
+it('accepts canonical Diane workspace configuration ahead of legacy names', async () => {
+  const { withDianeEnvironment } = await import('../../electron/backendLaunch');
+  expect(withDianeEnvironment({ DIANE_PYTHON: '/new/python', DAN_PYTHON: '/old/python', PATH: '/bin' })).toEqual({ DIANE_PYTHON: '/new/python', DAN_PYTHON: '/new/python', PATH: '/bin' });
+});

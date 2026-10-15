@@ -21,7 +21,7 @@ function normalizePath(rawPath: string): string {
 export function resolveBackendWorkspaceRoot(
   options: BackendLaunchOptions,
 ): string {
-  const env = options.env ?? process.env;
+  const env = withDianeEnvironment(options.env ?? process.env);
   const configured = String(env.DAN_WORKSPACE_ROOT ?? "").trim();
   if (configured) {
     return normalizePath(configured);
@@ -32,7 +32,7 @@ export function resolveBackendWorkspaceRoot(
 export function buildBackendLaunchEnv(
   options: BackendLaunchOptions,
 ): NodeJS.ProcessEnv {
-  const env = options.env ?? process.env;
+  const env = withDianeEnvironment(options.env ?? process.env);
   const graphsDir = normalizePath(options.graphsDir);
   const workspaceRoot = resolveBackendWorkspaceRoot({
     env,
@@ -43,4 +43,13 @@ export function buildBackendLaunchEnv(
     DAN_GRAPHS_DIR: graphsDir,
     DAN_WORKSPACE_ROOT: workspaceRoot,
   };
+}
+
+/** Prefer public DIANE_* names while retaining legacy consumers and installations. */
+export function withDianeEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const result = { ...env };
+  for (const [name, value] of Object.entries(env)) {
+    if (name.startsWith('DIANE_')) result[`DAN_${name.slice(6)}`] = value;
+  }
+  return result;
 }
