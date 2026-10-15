@@ -4,7 +4,7 @@ import { useDismissDetails } from '../workbench/useDismissDetails';
 
 export function ReaderMenu({ label, children, more = false }: { label: string; children: ReactNode; more?: boolean }) {
   const ref = useDismissDetails();
-  return <details ref={ref} className="wb-reader-menu" onKeyDown={event => {
+  return <details ref={ref} className={`wb-reader-menu${more ? "" : " wb-reading-menu"}`} onKeyDown={event => {
     if (event.key === 'Escape' && ref.current) { ref.current.open = false; ref.current.querySelector('summary')?.focus(); }
   }}><summary aria-label={label} title={label}>{more ? <MoreHorizontal size={16} /> : <><SlidersHorizontal size={14} /><span>{label}</span><ChevronDown size={12} /></>}</summary><div className="wb-reader-menu-body">{children}</div></details>;
 }

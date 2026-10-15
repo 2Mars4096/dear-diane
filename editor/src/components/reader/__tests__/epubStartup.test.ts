@@ -3,9 +3,9 @@ import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
 import EpubReader from '../EpubReader';
-const mock = vi.hoisted(() => ({ events: {} as Record<string, (value: unknown) => void>, resize: vi.fn(), spread: vi.fn() }));
+const mock = vi.hoisted(() => ({ events: {} as Record<string, (value: unknown) => void>, resize: vi.fn(), spread: vi.fn(), open: vi.fn(async () => {}), destroy: vi.fn(), resources: vi.fn(() => Promise.resolve()) }));
 vi.mock('epubjs', () => ({ default: () => ({
-  isOpen: true, open: async () => {}, destroy: () => {},
+  isOpen: true, open: () => mock.open(), opened: mock.resources(), destroy: mock.destroy,
   spine: { hooks: { content: { register() {} }, serialize: { register() {} } } },
   loaded: { navigation: Promise.resolve({ toc: [{ href: 'chapter.xhtml', label: 'Chapter 1', subitems: [] }] }) },
   renderTo: () => ({
@@ -51,4 +51,35 @@ it('preserves the first page until relocation, before enabling controls and resi
     await act(async () => referenceButton.click());
     expect(host.querySelector('[aria-label="Saved references"]')).toBeNull();
   } finally { await act(async () => root.unmount()); host.remove(); }
+});
+
+it('waits for resource initialization before destroying an already-open book', async () => {
+  let finish!: () => void;
+  mock.destroy.mockClear();
+  mock.open.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok:true, headers:new Headers(), arrayBuffer:async()=>new ArrayBuffer(1) }));
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({width:820,height:800} as DOMRect);
+  const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+  await act(async()=>root.render(createElement(EpubReader,{file:{path:'/pending.epub',name:'pending.epub',url:'/pending.epub'},onAsk(){},onNotes(){}})));
+  await act(async()=>root.unmount());
+  expect(mock.destroy).not.toHaveBeenCalled();
+  await act(async()=>finish());
+  expect(mock.destroy).toHaveBeenCalledOnce();
+  host.remove();
+});
+
+it('does not destroy resources between open() and the later opened promise', async () => {
+  let finishResources!: () => void;
+  mock.destroy.mockClear();
+  mock.resources.mockImplementationOnce(() => new Promise<void>(resolve => { finishResources = resolve; }));
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok:true,headers:new Headers(),arrayBuffer:async()=>new ArrayBuffer(1)}));
+  vi.spyOn(HTMLElement.prototype,'getBoundingClientRect').mockReturnValue({width:820,height:800} as DOMRect);
+  const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+  await act(async()=>root.render(createElement(EpubReader,{file:{path:'/resources.epub',name:'resources.epub',url:'/resources.epub'},onAsk(){},onNotes(){}})));
+  await act(async()=>root.unmount());
+  expect(mock.destroy).not.toHaveBeenCalled();
+  await act(async()=>finishResources());
+  expect(mock.destroy).toHaveBeenCalledOnce();host.remove();
 });

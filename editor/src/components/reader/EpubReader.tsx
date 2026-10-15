@@ -130,7 +130,7 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
     let resize: ResizeObserver | undefined, theme: MutationObserver | undefined;
     setReady(false); setError(''); setSelection(null); setLocation(null); setToc([]); setChapter('');
     const failure = (e: unknown) => { if (!cancelled) setError(e instanceof Error ? e.message : 'Could not open this EPUB.'); };
-    void (async () => {
+    const startup = (async () => {
       await waitForReaderSize(host.current!, controller.signal);
       if (cancelled) return;
       timeout = window.setTimeout(() => { controller.abort(); if (!cancelled) setError('Opening timed out. Try again.'); }, 30000);
@@ -144,6 +144,8 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
       book = ePub(); bookRef.current = book;
       book.spine.hooks.content.register((doc: Document) => protectEpubDocument(doc, false));
       await book.open(bytes, 'binary');
+      await book.opened; // open() resolves before resource/CSS replacement finishes.
+      if (cancelled || controller.signal.aborted) return;
       const fixed = book.packaging?.metadata?.layout === 'pre-paginated';
       setFixedLayout(fixed);
       if (fixed) { options.current.typography = 'original'; setTypography('original'); }
@@ -252,9 +254,10 @@ export default function EpubReader({ file, onAsk, onNotes }: { file: ReaderFile;
       cancelled = true; controller.abort(); window.clearTimeout(timeout); resize?.disconnect(); theme?.disconnect();
       turnRef.current = () => {};
       renditionRef.current = null; bookRef.current = null; bytesRef.current = null;
-      // Destroy the book once outstanding open/display promises settle to avoid stale hooks.
-      if (book?.isOpen) book.destroy();
-      else if (book) void book.opened.then(() => book?.destroy(), () => {});
+      // isOpen becomes true before EPUB.js finishes replacing CSS/resources.
+      // Destroying then invalidates its pending promises (replaceCss on undefined).
+      // Wait for this exact initialization/display attempt, even if already open.
+      void startup.finally(() => book?.destroy());
     };
     // File identity owns the entire engine; controls update the current rendition below.
     // eslint-disable-next-line react-hooks/exhaustive-deps

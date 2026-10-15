@@ -57,3 +57,15 @@
 .wb-reader-menu-body fieldset:disabled { opacity:.55; }
 .wb-reader-menu-body fieldset select:disabled { opacity:1; }
 .wb-reader-menu-body > button:last-child { margin-top:8px; border-top:1px solid var(--wb-line); border-radius:0; }
+
+.wb-reading-menu > .wb-reader-menu-body { width:min(360px,calc(100vw - 32px)); padding:16px; }
+.wb-reading-preferences header { font-size:14px; margin-bottom:14px; }
+.wb-reading-preference-section + .wb-reading-preference-section { border-top:1px solid var(--wb-line); margin-top:12px; padding-top:10px; }
+.wb-reading-preference-section h4 { margin:0 0 7px; font-size:11px; font-weight:600; color:var(--wb-muted); }
+.wb-reading-preferences label { display:grid; grid-template-columns:64px minmax(0,1fr); align-items:center; gap:12px; margin:7px 0; font-size:12px; }
+.wb-reading-preferences select { width:100%; max-width:none; height:32px; padding:0 8px; }
+.wb-reading-preferences .wb-reading-toggle { display:flex; justify-content:space-between; min-height:32px; margin-top:10px; }
+.wb-reading-preferences > p { margin:12px 0; line-height:1.5; }
+.wb-reading-preferences footer { border-top:1px solid var(--wb-line); padding-top:10px; }
+.wb-reading-preferences footer button { color:var(--wb-muted); padding:0; }
+@media(max-width:520px) { .wb-reading-menu > .wb-reader-menu-body { width:auto; padding:14px; } }
