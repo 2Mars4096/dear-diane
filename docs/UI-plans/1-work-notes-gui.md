@@ -231,3 +231,5 @@
 - [x] Refine reading-preferences panel hierarchy and alignment while preserving PDF parity.
 
 - [x] Install corrected font/settings/reflow update locally after idle verification; complete regression suite and health/archive/signature checks pass.
+
+- [x] Make underlining decoration-only and guarantee Reader CSS on newly displayed chapters; verify 40 toggles with stable iframe identity and computed styles.

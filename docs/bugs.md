@@ -2531,3 +2531,7 @@ When renaming workflows or moving error data between environments:
 - Browser integration initially failed because the desktop backend was unavailable; repeated checks used an isolated reader and temporary book copy instead. Intentional pagination aborts during changing settings are not failures.
 
 - Follow-up reproduction: EPUB.js open() and isOpen both precede its opened/resource promise. Rapid layout switching caused replaceCss access after resource destruction. Await book.opened and defer destruction until startup/display settles. Four-round rapid font/width/layout changes then produced no renderer errors; dedicated teardown tests cover both pending promises.
+
+- Underline follow-up: reapplying the entire font/theme stylesheet for a decoration toggle was unnecessary and could trigger reflow. Further inspection found EPUB.js Themes.inject ignores serialized CSS on new chapters. Added a one-time content hook plus CSS-variable-only decoration updates; 40 real-book toggles retain the same frame with correct computed decoration. Earlier frame-text-only checks were insufficient to verify theme application.
+
+- October 16 startup: two normal launches failed interpreter probes; the same project Python imported successfully from the app working directory in a terminal diagnostic. Direct app launch with launch-local DIANE_PYTHON recovered healthy services. This remains a startup-context issue, not a resolved interpreter failure.

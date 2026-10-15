@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-16
+- [infra] Installed exact underline/chapter-CSS correction after idle checks. Signature/ASAR equality verified (`6a6c342aeecc6e04b62d9c3e62a64501e4b695420ca5c60df9313433710c7723`); 567 frontend tests and build pass. Normal launch failed interpreter probes twice; direct launch with verified project DIANE_PYTHON succeeded and both health endpoints pass. No global Python settings changed. Rollback `.Diane-previous-c2698e53-a71f-4674-92c8-b7aea5b03654.app` retained.
+
+## 2026-10-15
+- [fix] Make EPUB link underlining a decoration-only CSS-variable override, avoiding stylesheet/font/theme replacement. Add a per-rendition content hook because EPUB.js omits serialized theme CSS when injecting newly displayed chapters. Reader styling now reaches every chapter.
+- [test] Actual-book browser verification: 40 underline toggles across scrolling/paginated layouts retain the exact iframe and text; computed link decoration matches each toggle. Unit checks ensure decoration changes do not register/select themes and chapter injection registers once.
+
 ## 2026-10-15
 - [infra] Installed corrected reader settings/resource-lifecycle build after idle checks. All 567 frontend tests, production budgets and packaging pass. Signature/ASAR equality verified (`144d7b4ca0f6c5f0c67a38e84115ebbcac917e2a9d26ebf2f6ad59346eddc506`); backend/proxy healthy on first launch. Rollback `.Diane-previous-18fbca55-8c75-4242-9a0b-fa1bd6ea858f.app` retained; public v0.1.8 assets unchanged.
 

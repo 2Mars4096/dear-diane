@@ -592,3 +592,6 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
 - [x] Fix Wide blank-view race, excessive EPUB underlines and inactive publisher-style leakage.
 - [x] Add shared PDF/EPUB settings with offline reading fonts, spacing, underline toggle and reset.
 - [x] Commit and install reader comfort update with lifecycle correction; 567 tests and health/signature/archive checks pass.
+
+- [x] Install and verify decoration-only EPUB underline toggle and per-chapter Reader CSS injection.
+- [ ] Investigate normal-launch interpreter probes failing while direct launch with the same project Python succeeds.

@@ -553,3 +553,5 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - Reader typography uses scoped replaceable CSS and shares font/spacing rules with measured pagination. Saved settings contain font IDs/spacing, never transient font blob URLs. ResizeObserver queues resize with the current CFI; it does not race a second width-driven display call.
 
 - EPUB engine cleanup waits for book.opened (resource/CSS replacement), not only book.open()/isOpen, then settles the initialization/display promise before destruction. This prevents layout changes from destroying resources still used by EPUB.js.
+
+- Reader CSS is explicitly injected into every new EPUB chapter via one rendition content hook, covering EPUB.js serialized-theme injection omission. Link underlining changes a theme CSS custom-property override only; it never re-registers or selects a theme.
