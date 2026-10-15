@@ -1,3 +1,4 @@
+import { SessionOptions } from "../workbench/SessionOptions";
 import { resizeComposer } from "../workbench/composerInput";
 import { InlineTeamSummary } from "../workbench/InlineTeamSummary";
 import { DraftPersistence } from "../workbench/draftPersistence";
@@ -25,7 +26,7 @@ import { SideTabs, readLastSideTab, rememberSideTab, type SideTab, type SideTabI
 import type { ReaderAsk } from "../reader/ReaderView";
 import { useDocumentTabs } from "../documents/useDocumentTabs";
 import { useProcesses } from "../workbench/processes";
-import { appendActivityEvent, streamedMessageContent, completedMessageContent } from "../workbench/eventPresentation";
+import { eventAgentName, appendActivityEvent, streamedMessageContent, completedMessageContent } from "../workbench/eventPresentation";
 import { WorkbenchNavigation } from "../workbench/WorkbenchNavigation";
 import { WorkbenchConversation, WorkbenchActivity } from "../workbench/WorkbenchConversation";
 import "../workbench/workbench.css";
@@ -14962,6 +14963,11 @@ export default function ChunkWorkspaceApp() {
     modelSelectionsByAgent[selectedAgentId],
     selectedAgentId,
   ).id;
+  const recordedLeadLabel = useMemo(() => {
+    const reply = [...messages].reverse().find(message => message.role === "assistant" && (!activeRunId || message.taskRunRef?.runId === activeRunId));
+    const detail = reply?.runEvents?.find(event => event.detail?.payload || event.detail?.backend)?.detail;
+    return detail ? eventAgentName({ type: "message", payload: (detail.payload ?? detail) as Record<string, unknown> }).replace("Claude Code", "Claude") : selectedAgentOption.shortLabel;
+  }, [messages, activeRunId, selectedAgentOption.shortLabel]);
   const selectedModelOption = useMemo(
     () => {
       const legacy = workspaceModelOptionForId(selectedModelId, selectedAgentId);
@@ -17082,7 +17088,7 @@ export default function ChunkWorkspaceApp() {
           rows={1}
           className="max-h-32 min-h-11 w-full resize-none rounded-lg border border-slate-200 bg-slate-50/90 px-3 py-2.5 text-sm leading-6 outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:bg-white focus:shadow-sm dark:border-slate-800 dark:bg-slate-900"
         />
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="wb-composer-toolbar flex flex-wrap items-center gap-2">
           <Suspense fallback={null}><AttachFiles disabled={attachmentBusy || sending} onFiles={files => addComposerFiles(files, "picker")} /></Suspense>
           <div className="flex h-7 shrink-0 items-center gap-0.5 rounded-md border border-slate-200 bg-slate-100/70 p-0.5 shadow-inner dark:border-slate-800 dark:bg-slate-900">
             {(["steer", "queue"] as const).map((mode) => {
@@ -17096,6 +17102,7 @@ export default function ChunkWorkspaceApp() {
                   key={mode}
                   type="button"
                   onClick={() => setActiveRunPlacement(mode)}
+                  aria-pressed={active}
                   disabled={queueUnavailable || (mode === "steer" && hasActiveRun && !canSteer)}
                   title={
                     mode === "steer" && hasActiveRun && !canSteer ? "Live steering is not available for this run" : mode === "queue"
@@ -17107,7 +17114,7 @@ export default function ChunkWorkspaceApp() {
                         : "Start work with this message"
                   }
                   className={cx(
-                    "inline-flex h-6 items-center gap-1 rounded px-1.5 text-[11px] font-semibold capitalize transition disabled:cursor-not-allowed disabled:opacity-40 sm:px-2",
+                    "wb-placement-button inline-flex h-6 items-center gap-1 rounded px-1.5 text-[11px] font-semibold capitalize transition disabled:cursor-not-allowed disabled:opacity-40 sm:px-2",
                     active
                       ? "bg-white text-slate-950 shadow-sm dark:bg-slate-100 dark:text-slate-950"
                       : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200",
@@ -18579,7 +18586,7 @@ export default function ChunkWorkspaceApp() {
               <div className="wb-conversation-heading">
               <TeamStrip activeRunId={activeRunId} workers={team.workers} lead={selectedAgentOption.shortLabel} leadRunning={Boolean(activeRunningTask)} open={teamPanel} onToggle={() => { setTeamPanel(!teamPanel); setWorkbenchActivity(false); setSidecarChat(false); setShowSidecarPreview(false); }} />
                 <div className="wb-conversation-actions">
-                {activeThread && <button title={`Copy session ID: ${activeThread.id}`} onClick={() => { void navigator.clipboard.writeText(activeThread.id).then(() => setStatus("Session ID copied"), () => setStatus(`Session ID: ${activeThread.id}`)); }}>Session <code>{activeThread.id}</code></button>}
+                {activeThread && <SessionOptions id={activeThread.id} onStatus={setStatus} />}
                 <button aria-pressed={workbenchOutline} onClick={() => setWorkbenchOutline(!workbenchOutline)}>{workbenchOutline ? "Conversation" : "Task detail"}</button></div></div>
 
               {workbenchOutline ? (              <div className="wb-outline min-h-0 flex-1 overflow-auto p-4">
@@ -18928,7 +18935,7 @@ export default function ChunkWorkspaceApp() {
           </PersistentPanel>
           <PersistentPanel active={visibleSideTab === "activity"} name="Activity"> <aside className="wb-activity-panel"><WorkbenchActivity events={agentEvents} /></aside></PersistentPanel>
           <PersistentPanel active={visibleSideTab === "changes"} name="Changes" key={`changes:${developmentRoot}:${activeThread?.id}`}><Suspense fallback={null}><ChangesPanel active={visibleSideTab === "changes"} root={developmentRoot} thread={activeThread?.id || ""} onComment={text => { setComposerInputValue([composerRef.current?.value ?? input, text].filter(Boolean).join("\n\n")); setActiveMainTab(mainTabs.find(tab => tab.session?.id === activeThread?.id && tab.session?.workflowId === activeThread?.workflowId)?.id || "chat"); setPhonePage("chat"); if (isPhoneViewport) openSideTab(null); requestAnimationFrame(() => composerRef.current?.focus()); }} /></Suspense></PersistentPanel>
-          <PersistentPanel active={visibleSideTab === "team"} name="Team"> <TeamPanel store={team.store} active={visibleSideTab === "team"} configuredProfiles={nativeWorkerProfiles} rosters={team.rosters} lead={selectedAgentOption.shortLabel} runDetails={Object.fromEntries(workPanelTasks.map(task => [taskRunId(task), { ...teamTitles[taskRunId(task)], startedAt: timestampValue(task.metadata?.run_created_at || task.metadata?._run_created_at, 0) }]))} header={false} activeRunId={activeRunId} onOpenLead={runId => {
+          <PersistentPanel active={visibleSideTab === "team"} name="Team"> <TeamPanel store={team.store} active={visibleSideTab === "team"} configuredProfiles={nativeWorkerProfiles} rosters={team.rosters} lead={recordedLeadLabel} runDetails={Object.fromEntries(workPanelTasks.map(task => [taskRunId(task), { ...teamTitles[taskRunId(task)], startedAt: timestampValue(task.metadata?.run_created_at || task.metadata?._run_created_at, 0) }]))} header={false} activeRunId={activeRunId} onOpenLead={runId => {
             setWorkbenchOutline(false); setTeamPanel(false); setPhonePage("chat");
             setActiveMainTab(mainTabs.find(tab => tab.session?.id === activeThread?.id && tab.session?.workflowId === activeThread?.workflowId)?.id || "chat");
             const message = messagesRef.current.find(item => item.taskRunRef?.runId === runId);

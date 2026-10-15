@@ -1,6 +1,14 @@
 # Changelog
 
 ## 2026-10-15
+- [infra] Installed the design-consistency pass locally as 0.1.8 after idle verification. Signature and prepared/installed ASAR equality pass (`ad7b79f34bb0ca915620abf5cf4362b655cea776ff6258395a8e7fc89045b918`); project-Python backend and desktop proxy healthy on first launch. Rollback retained at `/Applications/.Diane-previous-0d291334-0119-4d16-976c-fd78672b1e07.app`. Published v0.1.8 assets are unchanged.
+
+## 2026-10-15
+- [refactor] Refine Work interface hierarchy: compact Team counts in the header, one activity disclosure without duplicate Details, consolidated lead/navigation row, Available labels distinct from assignment outcomes, and readable worker bullets without repeated Working on prefixes.
+- [feat] Move session IDs into an accessible session-options menu; retain copy and keyboard/outside dismissal. Standardize composer placement/control sizes, selected states, focus rings and supporting typography using existing palette tokens. Sidebar lead identity uses recorded response metadata when available.
+- [test] 23 presentation/disclosure regressions pass. Production build/budgets pass; browser reviewed at 1600px and 1100px in light/dark appearances, with session menu interaction verified. Local installation pending.
+
+## 2026-10-15
 - [infra] Published v0.1.8 from `9f1076bb98310ed48e2dfd1cde255ab13a93580f`; Actions `38748616304` build/publish succeeded. Public release is stable, has five expected assets and the exact source marker. Downloaded ZIP size 216,220,018 bytes and SHA-512 match latest-mac.yml. Release: https://github.com/2Mars4096/dear-diane/releases/tag/v0.1.8.
 
 ## 2026-10-15

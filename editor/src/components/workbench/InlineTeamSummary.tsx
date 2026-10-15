@@ -24,7 +24,7 @@ export function InlineTeamSummary({ store, runId, lead, onOpenWorker }: {
       <ChevronRight size={13} /><strong>Lead · {lead}</strong><span>{working ? `${working} working` : `${rows.length} workers`}</span>
     </button>
     {open && <ul className="wb-team-slots">{rows.map(worker => <li className="wb-team-slot" key={worker.worker_id}>
-      <div className="wb-team-slot-heading"><button type="button" onClick={() => onOpenWorker(worker)} title="Open worker conversation"><strong>{worker.worker_name || agentLabel(worker.backend)} · {agentLabel(worker.backend)}</strong></button><span>{workerState(worker)}</span></div>
+      <div className="wb-team-slot-heading"><button type="button" onClick={() => onOpenWorker(worker)} title="Open worker conversation"><strong>{worker.worker_name || agentLabel(worker.backend)} · {agentLabel(worker.backend)}</strong></button><span>{["running", "needs_input"].includes(worker.status) ? workerState(worker) : "Available"}</span></div>
       <ul className="wb-worker-task-summary">{workerTaskSummary(worker).map((line, index) => <li key={index}>{line}</li>)}</ul>
     </li>)}</ul>}
   </section>;

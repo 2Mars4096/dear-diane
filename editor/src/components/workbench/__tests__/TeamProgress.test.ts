@@ -112,7 +112,7 @@ it('keeps historical failures out of the current run progress strip', () => {
   const old: TeamWorker = { worker_id: 'old', parent_run_id: 'past', backend: 'codex', status: 'failed', prompt: '', response: '', error: 'At capacity', native_session_id: '', created_at: 1 };
   try {
     act(() => root.render(createElement(TeamStrip, { workers: [old, { ...old, worker_id: 'new', parent_run_id: 'current', backend: 'claude', status: 'running', activity: 'Reading files', created_at: 2 }], activeRunId: 'current', lead: 'Claude', leadRunning: true, open: false, onToggle: vi.fn() })));
-    expect(host.textContent).toContain('reading files');
+    expect(host.textContent).toContain('1 working');
     expect(host.textContent).not.toContain('failed');
     expect(host.textContent).not.toContain('Codex');
     act(() => root.render(createElement(TeamStrip, { workers: [old], activeRunId: 'empty-current', lead: 'Claude', leadRunning: true, open: false, onToggle: vi.fn() })));
@@ -128,10 +128,10 @@ it('shows every configured slot, including idle workers, above their assigned ta
     const slots = host.querySelectorAll('.wb-team-slot');
     expect(slots).toHaveLength(3);
     expect(slots[0].textContent).toContain('Worker 1');
-    expect(slots[0].textContent).toContain('Idle');
+    expect(slots[0].textContent).toContain('Available');
     expect(slots[1].textContent).toContain('Visual reviewer');
     expect(slots[1].textContent).toContain('Visual review');
-    expect(host.textContent).toContain('1 working · 2 idle');
+    expect(host.textContent).toContain('1 working · 2 available');
     expect(host.textContent).toContain('Lead · Claude');
   } finally { act(() => root.unmount()); }
 });
@@ -164,4 +164,17 @@ it('keeps compact activity readable and exposes raw activity on expansion', asyn
     expect(host.textContent).toContain('Worker session');
     expect(host.querySelector('button[aria-label^="Stop"]')).not.toBeNull();
   } finally { act(() => root.unmount()); vi.unstubAllGlobals(); }
+});
+
+it('keeps the overview concise without labelling stopped workers as completed', () => {
+ const host=document.createElement('div'), root=createRoot(host);
+ const worker: TeamWorker={worker_id:'w',parent_run_id:'r',backend:'claude',status:'stopped',prompt:'Task',response:'',error:'',native_session_id:''};
+ try {
+  act(()=>root.render(createElement(TeamStrip,{workers:[worker],lead:'Claude',leadRunning:false,activeRunId:'r',open:false,onToggle:vi.fn()})));
+  expect(host.textContent).toContain('1 worker');
+  expect(host.textContent).not.toContain('completed');
+  act(()=>root.render(createElement(TeamStrip,{workers:[{...worker,status:'needs_input'}],lead:'Claude',leadRunning:true,activeRunId:'r',open:false,onToggle:vi.fn()})));
+  expect(host.textContent).toContain('needs attention');
+  expect(host.textContent).not.toContain('working');
+ } finally {act(()=>root.unmount());}
 });

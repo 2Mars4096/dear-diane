@@ -209,3 +209,9 @@
 - [x] Install and verify latest inline Team/progressive history build.
 
 - [x] Fix native-input autosizing, CSS cap/overflow mismatch and per-key root preview updates.
+
+- [x] Simplify team header counts and work disclosures; consolidate lead navigation, distinguish availability from task outcome, normalize worker task copy and improve supporting text/control sizes.
+- [x] Place session ID behind a shared-dismissal menu and unify composer control/selection/focus styling.
+- [x] Review light/dark layouts at wide/narrow desktop widths; targeted tests and production budgets pass.
+
+- [x] Install design-consistency pass locally October 15; idle guard, signature/archive equality and backend/proxy health pass.

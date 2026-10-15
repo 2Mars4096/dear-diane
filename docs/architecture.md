@@ -543,3 +543,5 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - `native_workers/completion.py` tracks once-per-attempt notices for managed top-level worker results. NativeLeadAdapter prioritizes user steering, delivers notices between observed tool actions, and resumes the native session after a terminal reply when handoffs remain. Review decisions suppress redundant notices; only existing requested scope may be reassigned. Failed/stopped leads do not auto-resume.
 
 - `diane.environment.apply_environment_aliases` maps canonical DIANE_* values to legacy DAN_* readers at import and after dotenv loading. Desktop `withDianeEnvironment` performs the same mapping before launch; canonical names win.
+
+- `workbench/SessionOptions.tsx` provides session-ID copy through the existing dismissible-details menu pattern, including Escape focus restoration. TeamStrip is an overview of active/attention/completed counts; detailed per-worker activity remains in disclosures. Available refers to worker capacity, independently of assignment success/failure.

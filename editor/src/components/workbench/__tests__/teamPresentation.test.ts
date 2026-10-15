@@ -41,7 +41,7 @@ it('uses stable attempt/session timestamps instead of the rolling action history
 
 it('uses the task goal instead of technical ownership and hides shell activity', () => {
   const task = worker('a', 'running', { prompt: 'TASK: EXPLOSION VISUAL EFFECTS. User: "More effects"\nOWNERSHIP: effects.gd', task_contract: { scope: 'effects.gd + tests/test_effects.gd' }, activity: 'Running mkdir -p "$TMPDIR/base" && git archive HEAD' });
-  expect(workerTaskSummary(task)).toEqual(['Working on: Explosion visual effects']);
+  expect(workerTaskSummary(task)).toEqual(['Explosion visual effects']);
   expect(workerState(task)).toBe('working');
 });
 it('keeps a human scope for legacy tasks without labelled headings', () => {

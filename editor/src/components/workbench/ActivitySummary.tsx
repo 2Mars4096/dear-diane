@@ -33,7 +33,7 @@ export function ActivitySummary({ events, active, live, startedAt, endedAt, chil
   const activity = currentActivity(events, live);
   const progress = active && !/^(Thinking|Working on your request)[.…]*$/i.test(activity) ? activity : '';
   return <details onToggle={event => { if (event.target === event.currentTarget) setOpen(event.currentTarget.open); }} className="wb-event wb-work-details" data-working={active || undefined}>
-    <summary><span className="wb-thinking-label">{active ? 'Thinking' : 'Work details'}{duration && <> <span className="wb-thinking-time">({duration})</span></>}</span><span className="wb-thinking-progress" title={progress}>{progress}</span><small>Details</small></summary>
+    <summary><span className="wb-thinking-label">{active ? progress || 'Thinking' : 'Work details'}</span>{duration && <span className="wb-thinking-time">{duration}</span>}</summary>
     {open && <div className="wb-work-history">{typeof children === "function" ? children() : children}</div>}
   </details>;
 }

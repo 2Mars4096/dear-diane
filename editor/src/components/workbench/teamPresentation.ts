@@ -126,7 +126,7 @@ export function orderedTeamRuns(workers: TeamWorker[], activeRunId = "", details
     const rows = workers.filter(worker => worker.parent_run_id === id);
     const times = rows.map(worker => worker.created_at || startedAt(worker)).filter(time => time > 0);
     const time = details[id]?.startedAt || (times.length ? Math.min(...times) * 1000 : 0);
-    return { id, workers: rows, startedAt: time, title: details[id]?.title || (rows.length ? rows.map(worker => taskTitle(worker.prompt)).slice(0, 2).join(" · ") : "Current task") };
+    return { id, workers: rows, startedAt: time, title: details[id]?.title || (rows.length ? rows.map(worker => workerTaskTitle(worker)).slice(0, 2).join(" · ") : "Current task") };
   }).sort((a, b) => Number(b.id === activeRunId) - Number(a.id === activeRunId) || b.startedAt - a.startedAt);
 }
 
@@ -139,7 +139,7 @@ export function workerTaskTitle(worker: TeamWorker): string {
   const scope = clean(worker.task_contract?.scope || "");
   const fileScope = /\b[\w-]+\.(?:gd|py|tsx?|jsx?|json|md|css|html|rs|go|cpp|h)\b|[/\\]/i.test(scope);
   let title = taskTitle(heading || (!fileScope && scope) || prompt);
-  title = title.replace(/^([A-Z][A-Z +/,-]+)(?=\s*\(|$)/, text => text[0] + text.slice(1).toLowerCase());
+  title = title.replace(/^[A-Z][A-Z0-9 +/,-]{12,}/, text => text[0] + text.slice(1).toLowerCase());
   return title;
 }
 
@@ -148,7 +148,7 @@ export function workerTaskSummary(worker: TeamWorker): string[] {
   const plain = (value: string) => value.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/\*\*|__|`/g, '').replace(/\s+/g, ' ').trim();
   const assignment = workerTaskTitle(worker);
   const state = worker.status === 'completed' ? 'Finished' : worker.status === 'failed' ? 'Failed' : worker.status === 'stopped' || worker.status === 'interrupted' ? 'Stopped' : worker.status === 'needs_input' ? 'Waiting for input' : 'Working on';
-  const summary = [`${state}: ${assignment}`];
+  const summary = [worker.status === "running" ? assignment : `${state}: ${assignment}`];
   if (!['running', 'needs_input'].includes(worker.status)) {
     const result = clip((worker.status === "failed" ? worker.error : worker.response || worker.error).split("\n").map(line => plain(line.replace(/^[#>*\-\s]+/, ""))).find(Boolean) || "", 160);
     if (result && result !== assignment) summary.push(`${worker.status === 'failed' ? 'Error' : worker.status === 'completed' ? 'Result' : 'Last update'}: ${result}`);

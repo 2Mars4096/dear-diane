@@ -3,7 +3,7 @@ import { namedWorkers } from "./workerNames";
 import type { WorkerProfiles } from "./modelSelection";
 import { lazy, Suspense, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Check, ChevronDown, CircleAlert, Square, X } from "lucide-react";
-import { agentLabel, elapsed, leadActivity, resultLine, startedAt, stripWorkers, taskTitle, workerPhase, workerState, workerReview, workerIntegration, workerTaskSummary, workerTaskTitle, orderedTeamRuns, type TeamRunDetail, type TeamWorker, type WorkerRequest } from "./teamPresentation";
+import { agentLabel, elapsed, resultLine, startedAt, taskTitle, workerPhase, workerState, workerReview, workerIntegration, workerTaskSummary, workerTaskTitle, orderedTeamRuns, type TeamRunDetail, type TeamWorker, type WorkerRequest } from "./teamPresentation";
 
 export type TeamSlot = { profile_id: string; name: string; backend: string };
 
@@ -71,21 +71,17 @@ export function useTeamWorkers(parentIds: string[], leadRunning: boolean, active
 }
 
 /** One stable line above the transcript: who is doing what right now. */
-export function TeamStrip({ workers, lead, leadRunning, open, onToggle, activeRunId }: { activeRunId?: string; workers: TeamWorker[]; lead: string; leadRunning: boolean; open: boolean; onToggle: () => void }) {
+export function TeamStrip({ workers, leadRunning, open, onToggle, activeRunId }: { activeRunId?: string; workers: TeamWorker[]; lead: string; leadRunning: boolean; open: boolean; onToggle: () => void }) {
   const current = activeRunId ? workers.filter(worker => worker.parent_run_id === activeRunId) : orderedTeamRuns(workers)[0]?.workers ?? [];
   if (!current.length) return null;
-  const { shown, more, settled } = stripWorkers(current);
-  const leadNow = leadActivity(current, leadRunning);
-  const idle = !shown.length && !leadNow;
-  return <button type="button" className="wb-team-strip" aria-expanded={open} aria-label="Team progress" onClick={onToggle} data-idle={idle || undefined}>
-    {idle ? <span className="wb-team-item"><Check size={12} />{settled} {settled === 1 ? "task" : "tasks"} done</span> : <>
-      <span className="wb-live-dot" aria-hidden="true" />
-      {leadNow && <span className="wb-team-item"><b>Lead: {lead}</b><span key={leadNow} className="wb-team-now">{leadNow}</span></span>}
-      {shown.map((worker) => <span key={worker.worker_id} className="wb-team-item" data-phase={workerPhase(worker)}>
-        <span className="wb-team-separator" aria-hidden="true">›</span><b>{agentLabel(worker.backend)}</b><span key={workerState(worker)} className="wb-team-now">{workerState(worker)}</span>
-      </span>)}
-      {more > 0 && <span className="wb-team-more">+{more}</span>}
-    </>}
+  const working = current.filter(worker => workerPhase(worker) === "active").length;
+  const attention = current.filter(worker => workerPhase(worker) === "attention").length;
+  const completed = current.filter(worker => worker.status === "completed").length;
+  const status = [working ? `${working} working` : "", attention ? `${attention} ${attention === 1 ? "needs" : "need"} attention` : ""].filter(Boolean).join(" · ")
+    || (completed === current.length ? `${completed} completed` : `${current.length} ${current.length === 1 ? "worker" : "workers"}`);
+  return <button type="button" className="wb-team-strip" aria-expanded={open} aria-label="Team progress" onClick={onToggle} data-idle={!leadRunning && !working || undefined}>
+    {leadRunning || working ? <span className="wb-live-dot" aria-hidden="true" /> : completed === current.length ? <Check size={12} /> : null}
+    <strong>Team</strong><span className="wb-team-overview">{status}</span><ChevronDown size={12} />
   </button>;
 }
 
@@ -110,13 +106,12 @@ export function TeamPanel({ workers, error, onStop, onClose, header, onChange, s
         <p className="wb-team-lead-identity">Lead · {lead}</p>
         <ul className="wb-team-slots">{Object.entries(namedWorkers(configuredProfiles)).filter(([, profile]) => profile.enabled || profile.backend).map(([id, profile]) => {
           const latest = workers.filter(worker => !worker.parent_worker_id && (worker.profile_id || (worker.origin ? "" : worker.backend)) === id).sort((a, b) => startedAt(b) - startedAt(a))[0];
-          return <li key={id} className="wb-team-slot"><div className="wb-team-slot-heading"><strong>{profile.name} · {agentLabel(profile.backend || id)}</strong><span>Idle</span></div>{latest && <ul className="wb-worker-task-summary" aria-label={`${profile.name} task summary`}>{workerTaskSummary(latest).map((text, index) => <li key={index}>{text}</li>)}</ul>}</li>;
+          return <li key={id} className="wb-team-slot"><div className="wb-team-slot-heading"><strong>{profile.name} · {agentLabel(profile.backend || id)}</strong><span>Available</span></div>{latest && <ul className="wb-worker-task-summary" aria-label={`${profile.name} task summary`}>{workerTaskSummary(latest).map((text, index) => <li key={index}>{text}</li>)}</ul>}</li>;
         })}</ul>
       </section>}
-      {runs.map(run => <TeamRunBranch key={run.id} title={run.title} startedAt={run.startedAt} current={run.id === activeRunId} count={rosters[run.id]?.length || run.workers.length} selected={run.workers.some(worker => worker.worker_id === selectedWorker)} onOpenLead={onOpenLead ? () => onOpenLead(run.id) : undefined}>
-        {run.id === activeRunId && <p className="wb-team-lead-identity">Lead · {lead}</p>}
+      {runs.map(run => <TeamRunBranch key={run.id} title={run.title} startedAt={run.startedAt} current={run.id === activeRunId} lead={lead} count={rosters[run.id]?.length || run.workers.length} selected={run.workers.some(worker => worker.worker_id === selectedWorker)} onOpenLead={onOpenLead ? () => onOpenLead(run.id) : undefined}>
         {rosters[run.id]?.length ? <>
-          <p className="wb-team-run-meta">{rosters[run.id].filter(slot => run.workers.some(worker => worker.profile_id === slot.profile_id && ["running", "needs_input"].includes(worker.status))).length} working · {rosters[run.id].filter(slot => !run.workers.some(worker => worker.profile_id === slot.profile_id && ["running", "needs_input"].includes(worker.status))).length} idle</p>
+          <p className="wb-team-run-meta">{rosters[run.id].filter(slot => run.workers.some(worker => worker.profile_id === slot.profile_id && ["running", "needs_input"].includes(worker.status))).length} working · {rosters[run.id].filter(slot => !run.workers.some(worker => worker.profile_id === slot.profile_id && ["running", "needs_input"].includes(worker.status))).length} available</p>
           <ul className="wb-team-slots">{rosters[run.id].map(slot => {
             const assigned = run.workers.filter(worker => !worker.parent_worker_id && (worker.profile_id || (worker.origin ? "" : worker.backend)) === slot.profile_id);
             const live = assigned.filter(worker => ["running", "needs_input"].includes(worker.status));
@@ -125,7 +120,7 @@ export function TeamPanel({ workers, error, onStop, onClose, header, onChange, s
             const selected = assigned.some(worker => worker.worker_id === selectedWorker);
             const allChildren = run.workers.filter(worker => !!worker.parent_worker_id);
             return <li key={slot.profile_id} className="wb-team-slot">
-              <div className="wb-team-slot-heading"><strong>{slot.name} · {agentLabel(slot.backend)}</strong><span>{live.length ? "Working" : "Idle"}</span></div>
+              <div className="wb-team-slot-heading"><strong>{slot.name} · {agentLabel(slot.backend)}</strong><span>{live.some(worker => worker.requests?.length || worker.status === "needs_input") ? "Needs input" : live.length ? "" : "Available"}</span></div>
               {!!summaryWorkers.length && <ul className="wb-worker-task-summary" aria-label={`${slot.name} task summary`}>{summaryWorkers.flatMap(worker => workerTaskSummary(worker).map((text, index) => <li key={`${worker.worker_id}-${index}`}>{text}</li>))}</ul>}
               {!!live.length && <ul className="wb-team-worker-tasks" aria-label={`${slot.name} tasks`}>{branches([...live, ...allChildren], "", new Set(), true)}</ul>}
               {!!settled.length && <details open={selected || undefined} className="wb-team-past-tasks"><summary>{settled.length} previous {settled.length === 1 ? "assignment" : "assignments"}</summary><ul className="wb-team-children">{branches([...settled, ...allChildren])}</ul></details>}
@@ -140,7 +135,7 @@ export function TeamPanel({ workers, error, onStop, onClose, header, onChange, s
   </aside>;
 }
 
-function TeamRunBranch({ title, startedAt, current, count, selected, onOpenLead, children }: { title: string; startedAt: number; current: boolean; count: number; selected: boolean; onOpenLead?: () => void; children: ReactNode }) {
+function TeamRunBranch({ title, startedAt, current, lead, count, selected, onOpenLead, children }: { title: string; startedAt: number; current: boolean; lead: string; count: number; selected: boolean; onOpenLead?: () => void; children: ReactNode }) {
   const [expanded, setExpanded] = useState<boolean | null>(null);
   const open = selected || (expanded ?? current);
   const date = startedAt ? new Date(startedAt) : null;
@@ -149,7 +144,7 @@ function TeamRunBranch({ title, startedAt, current, count, selected, onOpenLead,
       <ChevronDown size={14} /><strong>{title}</strong>
     </button>
     <div className="wb-team-run-meta"><span>{current ? "Current run" : "Previous run"} · {count} {count === 1 ? "worker" : "workers"}</span>{date && <time dateTime={date.toISOString()}>{date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time>}</div>
-    {open && <><button className="wb-team-lead" disabled={!onOpenLead} onClick={onOpenLead}>Open lead conversation</button>{children}</>}
+    {open && <><div className="wb-team-lead-row">{current && <strong>Lead · {lead}</strong>}<button className="wb-team-lead" aria-label="Open lead conversation" disabled={!onOpenLead} onClick={onOpenLead}>View conversation</button></div>{children}</>}
   </section>;
 }
 

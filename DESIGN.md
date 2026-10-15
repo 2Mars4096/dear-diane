@@ -29,3 +29,6 @@
 - Plan choices use bordered clickable rows with checked/focus states. Other and its comment input share one horizontal row; Recommended is inline with answer text. Comments also supply the custom answer when Other is selected.
 
 - Choice mode uses a concise Choose one / Choose multiple label without a secondary selection hint. Single-choice inputs have rounded check-mark selectors and radio semantics; multiple-choice inputs are square checkboxes. Typing comments selects Other, replacing the prior single answer or preserving multiple selections.
+
+- Team information has three levels: compact status counts in the conversation header, per-run summaries inside the transcript, and inspectable worker detail in the Team pane. Avoid repeating provider/activity chains across all three.
+- Show worker availability separately from assignment outcomes; a stopped assignment must not be presented as completed. Work disclosures use one label and elapsed time, without a second Details caption. Session IDs belong in session options.
