@@ -1,3 +1,4 @@
+import { resizeComposer } from "../workbench/composerInput";
 import { InlineTeamSummary } from "../workbench/InlineTeamSummary";
 import { DraftPersistence } from "../workbench/draftPersistence";
 import { teamRunTitles } from "../workbench/teamPresentation";
@@ -13416,6 +13417,8 @@ export default function ChunkWorkspaceApp() {
   const autoRestoringThreadIdRef = useRef<string | null>(null);
   const projectSelectedRef = useRef(false);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerPreviewTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(composerPreviewTimer.current), []);
   const composerDraftsRef = useRef<Record<string, string>>(initialComposerDrafts);
   const noteEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const initialNoteContentCache = useMemo(readStoredNoteContentCache, []);
@@ -13442,15 +13445,10 @@ export default function ChunkWorkspaceApp() {
   useLayoutEffect(() => {
     const node = composerRef.current;
     if (!node) return;
-    const resize = () => {
-      const style = getComputedStyle(node);
-      const line = parseFloat(style.lineHeight) || 24;
-      const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
-      node.style.height = "auto";
-      const maximum = line * 6 + padding;
-      node.style.height = `${Math.min(node.scrollHeight, maximum)}px`;
-      node.style.overflowY = node.scrollHeight > maximum ? "auto" : "hidden";
-    };
+    const resize = () => resizeComposer(node);
+    let frame = 0;
+    const onInput = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(resize); };
+    node.addEventListener("input", onInput);
     resize();
     let width = node.getBoundingClientRect().width;
     const observer = new ResizeObserver(() => {
@@ -13458,8 +13456,8 @@ export default function ChunkWorkspaceApp() {
       if (next !== width) { width = next; resize(); }
     });
     observer.observe(node);
-    return () => observer.disconnect();
-  }, [input, activePane, activeThread?.id]);
+    return () => { observer.disconnect(); node.removeEventListener("input", onInput); cancelAnimationFrame(frame); };
+  }, [activePane, activeThread?.id, activeMainTab]);
 
   const commitComposerDraft = useCallback(
     (thread: ThreadIdentity | null | undefined, value: string) => {
@@ -13476,7 +13474,8 @@ export default function ChunkWorkspaceApp() {
       value: string,
       options: { persist?: boolean; thread?: ThreadIdentity | null } = {},
     ) => {
-      if (composerRef.current) composerRef.current.value = value;
+      clearTimeout(composerPreviewTimer.current);
+      if (composerRef.current) { composerRef.current.value = value; resizeComposer(composerRef.current); }
       setInput(value);
       if (options.persist === false) return;
       commitComposerDraft(options.thread ?? activeThreadRef.current, value);
@@ -13489,7 +13488,8 @@ export default function ChunkWorkspaceApp() {
       draftPersistence.flush();
       composerDraftsRef.current = readStoredComposerDrafts();
       const draft = composerDraftForThread(composerDraftsRef.current, thread);
-      if (composerRef.current) composerRef.current.value = draft;
+      clearTimeout(composerPreviewTimer.current);
+      if (composerRef.current) { composerRef.current.value = draft; resizeComposer(composerRef.current); }
       setInput(draft);
       setComposerCaret(draft.length);
       setComposerSuggestionIndex(0);
@@ -16667,22 +16667,24 @@ export default function ChunkWorkspaceApp() {
     return () => { window.clearInterval(timer); window.removeEventListener("focus", publish); };
   }, [workspaces, activeWorkspaceId, selectedAgentOption, selectedModelOption, autonomyMode, selectedAgentId, leadProfiles, nativeWorkerProfiles, teamCapacity]);
 
-  const handleComposerInputChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
-    const value = event.currentTarget.value;
-    const caret = event.currentTarget.selectionStart ?? value.length;
-    commitComposerDraft(activeThreadRef.current, value);
-    startTransition(() => {
+  const scheduleComposerPreview = useCallback((value: string, caret: number) => {
+    clearTimeout(composerPreviewTimer.current);
+    composerPreviewTimer.current = setTimeout(() => startTransition(() => {
       setInput(value);
       setComposerCaret(caret);
       setComposerSuggestionSuppressedFor(null);
-    });
-  }, [commitComposerDraft]);
+    }), 100);
+  }, []);
+  const handleComposerInputChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
+    const value = event.currentTarget.value;
+    commitComposerDraft(activeThreadRef.current, value);
+    scheduleComposerPreview(value, event.currentTarget.selectionStart ?? value.length);
+  }, [commitComposerDraft, scheduleComposerPreview]);
 
   const handleComposerSelectionChange = useCallback((event: SyntheticEvent<HTMLTextAreaElement>) => {
     const target = event.currentTarget;
-    const caret = target.selectionStart ?? target.value.length;
-    startTransition(() => setComposerCaret(caret));
-  }, []);
+    scheduleComposerPreview(target.value, target.selectionStart ?? target.value.length);
+  }, [scheduleComposerPreview]);
 
   const addComposerFiles = useCallback((files: File[], source: string) => {
     if (!files.length || attachmentBusyRef.current) return;
@@ -17073,7 +17075,6 @@ export default function ChunkWorkspaceApp() {
           onChange={handleComposerInputChange}
           onPaste={handleComposerPaste}
           onKeyDown={handleComposerKeyDown}
-          onKeyUp={handleComposerSelectionChange}
           onClick={handleComposerSelectionChange}
           onSelect={handleComposerSelectionChange}
           onFocus={handleComposerSelectionChange}
