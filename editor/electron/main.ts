@@ -1,3 +1,5 @@
+import { selectBackendPython } from "./backendPython";
+import { proxyWebSocket } from "./webSocketProxy";
 import { startupDiagnostics, reportStartupFailure } from "./startupDiagnostics";
 import { registerNavigation, installNavigationMenu } from './navigation';
 import { sessionWindowDestination } from "./sessionWindows";
@@ -102,23 +104,14 @@ function parseDataUrl(dataUrl: string): { mimeType: string | null; buffer: Buffe
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
-function findPython(): string {
-  const candidates = [
-    process.env.DAN_PYTHON ?? "",
-    path.join(os.homedir(), ".venv", "bin", "python"),
-    "/opt/anaconda3/bin/python",
-    "/usr/local/bin/python3",
-    "/usr/bin/python3",
-    "python3",
-    "python",
-  ].filter(Boolean);
-  for (const p of candidates) {
-    try {
-      const resolved = p.startsWith("/") ? p : "";
-      if (resolved && fs.existsSync(resolved)) return resolved;
-    } catch { /* skip */ }
-  }
-  return candidates[candidates.length - 1];
+function pythonCandidates(): string[] {
+  if (process.env.DAN_PYTHON) return [process.env.DAN_PYTHON];
+  let localPython = "";
+  try {
+    localPython = JSON.parse(fs.readFileSync(path.join(__dirname, "local-build.json"), "utf8")).backendPython || "";
+  } catch { /* Published builds do not require a local environment. */ }
+  return [localPython, path.join(os.homedir(), ".venv", "bin", "python"),
+    "/opt/anaconda3/bin/python", "/usr/local/bin/python3", "/usr/bin/python3", "python3", "python"];
 }
 
 function isPortInUse(port: number): Promise<boolean> {
@@ -171,13 +164,14 @@ async function startBackend(): Promise<void> {
   fs.mkdirSync(workspaceRoot, { recursive: true });
   const danServeParts = danServe?.split(/\s+/).filter(Boolean) ?? [];
 
+  const python = danServe ? "" : await selectBackendPython(pythonCandidates(), { cwd: workspaceRoot, env });
   const proc = danServe
     ? spawn(danServeParts[0], [...danServeParts.slice(1), "--no-reload"], {
         cwd: workspaceRoot,
         env,
         stdio: ["ignore", "pipe", "pipe"],
       })
-    : spawn(findPython(), ["-m", "diane.server", "--no-reload"], {
+    : spawn(python, ["-m", "diane.server", "--no-reload"], {
         cwd: workspaceRoot,
         env,
         stdio: ["ignore", "pipe", "pipe"],
@@ -291,6 +285,9 @@ function startProductionServer(distDir: string): Promise<number> {
         const proxyReq = http.request(
           { hostname: "127.0.0.1", port: BACKEND_PORT, path: url, method: req.method, headers: { ...req.headers, host: `127.0.0.1:${BACKEND_PORT}` } },
           (proxyRes) => {
+            proxyRes.on("error", () => res.destroy());
+            res.once("close", () => proxyRes.destroy());
+            if (res.destroyed) { proxyRes.destroy(); return; }
             res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
             proxyRes.pipe(res);
           },
@@ -298,10 +295,12 @@ function startProductionServer(distDir: string): Promise<number> {
         proxyReq.setTimeout(BACKEND_PROXY_TIMEOUT_MS, () => {
           proxyReq.destroy(new Error("Backend request timed out"));
         });
-        req.on("aborted", () => {
-          proxyReq.destroy();
-        });
+        req.on("aborted", () => proxyReq.destroy());
+        req.on("error", () => proxyReq.destroy());
+        res.on("error", () => proxyReq.destroy());
+        res.once("close", () => { if (!res.writableEnded) proxyReq.destroy(); });
         proxyReq.on("error", (err) => {
+          if (res.destroyed) return;
           if (res.headersSent) {
             res.destroy();
             return;
@@ -338,32 +337,7 @@ function startProductionServer(distDir: string): Promise<number> {
         socket.destroy();
         return;
       }
-      const proxyReq = http.request({
-        hostname: "127.0.0.1",
-        port: BACKEND_PORT,
-        path: url,
-        method: "GET",
-        headers: { ...req.headers, host: `127.0.0.1:${BACKEND_PORT}` },
-      });
-
-      proxyReq.on("upgrade", (_proxyRes, proxySocket, proxyHead) => {
-        socket.write(
-          "HTTP/1.1 101 Switching Protocols\r\n" +
-          "Upgrade: websocket\r\n" +
-          "Connection: Upgrade\r\n" +
-          Object.entries(_proxyRes.headers)
-            .filter(([k]) => !["upgrade", "connection"].includes(k.toLowerCase()))
-            .map(([k, v]) => `${k}: ${v}`)
-            .join("\r\n") +
-          "\r\n\r\n",
-        );
-        if (proxyHead.length) socket.write(proxyHead);
-        proxySocket.pipe(socket as net.Socket);
-        (socket as net.Socket).pipe(proxySocket);
-      });
-
-      proxyReq.on("error", () => socket.destroy());
-      proxyReq.end();
+      proxyWebSocket(req, socket, head, BACKEND_PORT);
     });
 
     server.listen(PROD_SERVER_PORT, "127.0.0.1", () => {

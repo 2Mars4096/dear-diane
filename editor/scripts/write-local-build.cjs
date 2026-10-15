@@ -1,4 +1,4 @@
 // Record the build location so installed development copies can find the next update.
 const fs = require('node:fs');
 const path = require('node:path');
-fs.writeFileSync(path.resolve('dist-electron/local-build.json'), JSON.stringify({path:process.env.DAN_PUBLISHED_BUILD === '1' ? '' : path.resolve('release',`mac-${process.arch}`,'Dear Diane.app')}));
+fs.writeFileSync(path.resolve('dist-electron/local-build.json'), JSON.stringify({backendPython: process.env.DAN_PUBLISHED_BUILD === '1' ? '' : path.resolve('..', '.venv', process.platform === 'win32' ? 'Scripts' : 'bin', process.platform === 'win32' ? 'python.exe' : 'python'), path:process.env.DAN_PUBLISHED_BUILD === '1' ? '' : path.resolve('release',`mac-${process.arch}`,'Dear Diane.app')}));
