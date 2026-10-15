@@ -545,3 +545,11 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - `diane.environment.apply_environment_aliases` maps canonical DIANE_* values to legacy DAN_* readers at import and after dotenv loading. Desktop `withDianeEnvironment` performs the same mapping before launch; canonical names win.
 
 - `workbench/SessionOptions.tsx` provides session-ID copy through the existing dismissible-details menu pattern, including Escape focus restoration. TeamStrip is an overview of active/attention/completed counts; detailed per-worker activity remains in disclosures. Available refers to worker capacity, independently of assignment success/failure.
+
+- `reader/ReaderMenus.tsx` supplies searchable chapter navigation and shared dismissible settings/action menus to PDF and EPUB. MainTabs remains mounted for shortcuts but is visually hidden when the sidebar owns reading navigation.
+- `reader/lib/epub-typography.ts` supplies identical named typography themes to visible/measuring renditions. EPUB width/style preferences persist with the existing position record; viewport width changes repaginate. Fixed-layout EPUBs retain publisher typography.
+
+- `reader/ReadingSettings.tsx` renders one settings structure for PDF and EPUB; reflow-only controls remain disabled with an explanation for PDF/fixed layouts. `reader-fonts.ts` lazily caches bundled font blob URLs for inert EPUB CSP compatibility; license/provenance files ship alongside the fonts.
+- Reader typography uses scoped replaceable CSS and shares font/spacing rules with measured pagination. Saved settings contain font IDs/spacing, never transient font blob URLs. ResizeObserver queues resize with the current CFI; it does not race a second width-driven display call.
+
+- EPUB engine cleanup waits for book.opened (resource/CSS replacement), not only book.open()/isOpen, then settles the initialization/display promise before destruction. This prevents layout changes from destroying resources still used by EPUB.js.

@@ -2518,3 +2518,16 @@ When renaming workflows or moving error data between environments:
 ## 2026-10-15 — composer clipping and missing completion handoff
 - Native textarea updates preceded deferred input state, leaving its height stale. Computed six-line cap also exceeded CSS max-height while overflow remained hidden. Resize on native input, honor CSS bounds and coalesce root preview updates.
 - Native leads previously closed all workers immediately after their own terminal reply; worker completion only emitted UI events. Add attempt-deduplicated completion notices and keep the parent run alive until workers settle. Notify only between observed tool actions and without approvals/background tasks; never retry failed notification delivery in a loop. Provider-live acceptance pending.
+
+## 2026-10-15 — reader consistency
+- Wide EPUB frames stretched publisher tables of contents across the viewport; unconstrained toolbar actions could reach the window edge. Bound readable stage widths, group navigation/sizing, and move optional controls/actions into responsive menus. Original typography remains available.
+- Typography changes must affect the off-screen pagination rendition too, otherwise page counts disagree with the visible book. Both now use the same theme helper; fixed-layout books keep original styling.
+
+- EPUB heading follow-up: the supplied book uses `h2.section { font-size: medium }` and `span.small { font-size: x-small }`. Reader mode normalized inner spans but lacked a relative heading scale. Added h1–h6 em sizes and verified proportional scaling in Chromium with the actual markup.
+
+## 2026-10-15 — EPUB Wide/underline follow-up
+- Width updates called resize and display from a settings effect while ResizeObserver independently cleared views. Resize now queues behind displays and uses the saved CFI once. Four alternating width switches retain text in a real-book fixture.
+- Unscoped Reader theme rules persisted when Publisher Original was selected, and addStylesheetRules accumulated duplicate rules. Scoped registerCss rules replace stylesheet content; named location anchors stay undecorated, real-link underlines are opt-in.
+- Browser integration initially failed because the desktop backend was unavailable; repeated checks used an isolated reader and temporary book copy instead. Intentional pagination aborts during changing settings are not failures.
+
+- Follow-up reproduction: EPUB.js open() and isOpen both precede its opened/resource promise. Rapid layout switching caused replaceCss access after resource destruction. Await book.opened and defer destruction until startup/display settles. Four-round rapid font/width/layout changes then produced no renderer errors; dedicated teardown tests cover both pending promises.

@@ -32,3 +32,7 @@
 
 - Team information has three levels: compact status counts in the conversation header, per-run summaries inside the transcript, and inspectable worker detail in the Team pane. Avoid repeating provider/activity chains across all three.
 - Show worker availability separately from assignment outcomes; a stopped assignment must not be presented as completed. Work disclosures use one label and elapsed time, without a second Details caption. Session IDs belong in session options.
+
+- Reading uses one toolbar with grouped navigation/sizing, searchable Contents, Reading settings and a secondary actions menu. The sidebar owns document switching while reading, avoiding another visible tab strip. Book typography is distinct from app typography: offer reader styling and publisher original, preserving fixed-layout books.
+
+- Reading settings keep one layout across PDF and EPUB. Unsupported PDF typography controls remain visible but disabled with a reason. Reader fonts are an individual preference: offer a short curated set including book serif, distinct-letter sans, typewriter and handwriting; preserve publisher originals. Link underlines are opt-in; location anchors must never underline prose.

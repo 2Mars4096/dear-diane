@@ -581,3 +581,14 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
 
 - [x] Apply the Work/Team/composer design consistency pass; preserve theme/font preferences and worker inspection.
 - [x] Activate design pass locally; signature/archive/backend/proxy verification passed.
+
+- [x] Review and unify reader controls, searchable chapters, document actions, width/style preferences and reading navigation.
+- [x] Install reader consistency and heading-scaling update; signature/archive and backend/proxy health pass.
+
+- [x] Fix Reader-mode EPUB heading scaling; browser measurement and production build pass.
+
+- Scheduling proposal captured as IC-046 in `.agents/idea-cart.md`; not checked out for implementation.
+
+- [x] Fix Wide blank-view race, excessive EPUB underlines and inactive publisher-style leakage.
+- [x] Add shared PDF/EPUB settings with offline reading fonts, spacing, underline toggle and reset.
+- [x] Commit and install reader comfort update with lifecycle correction; 567 tests and health/signature/archive checks pass.

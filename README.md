@@ -154,11 +154,11 @@ Scanned PDFs use local OCR to make text selectable. Comments and highlights save
 
 ### Reader controls
 
-PDFs and EPUBs share a toolbar for chapters, sizing, page layout, references, notes, export, and download. Jump to a page directly or use the slider that appears on hover.
+PDFs and EPUBs share searchable Contents, grouped page/sizing controls, and a Reading settings menu. References and Notes stay visible; More contains annotated export and original download. Jump to a page directly or use the slider that appears on hover.
 
 PDF chapters come from embedded bookmarks or labelled headings detected in text or OCR. Scanned pages become eligible as you read them.
 
-EPUBs support continuous vertical scrolling and horizontal single-page or two-page layouts, with keyboard and wheel navigation. Text-size controls adjust the type, and whole-book page numbers recalculate for the window, text size, and layout. You can annotate text, export an annotated EPUB, and use local OCR on illustrations. EPUBs must be unencrypted and no larger than 150 MB compressed or expanded.
+EPUBs offer centered Comfortable/Wide reading widths, line spacing, optional link underlines, and Reader/Publisher original styling (fixed-layout books retain publisher styling). Reading fonts include Georgia, Literata, Atkinson Hyperlegible Next, system sans, Typewriter, and Handwritten (Kalam); bundled fonts work offline. PDF shows the same settings layout with unsupported typography controls disabled. Reset reading settings preserves the reading position and annotations. They support continuous vertical scrolling and horizontal single-page or two-page layouts, with keyboard and wheel navigation. Text-size controls adjust the type, and whole-book page numbers recalculate for the window, text size, and layout. You can annotate text, export an annotated EPUB, and use local OCR on illustrations. EPUBs must be unencrypted and no larger than 150 MB compressed or expanded.
 
 ### Paper library
 

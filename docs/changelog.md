@@ -1,6 +1,33 @@
 # Changelog
 
 ## 2026-10-15
+- [infra] Installed corrected reader settings/resource-lifecycle build after idle checks. All 567 frontend tests, production budgets and packaging pass. Signature/ASAR equality verified (`144d7b4ca0f6c5f0c67a38e84115ebbcac917e2a9d26ebf2f6ad59346eddc506`); backend/proxy healthy on first launch. Rollback `.Diane-previous-18fbca55-8c75-4242-9a0b-fa1bd6ea858f.app` retained; public v0.1.8 assets unchanged.
+
+## 2026-10-15
+- [fix] Correct EPUB cleanup to await the full opened/resource promise and the current initialization/display attempt. Reproduced replaceCss-on-undefined errors during rapid layout changes; the same four-round sequence completes with no renderer errors after the fix. Add separate pending-open and pending-resource teardown regressions.
+- [refactor] Reorganize Reading settings into Page/Text groups with aligned full-width controls and a separate reset footer; retain identical PDF structure and disabled unsupported controls.
+
+## 2026-10-15
+- [fix] Serialize EPUB viewport resizing behind in-flight display and pass the saved CFI to the resize redisplay path; remove competing width-triggered display calls. Browser check preserves rendered text across four Comfortable/Wide switches.
+- [fix] Scope Reader CSS to its active class, replace rather than accumulate style rules, and stop underlining location anchors. Add an off-by-default Underline links control, retaining hover/focus cues on real links. Expected pagination cancellation no longer logs failures.
+- [feat] Share Reading settings structure between PDF and EPUB; PDF keeps unsupported typography controls visibly disabled. Add font family, line spacing and position-preserving reset. Bundle OFL fonts Literata, Atkinson Hyperlegible Next and Kalam, with system serif/sans and Typewriter alternatives; selected font assets load locally through CSP-compatible blob URLs.
+- [test] Isolated real-book browser checks cover width switching, all four added font choices, underlines, Publisher Original and Reset; rendered body uses Diane Kalam and location anchors have no decoration. Temporary book copy and fixture were removed.
+
+## 2026-10-15
+- [infra] Installed reader consistency/EPUB heading-scaling update locally after idle verification. Signature and prepared/installed ASAR match (`c1bba76d62937c7e2e4c271bc50dd6f85f063099692dcb0c3e16014c8f91f5ef`); backend and desktop proxy healthy on first launch. Rollback `/Applications/.Diane-previous-96b28495-d866-433c-8f7e-d49a9ea4737f.app` retained. Published release assets unchanged.
+
+## 2026-10-15
+- [docs] Cart IC-046: natural-language scheduling owned by Diane’s meta layer above native leads, with no extra composer mode. Capture only; no scheduling implementation or task creation.
+
+## 2026-10-15
+- [fix] Give Reader-mode EPUB headings explicit relative sizes so publisher medium/x-small rules cannot leave section titles tiny. Verified the actual ORIGINS h2/span markup in Chromium: body 16→24 px scales both heading and nested text 21.6→32.4 px. Original publisher mode remains unchanged; visible and measured pagination share the rules. Build/budgets pass; activation pending with reader update.
+
+## 2026-10-15
+- [feat] Unify PDF/EPUB navigation and sizing groups, searchable Contents, Reading settings and More document actions. Explain disabled annotated export and layout-dependent EPUB page counts. Hide duplicate document tabs while reading; sidebar navigation and close shortcuts remain available.
+- [feat] Add centered EPUB widths and Reader/Publisher typography choices, sharing rules with pagination and retaining fixed-layout publisher styling. Original files remain unchanged.
+- [test] 59 reader/tab regressions and production build/budgets pass. Read-only real-book browser checks verify chapter search, style switching, wide/narrow layout, no horizontal overflow at 850px, and hidden duplicate tab row. Local activation pending.
+
+## 2026-10-15
 - [infra] Installed the design-consistency pass locally as 0.1.8 after idle verification. Signature and prepared/installed ASAR equality pass (`ad7b79f34bb0ca915620abf5cf4362b655cea776ff6258395a8e7fc89045b918`); project-Python backend and desktop proxy healthy on first launch. Rollback retained at `/Applications/.Diane-previous-0d291334-0119-4d16-976c-fd78672b1e07.app`. Published v0.1.8 assets are unchanged.
 
 ## 2026-10-15

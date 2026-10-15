@@ -215,3 +215,19 @@
 - [x] Review light/dark layouts at wide/narrow desktop widths; targeted tests and production budgets pass.
 
 - [x] Install design-consistency pass locally October 15; idle guard, signature/archive equality and backend/proxy health pass.
+
+- [x] Checkpoint installed Work UI as b91084b3 before reader changes.
+- [x] Unify reading toolbar controls/menus and remove duplicate tabs in reading mode without removing shortcuts.
+- [x] Add EPUB width/style preferences with matching pagination and fixed-layout protection; verify the supplied EPUB at wide/narrow sizes.
+
+- [x] Verify and fix proportional EPUB section-heading sizing in Reader mode, including nested publisher small spans.
+
+- [x] Install reader/heading-scaling changes locally October 15 after idle verification; signature/archive equality and health checks pass.
+
+- [x] Verify repeated width changes retain book views; scope/replace typography styles and make real-link underlines optional.
+- [x] Add shared PDF/EPUB reading settings, offline reading/typewriter/handwritten fonts, line spacing and reset.
+
+- [x] Reproduce/fix EPUB resource cleanup race during rapid settings changes; verify error-free repeated transitions and add two lifecycle regressions.
+- [x] Refine reading-preferences panel hierarchy and alignment while preserving PDF parity.
+
+- [x] Install corrected font/settings/reflow update locally after idle verification; complete regression suite and health/archive/signature checks pass.
