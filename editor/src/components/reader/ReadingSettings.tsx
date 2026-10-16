@@ -3,7 +3,6 @@ import { READER_FONTS, type ReaderFont } from './lib/reader-fonts';
 import type { EpubTypography } from './lib/epub-typography';
 export type ReflowSettings = {
   typography: EpubTypography; setTypography: (value: EpubTypography) => void;
-  font: number; setFont: (value: number) => void;
   family: ReaderFont; setFamily: (value: ReaderFont) => void;
   spacing: number; setSpacing: (value: number) => void;
   width: string; setWidth: (value: string) => void;
@@ -21,7 +20,6 @@ export function ReadingSettings({ layout, reflow, onReset }: { layout: ReactNode
     </div>
     <div className="wb-reading-preference-section"><h4>Text</h4>
       <label title={unavailable ? 'This document retains its original page typography' : undefined}>Style<select aria-label="Book styling" disabled={unavailable} value={reflow?.typography || 'original'} onChange={e => reflow?.setTypography(e.target.value as EpubTypography)}><option value="reader">Reader</option><option value="original">Publisher original</option></select></label>
-      <label>Size<select aria-label="Reading text size" disabled={unavailable} value={reflow?.font || 100} onChange={e => reflow?.setFont(Number(e.target.value))}>{Array.from({length:14},(_,i)=>70+i*10).map(value=><option key={value} value={value}>{value}%</option>)}</select></label>
       <fieldset disabled={unavailable || publisher} aria-label="Reader typography">
         <label>Font<select aria-label="Reading font" value={reflow?.family || 'georgia'} onChange={e=>reflow?.setFamily(e.target.value as ReaderFont)}>{Object.entries(READER_FONTS).map(([id,font])=><option key={id} value={id}>{font.label}</option>)}</select></label>
         <label>Spacing<select aria-label="Line spacing" value={reflow?.spacing || 1.65} onChange={e=>reflow?.setSpacing(Number(e.target.value))}><option value={1.4}>Compact</option><option value={1.65}>Normal</option><option value={1.9}>Relaxed</option></select></label>
