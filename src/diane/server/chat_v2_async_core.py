@@ -592,7 +592,7 @@ def parse_admission_command(text: str) -> AdmissionCommandHints:
     payload_text = rest
     if target_id and rest.startswith(target_id):
         payload_text = rest[len(target_id) :].strip()
-    if command in {"/status", "status", "/tasks", "tasks", "progress"}:
+    if command in {"/status", "/tasks"}:
         return AdmissionCommandHints(
             command=command,
             explicit_status=True,
@@ -613,21 +613,21 @@ def parse_admission_command(text: str) -> AdmissionCommandHints:
             target_id=target_id,
             payload_text=payload_text,
         )
-    if command in {"/pause", "pause"}:
+    if command in {"/pause"}:
         return AdmissionCommandHints(
             command="pause",
             explicit_pause=True,
             target_id=target_id,
             payload_text=payload_text,
         )
-    if command in {"/cancel", "cancel", "/stop", "stop"}:
+    if command in {"/cancel", "/stop"}:
         return AdmissionCommandHints(
             command="cancel",
             explicit_cancel=True,
             target_id=target_id,
             payload_text=payload_text,
         )
-    if command in {"/resume", "resume"}:
+    if command in {"/resume"}:
         return AdmissionCommandHints(
             command="resume",
             explicit_resume=True,
@@ -857,19 +857,6 @@ def _classify_control_command(
     target = _select_active_target(admission.board_snapshot, target_id=hints.target_id)
     command = "resume" if hints.explicit_resume else "pause" if hints.explicit_pause else "cancel"
     if target is None:
-        # A conversational "resume" after a settled reply belongs to the lead,
-        # which owns native-session/history context. Do not intercept it as an
-        # orphaned control command; explicit /resume and named targets stay strict.
-        if (hints.explicit_resume and admission.user_text.strip().lower() == "resume"
-                and not hints.target_id and admission.thread_id
-                and not admission.board_snapshot.active_runs and not admission.board_snapshot.queued_runs
-                and any(run.thread_id == admission.thread_id for run in admission.board_snapshot.completed_runs)):
-            return AdmissionDecision(
-                action="start_parallel",
-                relation="continuation",
-                reason="resume continues this settled conversation through its configured lead",
-                owned_paths=owned_paths,
-            )
         return AdmissionDecision(
             action="ask_clarification",
             relation="unclear",

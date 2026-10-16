@@ -1,6 +1,6 @@
 # Idea Cart
 
-Last reviewed: 2026-10-15
+Last reviewed: 2026-10-16
 
 ## Priority and expected gain
 
@@ -24,12 +24,26 @@ Ranked for the next bounded step after the remaining runtime and paired Sticky T
 IC-031/032 remain checked out into [Plan 7](../docs/plans/7-phone-personal-agent.md); implementation has not started. The 12 previously ranked ideas above remain exploratory except the explicitly authorized IC-033 result-cap subtask. IC-043/044 share input-routing concerns; IC-029/030 require auditing the implemented substrate rather than assuming it is absent.
 
 Review notes:
+- October 16: IC-047 captures the deferred intent router. Active count is 14; prune/merge deferred ideas at the next cart review before further expansion.
 - October 15: IC-046 adds natural-language scheduling, bringing the active cart to 13. Prune or merge deferred ideas at the next review before further expansion; none are removed by this capture.
 - Close current commitments before opening several exploratory tracks. The cart is at the preferred 12-item ceiling; select one candidate and keep manufacturing deferred rather than adding more ideas.
 - The historical Plan 59 link in the manufacturing vision predates cutover. Verify current code before checkout.
 - Full IC-033 checkout, external embeddings, live rollback, manufacturing orders and shell migration are not authorized by the low-risk batch.
 
 ## Active Items
+
+### IC-047 - Context-aware meta-layer intent routing
+- Status: carted
+- Priority: high
+- Kind: idea
+- Scope: message admission above native leads
+- Point: Interpret ordinary messages using the full sentence, current conversation and active work, identifying both intended action and target before routing.
+- Why: First-word matching confuses conversational requests such as “stop using that library” with run controls and loses contextual continuation.
+- Constraints: Keep only explicit slash commands deterministic for now. Do not implement the semantic router until checkout. Ambiguous intent/target goes to the lead or a focused clarification; never silently stop or redirect unrelated work. Coordinate with IC-046 scheduling.
+- Checkout target: scoped intent-routing design and adversarial acceptance cases.
+- Acceptance: Distinguish run controls from task content, preserve conversational resume/history and user-selected lead settings, respect thread/workspace boundaries, and demonstrate safe ambiguity behavior without adding composer modes.
+- Source: October 16 user decision; implementation deferred explicitly.
+
 
 ### IC-046 - Natural-language scheduling owned by Diane’s meta layer
 - Status: carted
@@ -201,7 +215,7 @@ Review notes:
 | IC-033 result cap | Done, subtask only | All lexical matches reachable — [4-7](../docs/plans/4-7-paper-library.md). Semantic retrieval remains carted. |
 | IC-031/032 | Transferred, not implemented | [Plan 7](../docs/plans/7-phone-personal-agent.md) owns the phone/personal-agent backlog. |
 
-All 13 current Active Items remain unresolved; none is silently marked complete because an adjacent feature shipped. Historical IC-001–024 receipts below retain their original implemented/committed distinction.
+All 14 current Active Items remain unresolved; none is silently marked complete because an adjacent feature shipped. Historical IC-001–024 receipts below retain their original implemented/committed distinction.
 
 ## Checkout Log
 

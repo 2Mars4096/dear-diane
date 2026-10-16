@@ -11,16 +11,19 @@ def admission(text='resume', *, prior_thread='chat', active=False):
     return ForegroundAdmissionInput(surface_turn=SurfaceTurn(id='resume-turn', surface='chat', text=text, thread_id='chat'), user_text=text, thread_id='chat', board_snapshot=board, command_hints=parse_admission_command(text))
 
 
-def test_resume_in_settled_conversation_reaches_lead_not_clarification():
-    decision = classify_foreground_turn(admission())
-    assert decision.action == 'start_parallel'
-    assert decision.relation == 'continuation'
-    assert 'control_command' not in decision.metadata
+def test_ordinary_words_are_not_control_commands():
+    for text in ['resume', 'stop using that library', 'pause the animation', 'cancel the subscription', 'status report on this paper', 'tasks remaining', 'progress on the design']:
+        hints = parse_admission_command(text)
+        assert not any([hints.explicit_resume, hints.explicit_pause, hints.explicit_cancel, hints.explicit_status])
+        assert hints.payload_text == text
+    assert classify_foreground_turn(admission()).action == 'start_parallel'
 
 
-def test_resume_does_not_borrow_another_chats_context_or_change_explicit_controls():
-    assert classify_foreground_turn(admission(prior_thread='other')).action == 'ask_clarification'
+def test_explicit_slash_commands_retain_targeted_control_behavior():
     assert classify_foreground_turn(admission('/resume')).action == 'ask_clarification'
-    decision = classify_foreground_turn(admission(active=True))
+    decision = classify_foreground_turn(admission('/resume', active=True))
     assert decision.metadata['control_command'] == 'resume'
     assert decision.target_run_id == 'old-run'
+    for text in ['/stop', '/cancel', '/pause', '/resume', '/status', '/tasks']:
+        hints = parse_admission_command(text)
+        assert any([hints.explicit_resume, hints.explicit_pause, hints.explicit_cancel, hints.explicit_status])
