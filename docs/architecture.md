@@ -555,3 +555,6 @@ Electron no longer owns terminals, Git/GitHub, LSP, debugging, extensions, marke
 - EPUB engine cleanup waits for book.opened (resource/CSS replacement), not only book.open()/isOpen, then settles the initialization/display promise before destruction. This prevents layout changes from destroying resources still used by EPUB.js.
 
 - Reader CSS is explicitly injected into every new EPUB chapter via one rendition content hook, covering EPUB.js serialized-theme injection omission. Link underlining changes a theme CSS custom-property override only; it never re-registers or selects a theme.
+
+- `native_workers/continuity.py` lets root leads inspect prior managed top-level workers in the same thread and source workspace. Resumption retains the native session/worktree in a new run-owned record, links both records and preserves historical output. Per-loop admission serialization and continuation links reject duplicate live starts; current configured slot/account/access compatibility and original-owner completion are required.
+- `native_worker`/bridge expose previous_workers via status and bounded events pages via before/after cursors. Child scopes cannot inspect unrelated prior workers. Explicit slash commands remain deterministic; plain first words are no longer interpreted as control actions.

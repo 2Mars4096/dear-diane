@@ -1,6 +1,12 @@
 # Changelog
 
 ## 2026-10-16
+- [fix] Restrict deterministic message interception to explicit slash commands. Ordinary stop/pause/resume/status/task/progress wording stays conversational; semantic meta-layer routing is deferred as idea-cart IC-047.
+- [feat] Expose prior same-conversation/workspace worker summaries and paged session events to leads. Resume eligible settled workers using their frozen native session and working directory, creating a new run-owned record linked to preserved history. Guard active owners/duplicate continuations, account/runtime/access changes and unrelated scopes; old continued records cannot be independently resumed/applied through stale UI actions.
+- [test] 182 relevant backend regressions pass; subsequent bridge/continuity checks pass (36). Real Git/fixture-provider tests preserve partial work and native session IDs; read-only inspection finds 20 prior matching worker sessions. No real project work was replayed. Activation deferred while work is active.
+- [infra] Earlier resume-admission/duplicate-Size correction was locally installed and verified healthy with archive hash 1c8988154dc66a2d9b44d76eec2f7ac0cabfb4ff4fb3cf37e77afc052ff3c36a; the slash-only policy supersedes that narrower resume exception.
+
+## 2026-10-16
 - [infra] Installed exact underline/chapter-CSS correction after idle checks. Signature/ASAR equality verified (`6a6c342aeecc6e04b62d9c3e62a64501e4b695420ca5c60df9313433710c7723`); 567 frontend tests and build pass. Normal launch failed interpreter probes twice; direct launch with verified project DIANE_PYTHON succeeded and both health endpoints pass. No global Python settings changed. Rollback `.Diane-previous-c2698e53-a71f-4674-92c8-b7aea5b03654.app` retained.
 
 ## 2026-10-15

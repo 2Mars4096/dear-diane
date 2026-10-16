@@ -2535,3 +2535,7 @@ When renaming workflows or moving error data between environments:
 - Underline follow-up: reapplying the entire font/theme stylesheet for a decoration toggle was unnecessary and could trigger reflow. Further inspection found EPUB.js Themes.inject ignores serialized CSS on new chapters. Added a one-time content hook plus CSS-variable-only decoration updates; 40 real-book toggles retain the same frame with correct computed decoration. Earlier frame-text-only checks were insufficient to verify theme application.
 
 - October 16 startup: two normal launches failed interpreter probes; the same project Python imported successfully from the app working directory in a terminal diagnostic. Direct app launch with launch-local DIANE_PYTHON recovered healthy services. This remains a startup-context issue, not a resolved interpreter failure.
+
+## 2026-10-16 — conversation resume versus team ownership
+- The “Which task or run should I resume?” response was deterministic admission, before Claude was called. First-word control matching was too broad; retain slash commands only, with contextual intent routing deferred to IC-047.
+- A new lead run had no access to previous worker records despite retained native lead history. Add same-thread/workspace status/events and explicit continuation preserving native session/worktree, with a new linked ID rather than reparenting historical records. Reject live/foreign/changed-access continuations and stale old-session replies.

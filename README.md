@@ -297,3 +297,5 @@ Local development desktop builds prefer the project’s `.venv` Python. Startup 
 In chat, expand the **Lead** heading to see worker task summaries and results. Select a worker to open its conversation in the Team sidebar.
 
 Long conversations show recent messages first. Use **Load earlier messages** above the transcript to reveal older history.
+
+Leads can inspect earlier worker sessions in the same conversation and resume eligible stopped work with its existing native context and working copy. Explicit slash commands control runs; ordinary words such as “resume” and “stop using…” remain conversational.

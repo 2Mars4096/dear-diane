@@ -285,3 +285,7 @@ Git edits must use the default isolated worker worktree. Shared inspection uses 
 
 ### Claude permission configuration
 For Claude, profile_policy.permission_mode accepts plan/default/acceptEdits/auto/full, mapped to native Claude modes. lead_profile/worker profiles may set claude_sandbox=default|enabled|disabled independently; default enables sandbox except for full. Configured workers inherit the lead mode; non-Claude workers map Claude-only default/acceptEdits to their existing auto behavior. can_use_tool requests require one-time human responses; stored original input is authoritative and caller-supplied input replacements are not accepted.
+
+### Team continuity across lead runs
+`native_worker(action="status")` includes `previous_workers` for the same conversation/source workspace. Inspect one with `status, worker_id=ID` or `events, worker_id=ID, limit=25`; use `before` or `after` cursors for other event pages. Large event payloads are marked truncated. Previous-run records are read-only until explicitly resumed.
+`resume, worker_id=OLD_ID, prompt="continue the same task"` preserves the native session, task contract and working directory, returning a new current-run worker ID with `continued_from_worker_id`. Use that returned ID for status/review/apply. History stays under the old ID. Active owners/continuations, unrelated threads/workspaces, missing working directories and changed runtime/account/access settings reject. Completion/review and worktree conflict checks remain required.

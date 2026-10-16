@@ -595,3 +595,7 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
 
 - [x] Install and verify decoration-only EPUB underline toggle and per-chapter Reader CSS injection.
 - [ ] Investigate normal-launch interpreter probes failing while direct launch with the same project Python succeeds.
+
+- [x] Restrict direct controls to slash commands; cart contextual routing as IC-047, not an implementation commitment.
+- [x] Add scoped prior-worker inspection/event paging and native-session/worktree continuation across lead runs.
+- [ ] Activate slash-only routing and worker continuity after active work finishes; provider-live acceptance remains pending.
