@@ -48,13 +48,16 @@ async def serve(directory: Path, team):
 def main():
     parser = argparse.ArgumentParser(description="Control the enabled team for this Dear Diane lead run")
     parser.add_argument("--queue", required=True)
-    parser.add_argument("action", choices=["start", "status", "stop", "resume", "changes", "apply", "review"])
+    parser.add_argument("action", choices=["start", "status", "stop", "resume", "changes", "apply", "review", "events"])
     parser.add_argument("--shared-workspace", action="store_true", help="Shared read-only inspection; editing workers use isolated worktrees")
     parser.add_argument("--profile-id", default="")
     parser.add_argument("--backend", default="")
     parser.add_argument("--prompt", default="")
     parser.add_argument("--worker-id", default="")
     parser.add_argument("--scope", default="")
+    parser.add_argument("--after", type=int)
+    parser.add_argument("--before", type=int)
+    parser.add_argument("--limit", type=int, default=25)
     parser.add_argument("--acceptance", action="append", default=[], help="Repeat for each acceptance criterion")
     parser.add_argument("--attempt", type=int, default=-1)
     parser.add_argument("--decision", choices=["accepted", "revise", "blocked"], default="")
@@ -67,6 +70,8 @@ def main():
     temporary = request.with_suffix(".tmp")
     payload = {"action": args.action, "profile_id": args.profile_id, "backend": args.backend, "prompt": args.prompt, "worker_id": args.worker_id,
                "isolate": not args.shared_workspace, "read_only": args.shared_workspace, "attempt": args.attempt, "decision": args.decision, "evidence": args.evidence}
+    if args.action == "events":
+        payload.update(after=args.after, before=args.before, limit=args.limit)
     if args.scope or args.acceptance:
         payload["contract"] = {"scope": args.scope, "acceptance": args.acceptance}
     temporary.write_text(json.dumps(payload))

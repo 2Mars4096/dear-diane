@@ -56,12 +56,26 @@ class NativeTeam:
         if self.emit:
             self.emit(record, row)
 
+    def previous_workers(self):
+        from .continuity import previous_workers
+        return previous_workers(self)
+
+    def prior_worker(self, identity):
+        from .continuity import prior_worker
+        return prior_worker(self, identity)
+
+    async def resume_previous(self, identity, prompt):
+        from .continuity import resume_previous
+        return await resume_previous(self, identity, prompt)
+
     async def start(self, backend: str, prompt: str, worker_id: str = "", isolate: bool = False, contract: dict | None = None, profile_id: str = "", read_only: bool = False) -> dict:
         async with self.admission_lock:
             return await self._start(backend, prompt, worker_id, isolate, contract, profile_id, read_only=read_only)
 
     async def _start(self, backend: str, prompt: str, worker_id: str = "", isolate: bool = False, contract: dict | None = None, profile_id: str = "", parent: dict | None = None, read_only: bool = False) -> dict:
         previous = self.records.get(worker_id) if worker_id else None
+        if previous and previous.get("continued_by_worker_id"):
+            raise ValueError(f"This worker continues as {previous['continued_by_worker_id']}; open its current session")
         profile_id = previous.get("profile_id", backend) if previous else profile_id
         if not profile_id:
             candidates = [key for key, value in self.profiles.items() if value.get("enabled") and value.get("backend", key) == backend]
@@ -479,7 +493,7 @@ def public_worker(row: dict) -> dict:
     task = team.tasks.get(row["worker_id"]) if team else None
     live = bool(task and not task.done())
     client = team.steering.get(row["worker_id"]) if team else None
-    owned = row.get("can_stop") is not False
+    owned = row.get("can_stop") is not False and not row.get("continued_by_worker_id")
     result = {key: value for key, value in row.items() if key not in {"profile", "history", "inherited_policy", "source_files"}}
     result.update(can_stop=owned and live,
                   can_reply=owned and (bool(client and client.turn_id) or (not live and bool(row.get("profile")))),
@@ -491,8 +505,8 @@ def public_worker(row: dict) -> dict:
 async def continue_worker(base: Path, parent_id: str, worker_id: str, prompt: str) -> dict:
     from types import SimpleNamespace
     row = next((r for r in read_workers(base, parent_id) if r["worker_id"] == worker_id), None)
-    if not row or row.get("can_stop") is False:
-        raise ValueError("This worker cannot be resumed independently")
+    if not row or row.get("can_stop") is False or row.get("continued_by_worker_id"):
+        raise ValueError("This worker cannot be resumed independently; open its current continuation if present")
     if not prompt.strip():
         raise ValueError("Enter a reply or instruction")
     team = active_teams.get(parent_id)
