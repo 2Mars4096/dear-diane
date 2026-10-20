@@ -196,6 +196,14 @@ Save the connection, then use Check SSH from its menu. For a new host, connect o
 
 For an existing configured remote workspace, use the folder action to open it. New project can then register a folder on that machine without moving or uploading its files. Remote service deployment, relay setup, and phone access are managed separately from SSH connections.
 
+### Phone companion
+
+The Android phone app brings **Diane**, **Work**, and **Library** into one interface. Continue a saved conversation, see work that needs your attention, answer questions and permission requests, or browse workspace files and notes. The conversation keeps the agent, account, model, workspace and permissions already selected on your computer.
+
+Drafts and outgoing actions are saved on the phone. Delivery labels distinguish a local request, an unconfirmed response and an acknowledgement from the computer. Reconnecting checks the original receipt before retrying, so a dropped connection does not create another execution. Stop and steering remain attached to their original run.
+
+The computer runs the agents and tools; the phone shows progress and decisions. Work currently groups existing conversations and tasks. Background push notifications, a separate durable issue/commitment layer and remote screen sharing are follow-up work. See [phone setup and validation](mobile/README.md) for compatible backend and build requirements.
+
 ## Sticky Todo companion
 
 Sticky Todo can send a request to the project selected in your most recently focused Diane window, using its folder and execution settings. Todo shows progress and a brief result. Open in Diane returns to the same session for questions, approvals, and follow-up. Closing Todo leaves the task running in Diane.
@@ -262,7 +270,7 @@ npm run electron:compile
 npm run build:verify
 ```
 
-Live-provider and real-browser evaluations are opt-in. Flutter 3.41 or newer is needed only to build the optional phone client. Planned phone personal-agent features are not yet available.
+Live-provider and real-browser evaluations are opt-in. Flutter 3.41.9 / Dart 3.11.5 is the validated baseline for the optional Android phone client. Broader phone personal-agent features remain on the roadmap.
 
 The Python package is `dear-diane`, with imports under `diane`. Use `dear-diane --help` for commands; use `DIANE_*` configuration names. Existing `dan` aliases and legacy `DAN_*` variables remain supported; `DIANE_*` takes precedence when both are set.
 

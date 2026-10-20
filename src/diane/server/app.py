@@ -17,6 +17,7 @@ from diane.server.paths import resolve_graphs_dir
 from diane.server.routers.chat_v2 import router as chat_v2_router, resume_recovered_queues
 from diane.server.routers.misc import router as workspace_router
 from diane.server.routers.sessions import router as sessions_router
+from diane.server.routers.phone import router as phone_router
 from diane.server.routers.sticky_todo import router as sticky_todo_router
 from diane.server.routers.native_workers import router as native_workers_router
 from diane.server.routers.reader import router as reader_router
@@ -69,6 +70,7 @@ def create_app() -> FastAPI:
 
     app.include_router(workspace_router)
     app.include_router(sessions_router)
+    app.include_router(phone_router)
     app.include_router(sticky_todo_router)
     app.include_router(chat_v2_router)
     app.include_router(native_workers_router)

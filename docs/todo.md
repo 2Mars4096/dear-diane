@@ -1,5 +1,12 @@
 # Todo
 
+## Phone handoff and mobile UX — October 20
+
+- [x] Implement the authorized six phone reliability fixes: additive conversation updates, durable receipts/outbox, reconnect recovery, inherited desktop settings, restored conversations/drafts, and decisions/steering/stop — [phone handoff](plans/7-1-phone-handoff.md).
+- [x] Deliver Diane / Work / Library navigation, an attention-first work list, and accessible phone conversation/connection views.
+- [x] Complete final validation: 59 targeted backend checks, all 25 Flutter tests, clean analysis, five rendered previews, and a clean Android ARM64 debug APK build.
+- [ ] Complete paired physical-phone acceptance: restart recovery, cellular/VPN handoff, live native decisions, and Stop.
+
 
 - [x] Fix validator JSON-wrapper parsing found by the built-in pilot; 176 tests and a post-fix live note run pass.
 - [ ] Proposed: repeat small-task comparisons against the fixed runtime and add a planner-activating case before changing built-in routing — [study](live-test-plans/1-super-diane-capability.md).
@@ -350,7 +357,7 @@ Ideas awaiting checkout: [idea cart](../.agents/idea-cart.md). IC-040–042 are 
 ## Universal product stack
 - [x] Replace crowded side-panel tabs with a labeled tool switcher; verify narrow layouts and keyboard access — [reader and side panel](UI-plans/3-reader-and-side-panel.md).
 
-- [ ] [7-phone-personal-agent](plans/7-phone-personal-agent.md) — staged plan: both phones/browser first; commitment capture, durable tasks, approvals, Google then broader providers, phone pilot, and follow-on workflows. Implementation not started.
+- [ ] [7-phone-personal-agent](plans/7-phone-personal-agent.md) — first Android handoff/UX slice implemented in [7-1](plans/7-1-phone-handoff.md); paired-device acceptance pending. Broader phone/browser coverage, durable issues/commitments, provider integrations, reminders and follow-on workflows remain.
 
 - [ ] [6-remote-control](plans/6-remote-control.md) — Settings profiles, SSH installer, authenticated `ny` relay, and shared projects deployed/tested on mini; direct VPN verified; physical-phone acceptance pending, s600 reserved for user testing.
   - [ ] [6-1-private-relay](plans/6-1-private-relay.md) — mini/ny services and native/OpenRouter live tests pass; direct VPN verified; physical-phone acceptance pending.

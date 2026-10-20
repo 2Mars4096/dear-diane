@@ -21,7 +21,7 @@ Make difficult agent work durable, steerable, verifiable, and understandable wit
 5. [Universal Product Cutover](plans/5-universal-product-cutover.md) — completed; legacy code/docs are archived in Git and the boundary is locked.
 6. [Remote control](plans/6-remote-control.md) — implementing Mac-managed SSH profiles, persistent execution, and authenticated private-network desktop/phone access through a replaceable `ny` relay; test on mini, leave s600 to the user.
 
-7. [Personal agent on the phone](plans/7-phone-personal-agent.md) — planned extension of the existing stack: both phones/browser first, commitment follow-through, provider-neutral connections (Google first), approvals, and durable reminders. Implementation not started.
+7. [Personal agent on the phone](plans/7-phone-personal-agent.md) — staged extension of the existing stack. The first authorized implementation is [reliable Android handoff and conversation UX](plans/7-1-phone-handoff.md): durable delivery, restored context, decisions and Diane / Work / Library. Broader phone/browser coverage, issue/commitment follow-through, provider connections and reminders remain future slices.
 
 ## Near-term priorities
 

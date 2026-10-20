@@ -1,9 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'phone_state.dart';
+import 'phone_transport.dart';
+
+export 'phone_state.dart';
+export 'phone_transport.dart';
+
+part 'phone_views.dart';
 
 const String compiledDefaultApiBase = String.fromEnvironment(
   'DAN_API_BASE',
@@ -247,12 +255,14 @@ class PhoneChatMessage {
     required this.role,
     required this.text,
     this.status = '',
+    this.record = const {},
   });
 
   final String id;
   final PhoneChatRole role;
   final String text;
   final String status;
+  final Map<String, dynamic> record;
 
   PhoneChatMessage copyWith({String? text, String? status}) {
     return PhoneChatMessage(
@@ -260,6 +270,7 @@ class PhoneChatMessage {
       role: role,
       text: text ?? this.text,
       status: status ?? this.status,
+      record: record,
     );
   }
 }
@@ -853,35 +864,110 @@ bool isWireGuardApiBase(String value) {
   return host == '10.77.77.2' || (host?.startsWith('10.77.77.') ?? false);
 }
 
+class _PlatformPhoneStatePersistence implements PhoneStatePersistence {
+  final MemoryPhoneStatePersistence _fallback = MemoryPhoneStatePersistence();
+
+  @override
+  Future<Map<String, dynamic>> load() async {
+    if (!Platform.isAndroid) return _fallback.load();
+    final raw = await wireGuardChannel.invokeMethod<String>('loadPhoneState');
+    final value = jsonDecode(raw ?? '{}');
+    return value is Map<String, dynamic> ? value : {};
+  }
+
+  @override
+  Future<void> save(Map<String, Object?> state) async {
+    if (!Platform.isAndroid) return _fallback.save(state);
+    final saved = await wireGuardChannel.invokeMethod<bool>('savePhoneState', {
+      'state': jsonEncode(state),
+    });
+    if (saved != true) throw StateError('Could not save work on this phone.');
+  }
+}
+
 class DanPhoneApp extends StatelessWidget {
-  const DanPhoneApp({super.key});
+  const DanPhoneApp({
+    super.key,
+    this.apiClient,
+    this.persistence,
+    this.initialApiBase,
+  });
+  final PhoneApiClient? apiClient;
+  final PhoneStatePersistence? persistence;
+  final String? initialApiBase;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Dear Diane Phone',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xff176b5b),
-          brightness: Brightness.light,
-        ),
-        scaffoldBackgroundColor: const Color(0xfff5f2eb),
-        useMaterial3: true,
+      theme: buildPhoneTheme(Brightness.light),
+      darkTheme: buildPhoneTheme(Brightness.dark),
+      themeMode: ThemeMode.system,
+      home: WorkspaceHome(
+        apiClient: apiClient,
+        persistence: persistence,
+        initialApiBase: initialApiBase,
       ),
-      home: const WorkspaceHome(),
     );
   }
 }
 
 class WorkspaceHome extends StatefulWidget {
-  const WorkspaceHome({super.key});
+  const WorkspaceHome({
+    super.key,
+    this.apiClient,
+    this.persistence,
+    this.initialApiBase,
+  });
+  final PhoneApiClient? apiClient;
+  final PhoneStatePersistence? persistence;
+  final String? initialApiBase;
 
   @override
   State<WorkspaceHome> createState() => _WorkspaceHomeState();
 }
 
-class _WorkspaceHomeState extends State<WorkspaceHome> {
+class _WorkspaceHomeState extends State<WorkspaceHome>
+    with WidgetsBindingObserver {
+  late final PhoneApiClient _api;
+  late final PhoneStatePersistence _persistence;
+  PhoneDeviceState _deviceState = PhoneDeviceState();
+  Future<void> _saveChain = Future<void>.value();
+  final Set<String> _delivering = {};
+  final Map<String, String> _savingDrafts = {};
+  bool _flushing = false;
+  bool _foreground = true;
+  bool _restoringDraft = false;
+  bool _deviceLoaded = false;
+  bool _savedStateReadable = true;
+  String _storageWarning = '';
+  int _generation = 0;
+  int _connectionGeneration = 0;
+  int _pollFailures = 0;
+  int _pollSubscription = 0;
+  int _pollCycles = 0;
+  Timer? _draftSaveTimer;
+  int _phoneTab = 0;
+  int _libraryTab = 0;
+  String conversationTitle = '';
+  DateTime? lastSyncedAt;
+  Map<String, dynamic> executionContext = {};
+  List<PhoneApprovalRequest> pendingApprovals = const [];
+
+  List<PhoneDeliveryItem> get _deliveries => _deviceState.deliveries
+      .where(
+        (item) => item.apiBase == activeApiBase && item.status != 'accepted',
+      )
+      .toList();
+  List<PhoneDeliveryItem> get _conversationDeliveries => _deliveries
+      .where(
+        (item) =>
+            item.threadId == activeThreadId ||
+            (item.threadId.isEmpty && activeThreadId.isEmpty),
+      )
+      .toList();
+
   WorkspaceMode mode = WorkspaceMode.work;
   WorkPage workPage = WorkPage.chat;
   WorkRunMode runMode = WorkRunMode.auto;
@@ -931,7 +1017,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       id: 'welcome',
       role: PhoneChatRole.status,
       text:
-          'Set a workspace, then send a Work request. Diane will run through the same Agent-run backend as the desktop GUI.',
+          'Continue a conversation from Work, or ask Diane to start something new.',
     ),
   ];
   String activeWorkflowId = '_scratch';
@@ -965,7 +1051,12 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
   @override
   void initState() {
     super.initState();
-    activeApiBase = _normalizeApiBase(compiledDefaultApiBase);
+    _api = widget.apiClient ?? HttpPhoneApiClient();
+    _persistence = widget.persistence ?? _PlatformPhoneStatePersistence();
+    WidgetsBinding.instance.addObserver(this);
+    activeApiBase = _normalizeApiBase(
+      widget.initialApiBase ?? compiledDefaultApiBase,
+    );
     apiBaseController = TextEditingController(text: activeApiBase);
     accessTokenController = TextEditingController();
     wireGuardConfigController = TextEditingController(
@@ -975,7 +1066,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     noteEditController.addListener(_handleNoteEditChanged);
     workspaceRootController = TextEditingController();
     workspaceRootController.addListener(_handleWorkspaceRootInputChanged);
-    chatController = TextEditingController();
+    chatController = TextEditingController()..addListener(_captureDraft);
     noteReadScrollController = ScrollController()
       ..addListener(_saveActiveNoteReadScroll);
     noteEditScrollController = ScrollController()
@@ -983,13 +1074,174 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     if (Platform.isAndroid) {
       wireGuardChannel.setMethodCallHandler(_handlePhoneWireGuardEvent);
       unawaited(_refreshPhoneWireGuardStatus());
-      unawaited(_loadPhoneSettings());
     }
-    unawaited(_refreshStatus());
+    unawaited(_initializePhone());
+  }
+
+  Future<void> _initializePhone() async {
+    await _loadPhoneSettings();
+    try {
+      _deviceState = PhoneDeviceState.fromJson(await _persistence.load());
+    } catch (_) {
+      _savedStateReadable = false;
+      if (mounted) {
+        setState(
+          () => _storageWarning =
+              'Saved phone work could not be loaded. Restart to try again; new actions are paused.',
+        );
+      }
+    }
+    if (!mounted) return;
+    _deviceLoaded = true;
+    _restoreSelectedConversation();
+    await _refreshStatus();
+  }
+
+  void _captureDraft() {
+    if (_restoringDraft || !_deviceLoaded) return;
+    final key = PhoneDeviceState.draftKey(
+      activeApiBase,
+      activeWorkflowId,
+      activeThreadId,
+      workspaceRoot,
+    );
+    _deviceState.drafts[key] = _savingDrafts[key] == chatController.text
+        ? ''
+        : chatController.text;
+    _draftSaveTimer?.cancel();
+    _draftSaveTimer = Timer(const Duration(milliseconds: 250), () {
+      unawaited(
+        _persistDeviceState().catchError((Object error) {
+          if (mounted) {
+            setState(
+              () => chatStatus = 'Draft could not be saved on this phone.',
+            );
+          }
+        }),
+      );
+    });
+  }
+
+  void _restoreDraft() {
+    _restoringDraft = true;
+    chatController.text =
+        _deviceState.drafts[PhoneDeviceState.draftKey(
+          activeApiBase,
+          activeWorkflowId,
+          activeThreadId,
+          workspaceRoot,
+        )] ??
+        '';
+    _restoringDraft = false;
+  }
+
+  void _captureSelection() {
+    _deviceState.selections[activeApiBase] = {
+      'workflow_id': activeWorkflowId,
+      'thread_id': activeThreadId,
+      'workspace_root': workspaceRoot,
+      'title': conversationTitle,
+      'messages': chatMessages
+          .skip(max(0, chatMessages.length - 160))
+          .map(
+            (message) => {
+              'id': message.id,
+              'role': message.role == PhoneChatRole.user ? 'user' : 'assistant',
+              'content': message.text.length > 12000
+                  ? '${message.text.substring(0, 12000)}\n\n[Connect to load the full message.]'
+                  : message.text,
+              'phone_status': message.status,
+              if (message.record['timestamp'] != null)
+                'timestamp': message.record['timestamp'],
+              if (message.record['task_run_ref'] != null)
+                'task_run_ref': message.record['task_run_ref'],
+            },
+          )
+          .toList(),
+      'execution_context': executionContext,
+      'last_synced_at': lastSyncedAt?.toUtc().toIso8601String(),
+      'attachments': composerAttachments
+          .map((item) => item.toPayload())
+          .toList(),
+    };
+  }
+
+  Future<void> _persistDeviceState() {
+    if (!_deviceLoaded) return Future<void>.value();
+    if (!_savedStateReadable) {
+      return Future<void>.error(
+        StateError('Saved phone state is unavailable.'),
+      );
+    }
+    _draftSaveTimer?.cancel();
+    _captureSelection();
+    // Capture before queueing; writes are serialized so a slow older save can
+    // never replace a newer draft or delivery receipt.
+    final snapshot =
+        jsonDecode(jsonEncode(_deviceState.toJson())) as Map<String, dynamic>;
+    final next = _saveChain
+        .catchError((Object _) {})
+        .then((_) => _persistence.save(snapshot));
+    _saveChain = next;
+    return next;
+  }
+
+  void _restoreSelectedConversation() {
+    final saved = _deviceState.selections[activeApiBase];
+    activeWorkflowId = _asString(saved?['workflow_id'], '_scratch');
+    activeThreadId = _asString(saved?['thread_id'], '');
+    workspaceRoot = _asString(saved?['workspace_root'], workspaceRoot);
+    workspaceRootController.text = workspaceRoot;
+    conversationTitle = _asString(saved?['title'], '');
+    chatMessages = saved == null
+        ? const []
+        : _phoneMessagesFromThreadPayload(saved);
+    executionContext = _recordValue(saved?['execution_context']) ?? {};
+    lastSyncedAt = DateTime.tryParse(_asString(saved?['last_synced_at'], ''));
+    composerAttachments =
+        (saved?['attachments'] is List
+                ? saved!['attachments'] as List
+                : const [])
+            .whereType<Map>()
+            .map(
+              (item) => PhoneAttachmentDraft(
+                id: '${item['id'] ?? ''}',
+                name: '${item['name'] ?? 'Screenshot'}',
+                mimeType: '${item['mime_type'] ?? 'image/png'}',
+                sizeBytes: _asInt(item['size_bytes']),
+                dataUrl: '${item['data_url'] ?? ''}',
+              ),
+            )
+            .where((item) => item.id.isNotEmpty && item.dataUrl.isNotEmpty)
+            .toList();
+    _restoreDraft();
+    if (mounted) setState(() {});
+  }
+
+  void _invalidateLiveView() {
+    _generation += 1;
+    _pollSubscription += 1;
+    agentPollTimer?.cancel();
+    agentPollTimer = null;
+    _pollFailures = 0;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _foreground = state == AppLifecycleState.resumed;
+    _invalidateLiveView();
+    if (_foreground && _deviceLoaded) {
+      unawaited(_refreshStatus());
+    } else if (_deviceLoaded) {
+      unawaited(_persistDeviceState().catchError((Object _) {}));
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _invalidateLiveView();
+    _draftSaveTimer?.cancel();
     apiBaseController.dispose();
     accessTokenController.dispose();
     wireGuardConfigController.dispose();
@@ -1144,20 +1396,26 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
   }
 
   Future<void> _refreshSessions() async {
-    if (!mounted || health == 'offline') return;
+    if (!mounted || health == 'offline' || loadingSessions) return;
+    final base = activeApiBase;
+    final epoch = _generation;
     setState(() => loadingSessions = true);
-    final threadPayload = await _getJson(activeApiBase, '/api/chats');
-    final taskPayload = await _getJson(
-      activeApiBase,
-      '/api/v2/tasks?limit=160',
-    );
-    if (!mounted) return;
-    final sessions = (threadPayload?['threads'] as List<dynamic>? ?? const [])
+    final threadPayload = await _getJson(base, '/api/chats');
+    final taskPayload = await _getJson(base, '/api/v2/tasks?limit=160');
+    if (!mounted || base != activeApiBase || epoch != _generation) {
+      if (mounted) setState(() => loadingSessions = false);
+      return;
+    }
+    if (threadPayload == null || taskPayload == null) {
+      setState(() => loadingSessions = false);
+      return;
+    }
+    final sessions = (threadPayload['threads'] as List<dynamic>? ?? const [])
         .whereType<Map<String, dynamic>>()
         .map(PhoneSessionSummary.fromJson)
         .where((session) => session.id.isNotEmpty)
         .toList();
-    final tasks = (taskPayload?['tasks'] as List<dynamic>? ?? const [])
+    final tasks = (taskPayload['tasks'] as List<dynamic>? ?? const [])
         .whereType<Map<String, dynamic>>()
         .map(PhoneTaskSummary.fromJson)
         .where((task) => task.threadId.isNotEmpty)
@@ -1204,45 +1462,15 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
           id: _asString(item['id'], _newId('history')),
           role: phoneRole,
           text: text,
-          status: _asString(taskRef?['status'], ''),
+          status: _asString(
+            item['phone_status'],
+            _asString(taskRef?['status'], ''),
+          ),
+          record: Map<String, dynamic>.from(item),
         ),
       );
     }
     return parsed;
-  }
-
-  List<Map<String, Object?>> _messagesToThreadPayload(
-    List<PhoneChatMessage> messages,
-  ) {
-    return messages
-        .where(
-          (message) =>
-              message.role == PhoneChatRole.user ||
-              message.role == PhoneChatRole.assistant,
-        )
-        .map(
-          (message) => {
-            'id': message.id,
-            'role': message.role == PhoneChatRole.user ? 'user' : 'assistant',
-            'content': message.text,
-          },
-        )
-        .toList();
-  }
-
-  Future<void> _saveActiveThreadMessages([
-    List<PhoneChatMessage>? source,
-  ]) async {
-    if (activeThreadId.isEmpty || activeWorkflowId.isEmpty) return;
-    final payloadMessages = _messagesToThreadPayload(source ?? chatMessages);
-    await _requestJson(
-      activeApiBase,
-      '/api/chats/${Uri.encodeComponent(activeWorkflowId)}/${Uri.encodeComponent(activeThreadId)}',
-      method: 'PUT',
-      body: {'mode': 'agent', 'messages': payloadMessages},
-      timeout: const Duration(seconds: 8),
-    );
-    unawaited(_refreshSessions());
   }
 
   Future<void> _selectWorkspaceRootFromDrawer(String root) async {
@@ -1253,6 +1481,8 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [nextRoot]);
       mode = WorkspaceMode.work;
       workPage = WorkPage.files;
+      _phoneTab = 2;
+      _libraryTab = 0;
       fileStatus = nextRoot.isEmpty
           ? 'Loading default workspace'
           : 'Loading $nextRoot';
@@ -1268,167 +1498,75 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     if (session.archived) {
       setState(
         () =>
-            chatStatus = 'Restore archived sessions from the desktop workspace',
+            chatStatus = 'Restore this archived conversation on the computer.',
       );
       return;
     }
-    agentPollTimer?.cancel();
-    final targetRoot = workspaceRootOverride.trim().isNotEmpty
-        ? workspaceRootOverride.trim()
-        : _sessionWorkspaceRootFor(session).trim();
+    _captureDraft();
+    _captureSelection();
+    _invalidateLiveView();
+    final epoch = _generation;
+    final root = workspaceRootOverride.isNotEmpty
+        ? workspaceRootOverride
+        : _sessionWorkspaceRootFor(session);
     setState(() {
       activeWorkflowId = session.workflowId;
       activeThreadId = session.id;
-      activeRunId = '';
-      activeTaskId = '';
-      activeRunLive = false;
+      conversationTitle = session.displayTitle;
       chatBusy = false;
-      chatStatus = 'Loading session';
+      activeTaskId = '';
+      activeRunId = '';
+      activeRunLive = false;
+      pendingApprovals = const [];
+      executionContext = {};
       chatMessages = const [];
       composerAttachments = const [];
       previewArtifacts = const [];
-      promptLogEntryCount = 0;
       promptLogPath = '';
+      promptLogEntryCount = 0;
+      chatStatus = 'Connecting to conversation';
+      _phoneTab = 0;
       mode = WorkspaceMode.work;
       workPage = WorkPage.chat;
-      if (targetRoot.isNotEmpty) {
-        workspaceRoot = targetRoot;
-        workspaceRootController.text = targetRoot;
-        phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [targetRoot]);
-      }
+      workspaceRoot = root;
+      workspaceRootController.text = root;
     });
-    if (targetRoot.isNotEmpty) {
-      setState(() {
-        sessionWorkspaceRoots = {
-          ...sessionWorkspaceRoots,
-          _sessionWorkspaceKey(session.workflowId, session.id): targetRoot,
-        };
-      });
-      unawaited(_refreshWorkspaceFiles(root: targetRoot));
-    }
-    final threadPayload = await _getJson(
-      activeApiBase,
-      '/api/chats/${Uri.encodeComponent(session.workflowId)}/${Uri.encodeComponent(session.id)}',
-    );
-    final taskPayload = await _getJson(
-      activeApiBase,
-      '/api/v2/threads/${Uri.encodeComponent(session.id)}/tasks?limit=20',
-    );
-    if (!mounted || activeThreadId != session.id) return;
-    final threadMessages = _phoneMessagesFromThreadPayload(threadPayload);
-    final threadTasks = (taskPayload?['tasks'] as List<dynamic>? ?? const [])
-        .whereType<Map<String, dynamic>>()
-        .map(PhoneTaskSummary.fromJson)
-        .where((task) => task.threadId == session.id)
-        .toList();
-    final latestTask = threadTasks.isNotEmpty
-        ? threadTasks.first
-        : phoneTasksByThread[session.id];
-    final recoveredRoot = latestTask?.workspaceRoot ?? targetRoot;
-    final fallbackMessages = threadMessages.isNotEmpty
-        ? threadMessages
-        : latestTask != null &&
-              (latestTask.latestProgress.isNotEmpty || latestTask.isLive)
-        ? [
-            PhoneChatMessage(
-              id: _newId('assistant'),
-              role: PhoneChatRole.assistant,
-              text: latestTask.latestProgress.isNotEmpty
-                  ? latestTask.latestProgress
-                  : 'Diane is working in this session.',
-              status: latestTask.status,
-            ),
-          ]
-        : const <PhoneChatMessage>[];
-    setState(() {
-      chatMessages = fallbackMessages;
-      activeTaskId = latestTask?.taskId ?? '';
-      activeRunId = latestTask?.activeRunId ?? '';
-      activeRunLive = latestTask?.isLive == true && activeRunId.isNotEmpty;
-      chatStatus = fallbackMessages.isEmpty
-          ? 'Ready'
-          : latestTask?.status == 'completed'
-          ? 'Ready'
-          : latestTask?.status ?? 'Ready';
-      if (recoveredRoot.isNotEmpty) {
-        workspaceRoot = recoveredRoot;
-        workspaceRootController.text = recoveredRoot;
-        phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [
-          recoveredRoot,
-        ]);
-        sessionWorkspaceRoots = {
-          ...sessionWorkspaceRoots,
-          _sessionWorkspaceKey(session.workflowId, session.id): recoveredRoot,
-        };
-      }
-      if (latestTask != null) {
-        phoneTasksByThread = {...phoneTasksByThread, session.id: latestTask};
-      }
-    });
-    await _savePhoneSettings();
-    if (activeRunLive && activeRunId.isNotEmpty) {
-      _startAgentPolling(
-        activeRunId,
-        fallbackMessages.isNotEmpty
-            ? fallbackMessages.last.id
-            : _newId('assistant'),
-      );
-    }
+    _restoreDraft();
+    await _persistDeviceState().catchError((Object _) {});
+    if (!mounted || epoch != _generation) return;
+    _startSessionPolling();
   }
 
   Future<void> _createSessionForWorkspace(String root) async {
-    final targetRoot = root.trim();
+    _captureDraft();
+    _captureSelection();
+    _invalidateLiveView();
     setState(() {
-      chatStatus = 'Creating session';
-      if (targetRoot.isNotEmpty) {
-        workspaceRoot = targetRoot;
-        workspaceRootController.text = targetRoot;
-        phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [targetRoot]);
-      }
-      mode = WorkspaceMode.work;
-      workPage = WorkPage.chat;
-    });
-    if (targetRoot.isNotEmpty) {
-      unawaited(_refreshWorkspaceFiles(root: targetRoot));
-    }
-    final payload = await _postJson(activeApiBase, '/api/chats/_scratch', {
-      'title': 'New Diane Session',
-      'mode': 'agent',
-    });
-    if (!mounted) return;
-    if (payload == null) {
-      setState(() => chatStatus = 'Session create failed');
-      return;
-    }
-    final session = PhoneSessionSummary.fromJson(payload);
-    if (session.id.isEmpty) {
-      setState(() => chatStatus = 'Session create failed');
-      return;
-    }
-    setState(() {
-      activeWorkflowId = session.workflowId;
-      activeThreadId = session.id;
+      activeWorkflowId = '_scratch';
+      activeThreadId = '';
+      conversationTitle = '';
+      chatBusy = false;
       activeRunId = '';
       activeTaskId = '';
       activeRunLive = false;
-      chatBusy = false;
-      chatStatus = 'Ready';
+      pendingApprovals = const [];
+      executionContext = {};
       chatMessages = const [];
-      previewArtifacts = const [];
       composerAttachments = const [];
-      phoneSessions = [
-        session,
-        ...phoneSessions.where((item) => item.id != session.id),
-      ];
-      if (targetRoot.isNotEmpty) {
-        sessionWorkspaceRoots = {
-          ...sessionWorkspaceRoots,
-          _sessionWorkspaceKey(session.workflowId, session.id): targetRoot,
-        };
-      }
+      previewArtifacts = const [];
+      workspaceRoot = root.trim();
+      workspaceRootController.text = workspaceRoot;
+      phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [workspaceRoot]);
+      chatStatus = 'Ready';
+      _phoneTab = 0;
+      mode = WorkspaceMode.work;
+      workPage = WorkPage.chat;
     });
-    await _savePhoneSettings();
-    unawaited(_refreshSessions());
+    _restoreDraft();
+    await _persistDeviceState().catchError((Object _) {});
+    // A server conversation is created idempotently with the first delivered
+    // request. Offline capture therefore never creates duplicate empty chats.
+    _startSessionPolling();
   }
 
   Future<void> _openNewWorkspaceDialog() async {
@@ -1636,12 +1774,6 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         ]);
         sessionWorkspaceRoots = savedSessionWorkspaceRoots;
       });
-      if (savedApiBase.isNotEmpty || savedToken.isNotEmpty) {
-        unawaited(_refreshStatus(preferredApiBase: activeApiBase));
-      }
-      if (savedWorkspaceRoot.isNotEmpty) {
-        unawaited(_refreshWorkspaceFiles(root: savedWorkspaceRoot));
-      }
     } on MissingPluginException {
       return;
     } on PlatformException {
@@ -1650,8 +1782,6 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
   }
 
   Future<void> _savePhoneSettings() async {
-    accessToken = _normalizeAccessToken(accessTokenController.text);
-    accessTokenController.text = accessToken;
     phoneWireGuardConfig = wireGuardConfigController.text.trim();
     final workspaceRoots = _mergeWorkspaceRoots(phoneWorkspaces, [
       if (workspaceRoot.trim().isNotEmpty) workspaceRoot.trim(),
@@ -1675,90 +1805,97 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
   }
 
   Future<void> _refreshStatus({String? preferredApiBase}) async {
+    if (!mounted || !_foreground) return;
     final requestedBase = _normalizeApiBase(preferredApiBase ?? activeApiBase);
+    if (requestedBase != activeApiBase) {
+      await _changeComputer(requestedBase);
+      return;
+    }
+    final connectionEpoch = ++_connectionGeneration;
+    final epoch = _generation;
     setState(() {
       loadingWireGuard = true;
       health = 'checking';
-      wireGuard = null;
-      activeApiBase = requestedBase;
-      statusDetail = 'Checking $requestedBase';
+      statusDetail = 'Connecting to your computer';
     });
-
     try {
-      final candidates = _candidateApiBases(requestedBase);
-      await _preparePhoneWireGuardFor(candidates).timeout(
-        const Duration(seconds: 4),
-        onTimeout: () {
-          if (!mounted) return;
-          setState(() {
-            phoneWireGuardDetail =
-                'Phone VPN status timed out; checking backend directly';
-          });
-        },
+      await _preparePhoneWireGuardFor([
+        requestedBase,
+      ]).timeout(const Duration(seconds: 4), onTimeout: () {});
+      await _api.request(
+        requestedBase,
+        '/api/health',
+        token: accessToken,
+        timeout: const Duration(seconds: 8),
       );
-      Map<String, dynamic>? healthy;
-      Map<String, dynamic>? wg;
-      var selectedBase = requestedBase;
-
-      for (final candidate in candidates) {
-        healthy = await _getJson(candidate, '/api/health');
-        if (healthy == null) continue;
-        selectedBase = candidate;
-        wg = await _getJson(candidate, '/api/workspace-wireguard');
-        break;
+      if (!mounted ||
+          epoch != _generation ||
+          connectionEpoch != _connectionGeneration ||
+          requestedBase != activeApiBase) {
+        return;
       }
-
-      if (!mounted) return;
-      final parsedWireGuard = wg is Map<String, dynamic>
-          ? WireGuardStatus.fromJson(wg)
-          : null;
-      final backendReady = healthy is Map<String, dynamic>;
       setState(() {
-        wireGuard = parsedWireGuard;
-        activeApiBase = selectedBase;
-        apiBaseController.text = selectedBase;
-        health = backendReady ? 'ready' : 'offline';
-        statusDetail = health == 'ready'
-            ? 'Connected to $selectedBase'
-            : 'No Dear Diane backend at ${candidates.join(', ')}';
-        if (phoneWireGuardConfig.trim().isEmpty && backendReady) {
-          phoneWireGuardDetail = parsedWireGuard?.status == 'active'
-              ? 'Phone VPN not required; backend is reachable and host WG is active'
-              : 'Phone VPN config is only needed for app-managed VPN';
-        }
+        health = 'ready';
+        lastSyncedAt = DateTime.now();
+        statusDetail = 'Connected';
       });
-      if (health == 'ready') {
-        unawaited(_refreshNotes(selectedBase));
-        unawaited(_refreshWorkspaceFiles(apiBase: selectedBase));
-        unawaited(_refreshSessions());
-      } else {
-        setState(() {
-          loadingNotes = false;
-          noteStatus = 'Backend offline';
-        });
-      }
+      unawaited(_refreshSessions());
+      unawaited(_refreshNotes(requestedBase));
+      unawaited(_refreshWorkspaceFiles(apiBase: requestedBase));
+      _startSessionPolling();
+      unawaited(_flushOutbox());
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted ||
+          epoch != _generation ||
+          connectionEpoch != _connectionGeneration) {
+        return;
+      }
       setState(() {
         health = 'offline';
-        statusDetail = 'Status check failed: $error';
+        statusDetail = error.toString();
         loadingNotes = false;
-        noteStatus = 'Backend offline';
+        noteStatus = 'Computer is offline';
       });
+      _startSessionPolling();
     } finally {
-      if (mounted) {
+      if (mounted &&
+          epoch == _generation &&
+          connectionEpoch == _connectionGeneration) {
         setState(() => loadingWireGuard = false);
       }
     }
   }
 
-  List<String> _candidateApiBases(String preferred) {
-    final values = <String>[
-      _normalizeApiBase(preferred),
-      _normalizeApiBase(compiledDefaultApiBase),
-      ...fallbackApiBases.map(_normalizeApiBase),
-    ];
-    return values.where((value) => value.isNotEmpty).toSet().toList();
+  Future<void> _changeComputer(String base) async {
+    _captureDraft();
+    await _persistDeviceState().catchError((Object _) {});
+    _invalidateLiveView();
+    ++_connectionGeneration;
+    setState(() {
+      activeApiBase = base;
+      chatBusy = false;
+      apiBaseController.text = base;
+      phoneSessions = const [];
+      phoneTasksByThread = const {};
+      phoneWorkspaces = const [];
+      pendingApprovals = const [];
+      previewArtifacts = const [];
+      activeRunId = '';
+      activeTaskId = '';
+      activeRunLive = false;
+      workspaceFiles = const [];
+      workspaceNotes = const [];
+      activeNote = null;
+      activeFile = null;
+      notePreviewCache.clear();
+      lastSyncedAt = null;
+      health = 'checking';
+      workspaceRoot = '';
+      workspaceRootController.clear();
+    });
+    _restoreSelectedConversation();
+    await _savePhoneSettings();
+    await _refreshStatus();
   }
 
   String _normalizeApiBase(String value) {
@@ -1777,57 +1914,28 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     return _requestJson(base, path);
   }
 
-  Future<Map<String, dynamic>?> _postJson(
-    String base,
-    String path,
-    Map<String, Object?> body, {
-    Duration timeout = const Duration(seconds: 10),
-  }) {
-    return _requestJson(
-      base,
-      path,
-      method: 'POST',
-      body: body,
-      timeout: timeout,
-    );
-  }
-
   Future<Map<String, dynamic>?> _requestJson(
     String base,
     String path, {
     String method = 'GET',
     Map<String, Object?>? body,
-    Duration timeout = const Duration(seconds: 3),
+    Duration timeout = const Duration(seconds: 10),
   }) async {
-    final client = HttpClient();
-    client.connectionTimeout = const Duration(seconds: 2);
+    // Legacy file/note readers use a nullable result. Work-changing commands
+    // exclusively use the typed, receipt-backed delivery path below.
     try {
-      final uri = Uri.parse('$base$path');
-      final request =
-          await (method == 'POST'
-                  ? client.postUrl(uri)
-                  : method == 'PUT'
-                  ? client.putUrl(uri)
-                  : client.getUrl(uri))
-              .timeout(timeout);
-      final token = _normalizeAccessToken(accessTokenController.text);
-      if (token.isNotEmpty) {
-        request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
-      }
-      if (body != null) {
-        request.headers.contentType = ContentType.json;
-        request.write(jsonEncode(body));
-      }
-      final response = await request.close().timeout(timeout);
-      if (response.statusCode < 200 || response.statusCode >= 300) return null;
-      final responseBody = await utf8.decodeStream(response);
-      if (responseBody.trim().isEmpty) return const <String, dynamic>{};
-      final decoded = jsonDecode(responseBody);
-      return decoded is Map<String, dynamic> ? decoded : null;
-    } catch (_) {
+      if (base != activeApiBase) return null;
+      final response = await _api.request(
+        base,
+        path,
+        method: method,
+        body: body,
+        token: accessToken,
+        timeout: timeout,
+      );
+      return base == activeApiBase ? response : null;
+    } on PhoneApiFailure {
       return null;
-    } finally {
-      client.close(force: true);
     }
   }
 
@@ -2021,6 +2129,8 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       fileStatus = 'Reading ${entry.relativePath}';
       mode = WorkspaceMode.work;
       workPage = WorkPage.preview;
+      _phoneTab = 2;
+      _libraryTab = 2;
     });
     final payload = await _getJson(
       activeApiBase,
@@ -2050,6 +2160,8 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       previewContent = 'Loading output artifact...';
       mode = WorkspaceMode.work;
       workPage = WorkPage.preview;
+      _phoneTab = 2;
+      _libraryTab = 2;
     });
     if (artifact.path.isEmpty) {
       setState(() {
@@ -2091,6 +2203,8 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       previewContent = '';
       mode = WorkspaceMode.work;
       workPage = WorkPage.preview;
+      _phoneTab = 2;
+      _libraryTab = 2;
     });
     final payload = await _getJson(
       activeApiBase,
@@ -2115,319 +2229,455 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
   }
 
   String _newId(String prefix) {
-    return '$prefix-${DateTime.now().microsecondsSinceEpoch}';
+    final random = Random.secure();
+    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+    bytes[6] = (bytes[6] & 15) | 64;
+    bytes[8] = (bytes[8] & 63) | 128;
+    final hex = bytes
+        .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
+        .join();
+    return '$prefix-${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
   }
 
-  void _replaceChatMessage(String id, String text, {String status = ''}) {
-    late final List<PhoneChatMessage> nextMessages;
-    setState(() {
-      nextMessages = chatMessages
-          .map(
-            (message) => message.id == id
-                ? message.copyWith(text: text, status: status)
-                : message,
-          )
-          .toList();
-      chatMessages = nextMessages;
-    });
-    if (activeThreadId.isNotEmpty) {
-      unawaited(_saveActiveThreadMessages(nextMessages));
-    }
-  }
-
-  Future<bool> _ensurePhoneThread(String prompt) async {
-    if (activeThreadId.isNotEmpty) return true;
-    final title = prompt.length > 64 ? '${prompt.substring(0, 64)}...' : prompt;
-    final payload = await _postJson(activeApiBase, '/api/chats/_scratch', {
-      'title': title,
-      'mode': 'agent',
-    });
-    if (payload == null) return false;
-    activeThreadId = _asString(payload['id'], '');
-    activeWorkflowId = _asString(payload['workflow_id'], '_scratch');
-    final root = workspaceRoot.trim();
-    if (activeThreadId.isNotEmpty && root.isNotEmpty) {
-      setState(() {
-        phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [root]);
-        sessionWorkspaceRoots = {
-          ...sessionWorkspaceRoots,
-          _sessionWorkspaceKey(activeWorkflowId, activeThreadId): root,
-        };
-      });
-      unawaited(_savePhoneSettings());
-    }
-    unawaited(_refreshSessions());
-    return activeThreadId.isNotEmpty;
-  }
-
-  Map<String, Object?> _phoneSurfaceContext({
-    List<PhoneAttachmentDraft> attachments = const [],
-  }) {
-    return {
-      'identity': {'name': 'Dear Diane Phone', 'role': 'chunk_workspace_phone'},
-      'workspace_root': workspaceRoot,
-      'workspace_id': workspaceRoot,
-      'notes_root': notesRoot,
-      'workspace_source': 'chunk_workspace_phone',
-      'ui_surface': 'chunk_workspace',
-      'surface_profile': 'super_tui',
-      'agent_profile': 'super_tui',
-      'agent_backend': 'super_dan',
-      'autonomy_mode': runMode.name,
-      'attention_resolution_mode': runMode.name,
-      'gui_for': 'dan super-tui',
-      'capabilities': [
-        'notes',
-        'markdown_preview',
-        'phone_page_navigation',
-        'background_agent_runs',
-        'checkpoint_commands',
-        'read_only_wireguard_status',
-        'preview_artifacts',
-        'prompt_logs',
-        'screenshot_data_url_attachments',
-      ],
-      if (attachments.isNotEmpty)
-        'appended_attachments': attachments
-            .map((attachment) => attachment.toPayload())
-            .toList(),
-      'active_note': activeNote == null
-          ? null
-          : {
-              'title': activeNote!.title,
-              'path': activeNote!.path,
-              'relative_path': activeNote!.relativePath,
-            },
-      'active_file': activeFile == null
-          ? null
-          : {
-              'path': activeFile!.path,
-              'relative_path': activeFile!.relativePath,
-              'preview': activeFileContent.length > 1400
-                  ? activeFileContent.substring(0, 1400)
-                  : activeFileContent,
-            },
-      'wireguard_service': wireGuard == null
-          ? null
-          : {
-              'mode': wireGuard!.mode,
-              'interface': wireGuard!.interfaceName,
-              'status': wireGuard!.status,
-              'conflict_policy': wireGuard!.conflictPolicy,
-            },
-    };
-  }
-
-  Map<String, Object?> _phoneExecutePayload() {
-    final attentionMode = runMode.name;
-    return {
-      'backend': 'super_dan',
-      'surface_profile': 'super_tui',
-      'background': true,
-      'profile_policy': {
-        'backend': 'super_dan',
-        'surface_profile': 'super_tui',
-        'autonomy_mode': attentionMode,
-        'attention_resolution_mode': attentionMode,
-      },
-      'approval_policy': {
-        'mode': runMode == WorkRunMode.review
-            ? 'ask_on_attention'
-            : 'auto_within_workspace',
-        'attention_resolution': attentionMode,
-      },
-      'metadata': {
-        'backend': 'super_dan',
-        'surface_profile': 'super_tui',
-        'compatibility_profile': 'super_tui',
-        'surface': 'gui:chunk-workspace',
-        'requested_from': 'chunk_workspace_phone',
-        'gui_for': 'dan super-tui',
-        'selected_backend': 'super_dan',
-        'selected_agent': 'native',
-        'selected_agent_label': 'Native',
-        'autonomy_mode': attentionMode,
-        'attention_resolution_mode': attentionMode,
-        'attention_resolution_label': runMode.label,
-      },
-    };
-  }
-
-  List<Map<String, String>> _chatHistoryForBackend([
-    List<PhoneChatMessage>? source,
-  ]) {
-    return (source ?? chatMessages)
-        .where(
-          (message) =>
-              message.role == PhoneChatRole.user ||
-              message.role == PhoneChatRole.assistant,
-        )
-        .map(
-          (message) => {
-            'role': message.role == PhoneChatRole.user ? 'user' : 'assistant',
-            'content': message.text,
-          },
-        )
-        .toList();
-  }
-
-  Future<void> _sendChatMessage() async {
-    final typedPrompt = chatController.text.trim();
-    final attachmentsForSend = List<PhoneAttachmentDraft>.from(
-      composerAttachments,
-    );
-    final prompt = typedPrompt.isNotEmpty
-        ? typedPrompt
-        : attachmentsForSend.length <= 1
-        ? 'Please review the attached screenshot.'
-        : 'Please review the attached screenshots.';
-    if ((typedPrompt.isEmpty && attachmentsForSend.isEmpty) || chatBusy) {
+  Future<void> _sendChatMessage({String? action}) async {
+    final draftText = chatController.text;
+    final typed = draftText.trim();
+    final attachments = List<PhoneAttachmentDraft>.from(composerAttachments);
+    if ((typed.isEmpty && attachments.isEmpty) || chatBusy) return;
+    if (activeThreadId.isEmpty &&
+        _deliveries.any((item) => item.threadId.isEmpty && item.isPending)) {
+      setState(
+        () => chatStatus =
+            'Your first message is saved. Deliver it before adding another message to this conversation.',
+      );
       return;
     }
-    chatController.clear();
-    final user = PhoneChatMessage(
-      id: _newId('user'),
-      role: PhoneChatRole.user,
-      text: attachmentsForSend.isEmpty
-          ? prompt
-          : [
-              if (typedPrompt.isNotEmpty) typedPrompt,
-              attachmentsForSend.length == 1
-                  ? 'Attached ${attachmentsForSend.first.name}'
-                  : 'Attached ${attachmentsForSend.length} screenshots',
-            ].where((value) => value.isNotEmpty).join('\n\n'),
+    final text = typed.isNotEmpty
+        ? typed
+        : 'Please review the attached screenshot${attachments.length > 1 ? 's' : ''}.';
+    final id = _newId('request');
+    final messageId = _newId('message');
+    final kind = action ?? (activeRunLive ? 'steer' : 'send');
+    final item = PhoneDeliveryItem(
+      id: id,
+      kind: kind,
+      text: text,
+      apiBase: activeApiBase,
+      workflowId: activeWorkflowId,
+      threadId: activeThreadId,
+      runId: activeRunId,
+      createdAt: DateTime.now(),
+      payload: {
+        'request_id': id,
+        'action': kind,
+        'workflow_id': activeWorkflowId,
+        'thread_id': activeThreadId,
+        'message_id': messageId,
+        'text': text,
+        if (kind == 'steer' || kind == 'queue') 'run_id': activeRunId,
+        if (activeThreadId.isEmpty && workspaceRoot.isNotEmpty)
+          'workspace_root': workspaceRoot,
+        'attachments': attachments
+            .map((attachment) => attachment.toPayload())
+            .toList(),
+      },
     );
-    final assistantId = _newId('assistant');
-    final assistant = PhoneChatMessage(
-      id: assistantId,
-      role: PhoneChatRole.assistant,
-      text: activeRunLive
-          ? 'Steering the active Diane run...'
-          : 'Starting Diane...',
-      status: 'working',
+    final originEpoch = _generation;
+    final originBase = activeApiBase;
+    final originThread = activeThreadId;
+    bool originVisible() =>
+        mounted &&
+        originEpoch == _generation &&
+        originBase == activeApiBase &&
+        originThread == activeThreadId;
+    final draftKey = PhoneDeviceState.draftKey(
+      activeApiBase,
+      activeWorkflowId,
+      activeThreadId,
+      workspaceRoot,
     );
-    final nextMessages = [...chatMessages, user, assistant];
-    final historyForBackend = _chatHistoryForBackend([...chatMessages, user]);
+    _savingDrafts[draftKey] = draftText;
+    _deviceState.drafts[draftKey] = '';
+    _deviceState.deliveries.add(item);
     setState(() {
       chatBusy = true;
-      chatStatus = activeRunLive ? 'Steering Diane' : 'Starting Diane';
-      chatMessages = nextMessages;
-      composerAttachments = const [];
-    });
-
-    try {
-      if (!_ensureWorkspaceUsableForChat(assistantId)) return;
-      final threadReady = await _ensurePhoneThread(prompt);
-      if (!threadReady) {
-        _replaceChatMessage(
-          assistantId,
-          'Could not create a phone work session.',
-        );
-        return;
-      }
-      unawaited(_saveActiveThreadMessages(nextMessages));
-
-      if (activeRunLive && activeRunId.isNotEmpty && activeTaskId.isNotEmpty) {
-        final command = await _postJson(
-          activeApiBase,
-          '/api/v2/agent-runs/$activeRunId/commands',
-          {
-            'command': 'append_followup',
-            'task_id': activeTaskId,
-            'idempotency_key': _newId('phone-append'),
-            'payload': {
-              'text': prompt,
-              'surface_context': _phoneSurfaceContext(
-                attachments: attachmentsForSend,
-              ),
-              'attachments': attachmentsForSend
-                  .map((attachment) => attachment.toPayload())
-                  .toList(),
-              'profile_policy': _phoneExecutePayload()['profile_policy'],
-              'approval_policy': _phoneExecutePayload()['approval_policy'],
-            },
+      chatMessages = [
+        ...chatMessages,
+        PhoneChatMessage(
+          id: messageId,
+          role: PhoneChatRole.user,
+          text: text,
+          status: item.statusLabel,
+          record: {
+            'id': messageId,
+            'role': 'user',
+            'content': text,
+            'attachments': attachments
+                .map((attachment) => attachment.toPayload())
+                .toList(),
+            'timestamp': DateTime.now().toUtc().toIso8601String(),
           },
-        );
-        final event = command?['event'] is Map<String, dynamic>
-            ? command!['event'] as Map<String, dynamic>
-            : null;
-        final queuedText = _agentEventText(event);
-        _replaceChatMessage(
-          assistantId,
-          queuedText.isEmpty ? 'Steering note queued.' : queuedText,
-          status: 'queued',
-        );
-        setState(() => chatStatus = 'Steering active run');
-        return;
-      }
-
-      final created = await _postJson(activeApiBase, '/api/v2/agent-runs', {
-        'workflow_id': activeWorkflowId,
-        'message': prompt,
-        'history': historyForBackend,
-        'thread_id': activeThreadId,
-        'session_id': activeThreadId,
-        'mode': 'agent',
-        'surface': 'frontend:chunk-workspace',
-        'surface_type': 'frontend',
-        'surface_id': 'chunk-workspace',
-        'surface_context': _phoneSurfaceContext(
-          attachments: attachmentsForSend,
         ),
-      });
-      final control = created?['v2_control_plane'] is Map<String, dynamic>
-          ? created!['v2_control_plane'] as Map<String, dynamic>
-          : const <String, dynamic>{};
-      final taskRef = created?['task_run_ref'] is Map<String, dynamic>
-          ? created!['task_run_ref'] as Map<String, dynamic>
-          : const <String, dynamic>{};
-      final runId = _asString(
-        control['run_id'],
-        _asString(taskRef['run_id'], ''),
-      );
-      activeTaskId = _asString(
-        control['task_id'],
-        _asString(taskRef['task_id'], activeTaskId),
-      );
-      if (runId.isEmpty) {
-        _replaceChatMessage(assistantId, 'Diane queued this request.');
-        setState(() => chatStatus = 'Queued');
-        return;
+      ];
+      chatStatus = 'Saving on this phone';
+    });
+    try {
+      await _persistDeviceState();
+    } catch (_) {
+      _deviceState.deliveries.removeWhere((value) => value.id == id);
+      _savingDrafts.remove(draftKey);
+      if ((_deviceState.drafts[draftKey] ?? '').isEmpty) {
+        _deviceState.drafts[draftKey] = draftText;
       }
-      activeRunId = runId;
-      activeRunLive = true;
-      _replaceChatMessage(
-        assistantId,
-        'Diane accepted the request.',
-        status: 'running',
-      );
-      setState(() {
-        phoneTasksByThread = {
-          ...phoneTasksByThread,
-          if (activeThreadId.isNotEmpty)
-            activeThreadId: PhoneTaskSummary(
-              taskId: activeTaskId,
-              threadId: activeThreadId,
-              status: 'running',
-              latestProgress: 'Diane accepted the request.',
-              workspaceRoot: workspaceRoot,
-              workspaceId: workspaceRoot,
-              activeRunId: runId,
-              title: prompt,
-            ),
-        };
-      });
-      unawaited(_refreshSessions());
-      await _postJson(
-        activeApiBase,
-        '/api/v2/agent-runs/$runId/execute',
-        _phoneExecutePayload(),
-      );
-      setState(() => chatStatus = 'Diane running');
-      _startAgentPolling(runId, assistantId);
-    } finally {
-      if (mounted) setState(() => chatBusy = false);
+      if (originVisible()) {
+        setState(() {
+          chatMessages = chatMessages
+              .where((message) => message.id != messageId)
+              .toList();
+          chatBusy = false;
+          chatStatus =
+              'Could not save this message. Your draft is still here; nothing was sent.';
+        });
+      }
+      unawaited(_persistDeviceState().catchError((Object _) {}));
+      return;
     }
+    _savingDrafts.remove(draftKey);
+    if (!originVisible()) {
+      if (mounted && originBase == activeApiBase && health == 'ready') {
+        unawaited(_deliverRequest(id, originEpoch: originEpoch));
+      }
+      return;
+    }
+    if (chatController.text == draftText) {
+      _restoringDraft = true;
+      chatController.clear();
+      _restoringDraft = false;
+    }
+    setState(() {
+      final sentAttachmentIds = attachments
+          .map((attachment) => attachment.id)
+          .toSet();
+      composerAttachments = composerAttachments
+          .where((attachment) => !sentAttachmentIds.contains(attachment.id))
+          .toList();
+      chatBusy = false;
+      chatStatus = health == 'ready'
+          ? 'Waiting for acknowledgement'
+          : 'Saved on this phone. Will send when reconnected.';
+    });
+    if (health == 'ready') {
+      await _deliverRequest(id);
+    } else {
+      _startSessionPolling();
+    }
+  }
+
+  Future<void> _queueChatMessage() =>
+      _sendChatMessage(action: activeRunLive ? 'queue' : 'send');
+
+  void _updateDelivery(PhoneDeliveryItem item) {
+    final index = _deviceState.deliveries.indexWhere(
+      (existing) => existing.id == item.id,
+    );
+    if (index < 0) return;
+    _deviceState.deliveries[index] = item;
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _retryDelivery(String id) async {
+    final candidates = _deviceState.deliveries.where((item) => item.id == id);
+    if (candidates.isEmpty || !candidates.first.canRetry) return;
+    await _deliverRequest(id);
+  }
+
+  Future<void> _deliverRequest(String id, {int? originEpoch}) async {
+    if (_delivering.contains(id) || !_foreground) return;
+    final candidates = _deviceState.deliveries.where((item) => item.id == id);
+    if (candidates.isEmpty) return;
+    var item = candidates.first;
+    if (item.apiBase != activeApiBase || !item.canRetry) return;
+    final base = item.apiBase;
+    final token = accessToken;
+    final epoch = originEpoch ?? _generation;
+    final originMatches = activeThreadId == item.threadId;
+    final wasUncertain = item.status == 'uncertain';
+    var awaitingReconciliation = wasUncertain;
+    _delivering.add(id);
+    _updateDelivery(item.copyWith(status: 'sending', error: ''));
+    try {
+      await _persistDeviceState();
+      Map<String, dynamic>? receipt;
+      if (wasUncertain) {
+        try {
+          receipt = await _api.request(
+            base,
+            '/api/phone/requests/${Uri.encodeComponent(id)}',
+            token: token,
+          );
+          awaitingReconciliation = false;
+        } on PhoneApiFailure catch (failure) {
+          if (failure.statusCode != 404) rethrow;
+          awaitingReconciliation = false;
+        }
+      }
+      receipt ??= await _api.request(
+        base,
+        '/api/phone/requests',
+        method: 'POST',
+        body: item.payload,
+        token: token,
+        timeout: const Duration(seconds: 25),
+      );
+      final deliveryState = phoneReceiptDeliveryStatus(receipt);
+      if (deliveryState != 'accepted') {
+        _updateDelivery(
+          item.copyWith(
+            status: deliveryState,
+            error: _asString(
+              receipt['summary'],
+              deliveryState == 'needs_review'
+                  ? 'Review this request on your computer before taking another action.'
+                  : deliveryState == 'expired' || deliveryState == 'rejected'
+                  ? 'This action was not applied. Refresh to see the current state.'
+                  : 'The computer has not confirmed this action.',
+            ),
+          ),
+        );
+      } else {
+        final thread = _asString(receipt['thread_id'], item.threadId);
+        final workflow = _asString(receipt['workflow_id'], item.workflowId);
+        item = item.copyWith(
+          status: 'accepted',
+          error: '',
+          threadId: thread,
+          workflowId: workflow,
+          runId: _asString(receipt['run_id'], item.runId),
+        );
+        _updateDelivery(item);
+        // The envelope in item.payload remains immutable. In particular, a
+        // replay of an initially blank thread retains the original body.
+        if (mounted &&
+            epoch == _generation &&
+            base == activeApiBase &&
+            (activeThreadId == thread ||
+                (activeThreadId.isEmpty && originMatches))) {
+          final previousDraftKey = PhoneDeviceState.draftKey(
+            base,
+            activeWorkflowId,
+            activeThreadId,
+            workspaceRoot,
+          );
+          final currentDraft = chatController.text;
+          setState(() {
+            activeThreadId = thread;
+            activeWorkflowId = workflow;
+            // A completed control receipt means the decision/message was
+            // delivered. Canonical session state determines whether its run
+            // has finished, including when a newer run has already begun.
+            if (item.kind == 'send') {
+              activeRunId = item.runId;
+              activeTaskId = _asString(receipt!['task_id'], activeTaskId);
+              final state = _asString(receipt['status'], 'accepted');
+              activeRunLive =
+                  ![
+                    'completed',
+                    'failed',
+                    'stopped',
+                    'interrupted',
+                  ].contains(state) &&
+                  activeRunId.isNotEmpty;
+            }
+            chatStatus = _asString(
+              receipt!['summary'],
+              'Accepted by your computer',
+            );
+            health = 'ready';
+            lastSyncedAt = DateTime.now();
+            final root = _asString(receipt['workspace_root'], workspaceRoot);
+            workspaceRoot = root;
+            workspaceRootController.text = root;
+          });
+          if (item.payload['thread_id'] == '') {
+            _deviceState.drafts[previousDraftKey] = '';
+            _deviceState.drafts[PhoneDeviceState.draftKey(
+                  base,
+                  activeWorkflowId,
+                  activeThreadId,
+                  workspaceRoot,
+                )] =
+                currentDraft;
+          }
+          _startSessionPolling();
+          unawaited(_refreshSessions());
+        }
+      }
+    } on PhoneApiFailure catch (failure) {
+      final staleAction =
+          !awaitingReconciliation &&
+          ['answer', 'stop', 'steer', 'queue'].contains(item.kind) &&
+          failure.isExpired;
+      final uncertain =
+          awaitingReconciliation ||
+          failure.uncertain ||
+          (failure.statusCode ?? 0) >= 500;
+      _updateDelivery(
+        item.copyWith(
+          status: failure.code == 'receipt_needs_review'
+              ? 'needs_review'
+              : staleAction
+              ? 'expired'
+              : uncertain
+              ? 'uncertain'
+              : 'failed',
+          error: failure.message,
+        ),
+      );
+      if (mounted && epoch == _generation && base == activeApiBase) {
+        setState(() {
+          chatStatus = staleAction
+              ? 'This action is no longer available. Refresh to see the current state.'
+              : failure.message;
+          if (failure.statusCode == null) health = 'offline';
+        });
+      }
+    } catch (_) {
+      _updateDelivery(
+        item.copyWith(
+          status: 'uncertain',
+          error: 'Delivery is unconfirmed. Retry safely with the same request.',
+        ),
+      );
+    } finally {
+      _delivering.remove(id);
+      await _persistDeviceState().catchError((Object _) {
+        if (mounted) {
+          setState(
+            () => chatStatus =
+                'Phone storage is unavailable. Reconnect to check delivery.',
+          );
+        }
+      });
+    }
+  }
+
+  Future<void> _flushOutbox() async {
+    if (_flushing || !_foreground || health != 'ready') return;
+    _flushing = true;
+    final base = activeApiBase;
+    try {
+      final pending = _deviceState.deliveries
+          .where(
+            (item) =>
+                item.apiBase == base &&
+                ['queued', 'uncertain'].contains(item.status),
+          )
+          .map((item) => item.id)
+          .toList();
+      for (final id in pending) {
+        if (!mounted ||
+            !_foreground ||
+            base != activeApiBase ||
+            health != 'ready') {
+          break;
+        }
+        await _deliverRequest(id);
+        final current = _deviceState.deliveries
+            .where((item) => item.id == id)
+            .first;
+        if (current.status == 'uncertain') break;
+      }
+    } finally {
+      _flushing = false;
+    }
+  }
+
+  Future<void> _submitControl(
+    String kind,
+    String text,
+    Map<String, Object?> fields,
+  ) async {
+    final originEpoch = _generation;
+    final originBase = activeApiBase;
+    final id = _newId('request');
+    final item = PhoneDeliveryItem(
+      id: id,
+      kind: kind,
+      text: text,
+      apiBase: activeApiBase,
+      workflowId: activeWorkflowId,
+      threadId: activeThreadId,
+      runId: activeRunId,
+      createdAt: DateTime.now(),
+      payload: {
+        'request_id': id,
+        'action': kind,
+        'workflow_id': activeWorkflowId,
+        'thread_id': activeThreadId,
+        'run_id': activeRunId,
+        ...fields,
+      },
+    );
+    _deviceState.deliveries.add(item);
+    try {
+      await _persistDeviceState();
+    } catch (_) {
+      _deviceState.deliveries.removeWhere((value) => value.id == id);
+      if (mounted &&
+          originEpoch == _generation &&
+          originBase == activeApiBase) {
+        setState(
+          () => chatStatus = 'Could not save this action. Nothing was sent.',
+        );
+      }
+      return;
+    }
+    if (mounted && originEpoch == _generation && originBase == activeApiBase) {
+      setState(
+        () => chatStatus = 'Action saved; awaiting computer acknowledgement',
+      );
+    }
+    if (health == 'ready') await _deliverRequest(id, originEpoch: originEpoch);
+  }
+
+  Future<void> _replyToApproval(
+    PhoneApprovalRequest request,
+    Map<String, Object?> body,
+  ) async {
+    if (!request.canAnswer || request.runId != activeRunId) return;
+    final duplicate = _deviceState.deliveries.any(
+      (item) =>
+          item.apiBase == activeApiBase &&
+          item.kind == 'answer' &&
+          item.payload['approval_request_id'] == request.id &&
+          '${item.payload['worker_id'] ?? ''}' == request.workerId &&
+          item.runId == request.runId &&
+          !['expired', 'failed'].contains(item.status),
+    );
+    if (duplicate) return;
+    setState(() {
+      pendingApprovals = pendingApprovals
+          .map(
+            (item) => item.key == request.key
+                ? item.copyWith(status: 'sending')
+                : item,
+          )
+          .toList();
+    });
+    await _submitControl(
+      'answer',
+      request.isQuestion
+          ? 'Answer Diane’s question'
+          : 'Respond to permission request',
+      {
+        'run_id': request.runId,
+        if (request.workerId.isNotEmpty) 'worker_id': request.workerId,
+        'approval_request_id': request.id,
+        'decision': body['decision'] ?? 'accept',
+        'answers': body['answers'] ?? <String, String>{},
+      },
+    );
+    if (mounted) _startSessionPolling();
   }
 
   Future<void> _pasteScreenshotAttachment() async {
@@ -2456,6 +2706,13 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
       composerAttachments = [...composerAttachments, attachment];
       chatStatus = 'Screenshot attached';
     });
+    await _persistDeviceState().catchError((Object _) {
+      if (mounted) {
+        setState(
+          () => chatStatus = 'Screenshot could not be saved on this phone.',
+        );
+      }
+    });
   }
 
   void _removeComposerAttachment(String id) {
@@ -2464,6 +2721,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
           .where((attachment) => attachment.id != id)
           .toList();
     });
+    unawaited(_persistDeviceState().catchError((Object _) {}));
   }
 
   Future<void> _changeRunMode(WorkRunMode next) async {
@@ -2477,117 +2735,253 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
 
   Future<void> _stopActiveRun() async {
     if (!activeRunLive || activeRunId.isEmpty) return;
+    if (_deviceState.deliveries.any(
+      (item) =>
+          item.apiBase == activeApiBase &&
+          item.runId == activeRunId &&
+          item.kind == 'stop' &&
+          !['failed', 'expired'].contains(item.status),
+    )) {
+      setState(
+        () => chatStatus =
+            'The stop request is already saved. Waiting for the computer’s state.',
+      );
+      return;
+    }
+    await _submitControl('stop', 'Stop current task', {'run_id': activeRunId});
+  }
+
+  void _startSessionPolling() {
+    agentPollTimer?.cancel();
+    final subscription = ++_pollSubscription;
+    if (!mounted || !_foreground || !_deviceLoaded) return;
+    unawaited(_pollSession(_generation, subscription));
+  }
+
+  bool _scopeCurrent(int epoch, int subscription, String base, String thread) =>
+      mounted &&
+      _foreground &&
+      epoch == _generation &&
+      subscription == _pollSubscription &&
+      base == activeApiBase &&
+      thread == activeThreadId;
+
+  Future<void> _pollSession(int epoch, int subscription) async {
+    final base = activeApiBase;
+    final thread = activeThreadId;
+    final workflow = activeWorkflowId;
+    final token = accessToken;
+    try {
+      if (thread.isEmpty) {
+        await _api.request(base, '/api/health', token: token);
+        if (!_scopeCurrent(epoch, subscription, base, thread)) return;
+      } else {
+        final payload = await _api.request(
+          base,
+          '/api/phone/sessions/${Uri.encodeComponent(workflow)}/${Uri.encodeComponent(thread)}/state',
+          token: token,
+        );
+        if (!_scopeCurrent(epoch, subscription, base, thread)) return;
+        _applySessionState(payload);
+        if (activeRunId.isNotEmpty) {
+          final run = _recordValue(payload['run']) ?? {};
+          final task = _recordValue(payload['task']) ?? {};
+          // The phone state endpoint already supplies compact progress and
+          // artifacts. Do not repeatedly download the complete event log.
+          _applyRunEvents(activeRunId, {
+            'events': [
+              {
+                'summary': _asString(
+                  run['latest_summary'],
+                  _asString(task['latest_progress'], ''),
+                ),
+                'artifact_refs': task['artifacts'] ?? const [],
+              },
+            ],
+          });
+        }
+      }
+      if (!_scopeCurrent(epoch, subscription, base, thread)) return;
+      _pollFailures = 0;
+      setState(() {
+        health = 'ready';
+        lastSyncedAt = DateTime.now();
+        statusDetail = 'Connected';
+      });
+      await _persistDeviceState().catchError((Object _) {});
+      if (_scopeCurrent(epoch, subscription, base, thread)) {
+        unawaited(_flushOutbox());
+        _pollCycles += 1;
+        if (_pollCycles % 6 == 0) unawaited(_refreshSessions());
+      }
+    } on PhoneApiFailure catch (failure) {
+      if (!_scopeCurrent(epoch, subscription, base, thread)) return;
+      _pollFailures += 1;
+      setState(() {
+        health = 'offline';
+        statusDetail = failure.message;
+        chatStatus = failure.statusCode == 404 && thread.isNotEmpty
+            ? 'This conversation is unavailable. Open another conversation from Work.'
+            : 'Connection interrupted. Your saved work is still here.';
+      });
+    } catch (_) {
+      if (!_scopeCurrent(epoch, subscription, base, thread)) return;
+      _pollFailures += 1;
+      setState(() {
+        health = 'offline';
+        statusDetail = 'Connection interrupted';
+      });
+    } finally {
+      if (_scopeCurrent(epoch, subscription, base, thread)) {
+        agentPollTimer = Timer(
+          phoneReconnectDelay(_pollFailures),
+          () => unawaited(_pollSession(epoch, subscription)),
+        );
+      }
+    }
+  }
+
+  void _applySessionState(Map<String, dynamic> payload) {
+    final thread = _recordValue(payload['thread']) ?? {};
+    final run = _recordValue(payload['run']) ?? {};
+    final task = _recordValue(payload['task']) ?? {};
+    final metadata = _recordValue(task['metadata']) ?? {};
+    final canonical = _phoneMessagesFromThreadPayload(thread);
+    final ids = canonical.map((message) => message.id).toSet();
+    final localIds = _conversationDeliveries
+        .map((item) => '${item.payload['message_id'] ?? ''}')
+        .toSet();
+    final pending = chatMessages
+        .where(
+          (message) =>
+              localIds.contains(message.id) && !ids.contains(message.id),
+        )
+        .toList();
+    final runStatus = _asString(run['status'], _asString(task['status'], ''));
+    final approvals =
+        (payload['pending_approvals'] is List
+                ? payload['pending_approvals'] as List
+                : const [])
+            .whereType<Map>()
+            .map(
+              (value) => PhoneApprovalRequest.fromJson(
+                Map<String, dynamic>.from(value),
+              ),
+            )
+            .toList();
+    final shownApprovals = <PhoneApprovalRequest>[];
+    for (final request in approvals) {
+      final receipts = _deviceState.deliveries.where(
+        (item) =>
+            item.apiBase == activeApiBase &&
+            item.kind == 'answer' &&
+            item.runId == request.runId &&
+            '${item.payload['worker_id'] ?? ''}' == request.workerId &&
+            item.payload['approval_request_id'] == request.id,
+      );
+      final latest = receipts.isEmpty ? null : receipts.last;
+      if (latest?.status == 'accepted') continue;
+      shownApprovals.add(
+        latest == null
+            ? request
+            : request.copyWith(
+                status:
+                    [
+                      'expired',
+                      'needs_review',
+                      'rejected',
+                    ].contains(latest.status)
+                    ? latest.status
+                    : latest.status == 'failed'
+                    ? 'pending'
+                    : 'sending',
+                error: latest.error,
+              ),
+      );
+    }
     setState(() {
-      chatBusy = true;
-      chatStatus = 'Requesting stop';
+      conversationTitle = _asString(thread['title'], conversationTitle);
+      chatMessages = [...canonical, ...pending];
+      activeRunId = _asString(
+        run['run_id'],
+        _asString(metadata['active_run_id'], ''),
+      );
+      activeTaskId = _asString(task['task_id'], _asString(run['task_id'], ''));
+      activeRunLive =
+          activeRunId.isNotEmpty &&
+          ![
+            'completed',
+            'failed',
+            'stopped',
+            'interrupted',
+            'cancelled',
+            'blocked',
+          ].contains(runStatus);
+      executionContext =
+          _recordValue(payload['execution_context']) ?? executionContext;
+      pendingApprovals = shownApprovals;
+      final root = _asString(
+        executionContext['workspace_root'],
+        _asString(
+          run['workspace_root'],
+          _asString(metadata['workspace_root'], workspaceRoot),
+        ),
+      );
+      if (_phoneTab == 0 && root.isNotEmpty) {
+        workspaceRoot = root;
+        workspaceRootController.text = root;
+      }
+      chatStatus = pendingApprovals.isNotEmpty
+          ? 'Needs your decision'
+          : activeRunLive
+          ? _asString(task['latest_progress'], 'Working on your computer')
+          : 'Ready';
+      if (task.isNotEmpty) {
+        phoneTasksByThread = {
+          ...phoneTasksByThread,
+          activeThreadId: PhoneTaskSummary.fromJson({
+            ...task,
+            'thread_id': activeThreadId,
+            'workspace_root': root,
+            'metadata': {'workspace_root': root, 'active_run_id': activeRunId},
+          }),
+        };
+      }
     });
-    final command = await _postJson(
-      activeApiBase,
-      '/api/v2/agent-runs/$activeRunId/commands',
-      {
-        'command': 'stop',
-        'task_id': activeTaskId,
-        'idempotency_key': _newId('phone-stop'),
-        'payload': {
-          'text': 'Stop requested from Dear Diane Phone.',
-          'surface_context': _phoneSurfaceContext(),
-        },
-      },
-    );
-    if (!mounted) return;
-    final event = command?['event'] is Map<String, dynamic>
-        ? command!['event'] as Map<String, dynamic>
-        : null;
-    final text = _agentEventText(event);
+  }
+
+  void _applyRunEvents(String run, Map<String, dynamic> payload) {
+    final events =
+        (payload['events'] is List ? payload['events'] as List : const [])
+            .whereType<Map<String, dynamic>>()
+            .toList();
+    if (events.isEmpty) return;
+    final artifacts = events.expand(_previewArtifactsFromEvent).toList();
+    if (artifacts.isNotEmpty) _mergePreviewArtifacts(artifacts);
+    final text = _bestAgentEventText(events);
+    if (text.isEmpty ||
+        chatMessages.any(
+          (message) =>
+              message.role == PhoneChatRole.assistant &&
+              (message.record['task_run_ref'] is Map &&
+                  (message.record['task_run_ref'] as Map)['run_id'] == run),
+        )) {
+      return;
+    }
+    final id = 'phone-progress-$run';
+    // A transient view of recorded events, never a PUT of authoritative history.
     setState(() {
-      chatBusy = false;
-      chatStatus = text.isEmpty ? 'Stop requested' : text;
       chatMessages = [
-        ...chatMessages,
+        ...chatMessages.where((message) => message.id != id),
         PhoneChatMessage(
-          id: _newId('status'),
-          role: PhoneChatRole.status,
-          text: text.isEmpty ? 'Stop requested.' : text,
-          status: 'stop_requested',
+          id: id,
+          role: PhoneChatRole.assistant,
+          text: text,
+          status: activeRunLive ? 'Working' : '',
+          record: {'phone_projection': true},
         ),
       ];
     });
-  }
-
-  bool _ensureWorkspaceUsableForChat(String assistantId) {
-    if (health != 'ready') {
-      _replaceChatMessage(assistantId, 'Dear Diane API is offline. Check Settings.');
-      return false;
-    }
-    return true;
-  }
-
-  void _startAgentPolling(String runId, String assistantId) {
-    agentPollTimer?.cancel();
-    var ticks = 0;
-    agentPollTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
-      ticks += 1;
-      if (ticks > 180) {
-        timer.cancel();
-        return;
-      }
-      unawaited(_refreshAgentEvents(runId, assistantId));
-    });
-    unawaited(_refreshAgentEvents(runId, assistantId));
-  }
-
-  Future<void> _refreshAgentEvents(String runId, String assistantId) async {
-    final payload = await _getJson(
-      activeApiBase,
-      '/api/v2/agent-runs/$runId/events',
-    );
-    if (!mounted || payload == null) return;
-    final events = (payload['events'] as List<dynamic>? ?? const [])
-        .whereType<Map<String, dynamic>>()
-        .toList();
-    if (events.isEmpty) return;
-    final artifacts = events.expand(_previewArtifactsFromEvent).toList();
-    if (artifacts.isNotEmpty) {
-      _mergePreviewArtifacts(artifacts);
-    }
-    final latest = events.last;
-    final text = _bestAgentEventText(events);
-    if (text.isNotEmpty) {
-      _replaceChatMessage(
-        assistantId,
-        text,
-        status: _asString(latest['type'], 'running'),
-      );
-    }
-    final type = _asString(latest['type'], '');
-    if (activeThreadId.isNotEmpty) {
-      setState(() {
-        phoneTasksByThread = {
-          ...phoneTasksByThread,
-          activeThreadId: PhoneTaskSummary(
-            taskId: _asString(latest['task_id'], activeTaskId),
-            threadId: activeThreadId,
-            status: type.isEmpty ? 'running' : type,
-            latestProgress: text,
-            workspaceRoot: workspaceRoot,
-            workspaceId: workspaceRoot,
-            activeRunId: runId,
-            title: text,
-          ),
-        };
-      });
-    }
-    if (type == 'completed' ||
-        type == 'failed' ||
-        type == 'blocked' ||
-        type == 'stopped') {
-      agentPollTimer?.cancel();
-      setState(() {
-        activeRunLive = false;
-        chatStatus = type == 'completed' ? 'Ready' : type;
-      });
-      unawaited(_refreshSessions());
-    }
   }
 
   Iterable<PhonePreviewArtifact> _previewArtifactsFromEvent(
@@ -2913,306 +3307,171 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
   Future<void> _openBackendDialog() async {
     apiBaseController.text = activeApiBase;
     accessTokenController.text = accessToken;
-    var dialogRootSuggestions = workspaceRootSuggestions;
-    Timer? dialogRootSuggestionDebounce;
-    try {
-      await showDialog<void>(
-        context: context,
-        builder: (context) {
-          return StatefulBuilder(
-            builder: (context, setDialogState) {
-              Future<void> refreshDialogRootSuggestions(String value) async {
-                final suggestions = await _fetchWorkspaceRootSuggestions(value);
-                if (!context.mounted) return;
-                setDialogState(() => dialogRootSuggestions = suggestions);
-              }
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, refreshSheet) {
+          Future<void> reconnect() async {
+            await _refreshStatus();
+            if (context.mounted) refreshSheet(() {});
+          }
 
-              void scheduleDialogRootSuggestions(String value) {
-                dialogRootSuggestionDebounce?.cancel();
-                dialogRootSuggestionDebounce = Timer(
-                  const Duration(milliseconds: 220),
-                  () => unawaited(refreshDialogRootSuggestions(value)),
-                );
-              }
+          Future<void> saveConnection() async {
+            final next = _normalizeApiBase(apiBaseController.text);
+            accessToken = _normalizeAccessToken(accessTokenController.text);
+            if (next != activeApiBase) {
+              await _changeComputer(next);
+            } else {
+              await _savePhoneSettings();
+              await _refreshStatus();
+            }
+            if (context.mounted) refreshSheet(() {});
+          }
 
-              Future<void> runAndRefresh(
-                Future<Object?> Function() action,
-              ) async {
-                await action();
-                if (context.mounted) setDialogState(() {});
-              }
-
-              return AlertDialog(
-                title: const Text('Settings'),
-                content: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      TextField(
-                        controller: apiBaseController,
-                        keyboardType: TextInputType.url,
-                        decoration: const InputDecoration(
-                          labelText: 'Dear Diane API base',
-                          hintText: 'http://10.77.77.2:8000',
+          return Padding(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.viewInsetsOf(context).bottom,
+            ),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.sizeOf(context).height * .86,
+              ),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(24, 6, 24, 24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'Your computer',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Icon(
+                          health == 'ready'
+                              ? Icons.check_circle_outline
+                              : Icons.cloud_off_outlined,
                         ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: accessTokenController,
-                        obscureText: true,
-                        enableSuggestions: false,
-                        autocorrect: false,
-                        decoration: const InputDecoration(
-                          labelText: 'Access token',
-                          hintText: 'Paste token if your backend requires one',
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      TextField(
-                        controller: workspaceRootController,
-                        onChanged: scheduleDialogRootSuggestions,
-                        decoration: const InputDecoration(
-                          labelText: 'Workspace root',
-                          hintText:
-                              '/Users/lizhi/Downloads/local_projects/deep-agent-network',
-                        ),
-                      ),
-                      if (dialogRootSuggestions.isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            border: Border.all(color: const Color(0xffded7ca)),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Column(
-                            children: [
-                              for (final suggestion
-                                  in dialogRootSuggestions.take(4))
-                                ListTile(
-                                  dense: true,
-                                  leading: const Icon(
-                                    Icons.folder_open_outlined,
-                                  ),
-                                  title: Text(
-                                    suggestion.label.isEmpty
-                                        ? suggestion.path
-                                        : suggestion.label,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  subtitle: Text(
-                                    suggestion.path,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  onTap: () => runAndRefresh(() async {
-                                    workspaceRootController.text =
-                                        suggestion.path;
-                                    dialogRootSuggestions = const [];
-                                    await _applyWorkspaceRoot(suggestion.path);
-                                    return null;
-                                  }),
-                                ),
-                            ],
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            health == 'ready'
+                                ? 'Connected and ready'
+                                : health == 'checking'
+                                ? 'Connecting…'
+                                : 'Waiting for connection',
+                            style: Theme.of(context).textTheme.titleMedium,
                           ),
                         ),
                       ],
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      health == 'ready'
+                          ? 'Work runs on your computer. You can leave this screen and return later.'
+                          : 'Messages stay saved on this phone until your computer acknowledges them.',
+                    ),
+                    if (lastSyncedAt != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(
+                          'Last synced ${lastSyncedAt!.toLocal().hour.toString().padLeft(2, '0')}:${lastSyncedAt!.toLocal().minute.toString().padLeft(2, '0')}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                    if (_deliveries.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: Text(
+                          '${_deliveries.length} saved ${_deliveries.length == 1 ? 'action needs' : 'actions need'} delivery or review.',
+                        ),
+                      ),
+                    const SizedBox(height: 20),
+                    FilledButton.icon(
+                      onPressed: health == 'checking' ? null : reconnect,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Reconnect'),
+                    ),
+                    const SizedBox(height: 16),
+                    ExpansionTile(
+                      tilePadding: EdgeInsets.zero,
+                      title: const Text('Connection details'),
+                      subtitle: const Text(
+                        'Address, access token and private network',
+                      ),
+                      children: [
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: apiBaseController,
+                          keyboardType: TextInputType.url,
+                          autocorrect: false,
+                          enableSuggestions: false,
+                          onChanged: (value) {
+                            if (_normalizeApiBase(value) != activeApiBase) {
+                              accessTokenController.clear();
+                            }
+                          },
+                          decoration: const InputDecoration(
+                            labelText: 'Computer address',
+                            hintText: 'https://your-computer.example',
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: accessTokenController,
+                          obscureText: true,
+                          autocorrect: false,
+                          enableSuggestions: false,
+                          decoration: const InputDecoration(
+                            labelText: 'Access token',
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        OutlinedButton(
+                          onPressed: saveConnection,
+                          child: const Text('Save and connect'),
+                        ),
+                        const SizedBox(height: 12),
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(Icons.vpn_lock_outlined),
+                          title: const Text('Private network'),
+                          subtitle: Text(phoneWireGuardDetail),
+                          trailing: const Icon(Icons.chevron_right),
+                          onTap: () {
+                            Navigator.of(sheetContext).pop();
+                            unawaited(_openPhoneWireGuardDialog());
+                          },
+                        ),
+                        if (health != 'ready')
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
                             child: Text(
-                              workspaceRoot.isEmpty
-                                  ? 'Default backend workspace'
-                                  : workspaceRoot,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
+                              statusDetail,
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                           ),
-                          TextButton.icon(
-                            onPressed: () => runAndRefresh(() async {
-                              await _applyWorkspaceRoot(
-                                workspaceRootController.text,
-                              );
-                              return null;
-                            }),
-                            icon: const Icon(Icons.folder_open_outlined),
-                            label: const Text('Set'),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          _StatusChip(
-                            icon: Icons.vpn_key_outlined,
-                            label: 'WG',
-                            value: _wireGuardLabel,
-                          ),
-                          _StatusChip(
-                            icon: Icons.dns_outlined,
-                            label: 'API',
-                            value: health,
-                          ),
-                          _StatusChip(
-                            icon: Icons.route_outlined,
-                            label: 'Mode',
-                            value: wireGuard?.mode ?? 'dan-phone',
-                          ),
-                          _StatusChip(
-                            icon: Icons.link_outlined,
-                            label: 'Host',
-                            value:
-                                Uri.tryParse(activeApiBase)?.host ??
-                                activeApiBase,
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Text(statusDetail),
-                      if (wireGuard != null) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          wireGuard!.conflictPolicy,
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
                       ],
-                      const SizedBox(height: 16),
-                      Text(
-                        'Phone VPN',
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          _StatusChip(
-                            icon: Icons.phone_android_outlined,
-                            label: 'Tunnel',
-                            value: phoneWireGuard?.name ?? 'dan-phone',
-                          ),
-                          _StatusChip(
-                            icon: Icons.power_settings_new_outlined,
-                            label: 'State',
-                            value: phoneWireGuardBusy
-                                ? 'working'
-                                : phoneWireGuard?.state ?? 'not-started',
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      if (phoneWireGuardConfig.trim().isEmpty) ...[
-                        Text(
-                          'No phone VPN config saved. Force start needs a Dear Diane phone WireGuard peer config first.',
-                          style: Theme.of(context).textTheme.bodySmall
-                              ?.copyWith(
-                                color: Theme.of(context).colorScheme.error,
-                              ),
-                        ),
-                        const SizedBox(height: 8),
-                      ],
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          FilledButton.icon(
-                            onPressed:
-                                phoneWireGuardBusy ||
-                                    phoneWireGuardConfig.trim().isEmpty
-                                ? null
-                                : () => runAndRefresh(
-                                    () => _forceStartPhoneWireGuard(),
-                                  ),
-                            icon: const Icon(Icons.power_settings_new),
-                            label: const Text('Force start'),
-                          ),
-                          OutlinedButton.icon(
-                            onPressed: phoneWireGuardBusy
-                                ? null
-                                : () => runAndRefresh(
-                                    () => _forceStopPhoneWireGuard(),
-                                  ),
-                            icon: const Icon(Icons.power_off_outlined),
-                            label: const Text('Force off'),
-                          ),
-                          TextButton.icon(
-                            onPressed: phoneWireGuardBusy
-                                ? null
-                                : () => runAndRefresh(
-                                    () => _refreshPhoneWireGuardStatus(),
-                                  ),
-                            icon: const Icon(Icons.refresh),
-                            label: const Text('VPN status'),
-                          ),
-                          TextButton.icon(
-                            onPressed: phoneWireGuardBusy
-                                ? null
-                                : () => runAndRefresh(
-                                    () => _pastePhoneWireGuardConfig(),
-                                  ),
-                            icon: const Icon(Icons.content_paste),
-                            label: const Text('Paste config'),
-                          ),
-                          TextButton.icon(
-                            onPressed: () {
-                              Navigator.of(context).pop();
-                              unawaited(_savePhoneSettings());
-                              unawaited(_openPhoneWireGuardDialog());
-                            },
-                            icon: const Icon(Icons.vpn_lock_outlined),
-                            label: const Text('Config'),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        phoneWireGuardDetail,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.of(sheetContext).pop(),
+                      child: const Text('Done'),
+                    ),
+                  ],
                 ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    child: const Text('Cancel'),
-                  ),
-                  TextButton(
-                    onPressed: () {
-                      Navigator.of(context).pop();
-                      unawaited(_savePhoneSettings());
-                      unawaited(_refreshStatus());
-                    },
-                    child: const Text('Refresh'),
-                  ),
-                  FilledButton(
-                    onPressed: () {
-                      final next = _normalizeApiBase(apiBaseController.text);
-                      activeApiBase = next;
-                      workspaceRoot = workspaceRootController.text.trim();
-                      unawaited(_savePhoneSettings());
-                      Navigator.of(context).pop();
-                      unawaited(_refreshStatus(preferredApiBase: next));
-                    },
-                    child: const Text('Test'),
-                  ),
-                ],
-              );
-            },
+              ),
+            ),
           );
         },
-      );
-    } finally {
-      dialogRootSuggestionDebounce?.cancel();
+      ),
+    );
+    if (mounted) {
+      apiBaseController.text = activeApiBase;
+      accessTokenController.text = accessToken;
     }
   }
 
@@ -3322,20 +3581,111 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
     );
   }
 
-  String get _wireGuardLabel {
-    if (loadingWireGuard) {
-      return phoneWireGuard == null ? 'checking' : 'api-check';
-    }
-    if (health != 'ready') {
-      return phoneWireGuard?.state == 'up' ? 'api-offline' : 'no-api';
-    }
-    return wireGuard?.status ?? 'unknown';
+  Widget _workBody(WorkPage page) => _WorkSurface(
+    page: page,
+    runMode: runMode,
+    workspaceRoot: workspaceRoot,
+    workspaceRootController: workspaceRootController,
+    files: workspaceFiles,
+    activeFile: activeFile,
+    activeFileContent: activeFileContent,
+    previewTitle: previewTitle,
+    previewStatus: previewStatus,
+    previewContent: previewContent,
+    previewArtifacts: previewArtifacts,
+    previewArtifactsExpanded: previewArtifactsExpanded,
+    fileStatus: fileStatus,
+    loadingFiles: loadingFiles,
+    chatMessages: chatMessages,
+    chatController: chatController,
+    chatStatus: _storageWarning.isEmpty ? chatStatus : _storageWarning,
+    chatBusy: chatBusy,
+    activeRunLive: activeRunLive,
+    composerAttachments: composerAttachments,
+    loadingPromptLog: loadingPromptLog,
+    onRunModeChanged: _changeRunMode,
+    onPasteScreenshot: _pasteScreenshotAttachment,
+    onRemoveAttachment: _removeComposerAttachment,
+    onStopRun: _stopActiveRun,
+    onOpenPromptLog: _openPromptLogPreview,
+    onTogglePreviewArtifacts: () =>
+        setState(() => previewArtifactsExpanded = !previewArtifactsExpanded),
+    onFetchRootSuggestions: _fetchWorkspaceRootSuggestions,
+    onApplyWorkspaceRoot: _applyWorkspaceRoot,
+    onRefreshFiles: _refreshWorkspaceFiles,
+    onSelectFile: _selectWorkspaceFile,
+    onSelectArtifact: _selectPreviewArtifact,
+    onSendChat: _sendChatMessage,
+    onQueueChat: _queueChatMessage,
+    deliveries: _conversationDeliveries,
+    pendingApprovals: pendingApprovals,
+    onRetryDelivery: _retryDelivery,
+    onReplyApproval: _replyToApproval,
+    conversationTitle: conversationTitle,
+    connectionState: health,
+    conversationId: activeThreadId,
+  );
+
+  Widget _libraryBody() {
+    final notes = Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: SegmentedButton<NotesPage>(
+            showSelectedIcon: false,
+            segments: const [
+              ButtonSegment(value: NotesPage.pages, label: Text('Pages')),
+              ButtonSegment(value: NotesPage.edit, label: Text('Edit')),
+              ButtonSegment(value: NotesPage.read, label: Text('Read')),
+            ],
+            selected: {notesPage},
+            onSelectionChanged: (selection) {
+              _saveActiveNoteReadScroll();
+              _saveActiveNoteEditScroll();
+              setState(() => notesPage = selection.first);
+              if (selection.first == NotesPage.read && activeNote != null) {
+                unawaited(_refreshNotePreview(activeNote!));
+              }
+            },
+          ),
+        ),
+        Expanded(
+          child: _NotesSurface(
+            page: notesPage,
+            notes: workspaceNotes,
+            activeNote: activeNote,
+            activePreview: activeNote == null
+                ? null
+                : notePreviewCache[activeNote!.path],
+            notesRoot: notesRoot,
+            noteContent: noteContent,
+            noteStatus: noteStatus,
+            notePreviewStatus: notePreviewStatus,
+            noteSaveStatus: noteSaveStatus,
+            loading: loadingNotes,
+            editController: noteEditController,
+            readScrollController: noteReadScrollController,
+            editScrollController: noteEditScrollController,
+            onSaveNote: _saveActiveNote,
+            onSelectNote: _selectNote,
+            onRefresh: () => _refreshNotes(),
+          ),
+        ),
+      ],
+    );
+    return PhoneLibraryView(
+      selectedIndex: _libraryTab,
+      onSelected: (index) => setState(() => _libraryTab = index),
+      child: _libraryTab == 1
+          ? notes
+          : _workBody(_libraryTab == 0 ? WorkPage.files : WorkPage.preview),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      key: scaffoldKey,
+    return PhoneShell(
+      scaffoldKey: scaffoldKey,
       drawer: _SessionDrawer(
         groups: _buildSessionGroups(),
         tasksByThread: phoneTasksByThread,
@@ -3348,2116 +3698,46 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         onCreateSession: _createSessionForWorkspace,
         onSelectSession: _selectPhoneSession,
       ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            _WorkspaceHeader(
-              mode: mode,
-              onModeChanged: (next) => setState(() => mode = next),
-              onOpenSessions: () => scaffoldKey.currentState?.openDrawer(),
-              onConfigureBackend: _openBackendDialog,
-            ),
-            Expanded(
-              child: mode == WorkspaceMode.work
-                  ? _WorkSurface(
-                      page: workPage,
-                      runMode: runMode,
-                      workspaceRoot: workspaceRoot,
-                      workspaceRootController: workspaceRootController,
-                      files: workspaceFiles,
-                      activeFile: activeFile,
-                      activeFileContent: activeFileContent,
-                      previewTitle: previewTitle,
-                      previewStatus: previewStatus,
-                      previewContent: previewContent,
-                      previewArtifacts: previewArtifacts,
-                      previewArtifactsExpanded: previewArtifactsExpanded,
-                      fileStatus: fileStatus,
-                      loadingFiles: loadingFiles,
-                      chatMessages: chatMessages,
-                      chatController: chatController,
-                      chatStatus: chatStatus,
-                      chatBusy: chatBusy,
-                      activeRunLive: activeRunLive,
-                      composerAttachments: composerAttachments,
-                      loadingPromptLog: loadingPromptLog,
-                      onRunModeChanged: _changeRunMode,
-                      onPasteScreenshot: _pasteScreenshotAttachment,
-                      onRemoveAttachment: _removeComposerAttachment,
-                      onStopRun: _stopActiveRun,
-                      onOpenPromptLog: _openPromptLogPreview,
-                      onTogglePreviewArtifacts: () => setState(
-                        () => previewArtifactsExpanded =
-                            !previewArtifactsExpanded,
-                      ),
-                      onFetchRootSuggestions: _fetchWorkspaceRootSuggestions,
-                      onApplyWorkspaceRoot: _applyWorkspaceRoot,
-                      onRefreshFiles: _refreshWorkspaceFiles,
-                      onSelectFile: _selectWorkspaceFile,
-                      onSelectArtifact: _selectPreviewArtifact,
-                      onSendChat: _sendChatMessage,
-                    )
-                  : _NotesSurface(
-                      page: notesPage,
-                      notes: workspaceNotes,
-                      activeNote: activeNote,
-                      activePreview: activeNote == null
-                          ? null
-                          : notePreviewCache[activeNote!.path],
-                      notesRoot: notesRoot,
-                      noteContent: noteContent,
-                      noteStatus: noteStatus,
-                      notePreviewStatus: notePreviewStatus,
-                      noteSaveStatus: noteSaveStatus,
-                      loading: loadingNotes,
-                      editController: noteEditController,
-                      readScrollController: noteReadScrollController,
-                      editScrollController: noteEditScrollController,
-                      onSaveNote: _saveActiveNote,
-                      onSelectNote: _selectNote,
-                      onRefresh: () => _refreshNotes(),
-                    ),
-            ),
-          ],
-        ),
-      ),
-      bottomNavigationBar: mode == WorkspaceMode.work
-          ? NavigationBar(
-              selectedIndex: workPage.index,
-              onDestinationSelected: (index) {
-                setState(() => workPage = WorkPage.values[index]);
-              },
-              destinations: const [
-                NavigationDestination(
-                  icon: Icon(Icons.chat_bubble_outline),
-                  selectedIcon: Icon(Icons.chat_bubble),
-                  label: 'Chat',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.folder_outlined),
-                  selectedIcon: Icon(Icons.folder),
-                  label: 'Files',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.visibility_outlined),
-                  selectedIcon: Icon(Icons.visibility),
-                  label: 'Preview',
-                ),
-              ],
+      selectedIndex: _phoneTab,
+      onDestinationSelected: (index) {
+        setState(() => _phoneTab = index);
+        if (index == 1) unawaited(_refreshSessions());
+      },
+      body: _phoneTab == 0
+          ? _workBody(WorkPage.chat)
+          : _phoneTab == 1
+          ? PhoneWorkOverview(
+              groups: _buildSessionGroups(),
+              tasksByThread: phoneTasksByThread,
+              loading: loadingSessions,
+              onRefresh: _refreshSessions,
+              onSelectSession: _selectPhoneSession,
+              deliveries: _deliveries,
+              onRetryDelivery: _retryDelivery,
+              approvals: pendingApprovals,
+              onReplyApproval: _replyToApproval,
+              onOpenDiane: () => setState(() => _phoneTab = 0),
             )
-          : NavigationBar(
-              selectedIndex: notesPage.index,
-              onDestinationSelected: (index) {
-                _saveActiveNoteReadScroll();
-                _saveActiveNoteEditScroll();
-                final nextPage = NotesPage.values[index];
-                if (notesPage == NotesPage.edit && nextPage != NotesPage.edit) {
-                  noteAutosaveTimer?.cancel();
-                  unawaited(_saveActiveNote());
-                }
-                setState(() => notesPage = nextPage);
-                final path = activeNote?.path;
-                if (path != null && path.isNotEmpty) {
-                  _restoreNoteScroll(nextPage, path);
-                }
-              },
-              destinations: const [
-                NavigationDestination(
-                  icon: Icon(Icons.menu_book_outlined),
-                  selectedIcon: Icon(Icons.menu_book),
-                  label: 'Pages',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.edit_note_outlined),
-                  selectedIcon: Icon(Icons.edit_note),
-                  label: 'Edit',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.article_outlined),
-                  selectedIcon: Icon(Icons.article),
-                  label: 'Read',
-                ),
-              ],
-            ),
-    );
-  }
-}
-
-class _WorkspaceHeader extends StatelessWidget {
-  const _WorkspaceHeader({
-    required this.mode,
-    required this.onModeChanged,
-    required this.onOpenSessions,
-    required this.onConfigureBackend,
-  });
-
-  final WorkspaceMode mode;
-  final ValueChanged<WorkspaceMode> onModeChanged;
-  final VoidCallback onOpenSessions;
-  final VoidCallback onConfigureBackend;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
-      decoration: const BoxDecoration(
-        color: Color(0xfffcfaf5),
-        border: Border(bottom: BorderSide(color: Color(0xffded7ca))),
-      ),
-      child: Row(
-        children: [
-          IconButton(
-            onPressed: onOpenSessions,
-            tooltip: 'Sessions',
-            icon: const Icon(Icons.menu),
-          ),
-          Expanded(
-            child: Center(
-              child: SegmentedButton<WorkspaceMode>(
-                segments: const [
-                  ButtonSegment(
-                    value: WorkspaceMode.work,
-                    icon: Icon(Icons.work_outline),
-                    label: Text('Work'),
-                  ),
-                  ButtonSegment(
-                    value: WorkspaceMode.notes,
-                    icon: Icon(Icons.notes_outlined),
-                    label: Text('Notes'),
-                  ),
-                ],
-                selected: {mode},
-                onSelectionChanged: (selection) =>
-                    onModeChanged(selection.first),
-              ),
-            ),
-          ),
-          IconButton(
-            onPressed: onConfigureBackend,
-            tooltip: 'Settings',
-            icon: const Icon(Icons.settings_outlined),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SessionDrawer extends StatefulWidget {
-  const _SessionDrawer({
-    required this.groups,
-    required this.tasksByThread,
-    required this.activeThreadId,
-    required this.activeWorkspaceRoot,
-    required this.loading,
-    required this.onRefresh,
-    required this.onCreateWorkspace,
-    required this.onSelectWorkspace,
-    required this.onCreateSession,
-    required this.onSelectSession,
-  });
-
-  final List<PhoneWorkspaceSessionGroup> groups;
-  final Map<String, PhoneTaskSummary> tasksByThread;
-  final String activeThreadId;
-  final String activeWorkspaceRoot;
-  final bool loading;
-  final Future<void> Function() onRefresh;
-  final Future<void> Function() onCreateWorkspace;
-  final Future<void> Function(String root) onSelectWorkspace;
-  final Future<void> Function(String root) onCreateSession;
-  final Future<void> Function(
-    PhoneSessionSummary session, {
-    String workspaceRootOverride,
-  })
-  onSelectSession;
-
-  @override
-  State<_SessionDrawer> createState() => _SessionDrawerState();
-}
-
-class _SessionDrawerState extends State<_SessionDrawer> {
-  String query = '';
-  final Set<String> expandedRoots = {};
-
-  @override
-  void didUpdateWidget(covariant _SessionDrawer oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    for (final group in widget.groups) {
-      if (group.root == widget.activeWorkspaceRoot || group.archived) {
-        expandedRoots.add(_groupKey(group));
-      }
-    }
-  }
-
-  String _groupKey(PhoneWorkspaceSessionGroup group) {
-    return group.archived ? 'archived' : group.root;
-  }
-
-  bool _sessionMatchesQuery(PhoneSessionSummary session, String normalized) {
-    if (normalized.isEmpty) return true;
-    final task = widget.tasksByThread[session.id];
-    return session.displayTitle.toLowerCase().contains(normalized) ||
-        session.id.toLowerCase().contains(normalized) ||
-        session.workflowId.toLowerCase().contains(normalized) ||
-        (task?.latestProgress.toLowerCase().contains(normalized) ?? false);
-  }
-
-  List<PhoneWorkspaceSessionGroup> _visibleGroups() {
-    final normalized = query.trim().toLowerCase();
-    if (normalized.isEmpty) return widget.groups;
-    return widget.groups
-        .map(
-          (group) => PhoneWorkspaceSessionGroup(
-            root: group.root,
-            name: group.name,
-            archived: group.archived,
-            sessions: group.sessions
-                .where((session) => _sessionMatchesQuery(session, normalized))
-                .toList(),
-          ),
-        )
-        .where(
-          (group) =>
-              group.sessions.isNotEmpty ||
-              group.name.toLowerCase().contains(normalized) ||
-              group.root.toLowerCase().contains(normalized),
-        )
-        .toList();
-  }
-
-  Future<void> _runAndClose(Future<void> Function() action) async {
-    Navigator.of(context).pop();
-    await action();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final visibleGroups = _visibleGroups();
-    return Drawer(
-      child: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    'Sessions',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Refresh sessions',
-                  onPressed: widget.loading
-                      ? null
-                      : () => unawaited(widget.onRefresh()),
-                  icon: widget.loading
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.refresh),
-                ),
-                IconButton.filledTonal(
-                  tooltip: 'New workspace',
-                  onPressed: () =>
-                      unawaited(_runAndClose(widget.onCreateWorkspace)),
-                  icon: const Icon(Icons.create_new_folder_outlined),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              onChanged: (value) => setState(() => query = value),
-              decoration: InputDecoration(
-                hintText: 'Search sessions',
-                prefixIcon: const Icon(Icons.search),
-                filled: true,
-                fillColor: Colors.white,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            if (widget.loading) const LinearProgressIndicator(),
-            if (!widget.loading && visibleGroups.isEmpty)
-              const Padding(
-                padding: EdgeInsets.only(top: 12),
-                child: Text('No sessions found.'),
-              ),
-            for (final group in visibleGroups)
-              _SessionWorkspaceGroupCard(
-                group: group,
-                tasksByThread: widget.tasksByThread,
-                activeThreadId: widget.activeThreadId,
-                activeWorkspaceRoot: widget.activeWorkspaceRoot,
-                expanded:
-                    expandedRoots.contains(_groupKey(group)) ||
-                    group.root == widget.activeWorkspaceRoot,
-                onExpandedChanged: (expanded) {
-                  setState(() {
-                    if (expanded) {
-                      expandedRoots.add(_groupKey(group));
-                    } else {
-                      expandedRoots.remove(_groupKey(group));
-                    }
-                  });
-                },
-                onSelectWorkspace: group.archived
-                    ? null
-                    : () => _runAndClose(
-                        () => widget.onSelectWorkspace(group.root),
-                      ),
-                onCreateSession: group.archived
-                    ? null
-                    : () => _runAndClose(
-                        () => widget.onCreateSession(group.root),
-                      ),
-                onSelectSession: (session) => _runAndClose(
-                  () => widget.onSelectSession(
-                    session,
-                    workspaceRootOverride: group.root,
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _SessionWorkspaceGroupCard extends StatelessWidget {
-  const _SessionWorkspaceGroupCard({
-    required this.group,
-    required this.tasksByThread,
-    required this.activeThreadId,
-    required this.activeWorkspaceRoot,
-    required this.expanded,
-    required this.onExpandedChanged,
-    required this.onSelectWorkspace,
-    required this.onCreateSession,
-    required this.onSelectSession,
-  });
-
-  final PhoneWorkspaceSessionGroup group;
-  final Map<String, PhoneTaskSummary> tasksByThread;
-  final String activeThreadId;
-  final String activeWorkspaceRoot;
-  final bool expanded;
-  final ValueChanged<bool> onExpandedChanged;
-  final VoidCallback? onSelectWorkspace;
-  final VoidCallback? onCreateSession;
-  final ValueChanged<PhoneSessionSummary> onSelectSession;
-
-  @override
-  Widget build(BuildContext context) {
-    final activeWorkspace =
-        !group.archived && group.root == activeWorkspaceRoot;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: activeWorkspace ? const Color(0xffe9f3ed) : Colors.white,
-          border: Border.all(
-            color: activeWorkspace
-                ? const Color(0xff9cb9a9)
-                : const Color(0xffded7ca),
-          ),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Column(
-          children: [
-            ListTile(
-              contentPadding: const EdgeInsets.fromLTRB(12, 4, 8, 4),
-              leading: Icon(
-                group.archived
-                    ? Icons.archive_outlined
-                    : Icons.folder_copy_outlined,
-              ),
-              title: Text(
-                group.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.w700),
-              ),
-              subtitle: Text(
-                group.archived
-                    ? '${group.sessions.length} archived'
-                    : group.root.isEmpty
-                    ? '${group.sessions.length} sessions'
-                    : group.root,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              onTap: group.archived ? null : onSelectWorkspace,
-              trailing: Wrap(
-                spacing: 2,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  if (!group.archived)
-                    IconButton(
-                      tooltip: 'New session in ${group.name}',
-                      onPressed: onCreateSession,
-                      icon: const Icon(Icons.add_comment_outlined),
-                    ),
-                  IconButton(
-                    tooltip: expanded
-                        ? 'Collapse workspace'
-                        : 'Expand workspace',
-                    onPressed: () => onExpandedChanged(!expanded),
-                    icon: Icon(
-                      expanded
-                          ? Icons.keyboard_arrow_down
-                          : Icons.keyboard_arrow_right,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (expanded) ...[
-              if (group.sessions.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text('No sessions yet.'),
-                  ),
-                ),
-              for (final session in group.sessions)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-                  child: _SessionTile(
-                    session: session,
-                    task: tasksByThread[session.id],
-                    active: session.id == activeThreadId,
-                    archived: group.archived,
-                    onTap: () => onSelectSession(session),
-                  ),
-                ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _SessionTile extends StatelessWidget {
-  const _SessionTile({
-    required this.session,
-    required this.task,
-    required this.active,
-    required this.archived,
-    required this.onTap,
-  });
-
-  final PhoneSessionSummary session;
-  final PhoneTaskSummary? task;
-  final bool active;
-  final bool archived;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final status =
-        task?.status ?? (session.messageCount == 0 ? 'blank' : 'saved');
-    final updated = _compactDateTimeLabel(session.updatedAt);
-    final detail = [
-      status,
-      if (session.messageCount > 0) '${session.messageCount} messages',
-      if (updated.isNotEmpty) updated,
-    ].join(' · ');
-    final live = task?.isLive == true;
-    return ListTile(
-      dense: true,
-      enabled: !archived,
-      selected: active,
-      tileColor: Colors.white,
-      selectedTileColor: const Color(0xffd7eadf),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
-        side: const BorderSide(color: Color(0xffded7ca)),
-      ),
-      leading: Icon(
-        live ? Icons.radio_button_checked : Icons.chat_bubble_outline,
-        color: live ? const Color(0xff176b5b) : null,
-      ),
-      title: Text(
-        session.displayTitle,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: Text(detail, maxLines: 1, overflow: TextOverflow.ellipsis),
-      trailing: const Icon(Icons.chevron_right),
-      onTap: archived ? null : onTap,
-    );
-  }
-}
-
-class _StatusChip extends StatelessWidget {
-  const _StatusChip({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
-
-  final IconData icon;
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: const Color(0xffece6da),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 16),
-          const SizedBox(width: 6),
-          Text(
-            '$label: $value',
-            style: Theme.of(context).textTheme.labelMedium,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _WorkSurface extends StatelessWidget {
-  const _WorkSurface({
-    required this.page,
-    required this.runMode,
-    required this.workspaceRoot,
-    required this.workspaceRootController,
-    required this.files,
-    required this.activeFile,
-    required this.activeFileContent,
-    required this.previewTitle,
-    required this.previewStatus,
-    required this.previewContent,
-    required this.previewArtifacts,
-    required this.previewArtifactsExpanded,
-    required this.fileStatus,
-    required this.loadingFiles,
-    required this.chatMessages,
-    required this.chatController,
-    required this.chatStatus,
-    required this.chatBusy,
-    required this.activeRunLive,
-    required this.composerAttachments,
-    required this.loadingPromptLog,
-    required this.onRunModeChanged,
-    required this.onPasteScreenshot,
-    required this.onRemoveAttachment,
-    required this.onStopRun,
-    required this.onOpenPromptLog,
-    required this.onTogglePreviewArtifacts,
-    required this.onFetchRootSuggestions,
-    required this.onApplyWorkspaceRoot,
-    required this.onRefreshFiles,
-    required this.onSelectFile,
-    required this.onSelectArtifact,
-    required this.onSendChat,
-  });
-
-  final WorkPage page;
-  final WorkRunMode runMode;
-  final String workspaceRoot;
-  final TextEditingController workspaceRootController;
-  final List<WorkspaceFileEntry> files;
-  final WorkspaceFileEntry? activeFile;
-  final String activeFileContent;
-  final String previewTitle;
-  final String previewStatus;
-  final String previewContent;
-  final List<PhonePreviewArtifact> previewArtifacts;
-  final bool previewArtifactsExpanded;
-  final String fileStatus;
-  final bool loadingFiles;
-  final List<PhoneChatMessage> chatMessages;
-  final TextEditingController chatController;
-  final String chatStatus;
-  final bool chatBusy;
-  final bool activeRunLive;
-  final List<PhoneAttachmentDraft> composerAttachments;
-  final bool loadingPromptLog;
-  final ValueChanged<WorkRunMode> onRunModeChanged;
-  final VoidCallback onPasteScreenshot;
-  final ValueChanged<String> onRemoveAttachment;
-  final VoidCallback onStopRun;
-  final VoidCallback onOpenPromptLog;
-  final VoidCallback onTogglePreviewArtifacts;
-  final Future<List<WorkspaceRootSuggestion>> Function(String)
-  onFetchRootSuggestions;
-  final Future<void> Function([String? value]) onApplyWorkspaceRoot;
-  final Future<void> Function({String? apiBase, String? root}) onRefreshFiles;
-  final ValueChanged<WorkspaceFileEntry> onSelectFile;
-  final ValueChanged<PhonePreviewArtifact> onSelectArtifact;
-  final VoidCallback onSendChat;
-
-  @override
-  Widget build(BuildContext context) {
-    return switch (page) {
-      WorkPage.chat => _ChatPage(
-        workspaceRoot: workspaceRoot,
-        messages: chatMessages,
-        controller: chatController,
-        status: chatStatus,
-        busy: chatBusy,
-        activeRunLive: activeRunLive,
-        runMode: runMode,
-        attachments: composerAttachments,
-        previewArtifacts: previewArtifacts,
-        previewArtifactsExpanded: previewArtifactsExpanded,
-        loadingPromptLog: loadingPromptLog,
-        onRunModeChanged: onRunModeChanged,
-        onPasteScreenshot: onPasteScreenshot,
-        onRemoveAttachment: onRemoveAttachment,
-        onStopRun: onStopRun,
-        onOpenPromptLog: onOpenPromptLog,
-        onTogglePreviewArtifacts: onTogglePreviewArtifacts,
-        onSelectArtifact: onSelectArtifact,
-        onSend: onSendChat,
-      ),
-      WorkPage.files => _FilesPage(
-        workspaceRoot: workspaceRoot,
-        controller: workspaceRootController,
-        files: files,
-        status: fileStatus,
-        loading: loadingFiles,
-        onFetchRootSuggestions: onFetchRootSuggestions,
-        onApplyWorkspaceRoot: onApplyWorkspaceRoot,
-        onRefresh: onRefreshFiles,
-        onSelectFile: onSelectFile,
-      ),
-      WorkPage.preview => _FilePreviewPage(
-        activeFile: activeFile,
-        title: previewTitle,
-        content: previewContent.isNotEmpty ? previewContent : activeFileContent,
-        status: previewStatus.isNotEmpty ? previewStatus : fileStatus,
-        previewArtifacts: previewArtifacts,
-        previewArtifactsExpanded: previewArtifactsExpanded,
-        onTogglePreviewArtifacts: onTogglePreviewArtifacts,
-        onSelectArtifact: onSelectArtifact,
-      ),
-    };
-  }
-}
-
-class _NotesSurface extends StatelessWidget {
-  const _NotesSurface({
-    required this.page,
-    required this.notes,
-    required this.activeNote,
-    required this.activePreview,
-    required this.notesRoot,
-    required this.noteContent,
-    required this.noteStatus,
-    required this.notePreviewStatus,
-    required this.noteSaveStatus,
-    required this.loading,
-    required this.editController,
-    required this.readScrollController,
-    required this.editScrollController,
-    required this.onSaveNote,
-    required this.onSelectNote,
-    required this.onRefresh,
-  });
-
-  final NotesPage page;
-  final List<WorkspaceNoteSummary> notes;
-  final WorkspaceNoteSummary? activeNote;
-  final WorkspaceNotePreview? activePreview;
-  final String notesRoot;
-  final String noteContent;
-  final String noteStatus;
-  final String notePreviewStatus;
-  final String noteSaveStatus;
-  final bool loading;
-  final TextEditingController editController;
-  final ScrollController readScrollController;
-  final ScrollController editScrollController;
-  final Future<void> Function() onSaveNote;
-  final ValueChanged<WorkspaceNoteSummary> onSelectNote;
-  final VoidCallback onRefresh;
-
-  @override
-  Widget build(BuildContext context) {
-    return switch (page) {
-      NotesPage.pages => _NotesListPage(
-        notes: notes,
-        activeNote: activeNote,
-        notesRoot: notesRoot,
-        noteStatus: noteStatus,
-        loading: loading,
-        onSelectNote: onSelectNote,
-        onRefresh: onRefresh,
-      ),
-      NotesPage.edit => _NoteEditPage(
-        controller: editController,
-        scrollController: editScrollController,
-        notes: notes,
-        activeNote: activeNote,
-        noteStatus: noteStatus,
-        saveStatus: noteSaveStatus,
-        onSave: onSaveNote,
-      ),
-      NotesPage.read => _NoteReadPage(
-        activeNote: activeNote,
-        preview: activePreview,
-        fallbackContent: noteContent,
-        status: notePreviewStatus,
-        scrollController: readScrollController,
-      ),
-    };
-  }
-}
-
-class _NotesListPage extends StatefulWidget {
-  const _NotesListPage({
-    required this.notes,
-    required this.activeNote,
-    required this.notesRoot,
-    required this.noteStatus,
-    required this.loading,
-    required this.onSelectNote,
-    required this.onRefresh,
-  });
-
-  final List<WorkspaceNoteSummary> notes;
-  final WorkspaceNoteSummary? activeNote;
-  final String notesRoot;
-  final String noteStatus;
-  final bool loading;
-  final ValueChanged<WorkspaceNoteSummary> onSelectNote;
-  final VoidCallback onRefresh;
-
-  @override
-  State<_NotesListPage> createState() => _NotesListPageState();
-}
-
-class _NotesListPageState extends State<_NotesListPage> {
-  String query = '';
-
-  @override
-  Widget build(BuildContext context) {
-    final normalizedQuery = query.trim().toLowerCase();
-    final visibleNotes = normalizedQuery.isEmpty
-        ? widget.notes
-        : widget.notes
+          : _libraryBody(),
+      connectionState: health,
+      computerLabel: 'Your computer',
+      onConfigureBackend: _openBackendDialog,
+      attentionCount:
+          phoneTasksByThread.values
               .where(
-                (note) =>
-                    note.title.toLowerCase().contains(normalizedQuery) ||
-                    note.relativePath.toLowerCase().contains(normalizedQuery) ||
-                    note.section.toLowerCase().contains(normalizedQuery) ||
-                    note.tags.any(
-                      (tag) => tag.toLowerCase().contains(normalizedQuery),
-                    ),
+                (task) => [
+                  'needs_input',
+                  'blocked',
+                  'failed',
+                  'paused',
+                  'interrupted',
+                ].contains(task.status),
               )
-              .toList();
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                'Pages',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-              ),
-            ),
-            IconButton(
-              tooltip: 'Refresh pages',
-              onPressed: widget.onRefresh,
-              icon: const Icon(Icons.refresh),
-            ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        Text(
-          widget.notesRoot.isEmpty ? widget.noteStatus : widget.notesRoot,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          onChanged: (value) => setState(() => query = value),
-          decoration: InputDecoration(
-            hintText: 'Search knowledge base',
-            prefixIcon: const Icon(Icons.search),
-            filled: true,
-            fillColor: Colors.white,
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-          ),
-        ),
-        const SizedBox(height: 12),
-        if (widget.loading) const LinearProgressIndicator(),
-        if (!widget.loading && visibleNotes.isEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 12),
-            child: Text(widget.noteStatus),
-          ),
-        for (final note in visibleNotes)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: ListTile(
-              selected: widget.activeNote?.path == note.path,
-              tileColor: Colors.white,
-              selectedTileColor: const Color(0xffd7eadf),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-                side: const BorderSide(color: Color(0xffded7ca)),
-              ),
-              leading: const Icon(Icons.article_outlined),
-              title: Text(
-                note.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              subtitle: Text(
-                [
-                  note.relativePath,
-                  if (note.tags.isNotEmpty) note.tags.take(2).join(', '),
-                ].where((value) => value.isNotEmpty).join(' · '),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => widget.onSelectNote(note),
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-class _ChatPage extends StatelessWidget {
-  const _ChatPage({
-    required this.workspaceRoot,
-    required this.messages,
-    required this.controller,
-    required this.status,
-    required this.busy,
-    required this.activeRunLive,
-    required this.runMode,
-    required this.attachments,
-    required this.previewArtifacts,
-    required this.previewArtifactsExpanded,
-    required this.loadingPromptLog,
-    required this.onRunModeChanged,
-    required this.onPasteScreenshot,
-    required this.onRemoveAttachment,
-    required this.onStopRun,
-    required this.onOpenPromptLog,
-    required this.onTogglePreviewArtifacts,
-    required this.onSelectArtifact,
-    required this.onSend,
-  });
-
-  final String workspaceRoot;
-  final List<PhoneChatMessage> messages;
-  final TextEditingController controller;
-  final String status;
-  final bool busy;
-  final bool activeRunLive;
-  final WorkRunMode runMode;
-  final List<PhoneAttachmentDraft> attachments;
-  final List<PhonePreviewArtifact> previewArtifacts;
-  final bool previewArtifactsExpanded;
-  final bool loadingPromptLog;
-  final ValueChanged<WorkRunMode> onRunModeChanged;
-  final VoidCallback onPasteScreenshot;
-  final ValueChanged<String> onRemoveAttachment;
-  final VoidCallback onStopRun;
-  final VoidCallback onOpenPromptLog;
-  final VoidCallback onTogglePreviewArtifacts;
-  final ValueChanged<PhonePreviewArtifact> onSelectArtifact;
-  final VoidCallback onSend;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Work Chat',
-            style: Theme.of(
-              context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            workspaceRoot.isEmpty ? 'Default workspace' : workspaceRoot,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: SegmentedButton<WorkRunMode>(
-                  showSelectedIcon: false,
-                  segments: const [
-                    ButtonSegment(
-                      value: WorkRunMode.auto,
-                      icon: Icon(Icons.auto_awesome_outlined),
-                      label: Text('Auto'),
-                    ),
-                    ButtonSegment(
-                      value: WorkRunMode.review,
-                      icon: Icon(Icons.rate_review_outlined),
-                      label: Text('Review'),
-                    ),
-                  ],
-                  selected: {runMode},
-                  onSelectionChanged: busy
-                      ? null
-                      : (selection) => onRunModeChanged(selection.first),
-                ),
-              ),
-              const SizedBox(width: 8),
-              IconButton.filledTonal(
-                tooltip: 'Paste screenshot data URL',
-                onPressed: busy ? null : onPasteScreenshot,
-                icon: const Icon(Icons.add_photo_alternate_outlined),
-              ),
-              IconButton.filledTonal(
-                tooltip: 'Prompt log',
-                onPressed: loadingPromptLog ? null : onOpenPromptLog,
-                icon: loadingPromptLog
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.receipt_long_outlined),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            runMode.description,
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 12),
-          Expanded(
-            child: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  for (final message in messages) ...[
-                    _MessageBubble(
-                      title: switch (message.role) {
-                        PhoneChatRole.user => 'You',
-                        PhoneChatRole.assistant => 'Diane',
-                        PhoneChatRole.status => 'Status',
-                      },
-                      text: message.text,
-                      status: message.status,
-                      alignRight: message.role == PhoneChatRole.user,
-                    ),
-                    const SizedBox(height: 10),
-                  ],
-                ],
-              ),
-            ),
-          ),
-          if (previewArtifacts.isNotEmpty) ...[
-            _PreviewArtifactShelf(
-              artifacts: previewArtifacts,
-              expanded: previewArtifactsExpanded,
-              onToggle: onTogglePreviewArtifacts,
-              onSelect: onSelectArtifact,
-            ),
-            const SizedBox(height: 8),
-          ],
-          Text(status, style: Theme.of(context).textTheme.bodySmall),
-          if (attachments.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                for (final attachment in attachments)
-                  InputChip(
-                    avatar: const Icon(Icons.image_outlined, size: 18),
-                    label: Text(
-                      [
-                        attachment.name,
-                        _formatBytes(attachment.sizeBytes),
-                      ].where((value) => value.isNotEmpty).join(' · '),
-                    ),
-                    onDeleted: () => onRemoveAttachment(attachment.id),
-                  ),
-              ],
-            ),
-          ],
-          const SizedBox(height: 12),
-          ValueListenableBuilder<TextEditingValue>(
-            valueListenable: controller,
-            builder: (context, value, _) {
-              final showStop =
-                  activeRunLive &&
-                  value.text.trim().isEmpty &&
-                  attachments.isEmpty;
-              return TextField(
-                controller: controller,
-                minLines: 1,
-                maxLines: 4,
-                enabled: !busy,
-                textInputAction: TextInputAction.send,
-                onSubmitted: (_) => showStop ? onStopRun() : onSend(),
-                decoration: InputDecoration(
-                  hintText: activeRunLive
-                      ? 'Steer or queue the active run'
-                      : 'Ask Diane to work in this workspace',
-                  filled: true,
-                  fillColor: Colors.white,
-                  suffixIcon: IconButton(
-                    tooltip: showStop ? 'Stop active run' : 'Send',
-                    icon: busy
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : Icon(
-                            showStop
-                                ? Icons.stop_circle_outlined
-                                : Icons.send_outlined,
-                          ),
-                    onPressed: busy ? null : (showStop ? onStopRun : onSend),
-                  ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
-              );
-            },
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PreviewArtifactShelf extends StatelessWidget {
-  const _PreviewArtifactShelf({
-    required this.artifacts,
-    required this.expanded,
-    required this.onToggle,
-    required this.onSelect,
-  });
-
-  final List<PhonePreviewArtifact> artifacts;
-  final bool expanded;
-  final VoidCallback onToggle;
-  final ValueChanged<PhonePreviewArtifact> onSelect;
-
-  @override
-  Widget build(BuildContext context) {
-    if (artifacts.isEmpty) return const SizedBox.shrink();
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xfffcfaf5),
-        border: Border.all(color: const Color(0xffded7ca)),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.inventory_2_outlined, size: 18),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    artifacts.length == 1
-                        ? 'Output'
-                        : '${artifacts.length} outputs',
-                    style: Theme.of(context).textTheme.labelLarge,
-                  ),
-                ),
-                IconButton(
-                  tooltip: expanded ? 'Collapse outputs' : 'Show outputs',
-                  onPressed: onToggle,
-                  icon: Icon(
-                    expanded
-                        ? Icons.keyboard_arrow_down
-                        : Icons.keyboard_arrow_right,
-                  ),
-                ),
-              ],
-            ),
-            if (expanded)
-              for (final artifact in artifacts.take(5))
-                ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(_artifactIcon(artifact)),
-                  title: Text(
-                    artifact.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  subtitle: Text(
-                    artifact.path.isNotEmpty ? artifact.path : artifact.url,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => onSelect(artifact),
-                ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-IconData _artifactIcon(PhonePreviewArtifact artifact) {
-  final target = '${artifact.kind} ${artifact.path} ${artifact.url}'
-      .toLowerCase();
-  if (target.contains('.html') || target.contains('text/html')) {
-    return Icons.web_asset_outlined;
-  }
-  if (target.contains('.pdf') || target.contains('pdf')) {
-    return Icons.picture_as_pdf_outlined;
-  }
-  if (RegExp(r'\.(png|jpe?g|webp|gif)\b').hasMatch(target) ||
-      target.contains('image')) {
-    return Icons.image_outlined;
-  }
-  if (RegExp(r'\.(md|markdown)\b').hasMatch(target)) {
-    return Icons.article_outlined;
-  }
-  return Icons.description_outlined;
-}
-
-class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({
-    required this.title,
-    required this.text,
-    this.status = '',
-    this.alignRight = false,
-  });
-
-  final String title;
-  final String text;
-  final String status;
-  final bool alignRight;
-
-  @override
-  Widget build(BuildContext context) {
-    return Align(
-      alignment: alignRight ? Alignment.centerRight : Alignment.centerLeft,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 320),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: alignRight ? const Color(0xffd7eadf) : Colors.white,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: const Color(0xffded7ca)),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: Theme.of(context).textTheme.labelLarge),
-                if (status.isNotEmpty)
-                  Text(status, style: Theme.of(context).textTheme.labelSmall),
-                const SizedBox(height: 4),
-                alignRight ? Text(text) : _MarkdownPreviewBody(markdown: text),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _FilesPage extends StatefulWidget {
-  const _FilesPage({
-    required this.workspaceRoot,
-    required this.controller,
-    required this.files,
-    required this.status,
-    required this.loading,
-    required this.onFetchRootSuggestions,
-    required this.onApplyWorkspaceRoot,
-    required this.onRefresh,
-    required this.onSelectFile,
-  });
-
-  final String workspaceRoot;
-  final TextEditingController controller;
-  final List<WorkspaceFileEntry> files;
-  final String status;
-  final bool loading;
-  final Future<List<WorkspaceRootSuggestion>> Function(String)
-  onFetchRootSuggestions;
-  final Future<void> Function([String? value]) onApplyWorkspaceRoot;
-  final Future<void> Function({String? apiBase, String? root}) onRefresh;
-  final ValueChanged<WorkspaceFileEntry> onSelectFile;
-
-  @override
-  State<_FilesPage> createState() => _FilesPageState();
-}
-
-class _FilesPageState extends State<_FilesPage> {
-  String query = '';
-  List<WorkspaceRootSuggestion> suggestions = const [];
-  Timer? debounce;
-
-  @override
-  void initState() {
-    super.initState();
-    unawaited(_loadSuggestions(widget.controller.text));
-  }
-
-  @override
-  void dispose() {
-    debounce?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _loadSuggestions(String value) async {
-    final next = await widget.onFetchRootSuggestions(value);
-    if (!mounted) return;
-    setState(() => suggestions = next);
-  }
-
-  void _scheduleSuggestions(String value) {
-    debounce?.cancel();
-    debounce = Timer(
-      const Duration(milliseconds: 220),
-      () => unawaited(_loadSuggestions(value)),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final normalizedQuery = query.trim().toLowerCase();
-    final visibleFiles = normalizedQuery.isEmpty
-        ? widget.files
-        : widget.files
-              .where(
-                (entry) =>
-                    entry.name.toLowerCase().contains(normalizedQuery) ||
-                    entry.relativePath.toLowerCase().contains(normalizedQuery),
-              )
-              .toList();
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                'Files',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-              ),
-            ),
-            IconButton(
-              tooltip: 'Refresh files',
-              onPressed: () => unawaited(widget.onRefresh()),
-              icon: const Icon(Icons.refresh),
-            ),
-          ],
-        ),
-        Text(
-          widget.status,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: widget.controller,
-          onChanged: _scheduleSuggestions,
-          onSubmitted: (value) => unawaited(widget.onApplyWorkspaceRoot(value)),
-          decoration: InputDecoration(
-            hintText: 'Workspace root',
-            prefixIcon: const Icon(Icons.folder_open_outlined),
-            suffixIcon: IconButton(
-              tooltip: 'Set workspace',
-              icon: const Icon(Icons.check),
-              onPressed: () => unawaited(
-                widget.onApplyWorkspaceRoot(widget.controller.text),
-              ),
-            ),
-            filled: true,
-            fillColor: Colors.white,
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-          ),
-        ),
-        if (suggestions.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              border: Border.all(color: const Color(0xffded7ca)),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Column(
-              children: [
-                for (final suggestion in suggestions.take(5))
-                  ListTile(
-                    dense: true,
-                    leading: const Icon(Icons.folder_outlined),
-                    title: Text(
-                      suggestion.label.isEmpty
-                          ? suggestion.path
-                          : suggestion.label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    subtitle: Text(
-                      suggestion.path,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    trailing: Text(suggestion.kind),
-                    onTap: () {
-                      widget.controller.text = suggestion.path;
-                      setState(() => suggestions = const []);
-                      unawaited(widget.onApplyWorkspaceRoot(suggestion.path));
-                    },
-                  ),
-              ],
-            ),
-          ),
-        ],
-        const SizedBox(height: 12),
-        TextField(
-          onChanged: (value) => setState(() => query = value),
-          decoration: InputDecoration(
-            hintText: 'Find files',
-            prefixIcon: const Icon(Icons.search),
-            filled: true,
-            fillColor: Colors.white,
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-          ),
-        ),
-        const SizedBox(height: 12),
-        if (widget.loading) const LinearProgressIndicator(),
-        if (!widget.loading && visibleFiles.isEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 12),
-            child: Text(widget.status),
-          ),
-        for (final item in visibleFiles)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: ListTile(
-              tileColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-                side: const BorderSide(color: Color(0xffded7ca)),
-              ),
-              leading: Icon(
-                item.isDirectory
-                    ? Icons.folder_outlined
-                    : Icons.description_outlined,
-              ),
-              title: Text(
-                item.relativePath,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              subtitle: Text(
-                item.isDirectory ? 'Folder' : '${item.size} bytes',
-              ),
-              trailing: const Icon(Icons.chevron_right),
-              contentPadding: EdgeInsets.only(
-                left: 16.0 + (item.depth.clamp(0, 4) * 10),
-                right: 12,
-              ),
-              onTap: () => widget.onSelectFile(item),
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-class _FilePreviewPage extends StatelessWidget {
-  const _FilePreviewPage({
-    required this.activeFile,
-    required this.title,
-    required this.content,
-    required this.status,
-    required this.previewArtifacts,
-    required this.previewArtifactsExpanded,
-    required this.onTogglePreviewArtifacts,
-    required this.onSelectArtifact,
-  });
-
-  final WorkspaceFileEntry? activeFile;
-  final String title;
-  final String content;
-  final String status;
-  final List<PhonePreviewArtifact> previewArtifacts;
-  final bool previewArtifactsExpanded;
-  final VoidCallback onTogglePreviewArtifacts;
-  final ValueChanged<PhonePreviewArtifact> onSelectArtifact;
-
-  @override
-  Widget build(BuildContext context) {
-    final displayTitle = title.isNotEmpty
-        ? title
-        : activeFile?.relativePath ?? 'Preview';
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        children: [
-          if (previewArtifacts.isNotEmpty) ...[
-            _PreviewArtifactShelf(
-              artifacts: previewArtifacts,
-              expanded: previewArtifactsExpanded,
-              onToggle: onTogglePreviewArtifacts,
-              onSelect: onSelectArtifact,
-            ),
-            const SizedBox(height: 10),
-          ],
-          Expanded(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                border: Border.all(color: const Color(0xffded7ca)),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      displayTitle,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    Text(
-                      status,
-                      maxLines: 3,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 10),
-                    Expanded(
-                      child: SingleChildScrollView(
-                        child: SelectableText(
-                          content.isEmpty
-                              ? 'Select a development file, output artifact, or prompt log to inspect it here.'
-                              : content,
-                          style: const TextStyle(
-                            fontFamily: 'monospace',
-                            fontSize: 13,
-                            height: 1.35,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _NoteReadPage extends StatelessWidget {
-  const _NoteReadPage({
-    required this.activeNote,
-    required this.preview,
-    required this.fallbackContent,
-    required this.status,
-    required this.scrollController,
-  });
-
-  final WorkspaceNoteSummary? activeNote;
-  final WorkspaceNotePreview? preview;
-  final String fallbackContent;
-  final String status;
-  final ScrollController scrollController;
-
-  @override
-  Widget build(BuildContext context) {
-    final body = preview?.previewMarkdown.trim().isNotEmpty == true
-        ? _phonePreviewMarkdown(preview!.previewMarkdown)
-        : _formatHugoPreviewBody(_stripHugoFrontmatter(fallbackContent));
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          border: Border.all(color: const Color(0xffded7ca)),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                activeNote?.title ?? 'Preview',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: 4),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  _MiniChip(Icons.cached_outlined, status),
-                  if (preview?.routePath.isNotEmpty == true)
-                    _MiniChip(Icons.link_outlined, preview!.routePath),
-                  if (activeNote?.pageId.isNotEmpty == true)
-                    _MiniChip(Icons.alternate_email, activeNote!.pageId),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Expanded(
-                child: SingleChildScrollView(
-                  controller: scrollController,
-                  child: _MarkdownPreviewBody(
-                    markdown: body.isEmpty
-                        ? 'No preview content loaded.'
-                        : body,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-String _stripHugoFrontmatter(String content) {
-  final match = RegExp(r'^---\s*\r?\n[\s\S]*?\r?\n---\s*').firstMatch(content);
-  return (match == null ? content : content.substring(match.end)).trimLeft();
-}
-
-String _formatHugoPreviewBody(String body) {
-  return body
-      .replaceAllMapped(
-        RegExp(
-          r'\{\{<\s*callout\b([^>]*)>\}\}([\s\S]*?)\{\{<\s*/callout\s*>\}\}',
-        ),
-        (match) {
-          final args = (match.group(1) ?? '').trim();
-          final inner = (match.group(2) ?? '').trim();
-          final titleMatch = RegExp(r'"([^"]+)"').firstMatch(args);
-          final title = titleMatch?.group(1)?.trim() ?? '';
-          final kindParts = args
-              .replaceAll(RegExp(r'"[^"]*"'), '')
-              .trim()
-              .split(RegExp(r'\s+'))
-              .where((part) => part.isNotEmpty)
-              .toList();
-          final kind = kindParts.isEmpty ? null : kindParts.first;
-          final label = [
-            if (kind != null && kind.toLowerCase() != 'note')
-              '${kind[0].toUpperCase()}${kind.substring(1)}',
-            if (title.isNotEmpty) title,
-          ].join(': ');
-          final header = label.isEmpty ? 'Note' : label;
-          final lines = inner
-              .split(RegExp(r'\r?\n'))
-              .map((line) => line.trimRight())
-              .toList();
-          return [
-            '> **$header**',
-            for (final line in lines) line.isEmpty ? '>' : '> $line',
-          ].join('\n');
-        },
-      )
-      .replaceAllMapped(
-        RegExp(r'\{\{<\s*summary\s+"([^"]+)"\s*>\}\}'),
-        (match) => '> Summary transclusion: @${match.group(1)}',
-      )
-      .replaceAllMapped(RegExp(r'\{\{<\s*([^>\s]+)([\s\S]*?)>\}\}'), (match) {
-        final shortcode = match.group(1) ?? '';
-        final args = (match.group(2) ?? '').trim();
-        return args.isEmpty ? '`$shortcode`' : '`$shortcode $args`';
-      })
-      .replaceAllMapped(
-        RegExp(r'(^|[\s(])@([A-Za-z0-9][A-Za-z0-9_-]+)', multiLine: true),
-        (match) => '${match.group(1)}[@${match.group(2)}](#${match.group(2)})',
-      );
-}
-
-String _phonePreviewMarkdown(String value) {
-  return value.replaceAllMapped(
-    RegExp(
-      r'<aside class="dan-markdown-callout[\s\S]*?<span class="text-sm[^"]*">([\s\S]*?)</span>[\s\S]*?<div class="dan-markdown-callout-body[^"]*">([\s\S]*?)</div>\s*</aside>',
-      caseSensitive: false,
-    ),
-    (match) {
-      final label = _stripHtml(_decodeHtmlEntities(match.group(1) ?? 'Note'));
-      final bodyHtml = match.group(2) ?? '';
-      final paragraphs = RegExp(r'<p[^>]*>([\s\S]*?)</p>', caseSensitive: false)
-          .allMatches(bodyHtml)
-          .map((item) => _stripHtml(_decodeHtmlEntities(item.group(1) ?? '')))
-          .where((item) => item.trim().isNotEmpty)
-          .toList();
-      final bodyLines = paragraphs.isEmpty
-          ? [_stripHtml(_decodeHtmlEntities(bodyHtml))]
-          : paragraphs;
-      return [
-        '> **${label.isEmpty ? 'Note' : label}**',
-        for (final line in bodyLines) '> $line',
-      ].join('\n');
-    },
-  );
-}
-
-String _stripHtml(String value) {
-  return value.replaceAll(RegExp(r'<[^>]+>'), '').trim();
-}
-
-String _decodeHtmlEntities(String value) {
-  return value
-      .replaceAll('&lt;', '<')
-      .replaceAll('&gt;', '>')
-      .replaceAll('&amp;', '&')
-      .replaceAll('&quot;', '"')
-      .replaceAll('&#39;', "'");
-}
-
-class _MiniChip extends StatelessWidget {
-  const _MiniChip(this.icon, this.label);
-
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-      decoration: BoxDecoration(
-        color: const Color(0xffece6da),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 14),
-          const SizedBox(width: 4),
-          Flexible(
-            child: Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.labelSmall,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _MarkdownPreviewBody extends StatelessWidget {
-  const _MarkdownPreviewBody({required this.markdown});
-
-  final String markdown;
-
-  @override
-  Widget build(BuildContext context) {
-    final lines = markdown.split(RegExp(r'\r?\n'));
-    final widgets = <Widget>[];
-    var inCode = false;
-    final codeLines = <String>[];
-
-    void flushCode() {
-      if (codeLines.isEmpty) return;
-      widgets.add(
-        Container(
-          width: double.infinity,
-          margin: const EdgeInsets.symmetric(vertical: 8),
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: const Color(0xff1d2422),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Text(
-            codeLines.join('\n'),
-            style: const TextStyle(
-              color: Color(0xfff3efe6),
-              fontFamily: 'monospace',
-              fontSize: 12.5,
-              height: 1.35,
-            ),
-          ),
-        ),
-      );
-      codeLines.clear();
-    }
-
-    for (final raw in lines) {
-      final line = raw.trimRight();
-      if (line.trimLeft().startsWith('```')) {
-        if (inCode) flushCode();
-        inCode = !inCode;
-        continue;
-      }
-      if (inCode) {
-        codeLines.add(raw);
-        continue;
-      }
-      if (line.trim().isEmpty) {
-        widgets.add(const SizedBox(height: 8));
-        continue;
-      }
-      final heading = RegExp(r'^(#{1,6})\s+(.+)$').firstMatch(line);
-      if (heading != null) {
-        final level = heading.group(1)!.length;
-        widgets.add(
-          Padding(
-            padding: EdgeInsets.only(top: level <= 2 ? 16 : 10, bottom: 5),
-            child: Text(
-              heading.group(2)!,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w800,
-                fontSize: level == 1
-                    ? 22
-                    : level == 2
-                    ? 19
-                    : 16,
-              ),
-            ),
-          ),
-        );
-        continue;
-      }
-      final bullet = RegExp(r'^\s*[-*+]\s+(.+)$').firstMatch(line);
-      if (bullet != null) {
-        widgets.add(
-          Padding(
-            padding: const EdgeInsets.only(bottom: 5),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('•  '),
-                Expanded(
-                  child: _PreviewInlineText(
-                    bullet.group(1)!,
-                    style: const TextStyle(height: 1.38),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-        continue;
-      }
-      final quote = RegExp(r'^\s*>\s?(.+)$').firstMatch(line);
-      if (quote != null) {
-        widgets.add(
-          Container(
-            width: double.infinity,
-            margin: const EdgeInsets.symmetric(vertical: 6),
-            padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
-            decoration: BoxDecoration(
-              border: Border.all(color: const Color(0xff9cb9a9)),
-              borderRadius: BorderRadius.circular(8),
-              color: const Color(0xffedf4ef),
-            ),
-            child: _PreviewInlineText(
-              quote.group(1)!,
-              style: const TextStyle(height: 1.38),
-            ),
-          ),
-        );
-        continue;
-      }
-      widgets.add(
-        Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: _PreviewInlineText(line, style: const TextStyle(height: 1.42)),
-        ),
-      );
-    }
-    if (inCode) flushCode();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: widgets,
-    );
-  }
-}
-
-class _PreviewInlineText extends StatelessWidget {
-  const _PreviewInlineText(this.text, {this.style});
-
-  final String text;
-  final TextStyle? style;
-
-  @override
-  Widget build(BuildContext context) {
-    final baseStyle = DefaultTextStyle.of(context).style.merge(style);
-    final spans = <TextSpan>[];
-    final pattern = RegExp(
-      r'(\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\))',
-    );
-    var cursor = 0;
-    for (final match in pattern.allMatches(text)) {
-      if (match.start > cursor) {
-        spans.add(TextSpan(text: text.substring(cursor, match.start)));
-      }
-      if (match.group(2) != null) {
-        spans.add(
-          TextSpan(
-            text: match.group(2),
-            style: const TextStyle(fontWeight: FontWeight.w700),
-          ),
-        );
-      } else if (match.group(3) != null) {
-        spans.add(
-          TextSpan(
-            text: match.group(3),
-            style: const TextStyle(
-              fontFamily: 'monospace',
-              backgroundColor: Color(0xffece6da),
-            ),
-          ),
-        );
-      } else {
-        spans.add(
-          TextSpan(
-            text: match.group(4),
-            style: const TextStyle(
-              color: Color(0xff176b5b),
-              decoration: TextDecoration.underline,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        );
-      }
-      cursor = match.end;
-    }
-    if (cursor < text.length) {
-      spans.add(TextSpan(text: text.substring(cursor)));
-    }
-    return RichText(
-      text: TextSpan(style: baseStyle, children: spans),
-    );
-  }
-}
-
-class _NoteEditPage extends StatefulWidget {
-  const _NoteEditPage({
-    required this.controller,
-    required this.scrollController,
-    required this.notes,
-    required this.activeNote,
-    required this.noteStatus,
-    required this.saveStatus,
-    required this.onSave,
-  });
-
-  final TextEditingController controller;
-  final ScrollController scrollController;
-  final List<WorkspaceNoteSummary> notes;
-  final WorkspaceNoteSummary? activeNote;
-  final String noteStatus;
-  final String saveStatus;
-  final Future<void> Function() onSave;
-
-  @override
-  State<_NoteEditPage> createState() => _NoteEditPageState();
-}
-
-class _NoteEditPageState extends State<_NoteEditPage> {
-  List<WorkspaceNoteSummary> suggestions = const [];
-  int mentionStart = -1;
-
-  @override
-  void initState() {
-    super.initState();
-    widget.controller.addListener(_refreshSuggestions);
-  }
-
-  @override
-  void didUpdateWidget(covariant _NoteEditPage oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.controller != widget.controller) {
-      oldWidget.controller.removeListener(_refreshSuggestions);
-      widget.controller.addListener(_refreshSuggestions);
-    }
-  }
-
-  @override
-  void dispose() {
-    widget.controller.removeListener(_refreshSuggestions);
-    super.dispose();
-  }
-
-  void _refreshSuggestions() {
-    final selection = widget.controller.selection;
-    if (!selection.isValid || selection.baseOffset < 0) return;
-    final cursor = selection.baseOffset;
-    final text = widget.controller.text;
-    if (cursor > text.length) return;
-    final before = text.substring(0, cursor);
-    final at = before.lastIndexOf('@');
-    if (at < 0) {
-      if (suggestions.isNotEmpty) setState(() => suggestions = const []);
-      return;
-    }
-    final query = before.substring(at + 1);
-    final validQuery = RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(query);
-    if (query.isEmpty || !validQuery) {
-      if (suggestions.isNotEmpty) setState(() => suggestions = const []);
-      return;
-    }
-    final lowered = query.toLowerCase();
-    final next =
-        widget.notes
-            .where(
-              (note) =>
-                  note.pageId.toLowerCase().contains(lowered) ||
-                  note.title.toLowerCase().contains(lowered) ||
-                  note.relativePath.toLowerCase().contains(lowered),
-            )
-            .where((note) => note.pageId.isNotEmpty)
-            .toList()
-          ..sort(
-            (a, b) => a.pageId.toLowerCase().compareTo(b.pageId.toLowerCase()),
-          );
-    final visible = next.take(8).toList();
-    setState(() {
-      mentionStart = at;
-      suggestions = visible;
-    });
-  }
-
-  void _insertMention(WorkspaceNoteSummary note) {
-    final selection = widget.controller.selection;
-    final cursor = selection.baseOffset;
-    if (mentionStart < 0 || cursor < mentionStart) return;
-    final text = widget.controller.text;
-    final replacement = '@${note.pageId}';
-    final next = text.replaceRange(mentionStart, cursor, replacement);
-    final nextCursor = mentionStart + replacement.length;
-    widget.controller.value = TextEditingValue(
-      text: next,
-      selection: TextSelection.collapsed(offset: nextCursor),
-    );
-    setState(() => suggestions = const []);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            widget.activeNote?.title ?? 'Markdown source',
-            style: Theme.of(
-              context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            widget.activeNote?.relativePath ?? widget.noteStatus,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 6),
-          Row(
-            children: [
-              _MiniChip(Icons.save_outlined, widget.saveStatus),
-              const Spacer(),
-              TextButton.icon(
-                onPressed: () => unawaited(widget.onSave()),
-                icon: const Icon(Icons.save_outlined),
-                label: const Text('Save'),
-              ),
-            ],
-          ),
-          if (suggestions.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            DecoratedBox(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                border: Border.all(color: const Color(0xffded7ca)),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Column(
-                children: [
-                  for (final note in suggestions)
-                    ListTile(
-                      dense: true,
-                      leading: const Icon(Icons.alternate_email),
-                      title: Text(note.pageId),
-                      subtitle: Text(
-                        note.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      onTap: () => _insertMention(note),
-                    ),
-                ],
-              ),
-            ),
-          ],
-          const SizedBox(height: 12),
-          Expanded(
-            child: TextField(
-              controller: widget.controller,
-              scrollController: widget.scrollController,
-              expands: true,
-              minLines: null,
-              maxLines: null,
-              decoration: InputDecoration(
-                hintText: 'Markdown source',
-                alignLabelWithHint: true,
-                filled: true,
-                fillColor: Colors.white,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+              .length +
+          _deliveries.where((item) => item.isPending).length,
+      conversationTitle: conversationTitle,
+      lastSyncedAt: lastSyncedAt,
+      onReconnect: _refreshStatus,
     );
   }
 }

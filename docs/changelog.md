@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-20
+
+- [feat] Rework the Android companion around Diane / Work / Library: a persistent conversation composer, attention-first work rows, scoped native questions/permissions, clear connection recovery, and light/dark layouts that accommodate narrow screens and large text. Keep files, notes, editing and outputs available.
+- [fix] Persist host-scoped drafts, selected conversations and immutable outgoing actions before delivery. Reconcile receipts after lost replies and app restarts, poll without a fixed timeout cutoff, ignore stale session responses, and preserve newly typed drafts during delayed saves. Keep acceptance distinct from completion.
+- [fix] Add durable phone request/receipt/state APIs, additive transcript updates and conflict-aware replacement. Retain concurrent phone messages and metadata through older desktop saves, deduplicate commands across their lifecycle, and freeze stop/steer/approval targets across retries.
+- [fix] Inherit the existing desktop execution configuration, including native account and permission policy. Respect current Plan mode, support legacy phone workspace identities, publish only sanitized context, and persist full final assistant replies once.
+- [test] 59 targeted backend checks and all 25 Flutter tests pass; Flutter analysis is clean. Five actual widget renderings inspected, including light/dark, Work, decisions and offline recovery. Narrow-screen/keyboard/2×-text and lost-acknowledgement regressions pass. A clean Android ARM64 debug APK build succeeds; paired installation/live acceptance remains pending.
+- [docs] Record phone/backend/execution-computer ownership, paired-version setup, actual widget renderings and physical-device acceptance boundaries. Durable issues/commitments, push delivery, screen sharing and broader platform support remain follow-up scope.
+
 ## 2026-10-16
 - [fix] Restrict deterministic message interception to explicit slash commands. Ordinary stop/pause/resume/status/task/progress wording stays conversational; semantic meta-layer routing is deferred as idea-cart IC-047.
 - [feat] Expose prior same-conversation/workspace worker summaries and paged session events to leads. Resume eligible settled workers using their frozen native session and working directory, creating a new run-owned record linked to preserved history. Guard active owners/duplicate continuations, account/runtime/access changes and unrelated scopes; old continued records cannot be independently resumed/applied through stale UI actions.

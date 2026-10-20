@@ -43,6 +43,8 @@ def settings_notice(settings):
 
 async def record_with_team_settings(store, run, command):
     from .service import active_teams
+    from diane.server.chat_v2_store import command_fingerprint
+    fingerprint = command_fingerprint(command)
     raw = (command.payload or {}).get('team_settings')
     if raw is None or command.command not in {'append_followup', 'continue_after_current'}:
         return store.record_agent_command(command)
@@ -61,7 +63,7 @@ async def record_with_team_settings(store, run, command):
     team = active_teams.get(run.run_id)
 
     def record():
-        event = store.record_agent_command(command)
+        event = store.record_agent_command(command, request_fingerprint=fingerprint)
         if event.type != 'queue_item_added' or event.source_event_type.endswith('queue_coalesced'):
             return event
         if command.command == 'append_followup':

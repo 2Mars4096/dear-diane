@@ -1,5 +1,13 @@
 # Known Issues & Failed Approaches
 
+- **Phone reliability, 2026-10-20:** full transcript replacement could discard desktop metadata or concurrent messages; command deduplication stopped after queue delivery; lost HTTP replies and app restarts had no durable phone receipt to reconcile. Add stable message/request identities, additive writes, protected legacy saves, durable host receipts and a persisted device outbox. A backend acknowledgement is not evidence that execution has completed.
+
+- **Phone continuity, 2026-10-20:** legacy phone conversations used workflow `_scratch` with a folder path as workspace ID. Filtering runs by workflow/workspace equality would silently miss their execution profile. Resolve the exact saved thread/workflow or its run references, preserve the native configuration, and check the current PlanStore mode before execution or permission grants. Public phone context must not include raw native profiles.
+
+- **Phone asynchronous UI, 2026-10-20:** a slow outbox save could clear a newly selected conversation or replace text typed during the save. Bind UI mutations to the original selection and exact composer content. Receipt reads that fail cannot establish that an earlier mutation was undelivered; retain uncertainty. Native approval identity includes run, worker and request, and decision-delivered status must not be interpreted as run completion.
+
+- **Phone validation environment, 2026-10-20:** one existing worker-settings test initially hit the Git workspace-isolation guard through a reused temporary test directory. It passes with a clean `--basetemp`; no runtime workaround was added. The first Android builds found only a JRE and a missing required build-tools version; use a complete JDK and the project's required Android tools. One incremental APK package step then reported `!zip.isFile()`; cleaning only generated Flutter outputs and rebuilding passed. Flutter's test engine needs explicit platform-font loading for faithful preview glyphs.
+
 - **Worker roster validation 2026-10-14:** first edit placed an optional profile_id before required action in the tool signature; corrected by appending it, preserving positional callers. Cancellation regression then caught a profile-loop variable overwriting the lead session lock key; renamed the loop variable and retained the cleanup test.
 
 - **Local install launcher 2026-10-14:** first installer spawn used absent `/opt/homebrew/bin/node` after a clean shutdown. No replacement occurred in that attempt. Retried via the available `node` executable; installation and relaunch passed signature/archive/health checks.

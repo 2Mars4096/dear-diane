@@ -13,6 +13,8 @@ from typing import Any, Literal, Sequence
 
 from pydantic import BaseModel, Field
 
+from diane._atomic_file import atomic_write_text
+
 from diane.server.chat_v2 import (
     AgentRunCommand,
     AgentRunEvent,
@@ -53,6 +55,15 @@ _INTERRUPTION_METADATA_KEYS = (
 )
 QueueLane = Literal["append", "continue_after_current"]
 QueueItemStatus = Literal["queued", "injected", "completed", "cancelled"]
+
+
+class IdempotencyConflict(ValueError):
+    """A durable request identity was reused for a different command."""
+
+
+def command_fingerprint(command: AgentRunCommand) -> str:
+    return hashlib.sha256(json.dumps(command.model_dump(mode="json"),
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 _BLUEPRINT_METADATA_KEYS = (
     "task_blueprint",
@@ -992,11 +1003,13 @@ class ChatV2Store:
             self._save_task(task)
             return task.snapshot()
 
-    def record_agent_command(self, command: AgentRunCommand) -> AgentRunEvent:
+    def record_agent_command(
+        self, command: AgentRunCommand, *, request_fingerprint: str = "",
+    ) -> AgentRunEvent:
         """Persist a control command as a normalized event."""
 
         if command.command in {"append_followup", "continue_after_current"}:
-            return self.queue_agent_command(command)
+            return self.queue_agent_command(command, request_fingerprint=request_fingerprint)
         if command.command in {"stop", "cancel"}:
             return self.request_agent_run_stop(command)
         if command.command == "pause":
@@ -1647,7 +1660,9 @@ class ChatV2Store:
             self._append_run_event(source_run.run_id, event)
             return event
 
-    def queue_agent_command(self, command: AgentRunCommand) -> AgentRunEvent:
+    def queue_agent_command(
+        self, command: AgentRunCommand, *, request_fingerprint: str = "",
+    ) -> AgentRunEvent:
         """Persist an explicit active-run queue command as a durable queue item."""
 
         lane: QueueLane = (
@@ -1678,6 +1693,7 @@ class ChatV2Store:
             run_id = str(command.run_id or task.active_run_id or "")
             command_payload = dict(command.payload or {})
             text = _queue_text_from_command(command)
+            fingerprint = request_fingerprint or command_fingerprint(command)
             dedup_key = str(command.idempotency_key or "").strip() or _stable_id(
                 "command-queue",
                 task.task_id,
@@ -1686,18 +1702,30 @@ class ChatV2Store:
                 text,
             )
             for item in task.queue_items:
-                if item.dedup_key == dedup_key and item.status == "queued":
+                same_identity = item.dedup_key == dedup_key or bool(
+                    command.surface_turn_id and item.surface_turn_id == command.surface_turn_id
+                )
+                if same_identity and (
+                    item.status == "queued" or command.idempotency_key or command.surface_turn_id
+                ):
+                    saved_fingerprint = item.metadata.get("command_fingerprint")
+                    if (saved_fingerprint and saved_fingerprint != fingerprint) or (
+                        not saved_fingerprint and (item.text != text or item.lane != lane)
+                    ):
+                        raise IdempotencyConflict("This command ID already has a different request")
                     event = AgentRunEvent(
                         type="queue_item_added",
                         run_id=run_id or None,
                         task_id=task.task_id,
-                        summary=f"Already queued in {lane.replace('_', '-')} lane.",
+                        summary=f"Command already accepted ({item.status}) in {lane.replace('_', '-')} lane.",
                         source_event_type="chat_v2.command.queue_coalesced",
                         payload={
                             "command": command.command,
                             "queue_item_id": item.id,
                             "lane": lane,
                             "queue_position": item.position,
+                            "queue_status": item.status,
+                            "replayed": True,
                             "surface_turn_id": command.surface_turn_id,
                         },
                     )
@@ -1710,14 +1738,19 @@ class ChatV2Store:
                 for item in task.queue_items
                 if item.lane == lane and item.status == "queued"
             )
-            item = QueueItemRecord(
-                id=_stable_id(
+            item_id = _stable_id(
                     "command-queue-item",
                     task.task_id,
                     lane,
                     command.surface_turn_id or "",
                     dedup_key,
-                ),
+                )
+            # Without a request identity, repeating completed text is a new
+            # command. It still must not reuse an existing queue record's ID.
+            if any(item.id == item_id for item in task.queue_items):
+                item_id = _stable_id(item_id, uuid.uuid4().hex)
+            item = QueueItemRecord(
+                id=item_id,
                 task_id=task.task_id,
                 lane=lane,
                 surface_turn_id=command.surface_turn_id or command.idempotency_key or "",
@@ -1728,6 +1761,7 @@ class ChatV2Store:
                     "command": command.command,
                     "command_payload": command_payload,
                     "idempotency_key": command.idempotency_key or "",
+                    "command_fingerprint": fingerprint,
                     "queue_key": task.queue_key,
                     "workspace_root": task.workspace_root,
                     "workspace_id": task.workspace_id,
@@ -2214,6 +2248,7 @@ class ChatV2Store:
             phase="accepted",
             latest_progress="Accepted by Chat/Agent V2.",
             metadata={
+                "workflow_id": str(turn.metadata.get("workflow_id") or ""),
                 "privacy_scope": turn.privacy_scope,
                 "surface": turn.surface,
                 "surface_type": turn.surface_type,
@@ -2657,10 +2692,7 @@ def _stable_id(*parts: str) -> str:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    atomic_write_text(path, json.dumps(payload, indent=2), mode=0o600)
 
 
 def _apply_token_usage_event(

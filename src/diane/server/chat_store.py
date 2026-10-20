@@ -2,18 +2,31 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from diane._atomic_file import atomic_write_text
+
 logger = logging.getLogger(__name__)
+
+
+def _synchronized(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return call
 
 __all__ = [
     "Mention",
@@ -68,6 +81,7 @@ class ChatMessage(BaseModel):
     )
     run_ref: RunRef | None = None
     task_run_ref: TaskRunRef | None = None
+    source_surface: str = ""
 
 
 class ChatThread(BaseModel):
@@ -100,6 +114,7 @@ class ChatStore:
 
     def __init__(self, base_dir: str = "./graphs") -> None:
         self.base_dir = Path(base_dir)
+        self._lock = threading.RLock()
         self._journal_compact_every = max(
             0,
             int(os.environ.get("DAN_CHAT_STORE_COMPACT_EVERY", "100")),
@@ -219,16 +234,16 @@ class ChatStore:
         title = thread.title.removesuffix(" (fork)")
         return title in {first[:80], first[:50] + "..."} or ChatStore.initial_title(thread) != thread.title
 
+    @_synchronized
     def _write_snapshot(self, thread: ChatThread) -> None:
         path = self._thread_path(thread.workflow_id, thread.id)
-        path.write_text(
-            thread.model_dump_json(indent=2), encoding="utf-8"
-        )
+        atomic_write_text(path, thread.model_dump_json(indent=2))
         journal_path = self._journal_path(thread.workflow_id, thread.id)
         if journal_path.exists():
             journal_path.unlink()
         self._store_cached_thread_state(thread, 0)
 
+    @_synchronized
     def _append_journal_entry(
         self,
         workflow_id: str,
@@ -250,6 +265,7 @@ class ChatStore:
         self._journal_counts[journal_path] = current
         return current
 
+    @_synchronized
     def _maybe_compact_thread(
         self,
         workflow_id: str,
@@ -289,7 +305,11 @@ class ChatStore:
         if op == "append_message":
             payload = entry.get("message")
             if isinstance(payload, dict):
-                thread.messages.append(ChatMessage.model_validate(payload))
+                message = ChatMessage.model_validate(payload)
+                # A crash between snapshot replacement and journal removal may
+                # leave an already-compacted append to replay.
+                if not any(existing.id == message.id for existing in thread.messages):
+                    thread.messages.append(message)
             thread.updated_at = self._parse_datetime(entry.get("updated_at"))
             return
         if op == "update_thread":
@@ -309,6 +329,7 @@ class ChatStore:
                     setattr(thread, key, value)
             return
 
+    @_synchronized
     def _read_thread_from_path(
         self, path: Path
     ) -> tuple[ChatThread | None, int]:
@@ -332,6 +353,7 @@ class ChatStore:
         thread.title = self.initial_title(thread)
         return thread, line_count
 
+    @_synchronized
     def _load_thread_from_path(self, path: Path) -> ChatThread | None:
         try:
             relative = path.relative_to(self.base_dir / "chats")
@@ -352,6 +374,7 @@ class ChatStore:
             return self._clone_thread(state.thread)
         return thread
 
+    @_synchronized
     def get_thread(
         self, workflow_id: str, thread_id: str
     ) -> ChatThread | None:
@@ -368,10 +391,91 @@ class ChatStore:
         return thread
 
     def save_thread(self, thread: ChatThread, *, auto_title: bool = True) -> None:
-        if auto_title:
-            thread.title = self.initial_title(thread)
-        self._write_snapshot(thread)
+        with self._lock:
+            if auto_title:
+                thread.title = self.initial_title(thread)
+            self._write_snapshot(thread)
 
+    @staticmethod
+    def revision(thread: ChatThread) -> str:
+        """Content token for clients that intentionally replace a transcript."""
+        return hashlib.sha256(json.dumps(
+            thread.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest()
+
+    def merge_messages(
+        self, workflow_id: str, thread_id: str, messages: list[dict[str, Any]],
+        *, source_surface: str = "phone",
+    ) -> ChatThread | None:
+        """Insert stable message IDs without overwriting a concurrent writer.
+
+        Replayed messages must agree on their user-visible identity. Existing
+        server metadata is authoritative, including when a stale client sends
+        defaults for fields that it does not understand.
+        """
+        with self._lock:
+            thread = self.get_thread(workflow_id, thread_id)
+            if thread is None:
+                return None
+            by_id = {message.id: message for message in thread.messages}
+            added = []
+            for raw in messages:
+                if not isinstance(raw, dict) or not str(raw.get("id") or "").strip():
+                    raise ValueError("Additive messages require a stable message ID")
+                message = ChatMessage.model_validate({**raw, "source_surface": source_surface})
+                existing = by_id.get(message.id)
+                if existing:
+                    if (existing.role, existing.content) != (message.role, message.content):
+                        raise ValueError("This message ID already has different content")
+                    continue
+                by_id[message.id] = message
+                added.append(message)
+            if added:
+                thread.messages.extend(added)
+                thread.updated_at = datetime.now(timezone.utc)
+                self.save_thread(thread)
+            return thread
+
+    def replace_messages(
+        self, workflow_id: str, thread_id: str, messages: list[dict[str, Any]],
+        *, expected_revision: str | None = None, auto_title: bool = True,
+    ) -> ChatThread | None:
+        """Keep legacy edit/fork semantics while protecting additive phone rows.
+
+        Old clients omit new metadata. A matching revision opts into intentional
+        truncation; unversioned saves cannot erase rows received from a phone.
+        """
+        with self._lock:
+            thread = self.get_thread(workflow_id, thread_id)
+            if thread is None:
+                return None
+            if expected_revision is not None and expected_revision != self.revision(thread):
+                raise ValueError("The transcript changed; reload it before replacing messages")
+            if not isinstance(messages, list) or any(not isinstance(raw, dict) for raw in messages):
+                raise ValueError("messages must be a list of message objects")
+            previous = {message.id: message for message in thread.messages}
+            replacement: list[ChatMessage] = []
+            for raw in messages:
+                old = previous.get(str(raw.get("id") or ""))
+                merged = {**(old.model_dump(mode="json") if old else {}), **raw}
+                if old:
+                    # Older serializers may supply an empty default marker.
+                    if old.source_surface:
+                        merged["source_surface"] = old.source_surface
+                    for field in ("task_run_ref", "run_ref"):
+                        if isinstance(raw.get(field), dict):
+                            merged[field] = {**(old.model_dump(mode="json").get(field) or {}), **raw[field]}
+                replacement.append(ChatMessage.model_validate(merged))
+            if expected_revision is None:
+                retained = {message.id for message in replacement}
+                replacement.extend(message for message in thread.messages
+                                   if message.source_surface == "phone" and message.id not in retained)
+            thread.messages = replacement
+            thread.updated_at = datetime.now(timezone.utc)
+            self.save_thread(thread, auto_title=auto_title)
+            return thread
+
+    @_synchronized
     def append_message(
         self, workflow_id: str, thread_id: str, message: ChatMessage
     ) -> ChatThread | None:
@@ -399,6 +503,7 @@ class ChatStore:
         self._finalize_cached_thread_mutation(state, journal_count)
         return self._clone_thread(state.thread)
 
+    @_synchronized
     def update_thread_title(
         self, workflow_id: str, thread_id: str, title: str, *, touch: bool = True
     ) -> bool:
@@ -427,6 +532,7 @@ class ChatStore:
         self._maybe_compact_thread(workflow_id, thread_id, journal_count)
         return True
 
+    @_synchronized
     def delete_thread(self, workflow_id: str, thread_id: str) -> bool:
         path = self._thread_path(workflow_id, thread_id)
         if path.exists():
@@ -444,6 +550,7 @@ class ChatStore:
             return True
         return False
 
+    @_synchronized
     def delete_all_threads(self, workflow_id: str) -> int:
         chats_dir = self.base_dir / "chats" / workflow_id
         if not chats_dir.exists():
