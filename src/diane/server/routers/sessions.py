@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from diane.server.chat_store import ChatMessage, ChatStore
+from diane.server.chat_store import ChatStore
 from diane.server.plan_mode import PlanUpdate
 
 router = APIRouter(tags=["sessions"])
@@ -44,7 +43,23 @@ async def get_chat_thread(
     thread = _store(request).get_thread(workflow_id, thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
-    return thread.model_dump(mode="json")
+    return {**thread.model_dump(mode="json"), "revision": ChatStore.revision(thread)}
+
+
+@router.post("/api/chats/{workflow_id}/{thread_id}/messages")
+async def append_chat_messages(
+    workflow_id: str, thread_id: str, request: Request, body: dict[str, Any],
+) -> dict[str, Any]:
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        raise HTTPException(422, "messages must be a list")
+    try:
+        thread = _store(request).merge_messages(workflow_id, thread_id, messages)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if thread is None:
+        raise HTTPException(404, "Thread not found")
+    return {**thread.model_dump(mode="json"), "revision": ChatStore.revision(thread)}
 
 
 @router.post("/api/chats/{workflow_id}")
@@ -79,16 +94,17 @@ async def update_chat_thread(
     thread = store.get_thread(workflow_id, thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
+    if "messages" in body:
+        try:
+            store.replace_messages(workflow_id, thread_id, body["messages"],
+                expected_revision=body.get("revision"), auto_title="title" not in body)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
     if "title" in body:
         meta = store.get_thread_meta(workflow_id, thread_id)
         meta["title_source"] = "manual"
         store.set_thread_meta(workflow_id, thread_id, meta)
         store.update_thread_title(workflow_id, thread_id, str(body.get("title") or ""))
-        thread = store.get_thread(workflow_id, thread_id) or thread
-    if "messages" in body:
-        thread.messages = [ChatMessage.model_validate(item) for item in body["messages"]]
-        thread.updated_at = datetime.now(timezone.utc)
-        store.save_thread(thread, auto_title="title" not in body)
     if "mode" in body:
         store.set_mode(workflow_id, thread_id, body.get("mode"))
     return {"status": "updated"}

@@ -37,7 +37,7 @@ from diane.server.chat_v2_scheduler_budget import (
     scheduler_budget_metadata_update,
     scheduler_continuation_budget_decision,
 )
-from diane.server.chat_v2_store import ChatV2Store
+from diane.server.chat_v2_store import ChatV2Store, IdempotencyConflict
 
 logger = logging.getLogger(__name__)
 
@@ -436,6 +436,8 @@ async def append_agent_run_command(
     from diane.native_workers.settings import record_with_team_settings
     try:
         event = await record_with_team_settings(store, run, normalized)
+    except IdempotencyConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     snapshot = store.get_task_snapshot(run.task_id)

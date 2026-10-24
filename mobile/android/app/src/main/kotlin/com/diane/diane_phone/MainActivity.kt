@@ -2,6 +2,7 @@ package com.diane.diane_phone
 
 import android.content.Intent
 import android.net.VpnService
+import android.util.AtomicFile
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.config.Config
@@ -10,9 +11,12 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.BufferedReader
 import java.io.StringReader
+import java.io.File
 import java.util.Locale
+import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
+    private val stateExecutor = Executors.newSingleThreadExecutor()
     private var wireGuardChannel: MethodChannel? = null
     private var wireGuardBackend: GoBackend? = null
     private var pendingWireGuardConfig: String? = null
@@ -27,6 +31,35 @@ class MainActivity : FlutterActivity() {
                 "start" -> startWireGuard(call.argument<String>("config").orEmpty(), result)
                 "stop" -> stopWireGuard(result)
                 "loadSettings" -> result.success(loadSettings())
+                "loadPhoneState" -> stateExecutor.execute {
+                    try {
+                        val state = AtomicFile(File(filesDir, "phone-state.json"))
+                        val value = try {
+                            state.openRead().bufferedReader().use { it.readText() }
+                        } catch (missing: java.io.FileNotFoundException) {
+                            "{}"
+                        }
+                        runOnUiThread { result.success(value) }
+                    } catch (error: Exception) {
+                        runOnUiThread { result.error("phone_state_read_failed", "Could not read saved phone work.", null) }
+                    }
+                }
+                "savePhoneState" -> {
+                    val value = call.argument<String>("state").orEmpty()
+                    stateExecutor.execute {
+                        val state = AtomicFile(File(filesDir, "phone-state.json"))
+                        var output: java.io.FileOutputStream? = null
+                        try {
+                            output = state.startWrite()
+                            output.write(value.toByteArray(Charsets.UTF_8))
+                            state.finishWrite(output)
+                            runOnUiThread { result.success(true) }
+                        } catch (error: Exception) {
+                            output?.let { state.failWrite(it) }
+                            runOnUiThread { result.error("phone_state_write_failed", "Could not save work on this phone.", null) }
+                        }
+                    }
+                }
                 "saveSettings" -> {
                     saveSettings(
                         call.argument<String>("apiBase").orEmpty(),
@@ -42,6 +75,11 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    override fun onDestroy() {
+        stateExecutor.shutdown()
+        super.onDestroy()
     }
 
     private fun wireGuardStatus(): Map<String, Any> {

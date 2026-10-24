@@ -2,32 +2,67 @@ import 'package:diane_phone/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+class _OfflineApi implements PhoneApiClient {
+  @override
+  Future<Map<String, dynamic>> request(
+    String base,
+    String path, {
+    String method = 'GET',
+    Map<String, Object?>? body,
+    String token = '',
+    Duration timeout = const Duration(seconds: 15),
+  }) async => throw const PhoneApiFailure('The computer could not be reached.');
+}
+
 void main() {
-  testWidgets('shows the phone workspace pages', (WidgetTester tester) async {
-    await tester.pumpWidget(const DanPhoneApp());
+  testWidgets('phone opens to Diane with Work, Library and secondary setup', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      DanPhoneApp(
+        apiClient: _OfflineApi(),
+        persistence: MemoryPhoneStatePersistence(),
+        initialApiBase: 'https://computer.test',
+      ),
+    );
+    await tester.pumpAndSettle();
 
+    expect(find.byKey(const ValueKey('phone-composer')), findsOneWidget);
     expect(find.text('Work'), findsOneWidget);
-    expect(find.text('Notes'), findsOneWidget);
-    expect(find.text('Work Chat'), findsOneWidget);
+    expect(find.text('Library'), findsOneWidget);
+    expect(find.text('Computer address'), findsNothing);
 
-    await tester.tap(find.byIcon(Icons.menu));
+    await tester.tap(find.byTooltip('Conversations'));
     await tester.pumpAndSettle();
-    expect(find.text('Search sessions'), findsOneWidget);
-    expect(find.byIcon(Icons.create_new_folder_outlined), findsOneWidget);
-    expect(find.byIcon(Icons.refresh), findsOneWidget);
-    await tester.tapAt(const Offset(520, 80));
+    expect(find.text('Search conversations'), findsOneWidget);
+    expect(find.byTooltip('New workspace'), findsOneWidget);
+    expect(find.byTooltip('Refresh sessions'), findsOneWidget);
+    await tester.tapAt(const Offset(750, 80));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byIcon(Icons.settings_outlined));
+    await tester.tap(find.byTooltip('Computer connection'));
     await tester.pumpAndSettle();
-    expect(find.text('Dear Diane API base'), findsOneWidget);
+    expect(find.text('Your computer'), findsOneWidget);
+    expect(find.text('Reconnect'), findsOneWidget);
+    expect(find.text('Computer address'), findsNothing);
+    await tester.tap(find.text('Connection details'));
+    await tester.pumpAndSettle();
+    expect(find.text('Computer address'), findsOneWidget);
     expect(find.text('Access token'), findsOneWidget);
-    expect(find.text('Workspace root'), findsOneWidget);
-    expect(find.textContaining('WG:'), findsOneWidget);
-    expect(find.text('Force start'), findsOneWidget);
-    expect(find.text('Force off'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
+    expect(find.text('Private network'), findsOneWidget);
+    await tester.ensureVisible(find.text('Done'));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Work'));
+    await tester.pumpAndSettle();
+    expect(find.text('A place to pick things up'), findsOneWidget);
+
+    await tester.tap(find.text('Library'));
+    await tester.pumpAndSettle();
+    expect(find.text('Files'), findsOneWidget);
+    expect(find.text('Outputs'), findsOneWidget);
 
     await tester.tap(find.text('Notes'));
     await tester.pumpAndSettle();
@@ -37,5 +72,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Markdown source'), findsWidgets);
     expect(find.text('Save'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
   });
 }
