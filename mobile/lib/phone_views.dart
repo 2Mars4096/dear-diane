@@ -186,10 +186,10 @@ class PhoneShell extends StatelessWidget {
     final textScaler = MediaQuery.textScalerOf(context);
     final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
     final headerHeight =
-        (textScaler.scale(25) * 1.2 + textScaler.scale(13) * 1.4 + 14).clamp(
-          80.0,
-          160.0,
-        );
+        (textScaler.scale(25) * 1.2 +
+                (keyboardOpen ? 0 : textScaler.scale(13) * 1.4) +
+                14)
+            .clamp(80.0, 160.0);
     return Scaffold(
       key: scaffoldKey,
       drawer: drawer,
@@ -210,29 +210,30 @@ class PhoneShell extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.titleLarge,
             ),
-            const SizedBox(height: 3),
-            Row(
-              children: [
-                Icon(
-                  connected
-                      ? Icons.circle
-                      : checking
-                      ? Icons.sync_rounded
-                      : Icons.cloud_off_outlined,
-                  size: connected ? 7 : 13,
-                  color: connected ? colors.primary : colors.onSurfaceVariant,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    '$status · $computerLabel',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
+            if (!keyboardOpen) const SizedBox(height: 3),
+            if (!keyboardOpen)
+              Row(
+                children: [
+                  Icon(
+                    connected
+                        ? Icons.circle
+                        : checking
+                        ? Icons.sync_rounded
+                        : Icons.cloud_off_outlined,
+                    size: connected ? 7 : 13,
+                    color: connected ? colors.primary : colors.onSurfaceVariant,
                   ),
-                ),
-              ],
-            ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      '$status · $computerLabel',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+              ),
           ],
         ),
         actions: [
@@ -1149,6 +1150,12 @@ class _WorkSurface extends StatelessWidget {
     this.conversationId = '',
     this.connectionState = 'ready',
     this.onQueueChat,
+    this.reportReference,
+    this.chatFocusNode,
+    this.onRemoveReport,
+    this.onOpenReport,
+    this.onAskReport,
+    this.showAskReport = false,
   });
 
   final WorkPage page;
@@ -1194,6 +1201,11 @@ class _WorkSurface extends StatelessWidget {
   final String conversationId;
   final String connectionState;
   final VoidCallback? onQueueChat;
+  final PhoneReportReference? reportReference;
+  final FocusNode? chatFocusNode;
+  final VoidCallback? onRemoveReport, onAskReport;
+  final ValueChanged<PhoneReportReference>? onOpenReport;
+  final bool showAskReport;
 
   @override
   Widget build(BuildContext context) {
@@ -1226,6 +1238,10 @@ class _WorkSurface extends StatelessWidget {
         conversationId: conversationId,
         connectionState: connectionState,
         onQueue: onQueueChat,
+        reportReference: reportReference,
+        focusNode: chatFocusNode,
+        onRemoveReport: onRemoveReport,
+        onOpenReport: onOpenReport,
       ),
       WorkPage.files => _FilesPage(
         workspaceRoot: workspaceRoot,
@@ -1247,6 +1263,8 @@ class _WorkSurface extends StatelessWidget {
         previewArtifactsExpanded: previewArtifactsExpanded,
         onTogglePreviewArtifacts: onTogglePreviewArtifacts,
         onSelectArtifact: onSelectArtifact,
+        onAsk: onAskReport,
+        showAsk: showAskReport,
       ),
     };
   }
@@ -1476,6 +1494,10 @@ class PhoneConversationView extends StatefulWidget {
     this.conversationId = '',
     this.connectionState = 'ready',
     this.onQueue,
+    this.reportReference,
+    this.focusNode,
+    this.onRemoveReport,
+    this.onOpenReport,
   });
 
   final String workspaceRoot;
@@ -1506,6 +1528,10 @@ class PhoneConversationView extends StatefulWidget {
   final String conversationId;
   final String connectionState;
   final VoidCallback? onQueue;
+  final PhoneReportReference? reportReference;
+  final FocusNode? focusNode;
+  final VoidCallback? onRemoveReport;
+  final ValueChanged<PhoneReportReference>? onOpenReport;
 
   @override
   State<PhoneConversationView> createState() => _PhoneConversationViewState();
@@ -1622,7 +1648,9 @@ class _PhoneConversationViewState extends State<PhoneConversationView> {
               PhoneChatRole.assistant => 'Diane',
               PhoneChatRole.status => 'Update',
             },
-            text: message.text,
+            text: phoneQuestionFromMessage(message.record) ?? message.text,
+            reportReference: phoneReportFromMessage(message.record),
+            onOpenReport: widget.onOpenReport,
             status: _workStatusLabel(message.status),
             alignRight: message.role == PhoneChatRole.user,
             isUpdate: message.role == PhoneChatRole.status,
@@ -1677,6 +1705,17 @@ class _PhoneConversationViewState extends State<PhoneConversationView> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final compact = constraints.maxHeight < 300;
+        // At large system text sizes, keep citation and input reachable while
+        // the keyboard is open. Detailed notices remain in scrollable history.
+        final noticeInHistory = compact && widget.reportReference != null;
+        final visibleContents = [
+          ...contents,
+          if (noticeInHistory && notice.isNotEmpty)
+            Semantics(
+              liveRegion: true,
+              child: Text(notice, style: Theme.of(context).textTheme.bodySmall),
+            ),
+        ];
         return Column(
           children: [
             Expanded(
@@ -1689,8 +1728,8 @@ class _PhoneConversationViewState extends State<PhoneConversationView> {
                       keyboardDismissBehavior:
                           ScrollViewKeyboardDismissBehavior.onDrag,
                       padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
-                      itemCount: contents.length,
-                      itemBuilder: (context, index) => contents[index],
+                      itemCount: visibleContents.length,
+                      itemBuilder: (context, index) => visibleContents[index],
                     ),
                   ),
                   if (_showJump)
@@ -1719,7 +1758,16 @@ class _PhoneConversationViewState extends State<PhoneConversationView> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (notice.isNotEmpty)
+                  if (widget.reportReference != null)
+                    PhoneReportReferenceChip(
+                      key: const ValueKey('phone-report-reference'),
+                      reference: widget.reportReference!,
+                      onOpen: widget.onOpenReport == null
+                          ? null
+                          : () => widget.onOpenReport!(widget.reportReference!),
+                      onRemove: widget.onRemoveReport,
+                    ),
+                  if (notice.isNotEmpty && !noticeInHistory)
                     Padding(
                       padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
                       child: ConstrainedBox(
@@ -1770,12 +1818,14 @@ class _PhoneConversationViewState extends State<PhoneConversationView> {
                     builder: (context, value, _) {
                       final hasDraft =
                           value.text.trim().isNotEmpty ||
-                          widget.attachments.isNotEmpty;
+                          widget.attachments.isNotEmpty ||
+                          widget.reportReference != null;
                       final showStop = widget.activeRunLive && !hasDraft;
                       final canSend = hasDraft && !widget.busy;
                       return TextField(
                         key: const ValueKey('phone-composer'),
                         controller: widget.controller,
+                        focusNode: widget.focusNode,
                         minLines: 1,
                         maxLines: compact ? 1 : 4,
                         textCapitalization: TextCapitalization.sentences,
@@ -1784,6 +1834,8 @@ class _PhoneConversationViewState extends State<PhoneConversationView> {
                         decoration: InputDecoration(
                           hintText: widget.activeRunLive
                               ? 'Steer this task…'
+                              : widget.reportReference != null
+                              ? 'Ask about this report…'
                               : 'Message Diane…',
                           hintMaxLines: 1,
                           prefixIcon: PopupMenuButton<String>(
@@ -1831,6 +1883,7 @@ class _PhoneConversationViewState extends State<PhoneConversationView> {
                               style: IconButton.styleFrom(
                                 minimumSize: const Size(48, 48),
                                 maximumSize: const Size(48, 48),
+                                foregroundColor: colors.onPrimary,
                               ),
                               onPressed: showStop && !widget.busy
                                   ? widget.onStopRun
@@ -2354,6 +2407,54 @@ IconData _artifactIcon(PhonePreviewArtifact artifact) {
   return Icons.description_outlined;
 }
 
+/// The same source stays visible in the draft and in the sent message.
+class PhoneReportReferenceChip extends StatelessWidget {
+  const PhoneReportReferenceChip({
+    super.key,
+    required this.reference,
+    this.onOpen,
+    this.onRemove,
+  });
+
+  final PhoneReportReference reference;
+  final VoidCallback? onOpen, onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: TextButton.icon(
+            key: onRemove == null
+                ? null
+                : const ValueKey('phone-open-report-reference'),
+            onPressed: onOpen,
+            style: TextButton.styleFrom(
+              alignment: Alignment.centerLeft,
+              minimumSize: const Size(48, 48),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+            ),
+            icon: const Icon(Icons.description_outlined, size: 18),
+            label: Text(
+              'Report: ${reference.title}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+        ),
+        if (onRemove != null)
+          IconButton(
+            key: const ValueKey('phone-remove-report'),
+            tooltip: 'Remove report reference',
+            onPressed: onRemove,
+            icon: const Icon(Icons.close_rounded, size: 18),
+          ),
+      ],
+    );
+  }
+}
+
 class _MessageBubble extends StatelessWidget {
   const _MessageBubble({
     required this.title,
@@ -2361,12 +2462,16 @@ class _MessageBubble extends StatelessWidget {
     this.status = '',
     this.alignRight = false,
     this.isUpdate = false,
+    this.reportReference,
+    this.onOpenReport,
   });
   final String title;
   final String text;
   final String status;
   final bool alignRight;
   final bool isUpdate;
+  final PhoneReportReference? reportReference;
+  final ValueChanged<PhoneReportReference>? onOpenReport;
 
   @override
   Widget build(BuildContext context) {
@@ -2411,6 +2516,13 @@ class _MessageBubble extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (reportReference != null)
+                  PhoneReportReferenceChip(
+                    reference: reportReference!,
+                    onOpen: onOpenReport == null
+                        ? null
+                        : () => onOpenReport!(reportReference!),
+                  ),
                 SelectableText(
                   text,
                   style: Theme.of(context).textTheme.bodyLarge,
@@ -2685,6 +2797,8 @@ class _FilePreviewPage extends StatelessWidget {
     required this.previewArtifactsExpanded,
     required this.onTogglePreviewArtifacts,
     required this.onSelectArtifact,
+    this.onAsk,
+    this.showAsk = false,
   });
 
   final WorkspaceFileEntry? activeFile;
@@ -2695,6 +2809,8 @@ class _FilePreviewPage extends StatelessWidget {
   final bool previewArtifactsExpanded;
   final VoidCallback onTogglePreviewArtifacts;
   final ValueChanged<PhonePreviewArtifact> onSelectArtifact;
+  final VoidCallback? onAsk;
+  final bool showAsk;
 
   @override
   Widget build(BuildContext context) {
@@ -2728,11 +2844,31 @@ class _FilePreviewPage extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      displayTitle,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            displayTitle,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                        if (showAsk) ...[
+                          const SizedBox(width: 8),
+                          FilledButton.icon(
+                            key: const ValueKey('phone-ask-report'),
+                            onPressed: onAsk,
+                            icon: const Icon(
+                              Icons.chat_bubble_outline_rounded,
+                              size: 18,
+                            ),
+                            label: const Text('Ask'),
+                          ),
+                        ],
+                      ],
                     ),
                     Text(
                       status,

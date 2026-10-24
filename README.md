@@ -200,6 +200,8 @@ For an existing configured remote workspace, use the folder action to open it. N
 
 The Android phone app brings **Diane**, **Work**, and **Library** into one interface. Continue a saved conversation, see work that needs your attention, answer questions and permission requests, or browse workspace files and notes. The conversation keeps the agent, account, model, workspace and permissions already selected on your computer.
 
+From a report or output preview, tap **Ask** to open chat with the report cited. Your draft stays intact, the reference can be inspected or removed, and sending includes its source and a saved excerpt. Report references stay with each conversation across navigation and restarts.
+
 Drafts and outgoing actions are saved on the phone. Delivery labels distinguish a local request, an unconfirmed response and an acknowledgement from the computer. Reconnecting checks the original receipt before retrying, so a dropped connection does not create another execution. Stop and steering remain attached to their original run.
 
 The computer runs the agents and tools; the phone shows progress and decisions. Work currently groups existing conversations and tasks. Background push notifications, a separate durable issue/commitment layer and remote screen sharing are follow-up work. See [phone setup and validation](mobile/README.md) for compatible backend and build requirements.

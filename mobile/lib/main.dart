@@ -947,6 +947,10 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
   int _pollFailures = 0;
   int _pollSubscription = 0;
   int _pollCycles = 0;
+  int _previewGeneration = 0;
+  int _fileTreeGeneration = 0;
+  PhoneReportReference? _previewReference;
+  String _previewScope = '';
   Timer? _draftSaveTimer;
   int _phoneTab = 0;
   int _libraryTab = 0;
@@ -1044,9 +1048,44 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
   late final TextEditingController noteEditController;
   late final TextEditingController workspaceRootController;
   late final TextEditingController chatController;
+  final FocusNode _chatFocusNode = FocusNode();
   late final ScrollController noteReadScrollController;
   late final ScrollController noteEditScrollController;
   final scaffoldKey = GlobalKey<ScaffoldState>();
+
+  String get _draftKey => PhoneDeviceState.draftKey(
+    activeApiBase,
+    activeWorkflowId,
+    activeThreadId,
+    workspaceRoot,
+  );
+
+  // Unlike a draft key, a preview is also tied to the browsed root in an
+  // existing conversation. Changing folders must not reuse its loaded body.
+  String get _currentPreviewScope => jsonEncode([
+    activeApiBase,
+    activeWorkflowId,
+    activeThreadId,
+    workspaceRoot,
+  ]);
+
+  PhoneReportReference? get _reportDraft =>
+      _deviceState.reportDrafts[_draftKey];
+
+  void _clearPreview() {
+    ++_previewGeneration;
+    ++_fileTreeGeneration;
+    _previewReference = null;
+    _previewScope = '';
+    activePreviewArtifact = null;
+    activeFile = null;
+    activeFileContent = '';
+    previewTitle = 'Preview';
+    previewStatus = 'Select a file or output to inspect it here';
+    previewContent = '';
+    loadingPromptLog = false;
+    loadingFiles = false;
+  }
 
   @override
   void initState() {
@@ -1155,6 +1194,8 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
                 'timestamp': message.record['timestamp'],
               if (message.record['task_run_ref'] != null)
                 'task_run_ref': message.record['task_run_ref'],
+              if (message.record['attachments'] != null)
+                'attachments': message.record['attachments'],
             },
           )
           .toList(),
@@ -1248,6 +1289,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
     noteEditController.dispose();
     workspaceRootController.dispose();
     chatController.dispose();
+    _chatFocusNode.dispose();
     noteReadScrollController.dispose();
     noteEditScrollController.dispose();
     agentPollTimer?.cancel();
@@ -1475,7 +1517,14 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
 
   Future<void> _selectWorkspaceRootFromDrawer(String root) async {
     final nextRoot = root.trim();
+    _captureDraft();
     setState(() {
+      _clearPreview();
+      if (activeThreadId.isEmpty && nextRoot != workspaceRoot) {
+        chatBusy = false;
+        chatMessages = const [];
+        chatStatus = 'Ready';
+      }
       workspaceRoot = nextRoot;
       workspaceRootController.text = nextRoot;
       phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [nextRoot]);
@@ -1487,6 +1536,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
           ? 'Loading default workspace'
           : 'Loading $nextRoot';
     });
+    _restoreDraft();
     await _savePhoneSettings();
     await _refreshWorkspaceFiles(root: nextRoot);
   }
@@ -1522,6 +1572,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
       chatMessages = const [];
       composerAttachments = const [];
       previewArtifacts = const [];
+      _clearPreview();
       promptLogPath = '';
       promptLogEntryCount = 0;
       chatStatus = 'Connecting to conversation';
@@ -1554,6 +1605,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
       chatMessages = const [];
       composerAttachments = const [];
       previewArtifacts = const [];
+      _clearPreview();
       workspaceRoot = root.trim();
       workspaceRootController.text = workspaceRoot;
       phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [workspaceRoot]);
@@ -1887,6 +1939,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
       workspaceNotes = const [];
       activeNote = null;
       activeFile = null;
+      _clearPreview();
       notePreviewCache.clear();
       lastSyncedAt = null;
       health = 'checking';
@@ -2062,12 +2115,20 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
 
   Future<void> _applyWorkspaceRoot([String? value]) async {
     final nextRoot = (value ?? workspaceRootController.text).trim();
+    _captureDraft();
     setState(() {
+      _clearPreview();
+      if (activeThreadId.isEmpty && nextRoot != workspaceRoot) {
+        chatBusy = false;
+        chatMessages = const [];
+        chatStatus = 'Ready';
+      }
       workspaceRoot = nextRoot;
       workspaceRootController.text = nextRoot;
       phoneWorkspaces = _mergeWorkspaceRoots(phoneWorkspaces, [nextRoot]);
       fileStatus = 'Loading workspace';
     });
+    _restoreDraft();
     await _savePhoneSettings();
     await _refreshWorkspaceFiles(root: nextRoot);
     unawaited(_refreshSessions());
@@ -2077,6 +2138,8 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
     final base = _normalizeApiBase(apiBase ?? activeApiBase);
     final requestedRoot = (root ?? workspaceRoot).trim();
     if (!mounted || health == 'offline') return;
+    final selection = ++_fileTreeGeneration;
+    final scope = _currentPreviewScope;
     setState(() {
       loadingFiles = true;
       fileStatus = requestedRoot.isEmpty
@@ -2087,7 +2150,12 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
         ? ''
         : '?root_path=${Uri.encodeComponent(requestedRoot)}';
     final payload = await _getJson(base, '/api/workspace-files$suffix');
-    if (!mounted) return;
+    if (!mounted ||
+        selection != _fileTreeGeneration ||
+        scope != _currentPreviewScope ||
+        base != activeApiBase) {
+      return;
+    }
     if (payload == null) {
       setState(() {
         loadingFiles = false;
@@ -2119,7 +2187,14 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
       await _applyWorkspaceRoot(entry.path);
       return;
     }
+    final selection = ++_previewGeneration;
+    final scope = _currentPreviewScope;
+    final base = activeApiBase;
+    final root = workspaceRoot;
     setState(() {
+      _previewReference = null;
+      _previewScope = scope;
+      loadingPromptLog = false;
       activeFile = entry;
       activePreviewArtifact = null;
       activeFileContent = '';
@@ -2133,25 +2208,46 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
       _libraryTab = 2;
     });
     final payload = await _getJson(
-      activeApiBase,
-      '/api/workspace-files/read?path=${Uri.encodeComponent(entry.path)}&root_path=${Uri.encodeComponent(workspaceRoot)}',
+      base,
+      '/api/workspace-files/read?path=${Uri.encodeComponent(entry.path)}&root_path=${Uri.encodeComponent(root)}',
     );
-    if (!mounted) return;
-    if (payload == null) {
-      setState(() => fileStatus = 'Could not read ${entry.relativePath}');
+    if (!mounted ||
+        selection != _previewGeneration ||
+        scope != _currentPreviewScope) {
       return;
     }
+    final content = payload?['content'] is String
+        ? payload!['content'] as String
+        : null;
     setState(() {
-      activeFileContent = _asString(payload['content'], '');
+      activeFileContent = content ?? '';
       previewTitle = entry.relativePath;
-      previewStatus = entry.relativePath;
+      previewStatus = content == null
+          ? 'Text unavailable · you can still ask about this file'
+          : payload?['truncated'] == true
+          ? '${entry.relativePath} · preview truncated'
+          : entry.relativePath;
       previewContent = activeFileContent;
-      fileStatus = entry.relativePath;
+      fileStatus = previewStatus;
+      _previewReference = PhoneReportReference.fromPreview(
+        id: _newId('report'),
+        title: entry.relativePath,
+        path: _reportSourcePath(payload, entry.path, root),
+        content: content,
+        truncated: payload?['truncated'] == true,
+      );
     });
   }
 
   Future<void> _selectPreviewArtifact(PhonePreviewArtifact artifact) async {
+    final selection = ++_previewGeneration;
+    final scope = _currentPreviewScope;
+    final base = activeApiBase;
+    final root = workspaceRoot;
     setState(() {
+      _previewReference = null;
+      _previewScope = scope;
+      loadingPromptLog = false;
       activePreviewArtifact = artifact;
       activeFile = null;
       activeFileContent = '';
@@ -2167,21 +2263,64 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
       setState(() {
         previewContent =
             'Remote artifact\n\n${artifact.url}\n\nOpen this URL from a browser-capable surface.';
+        if (artifact.url.isNotEmpty) {
+          _previewReference = PhoneReportReference.fromPreview(
+            id: _newId('report'),
+            title: artifact.title,
+            url: artifact.url,
+          );
+        }
       });
       return;
     }
     final payload = await _getJson(
-      activeApiBase,
-      '/api/workspace-files/read?path=${Uri.encodeComponent(artifact.path)}&root_path=${Uri.encodeComponent(workspaceRoot)}',
+      base,
+      '/api/workspace-files/read?path=${Uri.encodeComponent(artifact.path)}&root_path=${Uri.encodeComponent(root)}',
     );
-    if (!mounted) return;
+    if (!mounted ||
+        selection != _previewGeneration ||
+        scope != _currentPreviewScope) {
+      return;
+    }
+    final content = payload?['content'] is String
+        ? payload!['content'] as String
+        : null;
     setState(() {
       previewContent = _asString(
         payload?['content'],
         'Artifact recorded at:\n${artifact.path}\n\nThis output could not be read as text from the current workspace root.',
       );
-      previewStatus = artifact.path;
+      previewStatus = content == null
+          ? '${artifact.path} · text unavailable'
+          : payload?['truncated'] == true
+          ? '${artifact.path} · preview truncated'
+          : artifact.path;
+      _previewReference = PhoneReportReference.fromPreview(
+        id: _newId('report'),
+        title: artifact.title,
+        path: _reportSourcePath(payload, artifact.path, root),
+        url: artifact.url,
+        content: content,
+        truncated: payload?['truncated'] == true,
+      );
     });
+  }
+
+  String _reportSourcePath(
+    Map<String, dynamic>? payload,
+    String path,
+    String root,
+  ) {
+    final resolved = _asString(_recordValue(payload?['file'])?['path'], '');
+    if (resolved.isNotEmpty) return resolved;
+    if (root.isEmpty ||
+        path.startsWith('/') ||
+        path.startsWith('\\\\') ||
+        RegExp(r'^[A-Za-z]:[\\/]').hasMatch(path)) {
+      return path;
+    }
+    final separator = root.contains('\\') && !root.contains('/') ? '\\' : '/';
+    return '${root.replaceFirst(RegExp(r'[\\/]+$'), '')}$separator$path';
   }
 
   Future<void> _openPromptLogPreview() async {
@@ -2193,7 +2332,11 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
       });
       return;
     }
+    final selection = ++_previewGeneration;
+    final scope = _currentPreviewScope;
     setState(() {
+      _previewReference = null;
+      _previewScope = scope;
       loadingPromptLog = true;
       activePreviewArtifact = null;
       activeFile = null;
@@ -2210,7 +2353,11 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
       activeApiBase,
       '/api/v2/threads/${Uri.encodeComponent(activeThreadId)}/prompt-log',
     );
-    if (!mounted) return;
+    if (!mounted ||
+        selection != _previewGeneration ||
+        scope != _currentPreviewScope) {
+      return;
+    }
     setState(() {
       loadingPromptLog = false;
       promptLogEntryCount = _asInt(payload?['entry_count']);
@@ -2228,6 +2375,89 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
     });
   }
 
+  void _askAboutPreview() {
+    final reference = _previewReference;
+    if (reference == null || _previewScope != _currentPreviewScope) return;
+    setState(() {
+      // Each staging action has an identity, even when citing the same file.
+      // A delayed save may only consume the reference submitted with it.
+      _deviceState.reportDrafts[_draftKey] = PhoneReportReference.fromJson({
+        ...reference.toJson(),
+        'id': _newId('report'),
+      });
+      _phoneTab = 0;
+      mode = WorkspaceMode.work;
+      workPage = WorkPage.chat;
+    });
+    final scope = _currentPreviewScope;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _phoneTab == 0 && scope == _currentPreviewScope) {
+        _chatFocusNode.requestFocus();
+      }
+    });
+    _persistReportDraft();
+  }
+
+  void _removeReportDraft() {
+    setState(() => _deviceState.reportDrafts.remove(_draftKey));
+    _persistReportDraft();
+  }
+
+  void _persistReportDraft() {
+    unawaited(
+      _persistDeviceState().catchError((Object _) {
+        if (mounted) {
+          setState(
+            () => chatStatus =
+                'Report reference could not be saved on this phone.',
+          );
+        }
+      }),
+    );
+  }
+
+  void _openReportReference(PhoneReportReference reference) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: .62,
+        minChildSize: .3,
+        maxChildSize: .9,
+        expand: false,
+        builder: (context, scrollController) => ListView(
+          controller: scrollController,
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
+          children: [
+            Text(
+              reference.title,
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 12),
+            if (reference.path.isNotEmpty) SelectableText(reference.path),
+            if (reference.url.isNotEmpty) SelectableText(reference.url),
+            const SizedBox(height: 16),
+            Text(
+              reference.contentAvailable
+                  ? 'Saved report excerpt${reference.truncated ? ' · shortened' : ''}'
+                  : 'Reference only · report text was unavailable',
+            ),
+            const SizedBox(height: 8),
+            SelectableText(
+              reference.contentAvailable
+                  ? (reference.excerpt.isEmpty
+                        ? 'This report was empty.'
+                        : reference.excerpt)
+                  : 'Diane will receive the source reference. No report text is attached.',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   String _newId(String prefix) {
     final random = Random.secure();
     final bytes = List<int>.generate(16, (_) => random.nextInt(256));
@@ -2243,7 +2473,11 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
     final draftText = chatController.text;
     final typed = draftText.trim();
     final attachments = List<PhoneAttachmentDraft>.from(composerAttachments);
-    if ((typed.isEmpty && attachments.isEmpty) || chatBusy) return;
+    final reference = _reportDraft;
+    if ((typed.isEmpty && attachments.isEmpty && reference == null) ||
+        chatBusy) {
+      return;
+    }
     if (activeThreadId.isEmpty &&
         _deliveries.any((item) => item.threadId.isEmpty && item.isPending)) {
       setState(
@@ -2252,16 +2486,30 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
       );
       return;
     }
-    final text = typed.isNotEmpty
+    final question = typed.isNotEmpty
         ? typed
+        : reference != null
+        ? 'Please help me understand this report.'
         : 'Please review the attached screenshot${attachments.length > 1 ? 's' : ''}.';
+    final text = reference?.composeMessage(question) ?? question;
+    final attachmentPayloads = [
+      ...attachments.map((attachment) => attachment.toPayload()),
+      if (reference != null) reference.toAttachment(question),
+    ];
+    if (text.length > 100000) {
+      setState(
+        () => chatStatus =
+            'This message is too long. Shorten your question before sending.',
+      );
+      return;
+    }
     final id = _newId('request');
     final messageId = _newId('message');
     final kind = action ?? (activeRunLive ? 'steer' : 'send');
     final item = PhoneDeliveryItem(
       id: id,
       kind: kind,
-      text: text,
+      text: question,
       apiBase: activeApiBase,
       workflowId: activeWorkflowId,
       threadId: activeThreadId,
@@ -2277,19 +2525,21 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
         if (kind == 'steer' || kind == 'queue') 'run_id': activeRunId,
         if (activeThreadId.isEmpty && workspaceRoot.isNotEmpty)
           'workspace_root': workspaceRoot,
-        'attachments': attachments
-            .map((attachment) => attachment.toPayload())
-            .toList(),
+        'attachments': attachmentPayloads,
       },
     );
     final originEpoch = _generation;
     final originBase = activeApiBase;
     final originThread = activeThreadId;
+    final originWorkflow = activeWorkflowId;
+    final originRoot = workspaceRoot;
     bool originVisible() =>
         mounted &&
         originEpoch == _generation &&
         originBase == activeApiBase &&
-        originThread == activeThreadId;
+        originThread == activeThreadId &&
+        originWorkflow == activeWorkflowId &&
+        (originThread.isNotEmpty || originRoot == workspaceRoot);
     final draftKey = PhoneDeviceState.draftKey(
       activeApiBase,
       activeWorkflowId,
@@ -2298,6 +2548,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
     );
     _savingDrafts[draftKey] = draftText;
     _deviceState.drafts[draftKey] = '';
+    if (reference != null) _deviceState.reportDrafts.remove(draftKey);
     _deviceState.deliveries.add(item);
     setState(() {
       chatBusy = true;
@@ -2312,9 +2563,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
             'id': messageId,
             'role': 'user',
             'content': text,
-            'attachments': attachments
-                .map((attachment) => attachment.toPayload())
-                .toList(),
+            'attachments': attachmentPayloads,
             'timestamp': DateTime.now().toUtc().toIso8601String(),
           },
         ),
@@ -2326,6 +2575,9 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
     } catch (_) {
       _deviceState.deliveries.removeWhere((value) => value.id == id);
       _savingDrafts.remove(draftKey);
+      if (reference != null) {
+        _deviceState.reportDrafts.putIfAbsent(draftKey, () => reference);
+      }
       if ((_deviceState.drafts[draftKey] ?? '').isEmpty) {
         _deviceState.drafts[draftKey] = draftText;
       }
@@ -2400,7 +2652,13 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
     final base = item.apiBase;
     final token = accessToken;
     final epoch = originEpoch ?? _generation;
-    final originMatches = activeThreadId == item.threadId;
+    final originThread = item.threadId;
+    final originWorkflow = item.workflowId;
+    final originRoot = _asString(item.payload['workspace_root'], '');
+    bool originMatches() =>
+        activeThreadId == originThread &&
+        activeWorkflowId == originWorkflow &&
+        (originThread.isNotEmpty || workspaceRoot == originRoot);
     final wasUncertain = item.status == 'uncertain';
     var awaitingReconciliation = wasUncertain;
     _delivering.add(id);
@@ -2460,8 +2718,8 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
         if (mounted &&
             epoch == _generation &&
             base == activeApiBase &&
-            (activeThreadId == thread ||
-                (activeThreadId.isEmpty && originMatches))) {
+            ((activeThreadId == thread && activeWorkflowId == workflow) ||
+                (activeThreadId.isEmpty && originMatches()))) {
           final previousDraftKey = PhoneDeviceState.draftKey(
             base,
             activeWorkflowId,
@@ -2507,6 +2765,12 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
                   workspaceRoot,
                 )] =
                 currentDraft;
+            final pendingReference = _deviceState.reportDrafts.remove(
+              previousDraftKey,
+            );
+            if (pendingReference != null) {
+              _deviceState.reportDrafts[_draftKey] = pendingReference;
+            }
           }
           _startSessionPolling();
           unawaited(_refreshSessions());
@@ -3624,6 +3888,15 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
     conversationTitle: conversationTitle,
     connectionState: health,
     conversationId: activeThreadId,
+    reportReference: _reportDraft,
+    chatFocusNode: _chatFocusNode,
+    onRemoveReport: _removeReportDraft,
+    onOpenReport: _openReportReference,
+    showAskReport: activeFile != null || activePreviewArtifact != null,
+    onAskReport:
+        _previewReference != null && _previewScope == _currentPreviewScope
+        ? _askAboutPreview
+        : null,
   );
 
   Widget _libraryBody() {
@@ -3700,6 +3973,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome>
       ),
       selectedIndex: _phoneTab,
       onDestinationSelected: (index) {
+        if (index != 0) _chatFocusNode.unfocus();
         setState(() => _phoneTab = index);
         if (index == 1) unawaited(_refreshSessions());
       },

@@ -8,9 +8,15 @@ The Flutter Android companion for talking to Diane, following work on your compu
 - **Work** brings decisions and interrupted work to the top, followed by running conversations and recent results. Tap a row to open its conversation.
 - **Library** contains workspace files, notes, and outputs. Notes retain their editing and reading tools.
 
+Open a report in **Library → Outputs** (or a workspace file), then tap **Ask**. Diane chat opens with that report cited and your existing question intact. Type your question and send when ready. Tap the report reference to inspect its saved excerpt, or remove it with ×. Unsent report references stay with their conversation across navigation and app restarts.
+
+The question includes the report's title, file path or URL, and up to 2,000 characters of saved text. Partial previews are marked as excerpts. If a file cannot be read as text, or an output is a URL, the citation identifies the source and says its text was unavailable. Ask itself does not fetch a remote URL or start an agent run.
+
 The computer indicator opens connection status and recovery actions. Detailed server, token, workspace, and VPN controls are available from connection settings. The interface follows the device's light or dark appearance.
 
 Work rows reflect the existing session/task/run records. They do not yet represent a separate durable issue or commitment system.
+
+The October 24 source review also identified follow-up work for note autosave during note switching, per-conversation screenshot drafts and a native image picker. See the [phone review and acceptance record](../docs/plans/7-2-phone-report-chat.md).
 
 ## Where work happens
 
@@ -67,6 +73,8 @@ Before installing over an existing app, retain its signing identity and check th
 
 ### Verified source checks
 
+On October 24: all **47 Flutter tests pass**, static analysis is clean, and an Android ARM64 debug APK builds successfully with Flutter 3.47.8 / Dart 3.13.7 and JDK 17. The added report checks cover Ask navigation, Send/Steer/Queue, citation removal, offline restarts, per-conversation drafts, stale responses, relative paths, cross-workspace receipts and failed/delayed storage. Keyboard/2×-text checks pass online and offline. The [report-chat rendering](docs/phone-report-chat.png) uses the actual widgets and fictional report content. This source change has not been installed or exercised against a live paired backend.
+
 On October 20: all 25 Flutter tests and 59 targeted backend regressions pass; Flutter analysis reports no issues. A clean Android ARM64 debug APK build succeeds. The tests cover delivery/restart recovery, storage failure, stale responses, scoped decisions and responsive layouts, including 360×640 with the keyboard open and text at 2×.
 
 ### UI previews
@@ -77,7 +85,7 @@ These renderings use the actual Flutter widgets and fictional content, not a con
 | --- | --- | --- |
 | ![Diane conversation](docs/phone-conversation.png) | ![Attention-first Work](docs/phone-work.png) | ![Scoped permission request](docs/phone-decision.png) |
 
-[Offline recovery](docs/phone-offline.png) and [dark appearance](docs/phone-dark.png) are also included. To regenerate the five views:
+[Offline recovery](docs/phone-offline.png), [dark appearance](docs/phone-dark.png), and [report citations in chat](docs/phone-report-chat.png) are also included. To regenerate the six views:
 
 ```sh
 flutter test tool/render_phone_preview_test.dart \

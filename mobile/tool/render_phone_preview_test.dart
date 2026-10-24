@@ -20,6 +20,16 @@ const _fontDirectory = String.fromEnvironment('PHONE_FONT_DIR');
 const _serifFont = String.fromEnvironment('PHONE_SERIF_FONT');
 const _monoFont = String.fromEnvironment('PHONE_MONO_FONT');
 
+const _report = PhoneReportReference(
+  id: 'quarterly-research-report',
+  title: 'Quarterly research report',
+  path: '/research/reports/quarterly.md',
+  excerpt:
+      'The quarterly review recommends checking the source data, comparing the strongest explanations, and choosing one next step.',
+  contentAvailable: true,
+  capturedAt: '2026-10-24T09:00:00Z',
+);
+
 const _sessions = [
   PhoneSessionSummary(
     id: 'phone-review',
@@ -124,14 +134,24 @@ void main() {
     }
   });
 
-  for (final scene in ['conversation', 'work', 'offline', 'decision', 'dark']) {
+  for (final scene in [
+    'conversation',
+    'work',
+    'offline',
+    'decision',
+    'dark',
+    'report-chat',
+  ]) {
     testWidgets('render $scene phone preview', (tester) async {
       tester.view.physicalSize = const Size(390, 844);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       final captureKey = GlobalKey();
-      final controller = TextEditingController();
+      final reportChat = scene == 'report-chat';
+      final controller = TextEditingController(
+        text: reportChat ? 'Which change should I prioritize?' : '',
+      );
       addTearDown(controller.dispose);
       final offline = scene == 'offline';
       final decision = scene == 'decision';
@@ -156,7 +176,7 @@ void main() {
               onOpenDiane: () {},
             )
           : PhoneConversationView(
-              workspaceRoot: '/work/diane',
+              workspaceRoot: reportChat ? '/research' : '/work/diane',
               controller: controller,
               status: offline ? 'Delivery unconfirmed' : 'Ready',
               busy: false,
@@ -177,7 +197,31 @@ void main() {
               onRetryDelivery: (_) {},
               onReplyApproval: (_, _) async {},
               connectionState: offline ? 'offline' : 'ready',
-              messages: decision
+              reportReference: reportChat ? _report : null,
+              onRemoveReport: reportChat ? () {} : null,
+              onOpenReport: reportChat ? (_) {} : null,
+              messages: reportChat
+                  ? [
+                      PhoneChatMessage(
+                        id: 'report-question',
+                        role: PhoneChatRole.user,
+                        text: _report.composeMessage(
+                          'What are the main findings?',
+                        ),
+                        record: {
+                          'attachments': [
+                            _report.toAttachment('What are the main findings?'),
+                          ],
+                        },
+                      ),
+                      const PhoneChatMessage(
+                        id: 'report-answer',
+                        role: PhoneChatRole.assistant,
+                        text:
+                            'Three points stand out in the report:\n\n1. Verify the source data.\n2. Compare the strongest explanations.\n3. Choose one concrete next step.\n\nWe can work through whichever part matters most to you.',
+                      ),
+                    ]
+                  : decision
                   ? const [
                       PhoneChatMessage(
                         id: 'question-context',

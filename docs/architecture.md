@@ -1,5 +1,9 @@
 # Architecture
 
+- `PhoneReportReference` in `mobile/lib/phone_state.dart` captures report identity and a bounded, explicitly labelled source excerpt. `PhoneDeviceState.reportDrafts` uses the same computer/workflow/thread-or-new-workspace key as text drafts; outbox persistence consumes a citation atomically and restores it on failed storage.
+- File/output Ask stages a report and opens the existing phone conversation. The existing phone API receives both composed question/source text and a generic file attachment carrying citation metadata. This preserves context for Send/Steer/Queue without a backend contract change; canonical and cached messages render the compact question and an inspectable saved citation.
+- Phone preview generations and computer/workflow/thread/root scopes reject stale reads. Source paths use the read API's resolved path or their captured browse root. A new-chat receipt may migrate drafts only while its original workflow/root is still selected.
+
 ## Phone handoff
 
 - `server/routers/phone.py` adapts the existing session, V2 admission/execution, queue and native decision APIs. `/api/phone/requests` accepts stable request IDs; atomic private records under `graphs/phone_requests/` retain the original body, fingerprint, frozen execution context, target and dispatch phase. Conflicting ID reuse rejects. Receipt recovery reconciles durable evidence and reports uncertain dispatch for review instead of repeating native side effects.

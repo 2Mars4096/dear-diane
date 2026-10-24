@@ -52,6 +52,11 @@ PhoneConversationView conversation(
   VoidCallback? onStop,
   String id = 'primary',
   String status = 'Ready',
+  String connectionState = 'ready',
+  PhoneReportReference? reportReference,
+  VoidCallback? onRemoveReport,
+  ValueChanged<PhoneReportReference>? onOpenReport,
+  FocusNode? focusNode,
 }) => PhoneConversationView(
   workspaceRoot: '/research',
   conversationId: id,
@@ -73,6 +78,11 @@ PhoneConversationView conversation(
   onTogglePreviewArtifacts: () {},
   onSelectArtifact: (_) {},
   onSend: onSend ?? () {},
+  connectionState: connectionState,
+  reportReference: reportReference,
+  onRemoveReport: onRemoveReport,
+  onOpenReport: onOpenReport,
+  focusNode: focusNode,
 );
 
 void main() {
@@ -288,6 +298,150 @@ void main() {
     await tester.tap(find.text('Retry'));
     expect(retried, isTrue);
   });
+
+  testWidgets(
+    'sent report citations stay readable and reopen their recorded source',
+    (tester) async {
+      smallPhone(tester);
+      const report = PhoneReportReference(
+        id: 'quarterly-report',
+        title: 'Quarterly research report',
+        path: '/research/reports/quarterly.md',
+        excerpt: 'The quarterly review compares three possible next steps.',
+        contentAvailable: true,
+      );
+      const question = 'What should I follow up on first?';
+      final controller = TextEditingController();
+      addTearDown(controller.dispose);
+      PhoneReportReference? opened;
+      await tester.pumpWidget(
+        framed(
+          Scaffold(
+            body: conversation(
+              controller,
+              messages: [
+                PhoneChatMessage(
+                  id: 'question-with-report',
+                  role: PhoneChatRole.user,
+                  text: report.composeMessage(question),
+                  record: {
+                    'attachments': [report.toAttachment(question)],
+                  },
+                ),
+              ],
+              onOpenReport: (value) => opened = value,
+            ),
+          ),
+          scale: 2,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text(question), findsOneWidget);
+      expect(find.text(report.composeMessage(question)), findsNothing);
+      final citation = find.widgetWithText(
+        TextButton,
+        'Report: Quarterly research report',
+      );
+      expect(citation.hitTestable(), findsOneWidget);
+      expect(find.byTooltip('Remove report reference'), findsNothing);
+      await tester.tap(citation);
+      expect(opened?.path, report.path);
+      expect(opened?.excerpt, report.excerpt);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final connection in ['ready', 'offline']) {
+    testWidgets(
+      '$connection report draft stays actionable with keyboard and 2x text',
+      (tester) async {
+        smallPhone(tester, height: 640);
+        tester.view.viewInsets = const FakeViewPadding(bottom: 270);
+        const report = PhoneReportReference(
+          id: 'quarterly-long-title',
+          title:
+              'Quarterly research report with a deliberately long title for a narrow phone screen',
+          path: '/research/reports/quarterly.md',
+          excerpt: 'Compare the next steps before starting further work.',
+          contentAvailable: true,
+        );
+        PhoneReportReference? currentReport = report;
+        PhoneReportReference? opened;
+        var sends = 0, removals = 0;
+        final scaffoldKey = GlobalKey<ScaffoldState>();
+        final controller = TextEditingController(
+          text: 'Which change should I prioritize?',
+        );
+        addTearDown(controller.dispose);
+        await tester.pumpWidget(
+          framed(
+            StatefulBuilder(
+              builder: (context, setState) => PhoneShell(
+                scaffoldKey: scaffoldKey,
+                drawer: const Drawer(),
+                selectedIndex: 0,
+                onDestinationSelected: (_) {},
+                body: conversation(
+                  controller,
+                  connectionState: connection,
+                  status: 'Report attached. Add your question when ready.',
+                  reportReference: currentReport,
+                  onOpenReport: (value) => opened = value,
+                  onRemoveReport: () {
+                    removals++;
+                    setState(() => currentReport = null);
+                  },
+                  onSend: () => sends++,
+                ),
+                connectionState: connection,
+                computerLabel: 'Research computer with a longer name',
+                onConfigureBackend: () {},
+                onReconnect: () {},
+              ),
+            ),
+            scale: 2,
+            brightness: connection == 'offline'
+                ? Brightness.dark
+                : Brightness.light,
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(
+          find.byKey(const ValueKey('phone-composer')).hitTestable(),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('phone-report-reference')),
+          findsOneWidget,
+        );
+        final open = find.byKey(const ValueKey('phone-open-report-reference'));
+        final remove = find.byTooltip('Remove report reference');
+        expect(open.hitTestable(), findsOneWidget);
+        expect(remove.hitTestable(), findsOneWidget);
+        expect(sends, 0);
+        await tester.tap(open);
+        expect(opened?.id, report.id);
+        expect(controller.text, 'Which change should I prioritize?');
+        final send = find.byTooltip(
+          connection == 'offline' ? 'Save message to send' : 'Send message',
+        );
+        expect(send.hitTestable(), findsOneWidget);
+        await tester.tap(send);
+        expect(sends, 1);
+        await tester.tap(remove);
+        await tester.pumpAndSettle();
+        expect(removals, 1);
+        expect(
+          find.byKey(const ValueKey('phone-report-reference')),
+          findsNothing,
+        );
+        expect(controller.text, 'Which change should I prioritize?');
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   testWidgets(
     'question requires an explicit choice and sends the chosen answer',
